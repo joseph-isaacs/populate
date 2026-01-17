@@ -27,29 +27,15 @@ pub trait Distribution<T> {
 }
 ```
 
-### `DistributionExt<T>`
-
-```rust
-pub trait DistributionExt<T>: Distribution<T> + Sized {
-    fn with_nulls(self, null_prob: f64) -> WithNulls<Self>;
-    fn with_runs(self, switch_prob: f64) -> Runs<Self>;
-    fn map<U, F: Fn(T) -> U>(self, f: F) -> Map<Self, F, T>;
-    fn sample_vec(&self, seed: u64, len: usize) -> Vec<T>;
-}
-
-impl<T, D: Distribution<T>> DistributionExt<T> for D {}
-```
-
 ### `FromDistribution<T, D>`
 
 ```rust
 pub trait FromDistribution<T, D: Distribution<T>>: Sized {
-    fn from_distribution(dist: &D, seed: u64, len: usize) -> Self;
+    fn from_distribution(dist: &D, rng: &mut impl Rng, len: usize) -> Self;
 }
 
-pub trait FromNullableDistribution<T, D: Distribution<Option<T>>>: Sized {
-    fn from_nullable_distribution(dist: &D, seed: u64, len: usize) -> Self;
-}
+// Nullable types handled via bounds, e.g.:
+// impl<T, D: Distribution<Option<T>>> FromDistribution<Option<T>, D> for MyColumn<T>
 ```
 
 ## Base Distributions
@@ -80,39 +66,16 @@ pub trait FromNullableDistribution<T, D: Distribution<Option<T>>>: Sized {
 | `Monotonic<D>` | → `i64` | Increasing values |
 | `RandomWalk<D>` | → `f64` | Cumulative deltas |
 
-## Encoding-Aware Generation
-
-| Combinator | Encoding |
-|------------|----------|
-| `Runs<D>` | Run-end encoding |
-| `OneOf<T>` | Dictionary encoding |
-| `Monotonic<D>` | Delta encoding |
-| `WithNulls<D>` | Validity bitmaps |
-| `Constant<T>` | Constant encoding |
-
-Generate encoded representation directly:
-
-```rust
-let dist = Runs::new(OneOf::new(vec![1, 2, 3]), 0.1);
-let (values, run_ends) = dist.sample_run_ends(seed, 1000);
-```
-
 ## Composition Examples
 
 ```rust
-// Simple
-Range::new(0i32, 100).sample_vec(seed, 1000)
-
-// Runs
-Runs::new(OneOf::new(vec![1, 2, 3]), 0.1).sample_vec_runs(seed, 1000)
-
-// Full composition
-Range::new(1, 100)
-    .with_runs(0.1)
-    .with_nulls(0.2)
+// Combinators via nesting
+let dist = WithNulls::new(Range::new(0, 100), 0.2);
+let dist = Runs::new(OneOf::new(vec![1, 2, 3]), 0.1);
+let dist = Map::new(Range::new(0, 100), |x| x * 2);
 
 // Struct-like
-Tuple2(Range::new(0, 100), Range::new(0.0, 1.0)).sample_vec(seed, 100)
+Zip::new(Range::new(0, 100), Range::new(0.0, 1.0))
 
 // Lists
 ListDist::new(Range::new(0i32, 100), Range::new(1usize, 10))
@@ -126,15 +89,15 @@ StringDist::alphanumeric(Range::new(5usize, 15))
 ```rust
 struct MyColumn<T> { data: Vec<T> }
 
-impl<D: Distribution<u8>> FromDistribution<u8, D> for MyColumn<u8> {
-    fn from_distribution(dist: &D, seed: u64, len: usize) -> Self {
-        let mut rng = StdRng::seed_from_u64(seed);
-        MyColumn { data: (0..len).map(|_| dist.sample(&mut rng)).collect() }
+impl<T, D: Distribution<T>> FromDistribution<T, D> for MyColumn<T> {
+    fn from_distribution(dist: &D, rng: &mut impl Rng, len: usize) -> Self {
+        MyColumn { data: (0..len).map(|_| dist.sample(rng)).collect() }
     }
 }
 
 // Works with any distribution
-MyColumn::from_distribution(&Range::new(0u8, 100), 42, 1000)
+let mut rng = StdRng::seed_from_u64(42);
+MyColumn::from_distribution(&Range::new(0u8, 100), &mut rng, 1000)
 ```
 
 ## Key Properties
@@ -143,10 +106,3 @@ MyColumn::from_distribution(&Range::new(0u8, 100), 42, 1000)
 - **Zero coupling**: Only depends on `rand`, not vortex types
 - **Composable**: Combinators stack arbitrarily deep
 - **Extensible**: New distributions and storage formats added independently
-
-## Prior Art
-
-Similar to property testing combinators (proptest, QuickCheck, Hypothesis) but focused on:
-- Columnar data layouts (run-length, dictionary encoding patterns)
-- Encoding-aware data generation
-- Deterministic, reproducible output from seeds

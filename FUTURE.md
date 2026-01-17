@@ -139,6 +139,100 @@ impl GenerateColumns for (D1, (D2, (D3, D4))) { ... }
 
 Limited depth but covers practical cases.
 
+## Type Erasure for Dynamic Schemas
+
+**Open Question:** How to support heterogeneous collections of distributions for JSON, Arrow, etc.?
+
+### The Problem
+
+```rust
+// Can't do this - different T in Distribution<T>
+let columns: Vec<Box<dyn Distribution<?>>> = vec![
+    Box::new(Range::new(0i32, 100)),     // Distribution<i32>
+    Box::new(Bernoulli::new(0.5)),        // Distribution<bool>
+    Box::new(OneOf::new(vec!["a", "b"])), // Distribution<&str>
+];
+```
+
+### Option 1: Value Enum
+
+```rust
+enum Value {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    String(String),
+    Null,
+}
+
+trait DynDistribution {
+    fn sample_dyn(&mut self, rng: &mut dyn Rng) -> Value;
+}
+
+// Blanket impl for any Distribution<T> where T converts to Value
+impl<T: Into<Value>, D: Distribution<T>> DynDistribution for D {
+    fn sample_dyn(&mut self, rng: &mut dyn Rng) -> Value {
+        self.sample(rng).into()
+    }
+}
+
+// Now heterogeneous collections work
+let columns: Vec<Box<dyn DynDistribution>> = vec![
+    Box::new(Range::new(0i64, 100)),
+    Box::new(Bernoulli::new(0.5)),
+];
+```
+
+### Option 2: Write to Trait Object (zero-copy for Arrow)
+
+```rust
+trait ColumnWriter {
+    fn write_i64(&mut self, val: i64);
+    fn write_bool(&mut self, val: bool);
+    fn write_str(&mut self, val: &str);
+    fn write_null(&mut self);
+}
+
+trait DynDistribution {
+    fn sample_to(&mut self, rng: &mut dyn Rng, writer: &mut dyn ColumnWriter);
+}
+
+// Arrow impl
+struct Int64Builder { inner: arrow::array::Int64Builder }
+impl ColumnWriter for Int64Builder {
+    fn write_i64(&mut self, val: i64) { self.inner.append_value(val); }
+    // others panic - type mismatch
+}
+```
+
+### Option 3: Schema-Driven Generation
+
+```rust
+enum ColumnDef {
+    Int { min: i64, max: i64 },
+    Bool { true_prob: f64 },
+    String { values: Vec<String> },
+    Nullable { inner: Box<ColumnDef>, null_prob: f64 },
+}
+
+struct Schema(Vec<(String, ColumnDef)>);
+
+impl Schema {
+    fn generate_json(&self, rng: &mut impl Rng, len: usize) -> Vec<serde_json::Value>;
+    fn generate_arrow(&self, rng: &mut impl Rng, len: usize) -> RecordBatch;
+}
+```
+
+### Tradeoffs
+
+| Approach | Type safety | Performance | Flexibility |
+|----------|-------------|-------------|-------------|
+| Value enum | Runtime | Boxing overhead | High |
+| ColumnWriter | Runtime | Zero-copy possible | Medium |
+| Schema enum | Runtime | Good | Limited to enum variants |
+
+**Decision needed:** Which approach best balances ergonomics, performance, and flexibility?
+
 ## Additional Future Features
 
 - **FlatMap combinator** - Output determines next distribution

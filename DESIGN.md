@@ -22,16 +22,32 @@ This separation means:
 ### `Distribution<T>`
 
 ```rust
-pub trait Distribution<T> {
-    fn sample(&self, rng: &mut impl Rng) -> T;
+pub trait Distribution<T>: Sized {
+    fn sample(&mut self, rng: &mut impl Rng) -> T;
+
+    fn map<U, F: Fn(T) -> U>(self, f: F) -> Map<Self, F> {
+        Map::new(self, f)
+    }
 }
+
+// Tuples of distributions implement Distribution
+impl<D1, D2, T1, T2> Distribution<(T1, T2)> for (D1, D2)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+{
+    fn sample(&mut self, rng: &mut impl Rng) -> (T1, T2) {
+        (self.0.sample(rng), self.1.sample(rng))
+    }
+}
+// ... impl for tuples up to 12 via macro
 ```
 
 ### `FromDistribution<T, D>`
 
 ```rust
 pub trait FromDistribution<T, D: Distribution<T>>: Sized {
-    fn from_distribution(dist: &D, rng: &mut impl Rng, len: usize) -> Self;
+    fn from_distribution(dist: &mut D, rng: &mut impl Rng, len: usize) -> Self;
 }
 
 // Nullable types handled via bounds, e.g.:
@@ -42,13 +58,10 @@ pub trait FromDistribution<T, D: Distribution<T>>: Sized {
 
 | Distribution | Parameters | Description |
 |--------------|------------|-------------|
-| `Uniform` | none | Full-range uniform random |
 | `Bernoulli` | `true_prob: f64` | Biased boolean |
 | `Range<T>` | `min, max` | Bounded uniform `[min, max)` |
 | `OneOf<T>` | `values: Vec<T>` | Uniform from fixed set |
 | `Constant<T>` | `value: T` | Always same value |
-| `Normal` | `mean, std_dev` | Gaussian distribution |
-| `Exponential` | `lambda` | Exponential distribution |
 | `Weighted<T>` | `values, weights` | Non-uniform selection |
 
 ## Combinators
@@ -58,13 +71,10 @@ pub trait FromDistribution<T, D: Distribution<T>>: Sized {
 | `WithNulls<D>` | `T` → `Option<T>` | Adds null probability |
 | `Runs<D>` | `T` → `T` | Run-length friendly data |
 | `Map<D, F>` | `T` → `U` | Transform output |
-| `Zip<D1, D2>` | → `(T1, T2)` | Pair values |
-| `Either<D1, D2, B>` | → `T` | Conditional selection |
-| `Tuple2..5` | → `(T0, T1, ...)` | Struct-like composition |
-| `ListDist<D, L>` | → `Vec<T>` | Variable-length lists |
-| `StringDist<L>` | → `String` | Random strings |
-| `Monotonic<D>` | → `i64` | Increasing values |
-| `RandomWalk<D>` | → `f64` | Cumulative deltas |
+| `Repeat<D>` | `T` → `Vec<T>` | Fixed-length collection |
+| `RepeatN<D, L>` | `T` → `Vec<T>` | Variable-length collection |
+| `Monotonic<D>` | `T` → `T` | Increasing values |
+| `(D1, D2, ...)` | → `(T1, T2, ...)` | Tuple composition (built-in) |
 
 ## Composition Examples
 
@@ -72,32 +82,29 @@ pub trait FromDistribution<T, D: Distribution<T>>: Sized {
 // Combinators via nesting
 let dist = WithNulls::new(Range::new(0, 100), 0.2);
 let dist = Runs::new(OneOf::new(vec![1, 2, 3]), 0.1);
-let dist = Map::new(Range::new(0, 100), |x| x * 2);
+let dist = Range::new(0, 100).map(|x| x * 2);
 
-// Struct-like
-Zip::new(Range::new(0, 100), Range::new(0.0, 1.0))
+// Tuples (no wrapper needed)
+let mut row = (
+    Range::new(0, 100),
+    Range::new(0.0, 1.0),
+    Bernoulli::new(0.5),
+);
+let (i, f, b): (i32, f64, bool) = row.sample(&mut rng);
 
-// Lists
-ListDist::new(Range::new(0i32, 100), Range::new(1usize, 10))
-
-// Strings
-StringDist::alphanumeric(Range::new(5usize, 15))
-```
-
-## Custom Type Integration
-
-```rust
-struct MyColumn<T> { data: Vec<T> }
-
-impl<T, D: Distribution<T>> FromDistribution<T, D> for MyColumn<T> {
-    fn from_distribution(dist: &D, rng: &mut impl Rng, len: usize) -> Self {
-        MyColumn { data: (0..len).map(|_| dist.sample(rng)).collect() }
-    }
-}
-
-// Works with any distribution
-let mut rng = StdRng::seed_from_u64(42);
-MyColumn::from_distribution(&Range::new(0u8, 100), &mut rng, 1000)
+// Collect into Vec
+let mut rows = Repeat::new(
+    (
+        Runs::new(Range::new(1u64, 10_000), 0.1),
+        Weighted::new(
+            vec!["click", "view", "purchase"],
+            vec![0.5, 0.3, 0.2],
+        ),
+        WithNulls::new(Range::new(1i32, 10000), 0.85),
+    ),
+    10_000,
+);
+let data: Vec<(u64, &str, Option<i32>)> = rows.sample(&mut rng);
 ```
 
 ## Key Properties
@@ -106,3 +113,9 @@ MyColumn::from_distribution(&Range::new(0u8, 100), &mut rng, 1000)
 - **Zero coupling**: Only depends on `rand`, not vortex types
 - **Composable**: Combinators stack arbitrarily deep
 - **Extensible**: New distributions and storage formats added independently
+- **Stateful**: `&mut self` enables combinators like `Runs` and `Monotonic`
+
+## See Also
+
+- [EXAMPLES.md](EXAMPLES.md) - Real world examples (TPC-H tables)
+- [FUTURE.md](FUTURE.md) - Planned features and complex patterns

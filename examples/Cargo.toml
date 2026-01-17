@@ -1,0 +1,14 @@
+[package]
+name = "examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+dc = { path = "../dc", features = ["arrow"] }
+rand.workspace = true
+arrow.workspace = true
+
+[[bin]]
+name = "arrow_table"
+path = "arrow_table.rs"

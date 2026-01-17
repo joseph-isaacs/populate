@@ -1,19 +1,19 @@
-use crate::{Distribution, SampleIter};
+use dc_core::{Distribution, SampleIter};
 use rand::Rng;
 
-/// A distribution that produces uniform random values in a range [min, max).
+/// A distribution that produces values uniformly in [min, max).
 pub struct Range<T> {
     min: T,
     max: T,
 }
 
-impl<T> Range<T> {
+impl<T: Clone> Range<T> {
     pub fn new(min: T, max: T) -> Self {
-        Range { min, max }
+        Self { min, max }
     }
 }
 
-/// Iterator for Range distribution.
+/// Iterator for range values.
 #[derive(Clone)]
 pub struct RangeIter<T> {
     min: T,
@@ -37,7 +37,7 @@ macro_rules! impl_range {
             type Item = $t;
 
             fn next(&mut self, rng: &mut impl Rng) -> $t {
-                rng.gen_range(self.min..self.max)
+                rng.random_range(self.min..self.max)
             }
         }
     };
@@ -58,29 +58,31 @@ impl_range!(f64);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{collect::Vecs, collect::ElementCollector};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
     #[test]
     fn test_range_i32() {
         let mut dist = Range::new(0i32, 100);
-        let mut rng = StdRng::seed_from_u64(42);
+        let mut rng = StdRng::seed_from_u64(0);
         let mut iter = dist.sample();
 
         for _ in 0..100 {
-            let val = iter.next(&mut rng);
-            assert!(val >= 0 && val < 100);
+            let v = iter.next(&mut rng);
+            assert!(v >= 0 && v < 100);
         }
     }
 
     #[test]
     fn test_range_collect() {
-        let mut dist = Range::new(0i32, 1000);
-        let mut rng = StdRng::seed_from_u64(42);
+        let mut dist = Range::new(0i32, 100);
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut iter = dist.sample();
 
-        let data: Vec<i32> = Vecs::collect_element(dist.sample(), &mut rng, 1000);
-        assert_eq!(data.len(), 1000);
-        assert!(data.iter().all(|&x| x >= 0 && x < 1000));
+        let data: Vec<i32> = (0..10).map(|_| iter.next(&mut rng)).collect();
+        assert_eq!(data.len(), 10);
+        for v in data {
+            assert!(v >= 0 && v < 100);
+        }
     }
 }

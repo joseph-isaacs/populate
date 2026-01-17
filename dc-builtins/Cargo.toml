@@ -1,0 +1,10 @@
+[package]
+name = "dc-builtins"
+description = "Built-in combinators for data-comb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rand.workspace = true
+dc-core.workspace = true

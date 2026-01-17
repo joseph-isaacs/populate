@@ -1,0 +1,197 @@
+use rand::Rng;
+
+/// An infinite iterator that produces values using an RNG.
+///
+/// # Clone semantics
+///
+/// Iterators must implement `Clone` such that cloning produces an iterator
+/// with no accumulated internal state. A cloned iterator must produce the
+/// same sequence (given the same RNG state) as a freshly created iterator.
+///
+/// This invariant is used by list collectors to ensure each list gets
+/// independent element generation - the element iterator is cloned before
+/// generating each list's values.
+///
+/// For stateless iterators (e.g., `Range`, `Constant`), this is trivially satisfied.
+/// For stateful iterators (e.g., `Runs`), clone must reset any accumulated state
+/// (e.g., the "current run value") to its initial condition.
+pub trait SampleIter: Clone {
+    type Item;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+}
+
+/// A factory that produces sample iterators.
+pub trait Distribution<T> {
+    type Iter: SampleIter<Item = T>;
+    fn sample(&mut self) -> Self::Iter;
+}
+
+/// A sink that consumes values and produces an output.
+pub trait Sink<T> {
+    type Output;
+
+    fn push(&mut self, value: T);
+
+    /// Bulk append. Default uses push, but implementations can override
+    /// with optimized bulk operations.
+    fn extend(&mut self, iter: impl Iterator<Item = T>) {
+        for value in iter {
+            self.push(value);
+        }
+    }
+
+    fn finish(self) -> Self::Output;
+}
+
+/// A sink for list values that tracks offsets.
+pub trait ListSink<T> {
+    type Output;
+
+    fn start_list(&mut self);
+    fn push_element(&mut self, value: T);
+    fn end_list(&mut self);
+    fn finish(self) -> Self::Output;
+}
+
+// === Tuple iterators and Distribution impls ===
+// These must be in the same crate as Distribution due to orphan rules.
+
+/// Iterator for 2-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter2<I1, I2>(pub I1, pub I2);
+
+impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
+    type Item = (I1::Item, I2::Item);
+
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        (self.0.next(rng), self.1.next(rng))
+    }
+}
+
+impl<D1, D2, T1, T2> Distribution<(T1, T2)> for (D1, D2)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+{
+    type Iter = TupleIter2<D1::Iter, D2::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter2(self.0.sample(), self.1.sample())
+    }
+}
+
+/// Iterator for 3-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
+
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
+    type Item = (I1::Item, I2::Item, I3::Item);
+
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        (self.0.next(rng), self.1.next(rng), self.2.next(rng))
+    }
+}
+
+impl<D1, D2, D3, T1, T2, T3> Distribution<(T1, T2, T3)> for (D1, D2, D3)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter3(self.0.sample(), self.1.sample(), self.2.sample())
+    }
+}
+
+// === Collection functions using Sink ===
+
+/// Collect elements into a sink (row-oriented).
+pub fn collect_into<I, S>(mut iter: I, rng: &mut impl Rng, n: usize, mut sink: S) -> S::Output
+where
+    I: SampleIter,
+    S: Sink<I::Item>,
+{
+    for _ in 0..n {
+        sink.push(iter.next(rng));
+    }
+    sink.finish()
+}
+
+/// Collect elements using column-oriented bulk extend.
+pub fn collect_into_column<I, S>(mut iter: I, rng: &mut impl Rng, n: usize, mut sink: S) -> S::Output
+where
+    I: SampleIter,
+    S: Sink<I::Item>,
+{
+    sink.extend((0..n).map(|_| iter.next(rng)));
+    sink.finish()
+}
+
+/// Collect 2-tuple into separate sinks (column-oriented).
+pub fn collect_struct2_into<I1, I2, S1, S2>(
+    mut iter: TupleIter2<I1, I2>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+) -> (S1::Output, S2::Output)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+{
+    sink1.extend((0..n).map(|_| iter.0.next(rng)));
+    sink2.extend((0..n).map(|_| iter.1.next(rng)));
+    (sink1.finish(), sink2.finish())
+}
+
+/// Collect 3-tuple into separate sinks (column-oriented).
+pub fn collect_struct3_into<I1, I2, I3, S1, S2, S3>(
+    mut iter: TupleIter3<I1, I2, I3>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+    mut sink3: S3,
+) -> (S1::Output, S2::Output, S3::Output)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+    S3: Sink<I3::Item>,
+{
+    sink1.extend((0..n).map(|_| iter.0.next(rng)));
+    sink2.extend((0..n).map(|_| iter.1.next(rng)));
+    sink3.extend((0..n).map(|_| iter.2.next(rng)));
+    (sink1.finish(), sink2.finish(), sink3.finish())
+}
+
+/// Collect list into a list sink.
+pub fn collect_list_into<L, E, S>(
+    mut lengths: L,
+    elements: E,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink: S,
+) -> S::Output
+where
+    L: SampleIter<Item = usize>,
+    E: SampleIter,
+    S: ListSink<E::Item>,
+{
+    for _ in 0..n {
+        sink.start_list();
+        let mut elem_iter = elements.clone();
+        let len = lengths.next(rng);
+        for _ in 0..len {
+            sink.push_element(elem_iter.next(rng));
+        }
+        sink.end_list();
+    }
+    sink.finish()
+}

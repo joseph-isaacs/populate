@@ -1,26 +1,20 @@
-use crate::{Distribution, SampleIter};
+use dc_core::{Distribution, SampleIter};
 use rand::Rng;
 
 /// A distribution that always produces the same value.
-pub struct Constant<T>(pub T);
+pub struct Constant<T> {
+    value: T,
+}
 
-impl<T> Constant<T> {
+impl<T: Clone> Constant<T> {
     pub fn new(value: T) -> Self {
-        Constant(value)
+        Self { value }
     }
 }
 
-/// Iterator for Constant distribution.
+/// Iterator for constant values.
 #[derive(Clone)]
 pub struct ConstantIter<T>(T);
-
-impl<T: Clone> Distribution<T> for Constant<T> {
-    type Iter = ConstantIter<T>;
-
-    fn sample(&mut self) -> Self::Iter {
-        ConstantIter(self.0.clone())
-    }
-}
 
 impl<T: Clone> SampleIter for ConstantIter<T> {
     type Item = T;
@@ -30,11 +24,19 @@ impl<T: Clone> SampleIter for ConstantIter<T> {
     }
 }
 
+impl<T: Clone> Distribution<T> for Constant<T> {
+    type Iter = ConstantIter<T>;
+
+    fn sample(&mut self) -> Self::Iter {
+        ConstantIter(self.value.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
     fn test_constant() {

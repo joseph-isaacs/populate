@@ -1,0 +1,22 @@
+[package]
+name = "dc"
+description = "Sampling combinators for columnar data generation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dc-core.workspace = true
+dc-builtins.workspace = true
+dc-sink-vec.workspace = true
+
+[dependencies.dc-sink-arrow]
+workspace = true
+optional = true
+
+[features]
+default = []
+arrow = ["dep:dc-sink-arrow"]
+
+[dev-dependencies]
+rand = { workspace = true }

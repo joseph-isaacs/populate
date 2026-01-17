@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/data-comb",
+    "crates/data-comb-core",
+    "crates/data-comb-builtins",
+    "crates/data-comb-sink-vec",
+    "crates/data-comb-sink-arrow",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+rand = "0.8"
+arrow = "53"
+data-comb-core = { path = "crates/data-comb-core" }
+data-comb-builtins = { path = "crates/data-comb-builtins" }
+data-comb-sink-vec = { path = "crates/data-comb-sink-vec" }
+data-comb-sink-arrow = { path = "crates/data-comb-sink-arrow" }

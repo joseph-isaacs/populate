@@ -1,23 +1,23 @@
 [workspace]
 members = [
-    "dc",
-    "dc-core",
-    "dc-builtins",
-    "dc-sink-vec",
-    "dc-sink-arrow",
+    "populate",
+    "populate-core",
+    "populate-builtins",
+    "populate-sink-vec",
+    "populate-sink-arrow",
     "examples",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
 rand = "0.9"
 arrow = "57.2"
-dc-core = { path = "dc-core" }
-dc-builtins = { path = "dc-builtins" }
-dc-sink-vec = { path = "dc-sink-vec" }
-dc-sink-arrow = { path = "dc-sink-arrow" }
+populate-core = { path = "populate-core" }
+populate-builtins = { path = "populate-builtins" }
+populate-sink-vec = { path = "populate-sink-vec" }
+populate-sink-arrow = { path = "populate-sink-arrow" }

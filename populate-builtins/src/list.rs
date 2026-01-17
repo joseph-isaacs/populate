@@ -1,4 +1,4 @@
-use dc_core::Distribution;
+use populate_core::Distribution;
 
 /// A distribution for lists with a length distribution and element distribution.
 pub struct List<L, E> {
@@ -12,10 +12,10 @@ impl<L, E> List<L, E> {
     }
 
     /// Sample a list iterator from this distribution.
-    pub fn sample<T>(&mut self) -> ListIter<L::Iter, E::Iter>
+    pub fn sample(&mut self) -> ListIter<L::Iter, E::Iter>
     where
-        L: Distribution<usize>,
-        E: Distribution<T>,
+        L: Distribution<Item = usize>,
+        E: Distribution,
     {
         ListIter {
             lengths: self.lengths.sample(),
@@ -35,9 +35,9 @@ pub struct ListIter<L, E> {
 mod tests {
     use super::*;
     use crate::Constant;
-    use dc_core::SampleIter;
-    use rand::rngs::StdRng;
+    use populate_core::SampleIter;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_list() {

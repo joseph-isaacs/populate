@@ -114,6 +114,7 @@ dependencies = [
  "atoi",
  "base64",
  "chrono",
+ "comfy-table",
  "half",
  "lexical-core",
  "num-traits",
@@ -316,6 +317,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "comfy-table"
+version = "7.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
+dependencies = [
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,48 +380,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dc"
-version = "0.1.0"
-dependencies = [
- "dc-builtins",
- "dc-core",
- "dc-sink-arrow",
- "dc-sink-vec",
- "rand",
-]
-
-[[package]]
-name = "dc-builtins"
-version = "0.1.0"
-dependencies = [
- "dc-core",
- "rand",
-]
-
-[[package]]
-name = "dc-core"
-version = "0.1.0"
-dependencies = [
- "rand",
-]
-
-[[package]]
-name = "dc-sink-arrow"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "dc-core",
- "rand",
-]
-
-[[package]]
-name = "dc-sink-vec"
-version = "0.1.0"
-dependencies = [
- "dc-core",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -421,7 +390,7 @@ name = "examples"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "dc",
+ "populate",
  "rand",
 ]
 
@@ -658,6 +627,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
+name = "populate"
+version = "0.1.0"
+dependencies = [
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-sink-vec",
+ "rand",
+]
+
+[[package]]
+name = "populate-builtins"
+version = "0.1.0"
+dependencies = [
+ "populate-core",
+ "rand",
+]
+
+[[package]]
+name = "populate-core"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "populate-builtins",
+ "populate-core",
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-vec"
+version = "0.1.0"
+dependencies = [
+ "populate-builtins",
+ "populate-core",
+ "rand",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -856,6 +870,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9312f7c4f6ff9069b165498234ce8be658059c6728633667c526e27dc2cf1df5"
 
 [[package]]
+name = "unicode-segmentation"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1008,6 +1034,6 @@ dependencies = [
 
 [[package]]
 name = "zmij"
-version = "1.0.14"
+version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd8f3f50b848df28f887acb68e41201b5aea6bc8a8dacc00fb40635ff9a72fea"
+checksum = "94f63c051f4fe3c1509da62131a678643c5b6fbdc9273b2b79d4378ebda003d2"

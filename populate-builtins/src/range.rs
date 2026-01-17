@@ -1,4 +1,4 @@
-use dc_core::{Distribution, SampleIter};
+use populate_core::{Distribution, SampleIter};
 use rand::Rng;
 
 /// A distribution that produces values uniformly in [min, max).
@@ -22,7 +22,8 @@ pub struct RangeIter<T> {
 
 macro_rules! impl_range {
     ($t:ty) => {
-        impl Distribution<$t> for Range<$t> {
+        impl Distribution for Range<$t> {
+            type Item = $t;
             type Iter = RangeIter<$t>;
 
             fn sample(&mut self) -> Self::Iter {
@@ -58,8 +59,8 @@ impl_range!(f64);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_range_i32() {

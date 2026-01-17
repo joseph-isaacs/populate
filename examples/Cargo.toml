@@ -5,10 +5,14 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-dc = { path = "../dc", features = ["arrow"] }
+populate = { path = "../populate", features = ["arrow"] }
 rand.workspace = true
-arrow.workspace = true
+arrow = { workspace = true, features = ["prettyprint"] }
 
 [[bin]]
 name = "arrow_table"
 path = "arrow_table.rs"
+
+[[bin]]
+name = "vec_collection"
+path = "vec_collection.rs"

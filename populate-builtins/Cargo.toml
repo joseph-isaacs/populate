@@ -1,10 +1,10 @@
 [package]
-name = "dc-builtins"
-description = "Built-in combinators for data-comb"
+name = "populate-builtins"
+description = "Built-in combinators for populate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 rand.workspace = true
-dc-core.workspace = true
+populate-core.workspace = true

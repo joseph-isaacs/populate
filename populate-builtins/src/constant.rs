@@ -1,4 +1,4 @@
-use dc_core::{Distribution, SampleIter};
+use populate_core::{Distribution, SampleIter};
 use rand::Rng;
 
 /// A distribution that always produces the same value.
@@ -24,7 +24,8 @@ impl<T: Clone> SampleIter for ConstantIter<T> {
     }
 }
 
-impl<T: Clone> Distribution<T> for Constant<T> {
+impl<T: Clone> Distribution for Constant<T> {
+    type Item = T;
     type Iter = ConstantIter<T>;
 
     fn sample(&mut self) -> Self::Iter {
@@ -35,8 +36,8 @@ impl<T: Clone> Distribution<T> for Constant<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_constant() {

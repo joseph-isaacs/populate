@@ -1,5 +1,31 @@
 use rand::Rng;
 
+// === Collection traits ===
+
+/// Trait for a collector that can collect a distribution D into an output.
+/// The collector type C is a marker (e.g., `Arrow`, `Vecs`) that determines
+/// the output family. The associated `Output` type is the actual result.
+pub trait Collector<D>: Sized {
+    type Output;
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output;
+}
+
+/// Extension trait that adds `collect` method to all distributions.
+pub trait CollectExt {
+    fn collect<C>(&mut self, rng: &mut impl Rng, n: usize) -> C::Output
+    where
+        C: Collector<Self>,
+        Self: Sized,
+    {
+        C::collect(self, rng, n)
+    }
+}
+
+// Blanket impl for all types
+impl<D> CollectExt for D {}
+
+// === Core traits ===
+
 /// An infinite iterator that produces values using an RNG.
 ///
 /// # Clone semantics
@@ -21,8 +47,9 @@ pub trait SampleIter: Clone {
 }
 
 /// A factory that produces sample iterators.
-pub trait Distribution<T> {
-    type Iter: SampleIter<Item = T>;
+pub trait Distribution {
+    type Item;
+    type Iter: SampleIter<Item = Self::Item>;
     fn sample(&mut self) -> Self::Iter;
 }
 
@@ -68,11 +95,12 @@ impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     }
 }
 
-impl<D1, D2, T1, T2> Distribution<(T1, T2)> for (D1, D2)
+impl<D1, D2> Distribution for (D1, D2)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
+    D1: Distribution,
+    D2: Distribution,
 {
+    type Item = (D1::Item, D2::Item);
     type Iter = TupleIter2<D1::Iter, D2::Iter>;
 
     fn sample(&mut self) -> Self::Iter {
@@ -92,12 +120,13 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I
     }
 }
 
-impl<D1, D2, D3, T1, T2, T3> Distribution<(T1, T2, T3)> for (D1, D2, D3)
+impl<D1, D2, D3> Distribution for (D1, D2, D3)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
+    D1: Distribution,
+    D2: Distribution,
+    D3: Distribution,
 {
+    type Item = (D1::Item, D2::Item, D3::Item);
     type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
 
     fn sample(&mut self) -> Self::Iter {
@@ -120,7 +149,12 @@ where
 }
 
 /// Collect elements using column-oriented bulk extend.
-pub fn collect_into_column<I, S>(mut iter: I, rng: &mut impl Rng, n: usize, mut sink: S) -> S::Output
+pub fn collect_into_column<I, S>(
+    mut iter: I,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink: S,
+) -> S::Output
 where
     I: SampleIter,
     S: Sink<I::Item>,

@@ -1,9 +1,12 @@
-use arrow::array::{ArrayRef, BooleanBuilder, ListBuilder, PrimitiveBuilder, RecordBatch, StringBuilder};
-use arrow::datatypes::{
-    DataType, Field, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, Schema,
-    UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+use arrow::array::{
+    ArrayRef, BooleanBuilder, ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StringBuilder,
 };
-use dc_core::{ListSink, SampleIter, Sink, TupleIter2, TupleIter3};
+use arrow::datatypes::{
+    DataType, Field, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
+    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+};
+use populate_builtins::List;
+use populate_core::{Collector, Distribution, ListSink, SampleIter, Sink};
 use rand::Rng;
 use std::sync::Arc;
 
@@ -166,7 +169,7 @@ impl<T: arrow::datatypes::ArrowPrimitiveType> Default for ArrowListSink<T> {
 }
 
 impl<T: arrow::datatypes::ArrowPrimitiveType> ListSink<T::Native> for ArrowListSink<T> {
-    type Output = ArrayRef;
+    type Output = ListArray;
 
     fn start_list(&mut self) {
         // Nothing to do at start
@@ -181,13 +184,13 @@ impl<T: arrow::datatypes::ArrowPrimitiveType> ListSink<T::Native> for ArrowListS
     }
 
     fn finish(mut self) -> Self::Output {
-        Arc::new(self.builder.finish())
+        self.builder.finish()
     }
 }
 
 /// Trait for types that can be used in Arrow list sinks.
 pub trait ArrowListSinkType: Sized {
-    type Sink: ListSink<Self, Output = ArrayRef>;
+    type Sink: ListSink<Self, Output = ListArray>;
     fn new_list_sink() -> Self::Sink;
 }
 
@@ -214,67 +217,117 @@ impl_arrow_list_sink_type!(u64, UInt64Type);
 impl_arrow_list_sink_type!(f32, Float32Type);
 impl_arrow_list_sink_type!(f64, Float64Type);
 
-// === RecordBatch collection functions ===
+// === Marker types for Arrow collection ===
 
-/// Collect a 2-tuple iterator into a RecordBatch.
-pub fn collect_record_batch2<I1, I2>(
-    mut iter: TupleIter2<I1, I2>,
-    rng: &mut impl Rng,
-    n: usize,
-) -> RecordBatch
+/// Marker for collecting scalar distributions into ArrayRef.
+pub struct ArrayRefW;
+
+/// Marker for collecting tuple distributions into RecordBatch (columnar).
+pub struct RecordBatchW;
+
+/// Marker for collecting List distributions into ArrayRef (ListArray).
+pub struct ListArrayW;
+
+// === Collector implementations ===
+
+/// Collect scalar Distribution into ArrayRef
+impl<D> Collector<D> for ArrayRefW
 where
-    I1: SampleIter,
-    I2: SampleIter,
-    I1::Item: ArrowSinkType,
-    I2::Item: ArrowSinkType,
+    D: Distribution,
+    D::Item: ArrowSinkType,
 {
-    let mut s1 = I1::Item::new_sink(n);
-    let mut s2 = I2::Item::new_sink(n);
+    type Output = ArrayRef;
 
-    s1.extend((0..n).map(|_| iter.0.next(rng)));
-    s2.extend((0..n).map(|_| iter.1.next(rng)));
-
-    let schema = Schema::new(vec![
-        Field::new("c0", I1::Item::data_type(), false),
-        Field::new("c1", I2::Item::data_type(), false),
-    ]);
-
-    RecordBatch::try_new(Arc::new(schema), vec![s1.finish(), s2.finish()]).unwrap()
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut sink = D::Item::new_sink(n);
+        sink.extend((0..n).map(|_| iter.next(rng)));
+        sink.finish()
+    }
 }
 
-/// Collect a 3-tuple iterator into a RecordBatch.
-pub fn collect_record_batch3<I1, I2, I3>(
-    mut iter: TupleIter3<I1, I2, I3>,
-    rng: &mut impl Rng,
-    n: usize,
-) -> RecordBatch
+/// Collect 2-tuple distribution into RecordBatch
+impl<D1, D2> Collector<(D1, D2)> for RecordBatchW
 where
-    I1: SampleIter,
-    I2: SampleIter,
-    I3: SampleIter,
-    I1::Item: ArrowSinkType,
-    I2::Item: ArrowSinkType,
-    I3::Item: ArrowSinkType,
+    D1: Distribution,
+    D2: Distribution,
+    D1::Item: ArrowSinkType,
+    D2::Item: ArrowSinkType,
 {
-    let mut s1 = I1::Item::new_sink(n);
-    let mut s2 = I2::Item::new_sink(n);
-    let mut s3 = I3::Item::new_sink(n);
+    type Output = RecordBatch;
 
-    s1.extend((0..n).map(|_| iter.0.next(rng)));
-    s2.extend((0..n).map(|_| iter.1.next(rng)));
-    s3.extend((0..n).map(|_| iter.2.next(rng)));
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut s1 = D1::Item::new_sink(n);
+        let mut s2 = D2::Item::new_sink(n);
 
-    let schema = Schema::new(vec![
-        Field::new("c0", I1::Item::data_type(), false),
-        Field::new("c1", I2::Item::data_type(), false),
-        Field::new("c2", I3::Item::data_type(), false),
-    ]);
+        s1.extend((0..n).map(|_| iter.0.next(rng)));
+        s2.extend((0..n).map(|_| iter.1.next(rng)));
 
-    RecordBatch::try_new(
-        Arc::new(schema),
-        vec![s1.finish(), s2.finish(), s3.finish()],
-    )
-    .unwrap()
+        let schema = Schema::new(vec![
+            Field::new("c0", D1::Item::data_type(), false),
+            Field::new("c1", D2::Item::data_type(), false),
+        ]);
+
+        RecordBatch::try_new(Arc::new(schema), vec![s1.finish(), s2.finish()]).unwrap()
+    }
+}
+
+/// Collect 3-tuple distribution into RecordBatch
+impl<D1, D2, D3> Collector<(D1, D2, D3)> for RecordBatchW
+where
+    D1: Distribution,
+    D2: Distribution,
+    D3: Distribution,
+    D1::Item: ArrowSinkType,
+    D2::Item: ArrowSinkType,
+    D3::Item: ArrowSinkType,
+{
+    type Output = RecordBatch;
+
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut s1 = D1::Item::new_sink(n);
+        let mut s2 = D2::Item::new_sink(n);
+        let mut s3 = D3::Item::new_sink(n);
+
+        s1.extend((0..n).map(|_| iter.0.next(rng)));
+        s2.extend((0..n).map(|_| iter.1.next(rng)));
+        s3.extend((0..n).map(|_| iter.2.next(rng)));
+
+        let schema = Schema::new(vec![
+            Field::new("c0", D1::Item::data_type(), false),
+            Field::new("c1", D2::Item::data_type(), false),
+            Field::new("c2", D3::Item::data_type(), false),
+        ]);
+
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![s1.finish(), s2.finish(), s3.finish()],
+        )
+        .unwrap()
+    }
+}
+
+/// Collect List distribution into ListArray
+impl<L, E> Collector<List<L, E>> for ListArrayW
+where
+    L: Distribution<Item = usize>,
+    E: Distribution,
+    E::Item: ArrowListSinkType,
+{
+    type Output = ListArray;
+
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let iter = dist.sample();
+        populate_core::collect_list_into(
+            iter.lengths,
+            iter.elements,
+            rng,
+            n,
+            E::Item::new_list_sink(),
+        )
+    }
 }
 
 #[cfg(test)]

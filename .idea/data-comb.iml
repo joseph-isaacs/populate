@@ -15,6 +15,11 @@
       <sourceFolder url="file://$MODULE_DIR$/dc/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/dc/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/populate-builtins/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/populate-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/populate-sink-arrow/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/populate-sink-vec/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/populate/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

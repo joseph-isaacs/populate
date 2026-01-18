@@ -1,0 +1,27 @@
+[package]
+name = "populate"
+description = "Sampling combinators for columnar data generation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-core.workspace = true
+populate-builtins.workspace = true
+populate-sink-vec.workspace = true
+
+[dependencies.populate-sink-arrow]
+workspace = true
+optional = true
+
+[dependencies.populate-sink-json]
+workspace = true
+optional = true
+
+[features]
+default = []
+arrow = ["dep:populate-sink-arrow"]
+json = ["dep:populate-sink-json"]
+
+[dev-dependencies]
+rand = { workspace = true }

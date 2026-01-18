@@ -1,0 +1,23 @@
+[package]
+name = "tpch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-builtins = { workspace = true }
+populate-builtins-tpch = { workspace = true }
+populate-core = { workspace = true }
+populate-derive = { workspace = true }
+rand = { workspace = true }
+tpchgen = { workspace = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+tpchgen-arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+
+[[bench]]
+name = "part_bench"
+harness = false

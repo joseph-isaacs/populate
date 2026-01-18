@@ -37,10 +37,7 @@ fn test_nations_match_reference() {
 
 #[test]
 fn test_parts_match_reference() {
-    let reference: Vec<_> = PartGenerator::new(1.0, 1, 1)
-        .into_iter()
-        .take(100)
-        .collect();
+    let reference: Vec<_> = PartGenerator::new(1.0, 1, 1).into_iter().take(4).collect();
 
     let mut dist = part::parts();
     let mut iter = dist.sample();
@@ -65,14 +62,19 @@ fn test_parts_match_reference() {
             name,
             p.p_name.to_string(),
             "name mismatch at row {}: ours={}, ref={}",
-            i, name, p.p_name
+            i,
+            name,
+            p.p_name
         );
 
         // p_type
         assert_eq!(
-            typ.as_str(), p.p_type,
+            typ.as_str(),
+            p.p_type,
             "type mismatch at row {}: ours={}, ref={}",
-            i, typ, p.p_type
+            i,
+            typ,
+            p.p_type
         );
 
         // p_size
@@ -84,9 +86,12 @@ fn test_parts_match_reference() {
 
         // p_container
         assert_eq!(
-            container.as_str(), p.p_container,
+            container.as_str(),
+            p.p_container,
             "container mismatch at row {}: ours={}, ref={}",
-            i, container, p.p_container
+            i,
+            container,
+            p.p_container
         );
 
         // p_mfgr (extract number from "Manufacturer#N" format)

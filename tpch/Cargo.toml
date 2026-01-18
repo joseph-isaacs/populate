@@ -8,6 +8,7 @@ license.workspace = true
 populate-builtins = { workspace = true }
 populate-builtins-tpch = { workspace = true }
 populate-core = { workspace = true }
+populate-derive = { workspace = true }
 rand = { workspace = true }
 tpchgen = { workspace = true }
 

@@ -5,9 +5,25 @@ use std::sync::LazyLock;
 use constants::{
     COLORS, CONTAINER_SIZE, CONTAINER_TYPE, TYPE_SYLLABLE1, TYPE_SYLLABLE2, TYPE_SYLLABLE3,
 };
-use populate_builtins::{Combine, JoinExt, MapExt, RangeSampler, combine2, combine3, inc, merge};
+use populate_builtins::{
+    Combine, JoinExt, MapExt, RangeSampler, combine2, combine3, inc, merge, print,
+};
 use populate_builtins_tpch::{PickNBuffered, PickOneRef, Range, TpcHRange, TpchRng, seeded};
 use populate_core::Distribution;
+use populate_derive::ColumnSchema;
+
+/// Part table row schema for TPC-H.
+#[derive(ColumnSchema)]
+pub struct Part {
+    pub p_partkey: i64,
+    pub p_retailprice: i64,
+    pub p_name: String,
+    pub p_type: &'static String,
+    pub p_size: i64,
+    pub p_container: &'static String,
+    pub p_mfgr: i32,
+    pub p_brand: i32,
+}
 
 /// Create a TPC-H range distribution. Errors here if T is not supported by TpcHRange.
 fn range<T: Clone>(min: T, max: T) -> Range<T, TpcHRange>
@@ -46,31 +62,35 @@ pub fn calculate_retail_price(partkey: i64) -> i64 {
     90000 + (partkey / 10) % 20001 + (partkey % 1000) * 100
 }
 
-/// (p_partkey, p_retailprice, p_name, p_type, p_size, p_container, p_mfgr, p_brand)
-pub fn parts() -> impl Distribution<(
-    i64,
-    i64,
-    String,
-    &'static String,
-    i64,
-    &'static String,
-    i32,
-    i32,
-)> {
+/// Distribution producing PartRow tuples.
+pub fn parts() -> impl Distribution<PartRow> {
+    //     let key_retail = inc(1i64).map(|key| (key, calculate_retail_price(key)));
+    //
+    //     PartRow {
+    //         p_partkey: key_retail.0,
+    //         p_retailprice: key_retail.1,
+    //         p_name:                 seeded(rng(709314158), pick_n::<_, 5>(&COLORS)).join(" "), // p_name
+    // ...
+    //
+    //     }
+
     merge(
         merge(
-            inc(1i64).map(|key| (key, calculate_retail_price(key))), // (key, retail)
+            print("key_inc", inc(1i64)).map(|key| (key, calculate_retail_price(key))), // (key, retail)
             (
-                seeded(rng(709314158), pick_n::<_, 5>(&COLORS)).join(" "), // p_name
-                seeded(rng(1841581359), pick_one(&PART_TYPES)),            // p_type
-                seeded(rng(1193163244), range(1, 51)),                     // p_size
-                seeded(rng(727633698), pick_one(&PART_CONTAINERS)),        // p_container
+                seeded(
+                    rng(709314158),
+                    print("p_name", pick_n::<_, 5>(&COLORS)).join(" "),
+                ), // p_name
+                seeded(rng(1841581359), print("p_type", pick_one(&PART_TYPES))), // p_type
+                seeded(rng(1193163244), range(1, 51)),                           // p_size
+                seeded(rng(727633698), pick_one(&PART_CONTAINERS)),              // p_container
             ),
         ),
         (
             seeded(rng(1), range(1i32, 6)),
             seeded(rng(46831694), range(1i32, 6)),
         )
-            .map(|(mfgr, brand_raw)| (mfgr, (mfgr * 10 + brand_raw))), // (mfgr, brand)
+            .map(|(mfgr, brand_raw)| (mfgr, mfgr * 10 + brand_raw)), // (mfgr, brand)
     )
 }

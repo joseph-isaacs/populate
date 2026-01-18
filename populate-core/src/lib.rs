@@ -46,6 +46,21 @@ impl<T, D: Distribution<T>> CollectExt<T> for D {}
 pub trait SampleIter: Clone {
     type Item;
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+
+    /// Generate n values and process each with the given function.
+    ///
+    /// This is zero-allocation: values are generated and processed one at a time.
+    /// Useful for column-by-column collection where all values from one column
+    /// are processed before moving to the next.
+    #[inline]
+    fn next_n_with<F>(&mut self, n: usize, rng: &mut impl Rng, mut f: F)
+    where
+        F: FnMut(Self::Item),
+    {
+        for _ in 0..n {
+            f(self.next(rng));
+        }
+    }
 }
 
 /// A factory that produces sample iterators.
@@ -79,6 +94,21 @@ pub trait ListSink<T> {
     fn push_element(&mut self, value: T);
     fn end_list(&mut self);
     fn finish(self) -> Self::Output;
+}
+
+// === Column Schema trait ===
+
+/// Trait for structs that can describe their column schema.
+/// Typically derived via `#[derive(ColumnSchema)]` from populate-derive.
+pub trait ColumnSchema {
+    /// The tuple type that matches this struct's fields.
+    type Row;
+
+    /// Get field names for schema generation.
+    fn field_names() -> &'static [&'static str];
+
+    /// Get the number of fields/columns.
+    fn field_count() -> usize;
 }
 
 // === Tuple iterators and Distribution impls ===
@@ -415,8 +445,8 @@ where
     S1: Sink<I1::Item>,
     S2: Sink<I2::Item>,
 {
-    sink1.extend((0..n).map(|_| iter.0.next(rng)));
-    sink2.extend((0..n).map(|_| iter.1.next(rng)));
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
     (sink1.finish(), sink2.finish())
 }
 
@@ -437,10 +467,186 @@ where
     S2: Sink<I2::Item>,
     S3: Sink<I3::Item>,
 {
-    sink1.extend((0..n).map(|_| iter.0.next(rng)));
-    sink2.extend((0..n).map(|_| iter.1.next(rng)));
-    sink3.extend((0..n).map(|_| iter.2.next(rng)));
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
+    iter.2.next_n_with(n, rng, |v| sink3.push(v));
     (sink1.finish(), sink2.finish(), sink3.finish())
+}
+
+/// Collect 4-tuple into separate sinks (column-oriented).
+pub fn collect_struct4_into<I1, I2, I3, I4, S1, S2, S3, S4>(
+    mut iter: TupleIter4<I1, I2, I3, I4>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+    mut sink3: S3,
+    mut sink4: S4,
+) -> (S1::Output, S2::Output, S3::Output, S4::Output)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+    S3: Sink<I3::Item>,
+    S4: Sink<I4::Item>,
+{
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
+    iter.2.next_n_with(n, rng, |v| sink3.push(v));
+    iter.3.next_n_with(n, rng, |v| sink4.push(v));
+    (
+        sink1.finish(),
+        sink2.finish(),
+        sink3.finish(),
+        sink4.finish(),
+    )
+}
+
+/// Collect 5-tuple into separate sinks (column-oriented).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn collect_struct5_into<I1, I2, I3, I4, I5, S1, S2, S3, S4, S5>(
+    mut iter: TupleIter5<I1, I2, I3, I4, I5>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+    mut sink3: S3,
+    mut sink4: S4,
+    mut sink5: S5,
+) -> (S1::Output, S2::Output, S3::Output, S4::Output, S5::Output)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+    S3: Sink<I3::Item>,
+    S4: Sink<I4::Item>,
+    S5: Sink<I5::Item>,
+{
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
+    iter.2.next_n_with(n, rng, |v| sink3.push(v));
+    iter.3.next_n_with(n, rng, |v| sink4.push(v));
+    iter.4.next_n_with(n, rng, |v| sink5.push(v));
+    (
+        sink1.finish(),
+        sink2.finish(),
+        sink3.finish(),
+        sink4.finish(),
+        sink5.finish(),
+    )
+}
+
+/// Collect 6-tuple into separate sinks (column-oriented).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn collect_struct6_into<I1, I2, I3, I4, I5, I6, S1, S2, S3, S4, S5, S6>(
+    mut iter: TupleIter6<I1, I2, I3, I4, I5, I6>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+    mut sink3: S3,
+    mut sink4: S4,
+    mut sink5: S5,
+    mut sink6: S6,
+) -> (
+    S1::Output,
+    S2::Output,
+    S3::Output,
+    S4::Output,
+    S5::Output,
+    S6::Output,
+)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+    S3: Sink<I3::Item>,
+    S4: Sink<I4::Item>,
+    S5: Sink<I5::Item>,
+    S6: Sink<I6::Item>,
+{
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
+    iter.2.next_n_with(n, rng, |v| sink3.push(v));
+    iter.3.next_n_with(n, rng, |v| sink4.push(v));
+    iter.4.next_n_with(n, rng, |v| sink5.push(v));
+    iter.5.next_n_with(n, rng, |v| sink6.push(v));
+    (
+        sink1.finish(),
+        sink2.finish(),
+        sink3.finish(),
+        sink4.finish(),
+        sink5.finish(),
+        sink6.finish(),
+    )
+}
+
+/// Collect 7-tuple into separate sinks (column-oriented).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn collect_struct7_into<I1, I2, I3, I4, I5, I6, I7, S1, S2, S3, S4, S5, S6, S7>(
+    mut iter: TupleIter7<I1, I2, I3, I4, I5, I6, I7>,
+    rng: &mut impl Rng,
+    n: usize,
+    mut sink1: S1,
+    mut sink2: S2,
+    mut sink3: S3,
+    mut sink4: S4,
+    mut sink5: S5,
+    mut sink6: S6,
+    mut sink7: S7,
+) -> (
+    S1::Output,
+    S2::Output,
+    S3::Output,
+    S4::Output,
+    S5::Output,
+    S6::Output,
+    S7::Output,
+)
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    I7: SampleIter,
+    S1: Sink<I1::Item>,
+    S2: Sink<I2::Item>,
+    S3: Sink<I3::Item>,
+    S4: Sink<I4::Item>,
+    S5: Sink<I5::Item>,
+    S6: Sink<I6::Item>,
+    S7: Sink<I7::Item>,
+{
+    iter.0.next_n_with(n, rng, |v| sink1.push(v));
+    iter.1.next_n_with(n, rng, |v| sink2.push(v));
+    iter.2.next_n_with(n, rng, |v| sink3.push(v));
+    iter.3.next_n_with(n, rng, |v| sink4.push(v));
+    iter.4.next_n_with(n, rng, |v| sink5.push(v));
+    iter.5.next_n_with(n, rng, |v| sink6.push(v));
+    iter.6.next_n_with(n, rng, |v| sink7.push(v));
+    (
+        sink1.finish(),
+        sink2.finish(),
+        sink3.finish(),
+        sink4.finish(),
+        sink5.finish(),
+        sink6.finish(),
+        sink7.finish(),
+    )
 }
 
 /// Collect list into a list sink.

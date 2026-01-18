@@ -4,9 +4,12 @@ mod cycle;
 mod inc;
 mod join;
 mod list;
+#[cfg(test)]
+mod log;
 mod map;
 mod merge;
 mod pick;
+mod print;
 mod range;
 mod seeded;
 
@@ -25,6 +28,7 @@ pub use pick::{
     Pick, PickIter, PickN, PickNIter, PickOne, PickOneIter, PickOneRef, PickOneRefIter,
     PickStrategy, Unique,
 };
+pub use print::{Print, PrintIter, print};
 use rand::Rng;
 pub use range::{Range, RangeIter, RangeSampler, range};
 pub use seeded::{Seeded, SeededIter};

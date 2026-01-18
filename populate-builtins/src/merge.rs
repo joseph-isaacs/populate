@@ -107,7 +107,9 @@ where
     <<Base::Output as ExtendColumn<B>>::Output as ExtendColumn<C>>::Output: ExtendColumn<D>,
 {
     type Output =
-        <<<Base::Output as ExtendColumn<B>>::Output as ExtendColumn<C>>::Output as ExtendColumn<D>>::Output;
+        <<<Base::Output as ExtendColumn<B>>::Output as ExtendColumn<C>>::Output as ExtendColumn<
+            D,
+        >>::Output;
     fn append_columns_to(self, base: Base) -> Self::Output {
         base.extend_column(self.0)
             .extend_column(self.1)
@@ -177,8 +179,8 @@ impl<D1, D2, T1, T2> Merge<D1, D2, T1, T2> {
 }
 
 pub struct MergeIter<I1, I2, T1, T2> {
-    first: I1,
-    second: I2,
+    pub first: I1,
+    pub second: I2,
     _phantom: PhantomData<(T1, T2)>,
 }
 

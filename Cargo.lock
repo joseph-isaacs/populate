@@ -639,6 +639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "populate-sink-arrow"
 version = "0.1.0"
 dependencies = [
@@ -878,6 +887,7 @@ dependencies = [
  "populate-builtins",
  "populate-builtins-tpch",
  "populate-core",
+ "populate-derive",
  "rand",
  "tpchgen",
  "tpchgen-arrow",

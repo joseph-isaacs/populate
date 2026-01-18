@@ -1,10 +1,10 @@
-use arrow_array::builder::{Int32Builder, Int64Builder, StringBuilder};
 use arrow_array::RecordBatch;
+use arrow_array::builder::{Int32Builder, Int64Builder, StringBuilder};
 use arrow_schema::{DataType, Field, Schema};
 use divan::{Bencher, black_box};
 use populate_core::{Distribution, SampleIter};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 use std::sync::Arc;
 use tpch::tables::part::parts;
 use tpchgen::generators::PartGenerator;
@@ -31,17 +31,30 @@ fn tpchgen_arrow(bencher: Bencher) {
         let mut brand_builder = Int32Builder::with_capacity(ROWS);
         let mut price_builder = Int64Builder::with_capacity(ROWS);
 
-        for p in PartGenerator::new(1.0, 1, 1).into_iter().take(black_box(ROWS)) {
+        for p in PartGenerator::new(1.0, 1, 1)
+            .into_iter()
+            .take(black_box(ROWS))
+        {
             key_builder.append_value(p.p_partkey);
             name_builder.append_value(p.p_name.to_string());
             type_builder.append_value(p.p_type);
             size_builder.append_value(p.p_size);
             container_builder.append_value(p.p_container);
             // Extract mfgr number from "Manufacturer#N"
-            let mfgr: i32 = p.p_mfgr.to_string().trim_start_matches("Manufacturer#").parse().unwrap();
+            let mfgr: i32 = p
+                .p_mfgr
+                .to_string()
+                .trim_start_matches("Manufacturer#")
+                .parse()
+                .unwrap();
             mfgr_builder.append_value(mfgr);
             // Extract brand number from "Brand#NN"
-            let brand: i32 = p.p_brand.to_string().trim_start_matches("Brand#").parse().unwrap();
+            let brand: i32 = p
+                .p_brand
+                .to_string()
+                .trim_start_matches("Brand#")
+                .parse()
+                .unwrap();
             brand_builder.append_value(brand);
             price_builder.append_value(p.p_retailprice.0);
         }

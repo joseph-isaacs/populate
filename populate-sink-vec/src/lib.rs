@@ -17,6 +17,14 @@ pub struct ListCol;
 /// Marker for collecting List distributions into Vec<Vec<T>> - row-oriented.
 pub struct Rows;
 
+/// Marker for row-by-row collection that unzips tuples into columns.
+/// Use when columns are coupled (e.g., from Map) and can't use ColumnIters.
+pub struct Unzip;
+
+/// Marker for cache-local grouped collection.
+/// Independent columns are filled first, then coupled groups.
+pub struct GroupedCols;
+
 // === Collector implementations ===
 
 /// Collect any Distribution into Vec<T>

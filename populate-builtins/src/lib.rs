@@ -9,6 +9,7 @@ mod pick;
 mod range;
 mod seeded;
 
+use rand::Rng;
 pub use combine::{Combine, combine2, combine3};
 pub use constant::{Constant, ConstantIter};
 pub use cycle::{Cycle, CycleIter};
@@ -50,7 +51,7 @@ pub fn list<L: Distribution<usize>, E>(lengths: L, elements: E) -> List<L, E> {
     List::new(lengths, elements)
 }
 
-pub fn seeded<R, D>(rng: R, dist: D) -> Seeded<R, D> {
+pub fn seeded<R: Rng, D>(rng: R, dist: D) -> Seeded<R, D> {
     Seeded::new(rng, dist)
 }
 

@@ -8,7 +8,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink, Unnest};
+use populate_core::{
+    Collector, ColumnIters2, ColumnIters3, Distribution, ListSink, Rng, SampleIter, Sink,
+};
 use std::sync::Arc;
 
 /// Trait for creating Arrow sinks for a type.
@@ -304,21 +306,21 @@ where
     }
 }
 
-/// Collect 2-tuple distribution into RecordBatch
-impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for RecordBatchW
+/// Collect any 2-column distribution into RecordBatch
+/// Works for flat tuples (D1, D2) and any type implementing ColumnIters2.
+impl<T1, T2, D> Collector<D, (T1, T2)> for RecordBatchW
 where
     T1: IntoArrowArray,
     T2: IntoArrowArray,
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
+    D: ColumnIters2<T1, T2>,
 {
     type Output = RecordBatch;
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter = dist.sample();
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let (mut i1, mut i2) = dist.column_iters();
 
-        let a1 = T1::collect_array(&mut iter.0, rng, n);
-        let a2 = T2::collect_array(&mut iter.1, rng, n);
+        let a1 = T1::collect_array(&mut i1, rng, n);
+        let a2 = T2::collect_array(&mut i2, rng, n);
 
         let schema = Schema::new(vec![
             Field::new("c0", T1::data_type(), false),
@@ -329,57 +331,23 @@ where
     }
 }
 
-/// Collect 3-tuple distribution into RecordBatch
-impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for RecordBatchW
+/// Collect any 3-column distribution into RecordBatch
+/// Works for flat tuples (D1, D2, D3), unnested (D1, Unnest<(D2, D3)>), etc.
+impl<T1, T2, T3, D> Collector<D, (T1, T2, T3)> for RecordBatchW
 where
     T1: IntoArrowArray,
     T2: IntoArrowArray,
     T3: IntoArrowArray,
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
+    D: ColumnIters3<T1, T2, T3>,
 {
     type Output = RecordBatch;
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter = dist.sample();
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let (mut i1, mut i2, mut i3) = dist.column_iters();
 
-        let a1 = T1::collect_array(&mut iter.0, rng, n);
-        let a2 = T2::collect_array(&mut iter.1, rng, n);
-        let a3 = T3::collect_array(&mut iter.2, rng, n);
-
-        let schema = Schema::new(vec![
-            Field::new("c0", T1::data_type(), false),
-            Field::new("c1", T2::data_type(), false),
-            Field::new("c2", T3::data_type(), false),
-        ]);
-
-        RecordBatch::try_new(Arc::new(schema), vec![a1, a2, a3]).unwrap()
-    }
-}
-
-/// Collect (D1, Unnest<(D2, D3)>) into RecordBatch
-/// This enables column-by-column generation for merged/unnested distributions.
-impl<T1, T2, T3, D1, D2, D3> Collector<(D1, Unnest<(D2, D3)>), (T1, T2, T3)> for RecordBatchW
-where
-    T1: IntoArrowArray,
-    T2: IntoArrowArray,
-    T3: IntoArrowArray,
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-{
-    type Output = RecordBatch;
-
-    fn collect(dist: &mut (D1, Unnest<(D2, D3)>), rng: &mut impl Rng, n: usize) -> Self::Output {
-        // Access each distribution directly, bypassing the flattening next()
-        let mut iter1 = dist.0.sample();
-        let mut iter2 = (dist.1).0.0.sample();
-        let mut iter3 = (dist.1).0.1.sample();
-
-        let a1 = T1::collect_array(&mut iter1, rng, n);
-        let a2 = T2::collect_array(&mut iter2, rng, n);
-        let a3 = T3::collect_array(&mut iter3, rng, n);
+        let a1 = T1::collect_array(&mut i1, rng, n);
+        let a2 = T2::collect_array(&mut i2, rng, n);
+        let a3 = T3::collect_array(&mut i3, rng, n);
 
         let schema = Schema::new(vec![
             Field::new("c0", T1::data_type(), false),

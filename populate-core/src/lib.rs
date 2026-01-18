@@ -467,3 +467,73 @@ where
     }
     sink.finish()
 }
+
+// === ColumnIters traits for column-by-column collection ===
+
+/// Trait for distributions that can produce individual column iterators (2 columns).
+/// This enables column-by-column collection for both flat tuples and unnested tuples.
+pub trait ColumnIters2<T1, T2> {
+    type I1: SampleIter<Item = T1>;
+    type I2: SampleIter<Item = T2>;
+
+    fn column_iters(&mut self) -> (Self::I1, Self::I2);
+}
+
+/// Trait for distributions that can produce individual column iterators (3 columns).
+pub trait ColumnIters3<T1, T2, T3> {
+    type I1: SampleIter<Item = T1>;
+    type I2: SampleIter<Item = T2>;
+    type I3: SampleIter<Item = T3>;
+
+    fn column_iters(&mut self) -> (Self::I1, Self::I2, Self::I3);
+}
+
+// Implement ColumnIters2 for flat 2-tuple
+impl<T1, T2, D1, D2> ColumnIters2<T1, T2> for (D1, D2)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+{
+    type I1 = D1::Iter;
+    type I2 = D2::Iter;
+
+    fn column_iters(&mut self) -> (Self::I1, Self::I2) {
+        (self.0.sample(), self.1.sample())
+    }
+}
+
+// Implement ColumnIters3 for flat 3-tuple
+impl<T1, T2, T3, D1, D2, D3> ColumnIters3<T1, T2, T3> for (D1, D2, D3)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type I1 = D1::Iter;
+    type I2 = D2::Iter;
+    type I3 = D3::Iter;
+
+    fn column_iters(&mut self) -> (Self::I1, Self::I2, Self::I3) {
+        (self.0.sample(), self.1.sample(), self.2.sample())
+    }
+}
+
+// Implement ColumnIters3 for (D1, Unnest<(D2, D3)>)
+impl<T1, T2, T3, D1, D2, D3> ColumnIters3<T1, T2, T3> for (D1, Unnest<(D2, D3)>)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type I1 = D1::Iter;
+    type I2 = D2::Iter;
+    type I3 = D3::Iter;
+
+    fn column_iters(&mut self) -> (Self::I1, Self::I2, Self::I3) {
+        (
+            self.0.sample(),
+            (self.1).0.0.sample(),
+            (self.1).0.1.sample(),
+        )
+    }
+}

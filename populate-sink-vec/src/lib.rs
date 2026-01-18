@@ -1,5 +1,7 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink, Unnest};
+use populate_core::{
+    Collector, ColumnIters2, ColumnIters3, Distribution, ListSink, Rng, SampleIter, Sink,
+};
 
 // === Marker types for Vec collection ===
 
@@ -30,67 +32,40 @@ where
     }
 }
 
-/// Collect 2-tuple distribution into (Vec<T1>, Vec<T2>)
-impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for Cols
+/// Collect any 2-column distribution into (Vec<T1>, Vec<T2>)
+/// Works for flat tuples (D1, D2) and any type implementing ColumnIters2.
+impl<T1, T2, D> Collector<D, (T1, T2)> for Cols
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
+    D: ColumnIters2<T1, T2>,
 {
     type Output = (Vec<T1>, Vec<T2>);
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter = dist.sample();
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let (mut i1, mut i2) = dist.column_iters();
         let mut v1 = Vec::with_capacity(n);
         let mut v2 = Vec::with_capacity(n);
-        v1.extend((0..n).map(|_| iter.0.next(rng)));
-        v2.extend((0..n).map(|_| iter.1.next(rng)));
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
         (v1, v2)
     }
 }
 
-/// Collect 3-tuple distribution into (Vec<T1>, Vec<T2>, Vec<T3>)
-impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for Cols
+/// Collect any 3-column distribution into (Vec<T1>, Vec<T2>, Vec<T3>)
+/// Works for flat tuples (D1, D2, D3), unnested (D1, Unnest<(D2, D3)>), etc.
+impl<T1, T2, T3, D> Collector<D, (T1, T2, T3)> for Cols
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
+    D: ColumnIters3<T1, T2, T3>,
 {
     type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter = dist.sample();
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let (mut i1, mut i2, mut i3) = dist.column_iters();
         let mut v1 = Vec::with_capacity(n);
         let mut v2 = Vec::with_capacity(n);
         let mut v3 = Vec::with_capacity(n);
-        v1.extend((0..n).map(|_| iter.0.next(rng)));
-        v2.extend((0..n).map(|_| iter.1.next(rng)));
-        v3.extend((0..n).map(|_| iter.2.next(rng)));
-        (v1, v2, v3)
-    }
-}
-
-/// Collect (D1, Unnest<(D2, D3)>) into (Vec<T1>, Vec<T2>, Vec<T3>)
-/// This enables column-by-column generation for merged/unnested distributions.
-impl<T1, T2, T3, D1, D2, D3> Collector<(D1, Unnest<(D2, D3)>), (T1, T2, T3)> for Cols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-{
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
-
-    fn collect(dist: &mut (D1, Unnest<(D2, D3)>), rng: &mut impl Rng, n: usize) -> Self::Output {
-        // Access each distribution directly, bypassing the flattening next()
-        let mut iter1 = dist.0.sample();
-        let mut iter2 = (dist.1).0.0.sample();
-        let mut iter3 = (dist.1).0.1.sample();
-
-        let mut v1 = Vec::with_capacity(n);
-        let mut v2 = Vec::with_capacity(n);
-        let mut v3 = Vec::with_capacity(n);
-        v1.extend((0..n).map(|_| iter1.next(rng)));
-        v2.extend((0..n).map(|_| iter2.next(rng)));
-        v3.extend((0..n).map(|_| iter3.next(rng)));
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
+        v3.extend((0..n).map(|_| i3.next(rng)));
         (v1, v2, v3)
     }
 }

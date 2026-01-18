@@ -13,6 +13,9 @@ tpchgen = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }
+tpchgen-arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 
 [[bench]]
 name = "part_bench"

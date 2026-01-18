@@ -26,6 +26,7 @@ arrow-schema = "57"
 arrow-cast = "57"
 serde_json = "1"
 tpchgen = "2.0"
+tpchgen-arrow = "2.0"
 populate-core = { path = "populate-core" }
 populate-builtins = { path = "populate-builtins" }
 populate-builtins-tpch = { path = "populate-builtins-tpch" }

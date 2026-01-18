@@ -5,11 +5,11 @@ mod inc;
 mod join;
 mod list;
 mod map;
+mod merge;
 mod pick;
 mod range;
 mod seeded;
 
-use rand::Rng;
 pub use combine::{Combine, combine2, combine3};
 pub use constant::{Constant, ConstantIter};
 pub use cycle::{Cycle, CycleIter};
@@ -20,10 +20,12 @@ pub use join::{
 };
 pub use list::{List, ListIter};
 pub use map::{Map, MapExt, MapIter};
+pub use merge::{AppendColumnsTo, ExtendColumn, Merge, MergeIter, merge};
 pub use pick::{
     Pick, PickIter, PickN, PickNIter, PickOne, PickOneIter, PickOneRef, PickOneRefIter,
     PickStrategy, Unique,
 };
+use rand::Rng;
 pub use range::{Range, RangeIter, RangeSampler, range};
 pub use seeded::{Seeded, SeededIter};
 

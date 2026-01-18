@@ -47,24 +47,30 @@ fn test_parts_match_reference() {
     let mut rng = StdRng::seed_from_u64(0);
 
     for (i, p) in reference.iter().enumerate() {
-        let (key, name, typ, size, container, mfgr, brand, retailprice) = iter.next(&mut rng);
+        let (key, retailprice, name, typ, size, container, mfgr, brand) = iter.next(&mut rng);
 
         // p_partkey
         assert_eq!(key, p.p_partkey, "partkey mismatch at row {}", i);
+
+        // p_retailprice (stored as cents, ref uses TPCHDecimal)
+        let ref_price = p.p_retailprice.0;
+        assert_eq!(
+            retailprice, ref_price,
+            "retailprice mismatch at row {}: ours={}, ref={}",
+            i, retailprice, ref_price
+        );
 
         // p_name
         assert_eq!(
             name,
             p.p_name.to_string(),
             "name mismatch at row {}: ours={}, ref={}",
-            i,
-            name,
-            p.p_name
+            i, name, p.p_name
         );
 
         // p_type
         assert_eq!(
-            typ, p.p_type,
+            typ.as_str(), p.p_type,
             "type mismatch at row {}: ours={}, ref={}",
             i, typ, p.p_type
         );
@@ -78,7 +84,7 @@ fn test_parts_match_reference() {
 
         // p_container
         assert_eq!(
-            container, p.p_container,
+            container.as_str(), p.p_container,
             "container mismatch at row {}: ours={}, ref={}",
             i, container, p.p_container
         );
@@ -107,14 +113,6 @@ fn test_parts_match_reference() {
             brand, ref_brand,
             "brand mismatch at row {}: ours={}, ref={}",
             i, brand, ref_brand
-        );
-
-        // p_retailprice (stored as cents, ref uses TPCHDecimal)
-        let ref_price = p.p_retailprice.0;
-        assert_eq!(
-            retailprice, ref_price,
-            "retailprice mismatch at row {}: ours={}, ref={}",
-            i, retailprice, ref_price
         );
     }
 }

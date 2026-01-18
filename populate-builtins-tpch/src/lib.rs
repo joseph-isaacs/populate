@@ -7,7 +7,9 @@ use populate_builtins::{PickStrategy, RangeSampler};
 use rand::RngCore;
 
 // Re-export common types from populate-builtins for convenience
-pub use populate_builtins::{PickN, PickNIter, Range, RangeIter, Seeded, SeededIter, seeded};
+pub use populate_builtins::{
+    PickN, PickNIter, PickOneRef, Range, RangeIter, Seeded, SeededIter, seeded,
+};
 
 // === TpchRng: TPC-H Linear Congruential Generator ===
 
@@ -79,6 +81,15 @@ impl RangeSampler<i64> for TpcHRange {
     }
 }
 
+impl RangeSampler<i32> for TpcHRange {
+    fn sample_range(rng: &mut impl rand::Rng, min: i32, max: i32) -> i32 {
+        let seed = rng.next_u32();
+        let range = (max - min) as f64;
+        let value = ((seed as f64 / TpchRng::MODULUS as f64) * range) as i32;
+        min + value
+    }
+}
+
 // === TpchUnique: PickStrategy for TPC-H ===
 
 /// TPC-H unique picking strategy with seed accounting.
@@ -114,20 +125,28 @@ use populate_core::{Distribution, SampleIter};
 
 /// Pick N unique elements from a slice, reusing the shuffle buffer across calls.
 /// Uses TPC-H's Fisher-Yates with seed accounting.
+///
+/// Optimizations:
+/// - Uses u8 indices (max 255 elements) to reduce memory bandwidth
+/// - Restores only swapped elements instead of resetting full buffer
 pub struct PickNBuffered<'a, T, const N: usize> {
     values: &'a [T],
 }
 
 impl<'a, T, const N: usize> PickNBuffered<'a, T, N> {
     pub fn new(values: &'a [T]) -> Self {
+        assert!(
+            values.len() <= 255,
+            "PickNBuffered only supports up to 255 elements"
+        );
         Self { values }
     }
 }
 
-/// Iterator that holds a reusable shuffle buffer.
+/// Iterator that holds a reusable shuffle buffer with u8 indices.
 pub struct PickNBufferedIter<'a, T, const N: usize> {
     values: &'a [T],
-    buffer: Vec<usize>,
+    buffer: Vec<u8>,
 }
 
 impl<T, const N: usize> Clone for PickNBufferedIter<'_, T, N> {
@@ -135,7 +154,7 @@ impl<T, const N: usize> Clone for PickNBufferedIter<'_, T, N> {
         // Clone resets to fresh buffer (per SampleIter contract)
         Self {
             values: self.values,
-            buffer: (0..self.values.len()).collect(),
+            buffer: (0..self.values.len() as u8).collect(),
         }
     }
 }
@@ -146,16 +165,16 @@ impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
     fn next(&mut self, rng: &mut impl rand::Rng) -> [T; N] {
         let len = self.values.len();
 
-        // Reset buffer in place
-        for (i, slot) in self.buffer.iter_mut().enumerate() {
-            *slot = i;
-        }
+        // Track swaps so we can restore instead of full reset
+        let mut swaps = [(0u8, 0u8); N];
 
         // Partial Fisher-Yates shuffle using TPC-H formula
+        #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             let seed = rng.next_u64();
             let range = (len - i) as f64;
             let j = i + ((seed as f64 / TpchRng::MODULUS as f64) * range) as usize;
+            swaps[i] = (i as u8, j as u8);
             self.buffer.swap(i, j);
         }
 
@@ -164,7 +183,16 @@ impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
             let _ = rng.next_u64();
         }
 
-        std::array::from_fn(|i| self.values[self.buffer[i]].clone())
+        // Collect results before restoring
+        let result = std::array::from_fn(|i| self.values[self.buffer[i] as usize].clone());
+
+        // Restore swapped elements in reverse order
+        for i in (0..N).rev() {
+            let (a, b) = swaps[i];
+            self.buffer.swap(a as usize, b as usize);
+        }
+
+        result
     }
 }
 
@@ -174,7 +202,7 @@ impl<'a, T: Clone, const N: usize> Distribution<[T; N]> for PickNBuffered<'a, T,
     fn sample(&mut self) -> Self::Iter {
         PickNBufferedIter {
             values: self.values,
-            buffer: (0..self.values.len()).collect(),
+            buffer: (0..self.values.len() as u8).collect(),
         }
     }
 }

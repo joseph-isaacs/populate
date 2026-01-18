@@ -3,6 +3,8 @@ use std::marker::PhantomData;
 use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 
+use crate::{Range, RangeSampler};
+
 // === PickOne: pick one element using an index distribution ===
 
 /// Pick one random element from a slice using a custom index generator.
@@ -54,6 +56,12 @@ pub struct PickOneRef<'a, T, I> {
 impl<'a, T, I> PickOneRef<'a, T, I> {
     pub fn new(values: &'a [T], indices: I) -> Self {
         Self { values, indices }
+    }
+}
+
+impl<'a, T, S: RangeSampler<i64>> PickOneRef<'a, T, Range<i64, S>> {
+    pub fn with_sampler(values: &'a [T]) -> Self {
+        Self::new(values, Range::with_sampler(0, values.len() as i64))
     }
 }
 

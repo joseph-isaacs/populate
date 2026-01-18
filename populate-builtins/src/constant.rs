@@ -6,29 +6,37 @@ pub struct Constant<T> {
     value: T,
 }
 
-impl<T: Clone> Constant<T> {
+impl<T> Constant<T> {
     pub fn new(value: T) -> Self {
         Self { value }
     }
 }
 
-/// Iterator for constant values.
-#[derive(Clone)]
-pub struct ConstantIter<T>(T);
+/// Iterator for constant values - borrows from the parent Constant.
+pub struct ConstantIter<'a, T> {
+    value: &'a T,
+}
 
-impl<T: Clone> SampleIter for ConstantIter<T> {
+impl<T: Clone> SampleIter for ConstantIter<'_, T> {
     type Item = T;
 
     fn next(&mut self, _rng: &mut impl Rng) -> T {
-        self.0.clone()
+        self.value.clone()
+    }
+
+    fn reset(&mut self) {
+        // No state to reset
     }
 }
 
 impl<T: Clone> Distribution<T> for Constant<T> {
-    type Iter = ConstantIter<T>;
+    type Iter<'a>
+        = ConstantIter<'a, T>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
-        ConstantIter(self.value.clone())
+    fn sample(&mut self) -> Self::Iter<'_> {
+        ConstantIter { value: &self.value }
     }
 }
 

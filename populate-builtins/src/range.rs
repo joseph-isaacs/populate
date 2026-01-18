@@ -39,7 +39,7 @@ pub struct Range<T, S = ()> {
     _phantom: PhantomData<S>,
 }
 
-impl<T: Clone> Range<T, ()> {
+impl<T> Range<T, ()> {
     pub fn new(min: T, max: T) -> Self {
         Self {
             min,
@@ -49,7 +49,7 @@ impl<T: Clone> Range<T, ()> {
     }
 }
 
-impl<T: Clone, S> Range<T, S> {
+impl<T, S> Range<T, S> {
     pub fn with_sampler(min: T, max: T) -> Self {
         Self {
             min,
@@ -59,36 +59,43 @@ impl<T: Clone, S> Range<T, S> {
     }
 }
 
-#[derive(Clone)]
-pub struct RangeIter<T, S> {
-    min: T,
-    max: T,
+/// Iterator that borrows min/max from the parent Range.
+pub struct RangeIter<'a, T, S> {
+    min: &'a T,
+    max: &'a T,
     _phantom_data: PhantomData<S>,
 }
 
-impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
-    type Iter = RangeIter<T, S>;
+impl<T: Copy, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
+    type Iter<'a>
+        = RangeIter<'a, T, S>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         RangeIter {
-            min: self.min.clone(),
-            max: self.max.clone(),
+            min: &self.min,
+            max: &self.max,
             _phantom_data: Default::default(),
         }
     }
 }
 
-impl<T: Clone, S: RangeSampler<T>> SampleIter for RangeIter<T, S> {
+impl<T: Copy, S: RangeSampler<T>> SampleIter for RangeIter<'_, T, S> {
     type Item = T;
 
     fn next(&mut self, rng: &mut impl rand::Rng) -> T {
-        S::sample_range(rng, self.min.clone(), self.max.clone())
+        S::sample_range(rng, *self.min, *self.max)
+    }
+
+    fn reset(&mut self) {
+        // No state to reset - stateless iterator
     }
 }
 
 // === Convenience function ===
 
-pub fn range<T: Clone>(min: T, max: T) -> Range<T, ()> {
+pub fn range<T>(min: T, max: T) -> Range<T, ()> {
     Range::new(min, max)
 }
 

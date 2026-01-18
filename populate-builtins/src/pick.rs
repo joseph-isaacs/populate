@@ -17,7 +17,6 @@ impl<'a, T, I> PickOne<'a, T, I> {
     }
 }
 
-#[derive(Clone)]
 pub struct PickOneIter<'a, T, II> {
     values: &'a [T],
     indices: II,
@@ -30,12 +29,19 @@ impl<T: Clone, II: SampleIter<Item = i64>> SampleIter for PickOneIter<'_, T, II>
         let idx = self.indices.next(rng) as usize;
         self.values[idx].clone()
     }
+
+    fn reset(&mut self) {
+        self.indices.reset();
+    }
 }
 
 impl<'a, T: Clone, I: Distribution<i64>> Distribution<T> for PickOne<'a, T, I> {
-    type Iter = PickOneIter<'a, T, I::Iter>;
+    type Iter<'b>
+        = PickOneIter<'a, T, I::Iter<'b>>
+    where
+        Self: 'b;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         PickOneIter {
             values: self.values,
             indices: self.indices.sample(),
@@ -62,15 +68,6 @@ pub struct PickOneRefIter<'a, T, II> {
     indices: II,
 }
 
-impl<T, II: Clone> Clone for PickOneRefIter<'_, T, II> {
-    fn clone(&self) -> Self {
-        Self {
-            values: self.values,
-            indices: self.indices.clone(),
-        }
-    }
-}
-
 impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II> {
     type Item = &'a T;
 
@@ -78,12 +75,19 @@ impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II>
         let idx = self.indices.next(rng) as usize;
         &self.values[idx]
     }
+
+    fn reset(&mut self) {
+        self.indices.reset();
+    }
 }
 
 impl<'a, T, I: Distribution<i64>> Distribution<&'a T> for PickOneRef<'a, T, I> {
-    type Iter = PickOneRefIter<'a, T, I::Iter>;
+    type Iter<'b>
+        = PickOneRefIter<'a, T, I::Iter<'b>>
+    where
+        Self: 'b;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         PickOneRefIter {
             values: self.values,
             indices: self.indices.sample(),
@@ -106,7 +110,6 @@ impl<'a, T, I, const N: usize> Pick<'a, T, I, N> {
     }
 }
 
-#[derive(Clone)]
 pub struct PickIter<'a, T, II, const N: usize> {
     values: &'a [T],
     indices: II,
@@ -121,14 +124,21 @@ impl<T: Clone, II: SampleIter<Item = i64>, const N: usize> SampleIter for PickIt
             self.values[idx].clone()
         })
     }
+
+    fn reset(&mut self) {
+        self.indices.reset();
+    }
 }
 
 impl<'a, T: Clone, I: Distribution<i64>, const N: usize> Distribution<[T; N]>
     for Pick<'a, T, I, N>
 {
-    type Iter = PickIter<'a, T, I::Iter, N>;
+    type Iter<'b>
+        = PickIter<'a, T, I::Iter<'b>, N>
+    where
+        Self: 'b;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         PickIter {
             values: self.values,
             indices: self.indices.sample(),
@@ -189,7 +199,6 @@ impl<'a, T, S, const N: usize> PickN<'a, T, S, N> {
     }
 }
 
-#[derive(Clone)]
 pub struct PickNIter<'a, T, S, const N: usize> {
     values: &'a [T],
     _phantom: PhantomData<S>,
@@ -202,12 +211,19 @@ impl<T: Clone, S: PickStrategy, const N: usize> SampleIter for PickNIter<'_, T, 
         let indices = S::pick_indices::<N>(rng, self.values.len());
         std::array::from_fn(|i| self.values[indices[i]].clone())
     }
+
+    fn reset(&mut self) {
+        // No state to reset - stateless iterator
+    }
 }
 
 impl<'a, T: Clone, S: PickStrategy, const N: usize> Distribution<[T; N]> for PickN<'a, T, S, N> {
-    type Iter = PickNIter<'a, T, S, N>;
+    type Iter<'b>
+        = PickNIter<'a, T, S, N>
+    where
+        Self: 'b;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         PickNIter {
             values: self.values,
             _phantom: PhantomData,

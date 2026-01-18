@@ -30,28 +30,35 @@ impl<T, D: Distribution<T>> CollectExt<T> for D {}
 
 /// An infinite iterator that produces values using an RNG.
 ///
-/// # Clone semantics
+/// # Reset semantics
 ///
-/// Iterators must implement `Clone` such that cloning produces an iterator
-/// with no accumulated internal state. A cloned iterator must produce the
-/// same sequence (given the same RNG state) as a freshly created iterator.
+/// Iterators must implement `reset()` to restore themselves to their initial state.
+/// After calling `reset()`, the iterator must produce the same sequence
+/// (given the same RNG state) as a freshly created iterator.
 ///
 /// This invariant is used by list collectors to ensure each list gets
-/// independent element generation - the element iterator is cloned before
+/// independent element generation - the element iterator is reset before
 /// generating each list's values.
 ///
-/// For stateless iterators (e.g., `Range`, `Constant`), this is trivially satisfied.
-/// For stateful iterators (e.g., `Runs`), clone must reset any accumulated state
-/// (e.g., the "current run value") to its initial condition.
-pub trait SampleIter: Clone {
+/// For stateless iterators (e.g., `Range`, `Constant`), `reset()` is a no-op.
+/// For stateful iterators (e.g., `Cycle`, `Inc`), `reset()` must restore
+/// any accumulated state to its initial condition.
+pub trait SampleIter {
     type Item;
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+    /// Reset the iterator to its initial state.
+    fn reset(&mut self);
 }
 
 /// A factory that produces sample iterators.
+///
+/// Uses GATs to allow iterators to borrow from the distribution,
+/// avoiding allocations when creating iterators.
 pub trait Distribution<T> {
-    type Iter: SampleIter<Item = T>;
-    fn sample(&mut self) -> Self::Iter;
+    type Iter<'a>: SampleIter<Item = T>
+    where
+        Self: 'a;
+    fn sample(&mut self) -> Self::Iter<'_>;
 }
 
 /// A sink that consumes values and produces an output.
@@ -85,7 +92,6 @@ pub trait ListSink<T> {
 // These must be in the same crate as Distribution due to orphan rules.
 
 /// Iterator for 2-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 
 impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
@@ -94,6 +100,11 @@ impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (self.0.next(rng), self.1.next(rng))
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+    }
 }
 
 impl<T1, T2, D1, D2> Distribution<(T1, T2)> for (D1, D2)
@@ -101,15 +112,17 @@ where
     D1: Distribution<T1>,
     D2: Distribution<T2>,
 {
-    type Iter = TupleIter2<D1::Iter, D2::Iter>;
+    type Iter<'a>
+        = TupleIter2<D1::Iter<'a>, D2::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter2(self.0.sample(), self.1.sample())
     }
 }
 
 /// Iterator for 3-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
@@ -117,6 +130,12 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I
 
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (self.0.next(rng), self.1.next(rng), self.2.next(rng))
+    }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+        self.2.reset();
     }
 }
 
@@ -126,15 +145,17 @@ where
     D2: Distribution<T2>,
     D3: Distribution<T3>,
 {
-    type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
+    type Iter<'a>
+        = TupleIter3<D1::Iter<'a>, D2::Iter<'a>, D3::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter3(self.0.sample(), self.1.sample(), self.2.sample())
     }
 }
 
 /// Iterator for 4-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
@@ -150,6 +171,13 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
             self.3.next(rng),
         )
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+        self.2.reset();
+        self.3.reset();
+    }
 }
 
 impl<T1, T2, T3, T4, D1, D2, D3, D4> Distribution<(T1, T2, T3, T4)> for (D1, D2, D3, D4)
@@ -159,9 +187,12 @@ where
     D3: Distribution<T3>,
     D4: Distribution<T4>,
 {
-    type Iter = TupleIter4<D1::Iter, D2::Iter, D3::Iter, D4::Iter>;
+    type Iter<'a>
+        = TupleIter4<D1::Iter<'a>, D2::Iter<'a>, D3::Iter<'a>, D4::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter4(
             self.0.sample(),
             self.1.sample(),
@@ -172,7 +203,6 @@ where
 }
 
 /// Iterator for 5-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter5<I1, I2, I3, I4, I5>(pub I1, pub I2, pub I3, pub I4, pub I5);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleIter> SampleIter
@@ -189,6 +219,14 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
             self.4.next(rng),
         )
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+        self.2.reset();
+        self.3.reset();
+        self.4.reset();
+    }
 }
 
 impl<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5> Distribution<(T1, T2, T3, T4, T5)>
@@ -200,9 +238,12 @@ where
     D4: Distribution<T4>,
     D5: Distribution<T5>,
 {
-    type Iter = TupleIter5<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter>;
+    type Iter<'a>
+        = TupleIter5<D1::Iter<'a>, D2::Iter<'a>, D3::Iter<'a>, D4::Iter<'a>, D5::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter5(
             self.0.sample(),
             self.1.sample(),
@@ -214,7 +255,6 @@ where
 }
 
 /// Iterator for 6-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter6<I1, I2, I3, I4, I5, I6>(pub I1, pub I2, pub I3, pub I4, pub I5, pub I6);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleIter, I6: SampleIter>
@@ -232,6 +272,15 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
             self.5.next(rng),
         )
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+        self.2.reset();
+        self.3.reset();
+        self.4.reset();
+        self.5.reset();
+    }
 }
 
 impl<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6> Distribution<(T1, T2, T3, T4, T5, T6)>
@@ -244,9 +293,19 @@ where
     D5: Distribution<T5>,
     D6: Distribution<T6>,
 {
-    type Iter = TupleIter6<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter>;
+    type Iter<'a>
+        = TupleIter6<
+        D1::Iter<'a>,
+        D2::Iter<'a>,
+        D3::Iter<'a>,
+        D4::Iter<'a>,
+        D5::Iter<'a>,
+        D6::Iter<'a>,
+    >
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter6(
             self.0.sample(),
             self.1.sample(),
@@ -259,7 +318,6 @@ where
 }
 
 /// Iterator for 7-tuple distributions.
-#[derive(Clone)]
 pub struct TupleIter7<I1, I2, I3, I4, I5, I6, I7>(
     pub I1,
     pub I2,
@@ -301,6 +359,16 @@ impl<
             self.6.next(rng),
         )
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+        self.2.reset();
+        self.3.reset();
+        self.4.reset();
+        self.5.reset();
+        self.6.reset();
+    }
 }
 
 impl<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>
@@ -314,9 +382,20 @@ where
     D6: Distribution<T6>,
     D7: Distribution<T7>,
 {
-    type Iter = TupleIter7<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter>;
+    type Iter<'a>
+        = TupleIter7<
+        D1::Iter<'a>,
+        D2::Iter<'a>,
+        D3::Iter<'a>,
+        D4::Iter<'a>,
+        D5::Iter<'a>,
+        D6::Iter<'a>,
+        D7::Iter<'a>,
+    >
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleIter7(
             self.0.sample(),
             self.1.sample(),
@@ -343,7 +422,6 @@ pub fn unnest<D>(inner: D) -> Unnest<D> {
 }
 
 /// Iterator for (A, Unnest<(B, C)>) -> (A, B, C).
-#[derive(Clone)]
 pub struct TupleUnnest2Iter<I1, I2>(pub I1, pub I2);
 
 impl<I1, I2, A, B, C> SampleIter for TupleUnnest2Iter<I1, I2>
@@ -358,6 +436,11 @@ where
         let (b, c) = self.1.next(rng);
         (a, b, c)
     }
+
+    fn reset(&mut self) {
+        self.0.reset();
+        self.1.reset();
+    }
 }
 
 impl<D1, D2, A, B, C> Distribution<(A, B, C)> for (D1, Unnest<D2>)
@@ -365,9 +448,12 @@ where
     D1: Distribution<A>,
     D2: Distribution<(B, C)>,
 {
-    type Iter = TupleUnnest2Iter<D1::Iter, D2::Iter>;
+    type Iter<'a>
+        = TupleUnnest2Iter<D1::Iter<'a>, D2::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         TupleUnnest2Iter(self.0.sample(), self.1.0.sample())
     }
 }
@@ -446,7 +532,7 @@ where
 /// Collect list into a list sink.
 pub fn collect_list_into<L, E, S>(
     mut lengths: L,
-    elements: E,
+    mut elements: E,
     rng: &mut impl Rng,
     n: usize,
     mut sink: S,
@@ -458,10 +544,10 @@ where
 {
     for _ in 0..n {
         sink.start_list();
-        let mut elem_iter = elements.clone();
+        elements.reset();
         let len = lengths.next(rng);
         for _ in 0..len {
-            sink.push_element(elem_iter.next(rng));
+            sink.push_element(elements.next(rng));
         }
         sink.end_list();
     }

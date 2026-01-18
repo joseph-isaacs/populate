@@ -6,36 +6,45 @@ pub struct Inc<T> {
     start: T,
 }
 
-impl<T: Clone> Inc<T> {
+impl<T> Inc<T> {
     pub fn new(start: T) -> Self {
         Self { start }
     }
 }
 
-#[derive(Clone)]
-pub struct IncIter<T> {
+/// Iterator that borrows start from the parent Inc.
+pub struct IncIter<'a, T> {
+    start: &'a T,
     current: T,
 }
 
 macro_rules! impl_inc {
     ($t:ty) => {
         impl Distribution<$t> for Inc<$t> {
-            type Iter = IncIter<$t>;
+            type Iter<'a>
+                = IncIter<'a, $t>
+            where
+                Self: 'a;
 
-            fn sample(&mut self) -> Self::Iter {
+            fn sample(&mut self) -> Self::Iter<'_> {
                 IncIter {
+                    start: &self.start,
                     current: self.start,
                 }
             }
         }
 
-        impl SampleIter for IncIter<$t> {
+        impl SampleIter for IncIter<'_, $t> {
             type Item = $t;
 
             fn next(&mut self, _rng: &mut impl Rng) -> $t {
                 let v = self.current;
                 self.current += 1;
                 v
+            }
+
+            fn reset(&mut self) {
+                self.current = *self.start;
             }
         }
     };

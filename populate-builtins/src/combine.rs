@@ -27,8 +27,10 @@ impl Combine {
         let values: Vec<String> = a
             .iter()
             .flat_map(|x| {
-                b.iter()
-                    .flat_map(move |y| c.iter().map(move |z| format!("{}{}{}{}{}", x, sep, y, sep, z)))
+                b.iter().flat_map(move |y| {
+                    c.iter()
+                        .map(move |z| format!("{}{}{}{}{}", x, sep, y, sep, z))
+                })
             })
             .collect();
         Self { values }

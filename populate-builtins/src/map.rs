@@ -19,7 +19,6 @@ impl<D, F, T> Map<D, F, T> {
     }
 }
 
-#[derive(Clone)]
 pub struct MapIter<I, F> {
     inner: I,
     f: F,
@@ -28,12 +27,16 @@ pub struct MapIter<I, F> {
 impl<I, F, T, U> SampleIter for MapIter<I, F>
 where
     I: SampleIter<Item = T>,
-    F: FnMut(T) -> U + Clone,
+    F: FnMut(T) -> U,
 {
     type Item = U;
 
     fn next(&mut self, rng: &mut impl Rng) -> U {
         (self.f)(self.inner.next(rng))
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
     }
 }
 
@@ -42,9 +45,12 @@ where
     D: Distribution<T>,
     F: FnMut(T) -> U + Clone,
 {
-    type Iter = MapIter<D::Iter, F>;
+    type Iter<'a>
+        = MapIter<D::Iter<'a>, F>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         MapIter {
             inner: self.inner.sample(),
             f: self.f.clone(),

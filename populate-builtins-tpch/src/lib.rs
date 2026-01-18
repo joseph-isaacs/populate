@@ -130,16 +130,6 @@ pub struct PickNBufferedIter<'a, T, const N: usize> {
     buffer: Vec<usize>,
 }
 
-impl<T, const N: usize> Clone for PickNBufferedIter<'_, T, N> {
-    fn clone(&self) -> Self {
-        // Clone resets to fresh buffer (per SampleIter contract)
-        Self {
-            values: self.values,
-            buffer: (0..self.values.len()).collect(),
-        }
-    }
-}
-
 impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
     type Item = [T; N];
 
@@ -166,12 +156,22 @@ impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
 
         std::array::from_fn(|i| self.values[self.buffer[i]].clone())
     }
+
+    fn reset(&mut self) {
+        // Reset the buffer to initial state
+        for (i, slot) in self.buffer.iter_mut().enumerate() {
+            *slot = i;
+        }
+    }
 }
 
 impl<'a, T: Clone, const N: usize> Distribution<[T; N]> for PickNBuffered<'a, T, N> {
-    type Iter = PickNBufferedIter<'a, T, N>;
+    type Iter<'b>
+        = PickNBufferedIter<'a, T, N>
+    where
+        Self: 'b;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         PickNBufferedIter {
             values: self.values,
             buffer: (0..self.values.len()).collect(),

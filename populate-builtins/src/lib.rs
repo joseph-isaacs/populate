@@ -34,15 +34,15 @@ pub use populate_core::{
 };
 
 // Convenience functions
-pub fn constant<T: Clone>(value: T) -> Constant<T> {
+pub fn constant<T>(value: T) -> Constant<T> {
     Constant::new(value)
 }
 
-pub fn cycle<T: Clone, const N: usize>(values: [T; N]) -> Cycle<T, N> {
+pub fn cycle<T, const N: usize>(values: [T; N]) -> Cycle<T, N> {
     Cycle::new(values)
 }
 
-pub fn inc<T: Clone>(start: T) -> Inc<T> {
+pub fn inc<T>(start: T) -> Inc<T> {
     Inc::new(start)
 }
 

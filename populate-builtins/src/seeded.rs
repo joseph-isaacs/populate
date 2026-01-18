@@ -15,9 +15,12 @@ impl<R, D> Seeded<R, D> {
 }
 
 impl<R: Rng + Clone, T, D: Distribution<T>> Distribution<T> for Seeded<R, D> {
-    type Iter = SeededIter<R, D::Iter>;
+    type Iter<'a>
+        = SeededIter<R, D::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         SeededIter {
             rng: self.rng.clone(),
             iter: self.dist.sample(),
@@ -25,16 +28,19 @@ impl<R: Rng + Clone, T, D: Distribution<T>> Distribution<T> for Seeded<R, D> {
     }
 }
 
-#[derive(Clone)]
 pub struct SeededIter<R, I> {
     rng: R,
     iter: I,
 }
 
-impl<R: Rng + Clone, I: SampleIter> SampleIter for SeededIter<R, I> {
+impl<R: Rng, I: SampleIter> SampleIter for SeededIter<R, I> {
     type Item = I::Item;
 
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         self.iter.next(&mut self.rng)
+    }
+
+    fn reset(&mut self) {
+        self.iter.reset();
     }
 }

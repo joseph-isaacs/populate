@@ -17,7 +17,6 @@ impl<L: Distribution<usize>, E> List<L, E> {
 ///
 /// For AoS (row-oriented): call `next()` to produce `Vec<E::Item>`
 /// For SoA (columnar): access `.lengths` and `.elements` directly
-#[derive(Clone)]
 pub struct ListIter<L, E> {
     pub lengths: L,
     pub elements: E,
@@ -34,6 +33,11 @@ where
         let len = self.lengths.next(rng);
         (0..len).map(|_| self.elements.next(rng)).collect()
     }
+
+    fn reset(&mut self) {
+        self.lengths.reset();
+        self.elements.reset();
+    }
 }
 
 impl<T, L, E> Distribution<Vec<T>> for List<L, E>
@@ -41,9 +45,12 @@ where
     L: Distribution<usize>,
     E: Distribution<T>,
 {
-    type Iter = ListIter<L::Iter, E::Iter>;
+    type Iter<'a>
+        = ListIter<L::Iter<'a>, E::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         ListIter {
             lengths: self.lengths.sample(),
             elements: self.elements.sample(),

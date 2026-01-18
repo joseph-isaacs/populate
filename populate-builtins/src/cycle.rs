@@ -6,36 +6,43 @@ pub struct Cycle<T, const N: usize> {
     values: [T; N],
 }
 
-impl<T: Clone, const N: usize> Cycle<T, N> {
+impl<T, const N: usize> Cycle<T, N> {
     pub fn new(values: [T; N]) -> Self {
         Self { values }
     }
 }
 
-#[derive(Clone)]
-pub struct CycleIter<T, const N: usize> {
-    values: [T; N],
+/// Iterator that borrows from the parent Cycle - no array cloning needed.
+pub struct CycleIter<'a, T, const N: usize> {
+    values: &'a [T; N],
     index: usize,
 }
 
 impl<T: Clone, const N: usize> Distribution<T> for Cycle<T, N> {
-    type Iter = CycleIter<T, N>;
+    type Iter<'a>
+        = CycleIter<'a, T, N>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         CycleIter {
-            values: self.values.clone(),
+            values: &self.values,
             index: 0,
         }
     }
 }
 
-impl<T: Clone, const N: usize> SampleIter for CycleIter<T, N> {
+impl<T: Clone, const N: usize> SampleIter for CycleIter<'_, T, N> {
     type Item = T;
 
     fn next(&mut self, _rng: &mut impl Rng) -> T {
         let v = self.values[self.index].clone();
         self.index = (self.index + 1) % N;
         v
+    }
+
+    fn reset(&mut self) {
+        self.index = 0;
     }
 }
 

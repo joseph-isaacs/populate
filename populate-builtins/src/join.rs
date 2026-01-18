@@ -19,7 +19,6 @@ impl<D, T, const N: usize> Join<D, T, N> {
     }
 }
 
-#[derive(Clone)]
 pub struct JoinIter<I> {
     inner: I,
     separator: &'static str,
@@ -39,17 +38,23 @@ where
             .collect::<Vec<_>>()
             .join(self.separator)
     }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 impl<D, T, const N: usize> Distribution<String> for Join<D, T, N>
 where
     D: Distribution<[T; N]>,
-    D::Iter: SampleIter<Item = [T; N]>,
     T: AsRef<str>,
 {
-    type Iter = JoinIter<D::Iter>;
+    type Iter<'a>
+        = JoinIter<D::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         JoinIter {
             inner: self.inner.sample(),
             separator: self.separator,
@@ -88,7 +93,6 @@ impl<D, T> JoinVec<D, T> {
     }
 }
 
-#[derive(Clone)]
 pub struct JoinVecIter<I> {
     inner: I,
     separator: &'static str,
@@ -108,17 +112,23 @@ where
             .collect::<Vec<_>>()
             .join(self.separator)
     }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 impl<D, T> Distribution<String> for JoinVec<D, T>
 where
     D: Distribution<Vec<T>>,
-    D::Iter: SampleIter<Item = Vec<T>>,
     T: AsRef<str>,
 {
-    type Iter = JoinVecIter<D::Iter>;
+    type Iter<'a>
+        = JoinVecIter<D::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         JoinVecIter {
             inner: self.inner.sample(),
             separator: self.separator,
@@ -157,7 +167,6 @@ impl<D, T1, T2> JoinTuple2<D, T1, T2> {
     }
 }
 
-#[derive(Clone)]
 pub struct JoinTuple2Iter<I> {
     inner: I,
     separator: &'static str,
@@ -175,18 +184,24 @@ where
         let (a, b) = self.inner.next(rng);
         format!("{}{}{}", a.as_ref(), self.separator, b.as_ref())
     }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 impl<D, T1, T2> Distribution<String> for JoinTuple2<D, T1, T2>
 where
     D: Distribution<(T1, T2)>,
-    D::Iter: SampleIter<Item = (T1, T2)>,
     T1: AsRef<str>,
     T2: AsRef<str>,
 {
-    type Iter = JoinTuple2Iter<D::Iter>;
+    type Iter<'a>
+        = JoinTuple2Iter<D::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         JoinTuple2Iter {
             inner: self.inner.sample(),
             separator: self.separator,
@@ -211,7 +226,6 @@ impl<D, T1, T2, T3> JoinTuple3<D, T1, T2, T3> {
     }
 }
 
-#[derive(Clone)]
 pub struct JoinTuple3Iter<I> {
     inner: I,
     separator: &'static str,
@@ -237,19 +251,25 @@ where
             c.as_ref()
         )
     }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 impl<D, T1, T2, T3> Distribution<String> for JoinTuple3<D, T1, T2, T3>
 where
     D: Distribution<(T1, T2, T3)>,
-    D::Iter: SampleIter<Item = (T1, T2, T3)>,
     T1: AsRef<str>,
     T2: AsRef<str>,
     T3: AsRef<str>,
 {
-    type Iter = JoinTuple3Iter<D::Iter>;
+    type Iter<'a>
+        = JoinTuple3Iter<D::Iter<'a>>
+    where
+        Self: 'a;
 
-    fn sample(&mut self) -> Self::Iter {
+    fn sample(&mut self) -> Self::Iter<'_> {
         JoinTuple3Iter {
             inner: self.inner.sample(),
             separator: self.separator,

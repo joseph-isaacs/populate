@@ -1,6 +1,5 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, SampleIter};
-use rand::Rng;
+use populate_core::{Collector, Distribution, SampleIter, Sampler};
 use serde_json::{Value, json};
 
 /// Marker for collecting distributions into a JSON array of objects.
@@ -114,7 +113,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {
@@ -140,7 +139,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {
@@ -164,7 +163,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {

@@ -1,5 +1,5 @@
+use populate_core::Sampler;
 use populate_core::{Distribution, SampleIter};
-use rand::Rng;
 
 /// A distribution for lists with a length distribution and element distribution.
 pub struct List<L: Distribution<usize>, E> {
@@ -30,7 +30,7 @@ where
 {
     type Item = Vec<E::Item>;
 
-    fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
+    fn next(&mut self, rng: &mut impl Sampler) -> Vec<E::Item> {
         let len = self.lengths.next(rng);
         (0..len).map(|_| self.elements.next(rng)).collect()
     }

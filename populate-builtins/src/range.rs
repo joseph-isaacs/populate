@@ -1,5 +1,5 @@
+use populate_core::Sampler;
 use populate_core::{Distribution, SampleIter};
-use rand::Rng;
 
 /// A distribution that produces values uniformly in [min, max).
 pub struct Range<T> {
@@ -20,7 +20,8 @@ pub struct RangeIter<T> {
     max: T,
 }
 
-macro_rules! impl_range {
+/// Macro for types that fit in i32 range.
+macro_rules! impl_range_i32 {
     ($t:ty) => {
         impl Distribution<$t> for Range<$t> {
             type Iter = RangeIter<$t>;
@@ -36,24 +37,125 @@ macro_rules! impl_range {
         impl SampleIter for RangeIter<$t> {
             type Item = $t;
 
-            fn next(&mut self, rng: &mut impl Rng) -> $t {
-                rng.random_range(self.min..self.max)
+            fn next(&mut self, rng: &mut impl Sampler) -> $t {
+                // [min, max) half-open range: use bounded_int(min, max-1)
+                rng.bounded_int(self.min as i64, self.max as i64 - 1) as $t
             }
         }
     };
 }
 
-impl_range!(i8);
-impl_range!(i16);
-impl_range!(i32);
-impl_range!(i64);
-impl_range!(u8);
-impl_range!(u16);
-impl_range!(u32);
-impl_range!(u64);
-impl_range!(usize);
-impl_range!(f32);
-impl_range!(f64);
+impl_range_i32!(i8);
+impl_range_i32!(i16);
+impl_range_i32!(i32);
+impl_range_i32!(u8);
+impl_range_i32!(u16);
+
+// For larger types, we need bounded_int to work with the range
+// For now, cast through i32 (limits range but works for most TPC-H cases)
+impl Distribution<i64> for Range<i64> {
+    type Iter = RangeIter<i64>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<i64> {
+    type Item = i64;
+    fn next(&mut self, rng: &mut impl Sampler) -> i64 {
+        rng.bounded_int(self.min, self.max - 1)
+    }
+}
+
+impl Distribution<u32> for Range<u32> {
+    type Iter = RangeIter<u32>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<u32> {
+    type Item = u32;
+    fn next(&mut self, rng: &mut impl Sampler) -> u32 {
+        rng.bounded_int(self.min as i64, self.max as i64 - 1) as u32
+    }
+}
+
+impl Distribution<u64> for Range<u64> {
+    type Iter = RangeIter<u64>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<u64> {
+    type Item = u64;
+    fn next(&mut self, rng: &mut impl Sampler) -> u64 {
+        rng.bounded_int(self.min as i64, self.max as i64 - 1) as u64
+    }
+}
+
+impl Distribution<usize> for Range<usize> {
+    type Iter = RangeIter<usize>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<usize> {
+    type Item = usize;
+    fn next(&mut self, rng: &mut impl Sampler) -> usize {
+        rng.bounded_int(self.min as i64, self.max as i64 - 1) as usize
+    }
+}
+
+impl Distribution<f32> for Range<f32> {
+    type Iter = RangeIter<f32>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<f32> {
+    type Item = f32;
+    fn next(&mut self, rng: &mut impl Sampler) -> f32 {
+        let t = populate_core::next_double(rng) as f32;
+        self.min + t * (self.max - self.min)
+    }
+}
+
+impl Distribution<f64> for Range<f64> {
+    type Iter = RangeIter<f64>;
+    fn sample(&mut self) -> Self::Iter {
+        RangeIter {
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+impl SampleIter for RangeIter<f64> {
+    type Item = f64;
+    fn next(&mut self, rng: &mut impl Sampler) -> f64 {
+        let t = populate_core::next_double(rng);
+        self.min + t * (self.max - self.min)
+    }
+}
 
 #[cfg(test)]
 mod tests {

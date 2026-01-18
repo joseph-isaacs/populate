@@ -1,6 +1,6 @@
 use populate::{CollectExt, Cols, list, range};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 fn main() {
     let mut rng = StdRng::seed_from_u64(42);

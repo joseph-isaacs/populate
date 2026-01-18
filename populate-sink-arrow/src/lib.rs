@@ -1,15 +1,14 @@
 use arrow_array::{
+    ArrayRef, ArrowPrimitiveType, ListArray, RecordBatch,
     builder::{BooleanBuilder, ListBuilder, PrimitiveBuilder, StringBuilder},
     types::{
-        Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
-        UInt32Type, UInt64Type, UInt8Type,
+        Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+        UInt32Type, UInt64Type,
     },
-    ArrayRef, ArrowPrimitiveType, ListArray, RecordBatch,
 };
 use arrow_schema::{DataType, Field, Schema};
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, SampleIter, Sink};
-use rand::Rng;
+use populate_core::{Collector, Distribution, ListSink, SampleIter, Sampler, Sink};
 use std::sync::Arc;
 
 /// Trait for creating Arrow sinks for a type.
@@ -227,7 +226,7 @@ pub trait IntoArrowArray: Sized {
     /// Collect n samples from an iterator into an ArrayRef.
     fn collect_array<I: SampleIter<Item = Self>>(
         iter: &mut I,
-        rng: &mut impl Rng,
+        rng: &mut impl Sampler,
         n: usize,
     ) -> ArrayRef;
 
@@ -239,7 +238,7 @@ pub trait IntoArrowArray: Sized {
 impl<T: ArrowSinkType> IntoArrowArray for T {
     fn collect_array<I: SampleIter<Item = Self>>(
         iter: &mut I,
-        rng: &mut impl Rng,
+        rng: &mut impl Sampler,
         n: usize,
     ) -> ArrayRef {
         let mut sink = T::new_sink(n);
@@ -256,7 +255,7 @@ impl<T: ArrowSinkType> IntoArrowArray for T {
 impl<T: ArrowListSinkType + ArrowSinkType> IntoArrowArray for Vec<T> {
     fn collect_array<I: SampleIter<Item = Self>>(
         iter: &mut I,
-        rng: &mut impl Rng,
+        rng: &mut impl Sampler,
         n: usize,
     ) -> ArrayRef {
         let mut sink = T::new_list_sink();
@@ -297,7 +296,7 @@ where
 {
     type Output = ArrayRef;
 
-    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut D, rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let mut sink = T::new_sink(n);
         sink.extend((0..n).map(|_| iter.next(rng)));
@@ -315,7 +314,7 @@ where
 {
     type Output = RecordBatch;
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
 
         let a1 = T1::collect_array(&mut iter.0, rng, n);
@@ -342,7 +341,7 @@ where
 {
     type Output = RecordBatch;
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Sampler, n: usize) -> Self::Output {
         let mut iter = dist.sample();
 
         let a1 = T1::collect_array(&mut iter.0, rng, n);
@@ -368,7 +367,7 @@ where
 {
     type Output = ListArray;
 
-    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Sampler, n: usize) -> Self::Output {
         let iter = dist.sample();
         populate_core::collect_list_into(iter.lengths, iter.elements, rng, n, T::new_list_sink())
     }

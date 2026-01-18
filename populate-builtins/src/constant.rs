@@ -1,5 +1,5 @@
+use populate_core::Sampler;
 use populate_core::{Distribution, SampleIter};
-use rand::Rng;
 
 /// A distribution that always produces the same value.
 pub struct Constant<T> {
@@ -19,7 +19,7 @@ pub struct ConstantIter<T>(T);
 impl<T: Clone> SampleIter for ConstantIter<T> {
     type Item = T;
 
-    fn next(&mut self, _rng: &mut impl Rng) -> T {
+    fn next(&mut self, _rng: &mut impl Sampler) -> T {
         self.0.clone()
     }
 }

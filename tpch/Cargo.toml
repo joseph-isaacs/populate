@@ -1,0 +1,11 @@
+[package]
+name = "tpch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-builtins = { workspace = true }
+populate-core = { workspace = true }
+rand = { workspace = true }
+tpchgen = { workspace = true }

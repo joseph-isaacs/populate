@@ -646,6 +646,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpch"
+version = "0.1.0"
+dependencies = [
+ "populate-builtins",
+ "populate-core",
+ "rand",
+ "tpchgen",
+]
+
+[[package]]
+name = "tpchgen"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d651db770ccf53b89dd769ed47899c0c089452e3b725c3c48fbc6a2be579638"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"

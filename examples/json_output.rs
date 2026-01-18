@@ -1,4 +1,4 @@
-use populate::{CollectExt, JsonRows, pretty_print, range, list};
+use populate::{CollectExt, JsonRows, list, pretty_print, range};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 

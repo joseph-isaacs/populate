@@ -1,4 +1,44 @@
-use rand::Rng;
+// === Sampler trait ===
+
+/// Trait for random number generation with configurable sampling algorithm.
+///
+/// This trait abstracts over different RNG implementations, allowing the same
+/// distributions to work with standard RNGs (via rand) or TPC-H/TPC-DS compatible
+/// RNGs that use specific algorithms.
+///
+/// The core primitive is `bounded_int(min, max)` which returns a value in [min, max].
+/// Different implementations may use different formulas:
+/// - rand::Rng uses rejection sampling
+/// - TPC-H uses `floor((seed / MODULUS) * range) + min`
+/// - TPC-DS uses `seed % range + min`
+pub trait Sampler {
+    /// Generate a random i64 in [min, max] inclusive.
+    fn bounded_int(&mut self, min: i64, max: i64) -> i64;
+}
+
+/// Blanket implementation for all rand::Rng types.
+impl<R: rand::Rng> Sampler for R {
+    fn bounded_int(&mut self, min: i64, max: i64) -> i64 {
+        self.random_range(min..=max)
+    }
+}
+
+/// TPC-H modulus constant (2^31 - 1).
+pub const TPCH_MODULUS: i64 = 2147483647;
+
+/// Generate a random f64 in [0, 1) using the TPC-H formula.
+///
+/// This is exact for TPC-H compatible RNGs: `bounded_int(0, MODULUS-1) / MODULUS`.
+#[inline]
+pub fn next_double(rng: &mut impl Sampler) -> f64 {
+    rng.bounded_int(0, TPCH_MODULUS - 1) as f64 / TPCH_MODULUS as f64
+}
+
+/// Generate a random boolean with given probability.
+#[inline]
+pub fn next_bool(rng: &mut impl Sampler, probability: f64) -> bool {
+    next_double(rng) < probability
+}
 
 // === Collection traits ===
 
@@ -8,12 +48,12 @@ use rand::Rng;
 /// T is the item type produced by the distribution.
 pub trait Collector<D, T>: Sized {
     type Output;
-    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output;
+    fn collect(dist: &mut D, rng: &mut impl Sampler, n: usize) -> Self::Output;
 }
 
 /// Extension trait that adds `collect` method to all distributions.
 pub trait CollectExt<T>: Distribution<T> {
-    fn collect<C>(&mut self, rng: &mut impl Rng, n: usize) -> C::Output
+    fn collect<C>(&mut self, rng: &mut impl Sampler, n: usize) -> C::Output
     where
         C: Collector<Self, T>,
         Self: Sized,
@@ -44,7 +84,7 @@ impl<T, D: Distribution<T>> CollectExt<T> for D {}
 /// (e.g., the "current run value") to its initial condition.
 pub trait SampleIter: Clone {
     type Item;
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item;
 }
 
 /// A factory that produces sample iterators.
@@ -90,7 +130,7 @@ pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     type Item = (I1::Item, I2::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
         (self.0.next(rng), self.1.next(rng))
     }
 }
@@ -114,7 +154,7 @@ pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
     type Item = (I1::Item, I2::Item, I3::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
         (self.0.next(rng), self.1.next(rng), self.2.next(rng))
     }
 }
@@ -132,10 +172,249 @@ where
     }
 }
 
+/// Iterator for 4-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
+
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
+    for TupleIter4<I1, I2, I3, I4>
+{
+    type Item = (I1::Item, I2::Item, I3::Item, I4::Item);
+
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+        (
+            self.0.next(rng),
+            self.1.next(rng),
+            self.2.next(rng),
+            self.3.next(rng),
+        )
+    }
+}
+
+impl<T1, T2, T3, T4, D1, D2, D3, D4> Distribution<(T1, T2, T3, T4)> for (D1, D2, D3, D4)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+{
+    type Iter = TupleIter4<D1::Iter, D2::Iter, D3::Iter, D4::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter4(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+        )
+    }
+}
+
+/// Iterator for 5-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter5<I1, I2, I3, I4, I5>(pub I1, pub I2, pub I3, pub I4, pub I5);
+
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleIter> SampleIter
+    for TupleIter5<I1, I2, I3, I4, I5>
+{
+    type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item);
+
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+        (
+            self.0.next(rng),
+            self.1.next(rng),
+            self.2.next(rng),
+            self.3.next(rng),
+            self.4.next(rng),
+        )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5> Distribution<(T1, T2, T3, T4, T5)>
+    for (D1, D2, D3, D4, D5)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+{
+    type Iter = TupleIter5<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter5(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+        )
+    }
+}
+
+/// Iterator for 6-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter6<I1, I2, I3, I4, I5, I6>(pub I1, pub I2, pub I3, pub I4, pub I5, pub I6);
+
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleIter, I6: SampleIter>
+    SampleIter for TupleIter6<I1, I2, I3, I4, I5, I6>
+{
+    type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item);
+
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+        (
+            self.0.next(rng),
+            self.1.next(rng),
+            self.2.next(rng),
+            self.3.next(rng),
+            self.4.next(rng),
+            self.5.next(rng),
+        )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6> Distribution<(T1, T2, T3, T4, T5, T6)>
+    for (D1, D2, D3, D4, D5, D6)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<T6>,
+{
+    type Iter = TupleIter6<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter6(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+            self.5.sample(),
+        )
+    }
+}
+
+/// Iterator for 7-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter7<I1, I2, I3, I4, I5, I6, I7>(
+    pub I1,
+    pub I2,
+    pub I3,
+    pub I4,
+    pub I5,
+    pub I6,
+    pub I7,
+);
+
+impl<
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    I7: SampleIter,
+> SampleIter for TupleIter7<I1, I2, I3, I4, I5, I6, I7>
+{
+    type Item = (
+        I1::Item,
+        I2::Item,
+        I3::Item,
+        I4::Item,
+        I5::Item,
+        I6::Item,
+        I7::Item,
+    );
+
+    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+        (
+            self.0.next(rng),
+            self.1.next(rng),
+            self.2.next(rng),
+            self.3.next(rng),
+            self.4.next(rng),
+            self.5.next(rng),
+            self.6.next(rng),
+        )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>
+    Distribution<(T1, T2, T3, T4, T5, T6, T7)> for (D1, D2, D3, D4, D5, D6, D7)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<T6>,
+    D7: Distribution<T7>,
+{
+    type Iter = TupleIter7<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter7(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+            self.5.sample(),
+            self.6.sample(),
+        )
+    }
+}
+
+// === Unnest marker for tuple spreading ===
+
+/// Marker wrapper that tells tuple combinators to spread the inner distribution's output.
+///
+/// When used in a tuple like `(D1, Unnest<D2>)` where D2 produces (B, C),
+/// the result is flattened to (A, B, C) instead of (A, (B, C)).
+pub struct Unnest<D>(pub D);
+
+/// Convenience function to create an Unnest marker.
+pub fn unnest<D>(inner: D) -> Unnest<D> {
+    Unnest(inner)
+}
+
+/// Iterator for (A, Unnest<(B, C)>) -> (A, B, C).
+#[derive(Clone)]
+pub struct TupleUnnest2Iter<I1, I2>(pub I1, pub I2);
+
+impl<I1, I2, A, B, C> SampleIter for TupleUnnest2Iter<I1, I2>
+where
+    I1: SampleIter<Item = A>,
+    I2: SampleIter<Item = (B, C)>,
+{
+    type Item = (A, B, C);
+
+    fn next(&mut self, rng: &mut impl Sampler) -> (A, B, C) {
+        let a = self.0.next(rng);
+        let (b, c) = self.1.next(rng);
+        (a, b, c)
+    }
+}
+
+impl<D1, D2, A, B, C> Distribution<(A, B, C)> for (D1, Unnest<D2>)
+where
+    D1: Distribution<A>,
+    D2: Distribution<(B, C)>,
+{
+    type Iter = TupleUnnest2Iter<D1::Iter, D2::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleUnnest2Iter(self.0.sample(), self.1.0.sample())
+    }
+}
+
 // === Collection functions using Sink ===
 
 /// Collect elements into a sink (row-oriented).
-pub fn collect_into<I, S>(mut iter: I, rng: &mut impl Rng, n: usize, mut sink: S) -> S::Output
+pub fn collect_into<I, S>(mut iter: I, rng: &mut impl Sampler, n: usize, mut sink: S) -> S::Output
 where
     I: SampleIter,
     S: Sink<I::Item>,
@@ -149,7 +428,7 @@ where
 /// Collect elements using column-oriented bulk extend.
 pub fn collect_into_column<I, S>(
     mut iter: I,
-    rng: &mut impl Rng,
+    rng: &mut impl Sampler,
     n: usize,
     mut sink: S,
 ) -> S::Output
@@ -164,7 +443,7 @@ where
 /// Collect 2-tuple into separate sinks (column-oriented).
 pub fn collect_struct2_into<I1, I2, S1, S2>(
     mut iter: TupleIter2<I1, I2>,
-    rng: &mut impl Rng,
+    rng: &mut impl Sampler,
     n: usize,
     mut sink1: S1,
     mut sink2: S2,
@@ -183,7 +462,7 @@ where
 /// Collect 3-tuple into separate sinks (column-oriented).
 pub fn collect_struct3_into<I1, I2, I3, S1, S2, S3>(
     mut iter: TupleIter3<I1, I2, I3>,
-    rng: &mut impl Rng,
+    rng: &mut impl Sampler,
     n: usize,
     mut sink1: S1,
     mut sink2: S2,
@@ -207,7 +486,7 @@ where
 pub fn collect_list_into<L, E, S>(
     mut lengths: L,
     elements: E,
-    rng: &mut impl Rng,
+    rng: &mut impl Sampler,
     n: usize,
     mut sink: S,
 ) -> S::Output

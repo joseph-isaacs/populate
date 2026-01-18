@@ -1,137 +1,101 @@
 # Base Trait Rename Plan
 
-## Analysis of Current Traits vs Rust Ecosystem
+## Final Decision
 
-### Conflicts and Confusion with Standard Crates
-
-| Current Name | Conflicts With | Issue |
-|-------------|----------------|-------|
-| `Distribution<T>` | `rand::Distribution<T>` | **Semantic mismatch**: rand's Distribution is *stateless* with `fn sample(&self, rng) -> T`. Ours is a *mutable factory* with `fn sample(&mut self) -> Iter` |
-| `SampleIter` | `rand::DistIter` | Similar concept but different API signature |
-| `Sink<T>` | `futures::Sink<T>` | Same concept (value consumer) - **good alignment** |
-| `Collector<D, T>` | `std::iter::FromIterator` | Confusing since `Iterator::collect()` exists in std |
-
-### Trait Semantics Summary
-
-| Trait | What It Actually Does |
-|-------|----------------------|
-| `SampleIter` | Infinite iterator producing values via `next(&mut self, rng) -> Item` |
-| `Distribution<T>` | Factory that creates `SampleIter` instances via `sample(&mut self) -> Iter` |
-| `Sink<T>` | Consumer that accumulates values via `push()` and finalizes via `finish()` |
-| `ListSink<T>` | Nested-aware sink with `start_list()`, `push_element()`, `end_list()` |
-| `Collector<D, T>` | Format adapter that collects a distribution into a specific output type |
-
----
-
-## Rename Options
-
-### Option A: Avoid `rand` Conflict (Recommended)
-
-| Current | Proposed | Rationale |
+| Current | New Name | Rationale |
 |---------|----------|-----------|
-| `SampleIter` | **`Sampler`** | Noun form, "the thing that samples". Cleaner, no `Iter` suffix since it's not a std Iterator |
-| `Distribution<T>` | **`Generator<T>`** | Common programming term for "thing that generates values". Avoids rand conflict |
-| `Sink<T>` | `Sink<T>` | Keep as-is, aligns with futures crate |
-| `ListSink<T>` | `ListSink<T>` | Keep as-is, consistent with Sink |
-| `Collector<D, T>` | **`Materializer<D, T>`** | "Materializes" abstract generator into concrete output. Avoids confusion with `Iterator::collect()` |
+| `SampleIter` | **`Sampler`** | Noun form, "the thing that samples" |
+| `Distribution<T>` | **`ValueStream<T>`** | Emphasizes infinite streaming nature, avoids `rand::Distribution` conflict |
+| `Sink<T>` | `Sink<T>` | Keep - aligns with `futures::Sink` |
+| `ListSink<T>` | `ListSink<T>` | Keep - consistent with Sink |
+| `Collector<D, T>` | **`Materializer<D, T>`** | "Materializes" abstract stream into concrete output |
 | `CollectExt<T>` | **`MaterializeExt<T>`** | Follows Materializer rename |
 
-**Pros:**
-- No naming conflicts with rand or std
-- `Generator` is intuitive for programmers
-- `Sampler` clearly indicates "thing that samples"
-- `Materializer` accurately describes the operation
-
-**Cons:**
-- `Generator` might evoke Python/JS generators (different concept)
-
 ---
 
-### Option B: Domain-Specific Naming
+## Associated Renames
 
-| Current | Proposed | Rationale |
-|---------|----------|-----------|
-| `SampleIter` | **`DataStream`** | Emphasizes streaming/infinite nature |
-| `Distribution<T>` | **`Schema<T>`** | Describes "how to generate" data |
-| `Sink<T>` | **`Builder<T>`** | Builder pattern terminology |
-| `ListSink<T>` | **`ListBuilder<T>`** | Consistent with Builder |
-| `Collector<D, T>` | **`Format<D, T>`** | Represents an output format |
-| `CollectExt<T>` | **`FormatExt<T>`** | Follows Format rename |
+### Types and Structs
 
-**Pros:**
-- Unique to this domain
-- `Schema` captures the declarative nature
-
-**Cons:**
-- `Schema` might suggest validation/typing rather than generation
-- `Builder` conflicts with common pattern meaning
-
----
-
-### Option C: Minimal Changes (Conservative)
-
-| Current | Proposed | Rationale |
-|---------|----------|-----------|
-| `SampleIter` | **`Sampler`** | Just drop the `Iter` suffix |
-| `Distribution<T>` | `Distribution<T>` | Keep, document the difference from rand |
-| `Sink<T>` | `Sink<T>` | Keep as-is |
-| `ListSink<T>` | `ListSink<T>` | Keep as-is |
-| `Collector<D, T>` | **`OutputCollector<D, T>`** | Disambiguate from Iterator::collect |
-| `CollectExt<T>` | `CollectExt<T>` | Keep as-is |
-
-**Pros:**
-- Minimal churn
-- Familiar names
-
-**Cons:**
-- `Distribution` still conflicts conceptually with rand
-
----
-
-## Recommendation: Option A
-
-The recommended renames are:
-
-```
-SampleIter      → Sampler
-Distribution<T> → Generator<T>
-Sink<T>         → Sink<T>         (no change)
-ListSink<T>     → ListSink<T>     (no change)
-Collector<D, T> → Materializer<D, T>
-CollectExt<T>   → MaterializeExt<T>
-```
-
-### Associated Type/Struct Renames
-
-With Option A, these would also change:
-
-| Current | Proposed |
-|---------|----------|
-| `Distribution::Iter` | `Generator::Sampler` |
-| `TupleIter2`, `TupleIter3`, etc. | `TupleSampler2`, `TupleSampler3`, etc. |
+| Current | New |
+|---------|-----|
+| `Distribution::Iter` | `ValueStream::Sampler` |
+| `TupleIter2`, `TupleIter3`, ... | `TupleSampler2`, `TupleSampler3`, ... |
 | `TupleUnnest2Iter` | `TupleUnnest2Sampler` |
 
-### Method Renames
+### Methods
 
-| Current | Proposed |
-|---------|----------|
-| `Distribution::sample()` | `Generator::sampler()` or `Generator::make_sampler()` |
+| Current | New |
+|---------|-----|
+| `Distribution::sample()` | `ValueStream::sampler()` |
 | `CollectExt::collect()` | `MaterializeExt::materialize()` |
 
 ---
 
-## Alternative: Keep `sample()` method name
-
-If `Generator::sample()` feels right (since generators "sample" their output space), keep the method name:
+## New Trait Definitions
 
 ```rust
-pub trait Generator<T> {
+/// An infinite sampler that produces values using an RNG.
+pub trait Sampler: Clone {
+    type Item;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+}
+
+/// A stream that produces samplers for generating values.
+pub trait ValueStream<T> {
     type Sampler: Sampler<Item = T>;
-    fn sample(&mut self) -> Self::Sampler;  // keep as sample()
+    fn sampler(&mut self) -> Self::Sampler;
+}
+
+/// A sink that consumes values and produces an output.
+pub trait Sink<T> {
+    type Output;
+    fn push(&mut self, value: T);
+    fn extend(&mut self, iter: impl Iterator<Item = T>);
+    fn finish(self) -> Self::Output;
+}
+
+/// A sink for list values that tracks offsets.
+pub trait ListSink<T> {
+    type Output;
+    fn start_list(&mut self);
+    fn push_element(&mut self, value: T);
+    fn end_list(&mut self);
+    fn finish(self) -> Self::Output;
+}
+
+/// Materializes a value stream into a concrete output format.
+pub trait Materializer<S, T>: Sized {
+    type Output;
+    fn materialize(stream: &mut S, rng: &mut impl Rng, n: usize) -> Self::Output;
+}
+
+/// Extension trait that adds `materialize` method to all value streams.
+pub trait MaterializeExt<T>: ValueStream<T> {
+    fn materialize<M>(&mut self, rng: &mut impl Rng, n: usize) -> M::Output
+    where
+        M: Materializer<Self, T>,
+        Self: Sized;
 }
 ```
 
-This reads naturally: "a generator produces a sampler when you call sample()".
+---
+
+## Analysis of Current Traits vs Rust Ecosystem
+
+### Conflicts Resolved
+
+| Current Name | Conflicted With | Resolution |
+|-------------|-----------------|------------|
+| `Distribution<T>` | `rand::Distribution<T>` | Renamed to `ValueStream<T>` |
+| `SampleIter` | `rand::DistIter` | Renamed to `Sampler` |
+| `Collector<D, T>` | `std::iter::FromIterator` | Renamed to `Materializer<S, T>` |
+
+### Good Alignments Kept
+
+| Trait | Aligns With |
+|-------|-------------|
+| `Sink<T>` | `futures::Sink<T>` - same value consumer concept |
 
 ---
 

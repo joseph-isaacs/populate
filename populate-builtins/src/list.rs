@@ -1,22 +1,50 @@
-use populate_core::Distribution;
+use populate_core::{Distribution, SampleIter};
+use rand::Rng;
 
 /// A distribution for lists with a length distribution and element distribution.
-pub struct List<L, E> {
+pub struct List<L: Distribution<Item = usize>, E> {
     pub lengths: L,
     pub elements: E,
 }
 
-impl<L, E> List<L, E> {
+impl<L: Distribution<Item = usize>, E> List<L, E> {
     pub fn new(lengths: L, elements: E) -> Self {
         Self { lengths, elements }
     }
+}
 
-    /// Sample a list iterator from this distribution.
-    pub fn sample(&mut self) -> ListIter<L::Iter, E::Iter>
-    where
-        L: Distribution<Item = usize>,
-        E: Distribution,
-    {
+/// Iterator for list values - bundles length and element iterators.
+///
+/// For AoS (row-oriented): call `next()` to produce `Vec<E::Item>`
+/// For SoA (columnar): access `.lengths` and `.elements` directly
+#[derive(Clone)]
+pub struct ListIter<L, E> {
+    pub lengths: L,
+    pub elements: E,
+}
+
+impl<L, E> SampleIter for ListIter<L, E>
+where
+    L: SampleIter<Item = usize>,
+    E: SampleIter,
+{
+    type Item = Vec<E::Item>;
+
+    fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
+        let len = self.lengths.next(rng);
+        (0..len).map(|_| self.elements.next(rng)).collect()
+    }
+}
+
+impl<L, E> Distribution for List<L, E>
+where
+    L: Distribution<Item = usize>,
+    E: Distribution,
+{
+    type Item = Vec<E::Item>;
+    type Iter = ListIter<L::Iter, E::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
         ListIter {
             lengths: self.lengths.sample(),
             elements: self.elements.sample(),
@@ -24,32 +52,34 @@ impl<L, E> List<L, E> {
     }
 }
 
-/// Iterator for list values - bundles length and element iterators.
-#[derive(Clone)]
-pub struct ListIter<L, E> {
-    pub lengths: L,
-    pub elements: E,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Constant;
-    use populate_core::SampleIter;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
-    fn test_list() {
+    fn test_list_aos() {
         let mut dist = List::new(Constant::new(3usize), Constant::new(42i32));
         let mut rng = StdRng::seed_from_u64(0);
         let mut iter = dist.sample();
 
-        // Get a length
+        // AoS: next() produces complete Vec
+        let row = iter.next(&mut rng);
+        assert_eq!(row, vec![42, 42, 42]);
+    }
+
+    #[test]
+    fn test_list_soa() {
+        let mut dist = List::new(Constant::new(3usize), Constant::new(42i32));
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut iter = dist.sample();
+
+        // SoA: access structure directly
         let len = iter.lengths.next(&mut rng);
         assert_eq!(len, 3);
 
-        // Get elements
         for _ in 0..len {
             assert_eq!(iter.elements.next(&mut rng), 42);
         }

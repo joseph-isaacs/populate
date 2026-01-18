@@ -37,13 +37,13 @@ pub use populate_builtins::{
 };
 
 // Re-export Vec collectors and sinks
-pub use populate_sink_vec::{Col, Cols, ListCol, VecListSink, VecSink};
+pub use populate_sink_vec::{Col, Cols, ListCol, Rows, VecListSink, VecSink};
 
 // Re-export Arrow collectors and sinks when feature is enabled
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow::{
-    ArrayRefW, ArrowListSink, ArrowListSinkType, ArrowSinkType, BooleanSink, ListArrayW,
-    PrimitiveSink, RecordBatchW, StringSink,
+    ArrayRefW, ArrowListSink, ArrowListSinkType, ArrowSinkType, BooleanSink, IntoArrowArray,
+    ListArrayW, PrimitiveSink, RecordBatchW, StringSink,
 };
 
 // Also expose the sub-crates as modules for direct access

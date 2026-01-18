@@ -10,8 +10,11 @@ pub struct Col;
 /// Marker for collecting tuple distributions into tuple of Vecs (columnar).
 pub struct Cols;
 
-/// Marker for collecting List distributions into (Vec<T>, Vec<usize>).
+/// Marker for collecting List distributions into (Vec<T>, Vec<usize>) - columnar.
 pub struct ListCol;
+
+/// Marker for collecting List distributions into Vec<Vec<T>> - row-oriented.
+pub struct Rows;
 
 // === Collector implementations ===
 
@@ -67,7 +70,7 @@ where
     }
 }
 
-/// Collect List distribution into (Vec<T>, Vec<usize>) - values and offsets
+/// Collect List distribution into (Vec<T>, Vec<usize>) - columnar (values and offsets)
 impl<L, E> Collector<List<L, E>> for ListCol
 where
     L: Distribution<Item = usize>,
@@ -78,6 +81,25 @@ where
     fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let iter = dist.sample();
         populate_core::collect_list_into(iter.lengths, iter.elements, rng, n, VecListSink::new())
+    }
+}
+
+/// Collect List distribution into Vec<Vec<T>> - row-oriented
+impl<L, E> Collector<List<L, E>> for Rows
+where
+    L: Distribution<Item = usize>,
+    E: Distribution,
+{
+    type Output = Vec<Vec<E::Item>>;
+
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        (0..n)
+            .map(|_| {
+                let len = iter.lengths.next(rng);
+                (0..len).map(|_| iter.elements.next(rng)).collect()
+            })
+            .collect()
     }
 }
 

@@ -217,6 +217,51 @@ impl_arrow_list_sink_type!(u64, UInt64Type);
 impl_arrow_list_sink_type!(f32, Float32Type);
 impl_arrow_list_sink_type!(f64, Float64Type);
 
+// === IntoArrowArray trait for unified array collection ===
+
+/// Trait for types that can be collected into Arrow arrays.
+/// This unifies scalar types and Vec<T> (lists) for use in RecordBatch tuples.
+pub trait IntoArrowArray: Sized {
+    /// Collect n samples from an iterator into an ArrayRef.
+    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef;
+
+    /// Get the Arrow DataType for this type.
+    fn data_type() -> DataType;
+}
+
+// Implement IntoArrowArray for all scalar types via ArrowSinkType
+impl<T: ArrowSinkType> IntoArrowArray for T {
+    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef {
+        let mut sink = T::new_sink(n);
+        sink.extend((0..n).map(|_| iter.next(rng)));
+        sink.finish()
+    }
+
+    fn data_type() -> DataType {
+        T::data_type()
+    }
+}
+
+// Implement IntoArrowArray for Vec<T> where T can be stored in Arrow lists
+impl<T: ArrowListSinkType + ArrowSinkType> IntoArrowArray for Vec<T> {
+    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef {
+        let mut sink = T::new_list_sink();
+        for _ in 0..n {
+            let list = iter.next(rng);
+            sink.start_list();
+            for elem in list {
+                sink.push_element(elem);
+            }
+            sink.end_list();
+        }
+        Arc::new(sink.finish())
+    }
+
+    fn data_type() -> DataType {
+        DataType::List(Arc::new(Field::new("item", T::data_type(), true)))
+    }
+}
+
 // === Marker types for Arrow collection ===
 
 /// Marker for collecting scalar distributions into ArrayRef.
@@ -251,25 +296,23 @@ impl<D1, D2> Collector<(D1, D2)> for RecordBatchW
 where
     D1: Distribution,
     D2: Distribution,
-    D1::Item: ArrowSinkType,
-    D2::Item: ArrowSinkType,
+    D1::Item: IntoArrowArray,
+    D2::Item: IntoArrowArray,
 {
     type Output = RecordBatch;
 
     fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
-        let mut s1 = D1::Item::new_sink(n);
-        let mut s2 = D2::Item::new_sink(n);
 
-        s1.extend((0..n).map(|_| iter.0.next(rng)));
-        s2.extend((0..n).map(|_| iter.1.next(rng)));
+        let a1 = D1::Item::collect_array(&mut iter.0, rng, n);
+        let a2 = D2::Item::collect_array(&mut iter.1, rng, n);
 
         let schema = Schema::new(vec![
             Field::new("c0", D1::Item::data_type(), false),
             Field::new("c1", D2::Item::data_type(), false),
         ]);
 
-        RecordBatch::try_new(Arc::new(schema), vec![s1.finish(), s2.finish()]).unwrap()
+        RecordBatch::try_new(Arc::new(schema), vec![a1, a2]).unwrap()
     }
 }
 
@@ -279,21 +322,18 @@ where
     D1: Distribution,
     D2: Distribution,
     D3: Distribution,
-    D1::Item: ArrowSinkType,
-    D2::Item: ArrowSinkType,
-    D3::Item: ArrowSinkType,
+    D1::Item: IntoArrowArray,
+    D2::Item: IntoArrowArray,
+    D3::Item: IntoArrowArray,
 {
     type Output = RecordBatch;
 
     fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
-        let mut s1 = D1::Item::new_sink(n);
-        let mut s2 = D2::Item::new_sink(n);
-        let mut s3 = D3::Item::new_sink(n);
 
-        s1.extend((0..n).map(|_| iter.0.next(rng)));
-        s2.extend((0..n).map(|_| iter.1.next(rng)));
-        s3.extend((0..n).map(|_| iter.2.next(rng)));
+        let a1 = D1::Item::collect_array(&mut iter.0, rng, n);
+        let a2 = D2::Item::collect_array(&mut iter.1, rng, n);
+        let a3 = D3::Item::collect_array(&mut iter.2, rng, n);
 
         let schema = Schema::new(vec![
             Field::new("c0", D1::Item::data_type(), false),
@@ -301,11 +341,7 @@ where
             Field::new("c2", D3::Item::data_type(), false),
         ]);
 
-        RecordBatch::try_new(
-            Arc::new(schema),
-            vec![s1.finish(), s2.finish(), s3.finish()],
-        )
-        .unwrap()
+        RecordBatch::try_new(Arc::new(schema), vec![a1, a2, a3]).unwrap()
     }
 }
 

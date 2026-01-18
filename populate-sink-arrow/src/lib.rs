@@ -223,7 +223,11 @@ impl_arrow_list_sink_type!(f64, Float64Type);
 /// This unifies scalar types and Vec<T> (lists) for use in RecordBatch tuples.
 pub trait IntoArrowArray: Sized {
     /// Collect n samples from an iterator into an ArrayRef.
-    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef;
+    fn collect_array<I: SampleIter<Item = Self>>(
+        iter: &mut I,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> ArrayRef;
 
     /// Get the Arrow DataType for this type.
     fn data_type() -> DataType;
@@ -231,7 +235,11 @@ pub trait IntoArrowArray: Sized {
 
 // Implement IntoArrowArray for all scalar types via ArrowSinkType
 impl<T: ArrowSinkType> IntoArrowArray for T {
-    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef {
+    fn collect_array<I: SampleIter<Item = Self>>(
+        iter: &mut I,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> ArrayRef {
         let mut sink = T::new_sink(n);
         sink.extend((0..n).map(|_| iter.next(rng)));
         sink.finish()
@@ -244,7 +252,11 @@ impl<T: ArrowSinkType> IntoArrowArray for T {
 
 // Implement IntoArrowArray for Vec<T> where T can be stored in Arrow lists
 impl<T: ArrowListSinkType + ArrowSinkType> IntoArrowArray for Vec<T> {
-    fn collect_array<I: SampleIter<Item = Self>>(iter: &mut I, rng: &mut impl Rng, n: usize) -> ArrayRef {
+    fn collect_array<I: SampleIter<Item = Self>>(
+        iter: &mut I,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> ArrayRef {
         let mut sink = T::new_list_sink();
         for _ in 0..n {
             let list = iter.next(rng);
@@ -356,13 +368,7 @@ where
 
     fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let iter = dist.sample();
-        populate_core::collect_list_into(
-            iter.lengths,
-            iter.elements,
-            rng,
-            n,
-            T::new_list_sink(),
-        )
+        populate_core::collect_list_into(iter.lengths, iter.elements, rng, n, T::new_list_sink())
     }
 }
 

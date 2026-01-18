@@ -55,8 +55,8 @@ where
 mod tests {
     use super::*;
     use crate::Constant;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_list_aos() {

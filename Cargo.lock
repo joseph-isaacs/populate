@@ -633,6 +633,7 @@ dependencies = [
  "populate-builtins",
  "populate-core",
  "populate-sink-arrow",
+ "populate-sink-json",
  "populate-sink-vec",
  "rand",
 ]
@@ -660,6 +661,16 @@ dependencies = [
  "populate-builtins",
  "populate-core",
  "rand",
+]
+
+[[package]]
+name = "populate-sink-json"
+version = "0.1.0"
+dependencies = [
+ "populate-builtins",
+ "populate-core",
+ "rand",
+ "serde_json",
 ]
 
 [[package]]

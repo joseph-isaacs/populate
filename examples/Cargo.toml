@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-populate = { path = "../populate", features = ["arrow"] }
+populate = { path = "../populate", features = ["arrow", "json"] }
 rand.workspace = true
 arrow = { workspace = true, features = ["prettyprint"] }
 
@@ -16,3 +16,7 @@ path = "arrow_table.rs"
 [[bin]]
 name = "vec_collection"
 path = "vec_collection.rs"
+
+[[bin]]
+name = "json_output"
+path = "json_output.rs"

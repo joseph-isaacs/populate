@@ -14,9 +14,14 @@ populate-sink-vec.workspace = true
 workspace = true
 optional = true
 
+[dependencies.populate-sink-json]
+workspace = true
+optional = true
+
 [features]
 default = []
 arrow = ["dep:populate-sink-arrow"]
+json = ["dep:populate-sink-json"]
 
 [dev-dependencies]
 rand = { workspace = true }

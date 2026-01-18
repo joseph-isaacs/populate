@@ -9,7 +9,7 @@
 //!
 //! - **Core traits** (`populate-core`): `Distribution`, `SampleIter`, `Sink`, `ListSink`
 //! - **Built-in combinators** (`populate-builtins`): `Constant`, `Range`, `List`, tuples
-//! - **Sink implementations**: `populate-sink-vec` (Vec), `populate-sink-arrow` (Arrow)
+//! - **Sink implementations**: `populate-sink-vec` (Vec), `populate-sink-arrow` (Arrow), `populate-sink-json` (JSON)
 //!
 //! # Example
 //!
@@ -53,3 +53,10 @@ pub use populate_sink_vec as sink_vec;
 
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as sink_arrow;
+
+// Re-export JSON collectors and sinks when feature is enabled
+#[cfg(feature = "json")]
+pub use populate_sink_json::{JsonRows, ToJsonValue, pretty_print};
+
+#[cfg(feature = "json")]
+pub use populate_sink_json as sink_json;

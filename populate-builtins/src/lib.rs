@@ -7,8 +7,8 @@ pub use list::{List, ListIter};
 pub use range::{Range, RangeIter};
 
 // Re-export tuple types from core (they must be there due to orphan rules)
-pub use populate_core::{TupleIter2, TupleIter3};
 use populate_core::Distribution;
+pub use populate_core::{TupleIter2, TupleIter3};
 
 // Convenience functions
 pub fn constant<T: Clone>(value: T) -> Constant<T> {

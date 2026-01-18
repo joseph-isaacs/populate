@@ -19,7 +19,10 @@ pub use join::{
 };
 pub use list::{List, ListIter};
 pub use map::{Map, MapExt, MapIter};
-pub use pick::{Pick, PickIter, PickN, PickNIter, PickOne, PickOneIter, PickStrategy, Unique};
+pub use pick::{
+    Pick, PickIter, PickN, PickNIter, PickOne, PickOneIter, PickOneRef, PickOneRefIter,
+    PickStrategy, Unique,
+};
 pub use range::{Range, RangeIter, RangeSampler, range};
 pub use seeded::{Seeded, SeededIter};
 
@@ -53,6 +56,10 @@ pub fn seeded<R, D>(rng: R, dist: D) -> Seeded<R, D> {
 
 pub fn pick_one<T, I>(indices: I, values: &[T]) -> PickOne<'_, T, I> {
     PickOne::new(values, indices)
+}
+
+pub fn pick_one_ref<T, I>(indices: I, values: &[T]) -> PickOneRef<'_, T, I> {
+    PickOneRef::new(values, indices)
 }
 
 pub fn pick<T, I, const N: usize>(indices: I, values: &[T]) -> Pick<'_, T, I, N> {

@@ -108,6 +108,77 @@ impl PickStrategy for TpchUnique {
     }
 }
 
+// === PickNBuffered: pick N unique elements with reusable buffer ===
+
+use populate_core::{Distribution, SampleIter};
+
+/// Pick N unique elements from a slice, reusing the shuffle buffer across calls.
+/// Uses TPC-H's Fisher-Yates with seed accounting.
+pub struct PickNBuffered<'a, T, const N: usize> {
+    values: &'a [T],
+}
+
+impl<'a, T, const N: usize> PickNBuffered<'a, T, N> {
+    pub fn new(values: &'a [T]) -> Self {
+        Self { values }
+    }
+}
+
+/// Iterator that holds a reusable shuffle buffer.
+pub struct PickNBufferedIter<'a, T, const N: usize> {
+    values: &'a [T],
+    buffer: Vec<usize>,
+}
+
+impl<T, const N: usize> Clone for PickNBufferedIter<'_, T, N> {
+    fn clone(&self) -> Self {
+        // Clone resets to fresh buffer (per SampleIter contract)
+        Self {
+            values: self.values,
+            buffer: (0..self.values.len()).collect(),
+        }
+    }
+}
+
+impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
+    type Item = [T; N];
+
+    fn next(&mut self, rng: &mut impl rand::Rng) -> [T; N] {
+        let len = self.values.len();
+
+        // Reset buffer in place
+        for (i, slot) in self.buffer.iter_mut().enumerate() {
+            *slot = i;
+        }
+
+        // Partial Fisher-Yates shuffle using TPC-H formula
+        for i in 0..N {
+            let seed = rng.next_u64();
+            let range = (len - i) as f64;
+            let j = i + ((seed as f64 / TpchRng::MODULUS as f64) * range) as usize;
+            self.buffer.swap(i, j);
+        }
+
+        // Advance RNG by remaining seeds (TPC-H seeds_per_row accounting)
+        for _ in N..len {
+            let _ = rng.next_u64();
+        }
+
+        std::array::from_fn(|i| self.values[self.buffer[i]].clone())
+    }
+}
+
+impl<'a, T: Clone, const N: usize> Distribution<[T; N]> for PickNBuffered<'a, T, N> {
+    type Iter = PickNBufferedIter<'a, T, N>;
+
+    fn sample(&mut self) -> Self::Iter {
+        PickNBufferedIter {
+            values: self.values,
+            buffer: (0..self.values.len()).collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

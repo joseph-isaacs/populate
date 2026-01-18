@@ -43,6 +43,54 @@ impl<'a, T: Clone, I: Distribution<i64>> Distribution<T> for PickOne<'a, T, I> {
     }
 }
 
+// === PickOneRef: pick one element by reference ===
+
+/// Pick one random element from a slice by reference (no clone).
+pub struct PickOneRef<'a, T, I> {
+    values: &'a [T],
+    indices: I,
+}
+
+impl<'a, T, I> PickOneRef<'a, T, I> {
+    pub fn new(values: &'a [T], indices: I) -> Self {
+        Self { values, indices }
+    }
+}
+
+pub struct PickOneRefIter<'a, T, II> {
+    values: &'a [T],
+    indices: II,
+}
+
+impl<T, II: Clone> Clone for PickOneRefIter<'_, T, II> {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values,
+            indices: self.indices.clone(),
+        }
+    }
+}
+
+impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II> {
+    type Item = &'a T;
+
+    fn next(&mut self, rng: &mut impl Rng) -> &'a T {
+        let idx = self.indices.next(rng) as usize;
+        &self.values[idx]
+    }
+}
+
+impl<'a, T, I: Distribution<i64>> Distribution<&'a T> for PickOneRef<'a, T, I> {
+    type Iter = PickOneRefIter<'a, T, I::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        PickOneRefIter {
+            values: self.values,
+            indices: self.indices.sample(),
+        }
+    }
+}
+
 // === Pick: pick N elements using an index distribution (with replacement) ===
 
 /// Pick N random elements from a slice using a custom index generator (compile-time N).

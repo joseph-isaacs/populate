@@ -1,5 +1,5 @@
-// Re-export rand::Rng
-pub use rand::Rng;
+// Re-export rand traits
+pub use rand::{Rng, RngCore};
 
 // === Collection traits ===
 
@@ -552,4 +552,105 @@ where
         sink.end_list();
     }
     sink.finish()
+}
+
+// === Dynamic dispatch support ===
+//
+// The GAT-based `Distribution` trait is not object-safe. These types provide
+// an opt-in escape hatch for cases requiring runtime polymorphism (e.g.,
+// schema defined by config file, heterogeneous collections).
+//
+// Usage:
+// ```
+// let dyn_dist: DynDist<i32> = DynDist::new(range(1, 100));
+// let mut table = (dyn_dist, constant(42));  // mixes dynamic and static
+// ```
+
+/// Object-safe version of `SampleIter` using dynamic dispatch for RNG.
+///
+/// Uses `RngCore` instead of `Rng` because `Rng` has generic methods
+/// that make it not object-safe.
+///
+/// Unlike `SampleIter`, this trait cannot have a blanket impl because
+/// `SampleIter::next` takes `impl Rng` (Sized), but `DynSampleIter::next_dyn`
+/// receives `&mut dyn RngCore` (unsized). Implement this trait for specific
+/// iterator types that need dynamic dispatch support.
+pub trait DynSampleIter {
+    type Item;
+    fn next_dyn(&mut self, rng: &mut dyn RngCore) -> Self::Item;
+    fn reset_dyn(&mut self);
+}
+
+/// Wrapper that turns `&mut dyn RngCore` into a sized `impl Rng`.
+///
+/// This allows passing dynamically-dispatched RNGs to functions that
+/// expect `impl Rng` (which requires Sized).
+pub struct DynRng<'a>(pub &'a mut dyn RngCore);
+
+impl RngCore for DynRng<'_> {
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest)
+    }
+}
+
+// DynRng implements Rng via the blanket impl: impl<R: RngCore + ?Sized> Rng for R
+
+/// Object-safe trait for distributions that produce boxed iterators.
+///
+/// This trait enables runtime polymorphism at the cost of allocation.
+/// Implement this for types that need to be stored in `dyn` contexts.
+pub trait DynDistribution<T> {
+    fn sample_boxed(&mut self) -> Box<dyn DynSampleIter<Item = T> + '_>;
+}
+
+/// Wrapper that adapts a `DynDistribution` into the GAT-based `Distribution`.
+///
+/// This allows dynamic distributions to compose with static ones:
+/// ```ignore
+/// let dynamic = DynDist::new(range(1, 100));
+/// let static_dist = constant(42);
+/// let mut combined = (dynamic, static_dist);
+/// ```
+pub struct DynDist<T>(Box<dyn DynDistribution<T>>);
+
+impl<T> DynDist<T> {
+    pub fn new<D>(dist: D) -> Self
+    where
+        D: DynDistribution<T> + 'static,
+    {
+        DynDist(Box::new(dist))
+    }
+}
+
+/// Boxed iterator wrapper for `DynDist`.
+pub struct BoxedIter<'a, T>(Box<dyn DynSampleIter<Item = T> + 'a>);
+
+impl<T> SampleIter for BoxedIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self, rng: &mut impl Rng) -> T {
+        // `impl Rng` is Sized and implements RngCore, so we can coerce to &mut dyn RngCore
+        self.0.next_dyn(rng)
+    }
+
+    fn reset(&mut self) {
+        self.0.reset_dyn();
+    }
+}
+
+impl<T> Distribution<T> for DynDist<T> {
+    type Iter<'a>
+        = BoxedIter<'a, T>
+    where
+        Self: 'a;
+
+    fn sample(&mut self) -> Self::Iter<'_> {
+        BoxedIter(self.0.sample_boxed())
+    }
 }

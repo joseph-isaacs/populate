@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use populate_core::{Distribution, SampleIter};
+use populate_core::{Distribution, DynDistribution, DynRng, DynSampleIter, RngCore, SampleIter};
 
 /// Trait for range sampling strategies.
 pub trait RangeSampler<T>: Clone {
@@ -93,6 +93,25 @@ impl<T: Copy, S: RangeSampler<T>> SampleIter for RangeIter<'_, T, S> {
     }
 }
 
+impl<T: Copy, S: RangeSampler<T>> DynSampleIter for RangeIter<'_, T, S> {
+    type Item = T;
+
+    fn next_dyn(&mut self, rng: &mut dyn RngCore) -> T {
+        // Wrap the dyn RngCore in DynRng to get a Sized impl Rng
+        S::sample_range(&mut DynRng(rng), *self.min, *self.max)
+    }
+
+    fn reset_dyn(&mut self) {
+        self.reset();
+    }
+}
+
+impl<T: Copy + 'static, S: RangeSampler<T> + 'static> DynDistribution<T> for Range<T, S> {
+    fn sample_boxed(&mut self) -> Box<dyn DynSampleIter<Item = T> + '_> {
+        Box::new(self.sample())
+    }
+}
+
 // === Convenience function ===
 
 pub fn range<T>(min: T, max: T) -> Range<T, ()> {
@@ -102,6 +121,7 @@ pub fn range<T>(min: T, max: T) -> Range<T, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use populate_core::{Distribution, DynDist};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -127,5 +147,34 @@ mod tests {
             let v = iter.next(&mut rng);
             assert!(v >= 0 && v < 100);
         }
+    }
+
+    #[test]
+    fn test_dyn_dist_with_range() {
+        // Demonstrate wrapping a static Range into DynDist for dynamic dispatch
+        let mut dyn_dist: DynDist<i32> = DynDist::new(range(0i32, 100));
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut iter = dyn_dist.sample();
+
+        for _ in 0..10 {
+            let v = iter.next(&mut rng);
+            assert!(v >= 0 && v < 100);
+        }
+    }
+
+    #[test]
+    fn test_dyn_dist_composes_with_tuple() {
+        use crate::constant;
+
+        // DynDist can be combined with static distributions in tuples
+        let dyn_range: DynDist<i32> = DynDist::new(range(1i32, 100));
+        let mut combined = (dyn_range, constant(42i32));
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut iter = combined.sample();
+
+        let (a, b) = iter.next(&mut rng);
+        assert!(a >= 1 && a < 100);
+        assert_eq!(b, 42);
     }
 }

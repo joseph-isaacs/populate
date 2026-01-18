@@ -29,8 +29,8 @@ pub use seeded::{Seeded, SeededIter};
 // Re-export tuple types and unnest from core (they must be there due to orphan rules)
 use populate_core::Distribution;
 pub use populate_core::{
-    TupleIter2, TupleIter3, TupleIter4, TupleIter5, TupleIter6, TupleIter7, TupleUnnest2Iter,
-    Unnest, unnest,
+    BoxedIter, DynDist, DynDistribution, DynSampleIter, TupleIter2, TupleIter3, TupleIter4,
+    TupleIter5, TupleIter6, TupleIter7, TupleUnnest2Iter, Unnest, unnest,
 };
 
 // Convenience functions

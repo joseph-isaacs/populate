@@ -1,5 +1,4 @@
-use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{Distribution, DynDistribution, DynSampleIter, Rng, RngCore, SampleIter};
 
 /// A distribution that cycles through a fixed list of values.
 pub struct Cycle<T, const N: usize> {
@@ -43,6 +42,26 @@ impl<T: Clone, const N: usize> SampleIter for CycleIter<'_, T, N> {
 
     fn reset(&mut self) {
         self.index = 0;
+    }
+}
+
+impl<T: Clone, const N: usize> DynSampleIter for CycleIter<'_, T, N> {
+    type Item = T;
+
+    fn next_dyn(&mut self, _rng: &mut dyn RngCore) -> T {
+        let v = self.values[self.index].clone();
+        self.index = (self.index + 1) % N;
+        v
+    }
+
+    fn reset_dyn(&mut self) {
+        self.index = 0;
+    }
+}
+
+impl<T: Clone + 'static, const N: usize> DynDistribution<T> for Cycle<T, N> {
+    fn sample_boxed(&mut self) -> Box<dyn DynSampleIter<Item = T> + '_> {
+        Box::new(self.sample())
     }
 }
 

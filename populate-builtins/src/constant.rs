@@ -1,5 +1,4 @@
-use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{Distribution, DynDistribution, DynSampleIter, Rng, RngCore, SampleIter};
 
 /// A distribution that always produces the same value.
 pub struct Constant<T> {
@@ -29,6 +28,18 @@ impl<T: Clone> SampleIter for ConstantIter<'_, T> {
     }
 }
 
+impl<T: Clone> DynSampleIter for ConstantIter<'_, T> {
+    type Item = T;
+
+    fn next_dyn(&mut self, _rng: &mut dyn RngCore) -> T {
+        self.value.clone()
+    }
+
+    fn reset_dyn(&mut self) {
+        // No state to reset
+    }
+}
+
 impl<T: Clone> Distribution<T> for Constant<T> {
     type Iter<'a>
         = ConstantIter<'a, T>
@@ -37,6 +48,12 @@ impl<T: Clone> Distribution<T> for Constant<T> {
 
     fn sample(&mut self) -> Self::Iter<'_> {
         ConstantIter { value: &self.value }
+    }
+}
+
+impl<T: Clone + 'static> DynDistribution<T> for Constant<T> {
+    fn sample_boxed(&mut self) -> Box<dyn DynSampleIter<Item = T> + '_> {
+        Box::new(self.sample())
     }
 }
 

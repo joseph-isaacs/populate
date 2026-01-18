@@ -24,8 +24,7 @@ impl<T: Clone> SampleIter for ConstantIter<T> {
     }
 }
 
-impl<T: Clone> Distribution for Constant<T> {
-    type Item = T;
+impl<T: Clone> Distribution<T> for Constant<T> {
     type Iter = ConstantIter<T>;
 
     fn sample(&mut self) -> Self::Iter {

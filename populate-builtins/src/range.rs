@@ -22,8 +22,7 @@ pub struct RangeIter<T> {
 
 macro_rules! impl_range {
     ($t:ty) => {
-        impl Distribution for Range<$t> {
-            type Item = $t;
+        impl Distribution<$t> for Range<$t> {
             type Iter = RangeIter<$t>;
 
             fn sample(&mut self) -> Self::Iter {

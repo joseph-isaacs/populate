@@ -2,12 +2,12 @@ use populate_core::{Distribution, SampleIter};
 use rand::Rng;
 
 /// A distribution for lists with a length distribution and element distribution.
-pub struct List<L: Distribution<Item = usize>, E> {
+pub struct List<L: Distribution<usize>, E> {
     pub lengths: L,
     pub elements: E,
 }
 
-impl<L: Distribution<Item = usize>, E> List<L, E> {
+impl<L: Distribution<usize>, E> List<L, E> {
     pub fn new(lengths: L, elements: E) -> Self {
         Self { lengths, elements }
     }
@@ -36,12 +36,11 @@ where
     }
 }
 
-impl<L, E> Distribution for List<L, E>
+impl<T, L, E> Distribution<Vec<T>> for List<L, E>
 where
-    L: Distribution<Item = usize>,
-    E: Distribution,
+    L: Distribution<usize>,
+    E: Distribution<T>,
 {
-    type Item = Vec<E::Item>;
     type Iter = ListIter<L::Iter, E::Iter>;
 
     fn sample(&mut self) -> Self::Iter {

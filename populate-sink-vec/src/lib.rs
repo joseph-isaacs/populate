@@ -18,12 +18,12 @@ pub struct Rows;
 
 // === Collector implementations ===
 
-/// Collect any Distribution into Vec<D::Item>
-impl<D> Collector<D> for Col
+/// Collect any Distribution into Vec<T>
+impl<T, D> Collector<D, T> for Col
 where
-    D: Distribution,
+    D: Distribution<T>,
 {
-    type Output = Vec<D::Item>;
+    type Output = Vec<T>;
 
     fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
@@ -32,12 +32,12 @@ where
 }
 
 /// Collect 2-tuple distribution into (Vec<T1>, Vec<T2>)
-impl<D1, D2> Collector<(D1, D2)> for Cols
+impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for Cols
 where
-    D1: Distribution,
-    D2: Distribution,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
 {
-    type Output = (Vec<D1::Item>, Vec<D2::Item>);
+    type Output = (Vec<T1>, Vec<T2>);
 
     fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
@@ -50,13 +50,13 @@ where
 }
 
 /// Collect 3-tuple distribution into (Vec<T1>, Vec<T2>, Vec<T3>)
-impl<D1, D2, D3> Collector<(D1, D2, D3)> for Cols
+impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for Cols
 where
-    D1: Distribution,
-    D2: Distribution,
-    D3: Distribution,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
 {
-    type Output = (Vec<D1::Item>, Vec<D2::Item>, Vec<D3::Item>);
+    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
 
     fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
@@ -71,12 +71,12 @@ where
 }
 
 /// Collect List distribution into (Vec<T>, Vec<usize>) - columnar (values and offsets)
-impl<L, E> Collector<List<L, E>> for ListCol
+impl<T, L, E> Collector<List<L, E>, Vec<T>> for ListCol
 where
-    L: Distribution<Item = usize>,
-    E: Distribution,
+    L: Distribution<usize>,
+    E: Distribution<T>,
 {
-    type Output = (Vec<E::Item>, Vec<usize>);
+    type Output = (Vec<T>, Vec<usize>);
 
     fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let iter = dist.sample();
@@ -85,12 +85,12 @@ where
 }
 
 /// Collect List distribution into Vec<Vec<T>> - row-oriented
-impl<L, E> Collector<List<L, E>> for Rows
+impl<T, L, E> Collector<List<L, E>, Vec<T>> for Rows
 where
-    L: Distribution<Item = usize>,
-    E: Distribution,
+    L: Distribution<usize>,
+    E: Distribution<T>,
 {
-    type Output = Vec<Vec<E::Item>>;
+    type Output = Vec<Vec<T>>;
 
     fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();

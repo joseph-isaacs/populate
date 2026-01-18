@@ -276,40 +276,40 @@ pub struct ListArrayW;
 // === Collector implementations ===
 
 /// Collect scalar Distribution into ArrayRef
-impl<D> Collector<D> for ArrayRefW
+impl<T, D> Collector<D, T> for ArrayRefW
 where
-    D: Distribution,
-    D::Item: ArrowSinkType,
+    T: ArrowSinkType,
+    D: Distribution<T>,
 {
     type Output = ArrayRef;
 
     fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
-        let mut sink = D::Item::new_sink(n);
+        let mut sink = T::new_sink(n);
         sink.extend((0..n).map(|_| iter.next(rng)));
         sink.finish()
     }
 }
 
 /// Collect 2-tuple distribution into RecordBatch
-impl<D1, D2> Collector<(D1, D2)> for RecordBatchW
+impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for RecordBatchW
 where
-    D1: Distribution,
-    D2: Distribution,
-    D1::Item: IntoArrowArray,
-    D2::Item: IntoArrowArray,
+    T1: IntoArrowArray,
+    T2: IntoArrowArray,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
 {
     type Output = RecordBatch;
 
     fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
 
-        let a1 = D1::Item::collect_array(&mut iter.0, rng, n);
-        let a2 = D2::Item::collect_array(&mut iter.1, rng, n);
+        let a1 = T1::collect_array(&mut iter.0, rng, n);
+        let a2 = T2::collect_array(&mut iter.1, rng, n);
 
         let schema = Schema::new(vec![
-            Field::new("c0", D1::Item::data_type(), false),
-            Field::new("c1", D2::Item::data_type(), false),
+            Field::new("c0", T1::data_type(), false),
+            Field::new("c1", T2::data_type(), false),
         ]);
 
         RecordBatch::try_new(Arc::new(schema), vec![a1, a2]).unwrap()
@@ -317,28 +317,28 @@ where
 }
 
 /// Collect 3-tuple distribution into RecordBatch
-impl<D1, D2, D3> Collector<(D1, D2, D3)> for RecordBatchW
+impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for RecordBatchW
 where
-    D1: Distribution,
-    D2: Distribution,
-    D3: Distribution,
-    D1::Item: IntoArrowArray,
-    D2::Item: IntoArrowArray,
-    D3::Item: IntoArrowArray,
+    T1: IntoArrowArray,
+    T2: IntoArrowArray,
+    T3: IntoArrowArray,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
 {
     type Output = RecordBatch;
 
     fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
 
-        let a1 = D1::Item::collect_array(&mut iter.0, rng, n);
-        let a2 = D2::Item::collect_array(&mut iter.1, rng, n);
-        let a3 = D3::Item::collect_array(&mut iter.2, rng, n);
+        let a1 = T1::collect_array(&mut iter.0, rng, n);
+        let a2 = T2::collect_array(&mut iter.1, rng, n);
+        let a3 = T3::collect_array(&mut iter.2, rng, n);
 
         let schema = Schema::new(vec![
-            Field::new("c0", D1::Item::data_type(), false),
-            Field::new("c1", D2::Item::data_type(), false),
-            Field::new("c2", D3::Item::data_type(), false),
+            Field::new("c0", T1::data_type(), false),
+            Field::new("c1", T2::data_type(), false),
+            Field::new("c2", T3::data_type(), false),
         ]);
 
         RecordBatch::try_new(Arc::new(schema), vec![a1, a2, a3]).unwrap()
@@ -346,11 +346,11 @@ where
 }
 
 /// Collect List distribution into ListArray
-impl<L, E> Collector<List<L, E>> for ListArrayW
+impl<T, L, E> Collector<List<L, E>, Vec<T>> for ListArrayW
 where
-    L: Distribution<Item = usize>,
-    E: Distribution,
-    E::Item: ArrowListSinkType,
+    T: ArrowListSinkType,
+    L: Distribution<usize>,
+    E: Distribution<T>,
 {
     type Output = ListArray;
 
@@ -361,7 +361,7 @@ where
             iter.elements,
             rng,
             n,
-            E::Item::new_list_sink(),
+            T::new_list_sink(),
         )
     }
 }

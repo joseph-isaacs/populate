@@ -5,24 +5,25 @@ use rand::Rng;
 /// Trait for a collector that can collect a distribution D into an output.
 /// The collector type C is a marker (e.g., `Arrow`, `Vecs`) that determines
 /// the output family. The associated `Output` type is the actual result.
-pub trait Collector<D>: Sized {
+/// T is the item type produced by the distribution.
+pub trait Collector<D, T>: Sized {
     type Output;
     fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output;
 }
 
 /// Extension trait that adds `collect` method to all distributions.
-pub trait CollectExt {
+pub trait CollectExt<T>: Distribution<T> {
     fn collect<C>(&mut self, rng: &mut impl Rng, n: usize) -> C::Output
     where
-        C: Collector<Self>,
+        C: Collector<Self, T>,
         Self: Sized,
     {
         C::collect(self, rng, n)
     }
 }
 
-// Blanket impl for all types
-impl<D> CollectExt for D {}
+// Blanket impl for all Distribution<T>
+impl<T, D: Distribution<T>> CollectExt<T> for D {}
 
 // === Core traits ===
 
@@ -47,9 +48,8 @@ pub trait SampleIter: Clone {
 }
 
 /// A factory that produces sample iterators.
-pub trait Distribution {
-    type Item;
-    type Iter: SampleIter<Item = Self::Item>;
+pub trait Distribution<T> {
+    type Iter: SampleIter<Item = T>;
     fn sample(&mut self) -> Self::Iter;
 }
 
@@ -95,12 +95,11 @@ impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     }
 }
 
-impl<D1, D2> Distribution for (D1, D2)
+impl<T1, T2, D1, D2> Distribution<(T1, T2)> for (D1, D2)
 where
-    D1: Distribution,
-    D2: Distribution,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
 {
-    type Item = (D1::Item, D2::Item);
     type Iter = TupleIter2<D1::Iter, D2::Iter>;
 
     fn sample(&mut self) -> Self::Iter {
@@ -120,13 +119,12 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I
     }
 }
 
-impl<D1, D2, D3> Distribution for (D1, D2, D3)
+impl<T1, T2, T3, D1, D2, D3> Distribution<(T1, T2, T3)> for (D1, D2, D3)
 where
-    D1: Distribution,
-    D2: Distribution,
-    D3: Distribution,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
 {
-    type Item = (D1::Item, D2::Item, D3::Item);
     type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
 
     fn sample(&mut self) -> Self::Iter {

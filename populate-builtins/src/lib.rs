@@ -19,6 +19,6 @@ pub fn range<T: Clone>(min: T, max: T) -> Range<T> {
     Range::new(min, max)
 }
 
-pub fn list<L: Distribution<Item=usize>, E>(lengths: L, elements: E) -> List<L, E> {
+pub fn list<L: Distribution<usize>, E>(lengths: L, elements: E) -> List<L, E> {
     List::new(lengths, elements)
 }

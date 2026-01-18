@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 populate = { path = "../populate", features = ["arrow", "json"] }
 rand.workspace = true
-arrow = { workspace = true, features = ["prettyprint"] }
+arrow-cast = { workspace = true, features = ["prettyprint"] }
 
 [[bin]]
 name = "arrow_table"

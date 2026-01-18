@@ -1,10 +1,12 @@
-use arrow::array::{
-    ArrayRef, BooleanBuilder, ListArray, ListBuilder, PrimitiveBuilder, RecordBatch, StringBuilder,
+use arrow_array::{
+    builder::{BooleanBuilder, ListBuilder, PrimitiveBuilder, StringBuilder},
+    types::{
+        Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
+        UInt32Type, UInt64Type, UInt8Type,
+    },
+    ArrayRef, ArrowPrimitiveType, ListArray, RecordBatch,
 };
-use arrow::datatypes::{
-    DataType, Field, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
-    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
-};
+use arrow_schema::{DataType, Field, Schema};
 use populate_builtins::List;
 use populate_core::{Collector, Distribution, ListSink, SampleIter, Sink};
 use rand::Rng;
@@ -18,11 +20,11 @@ pub trait ArrowSinkType: Sized {
 }
 
 /// Primitive sink wrapper.
-pub struct PrimitiveSink<T: arrow::datatypes::ArrowPrimitiveType> {
+pub struct PrimitiveSink<T: ArrowPrimitiveType> {
     builder: PrimitiveBuilder<T>,
 }
 
-impl<T: arrow::datatypes::ArrowPrimitiveType> PrimitiveSink<T> {
+impl<T: ArrowPrimitiveType> PrimitiveSink<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
             builder: PrimitiveBuilder::<T>::with_capacity(capacity),
@@ -30,7 +32,7 @@ impl<T: arrow::datatypes::ArrowPrimitiveType> PrimitiveSink<T> {
     }
 }
 
-impl<T: arrow::datatypes::ArrowPrimitiveType> Sink<T::Native> for PrimitiveSink<T> {
+impl<T: ArrowPrimitiveType> Sink<T::Native> for PrimitiveSink<T> {
     type Output = ArrayRef;
 
     fn push(&mut self, value: T::Native) {
@@ -150,11 +152,11 @@ impl ArrowSinkType for String {
 }
 
 // List sink for Arrow
-pub struct ArrowListSink<T: arrow::datatypes::ArrowPrimitiveType> {
+pub struct ArrowListSink<T: ArrowPrimitiveType> {
     builder: ListBuilder<PrimitiveBuilder<T>>,
 }
 
-impl<T: arrow::datatypes::ArrowPrimitiveType> ArrowListSink<T> {
+impl<T: ArrowPrimitiveType> ArrowListSink<T> {
     pub fn new() -> Self {
         Self {
             builder: ListBuilder::new(PrimitiveBuilder::<T>::new()),
@@ -162,13 +164,13 @@ impl<T: arrow::datatypes::ArrowPrimitiveType> ArrowListSink<T> {
     }
 }
 
-impl<T: arrow::datatypes::ArrowPrimitiveType> Default for ArrowListSink<T> {
+impl<T: ArrowPrimitiveType> Default for ArrowListSink<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: arrow::datatypes::ArrowPrimitiveType> ListSink<T::Native> for ArrowListSink<T> {
+impl<T: ArrowPrimitiveType> ListSink<T::Native> for ArrowListSink<T> {
     type Output = ListArray;
 
     fn start_list(&mut self) {
@@ -375,7 +377,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int32Array};
+    use arrow_array::{Array, Int32Array};
 
     #[test]
     fn test_primitive_sink() {

@@ -1,4 +1,4 @@
-use arrow::util::pretty::print_batches;
+use arrow_cast::pretty::print_batches;
 use populate::{CollectExt, RecordBatchW, list, range};
 use rand::SeedableRng;
 use rand::rngs::StdRng;

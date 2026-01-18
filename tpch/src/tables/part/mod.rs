@@ -17,13 +17,11 @@ fn rng(seed: i64) -> TpchRng {
     TpchRng::new(seed)
 }
 
-static PART_TYPES: LazyLock<Combine> = LazyLock::new(|| {
-    combine3(&TYPE_SYLLABLE3, &TYPE_SYLLABLE2, &TYPE_SYLLABLE1, " ")
-});
+static PART_TYPES: LazyLock<Combine> =
+    LazyLock::new(|| combine3(&TYPE_SYLLABLE3, &TYPE_SYLLABLE2, &TYPE_SYLLABLE1, " "));
 
-static PART_CONTAINERS: LazyLock<Combine> = LazyLock::new(|| {
-    combine2(&CONTAINER_SIZE, &CONTAINER_TYPE, " ")
-});
+static PART_CONTAINERS: LazyLock<Combine> =
+    LazyLock::new(|| combine2(&CONTAINER_SIZE, &CONTAINER_TYPE, " "));
 
 /// Calculate part retail price from partkey (result in cents)
 pub fn calculate_retail_price(partkey: i64) -> i64 {
@@ -33,7 +31,7 @@ pub fn calculate_retail_price(partkey: i64) -> i64 {
 /// (p_partkey, p_name, p_type, p_size, p_container, p_mfgr_num, p_brand_num, p_retailprice)
 pub fn parts() -> impl Distribution<(i64, String, &'static str, i64, &'static str, i32, i32, i64)> {
     (
-        inc(1i64), // p_partkey
+        inc(1i64),                                                             // p_partkey
         seeded(rng(709314158), PickNBuffered::<_, 5>::new(&COLORS)).join(" "), // p_name
         // p_type: pick from 150 combinations (6*5*5)
         seeded(
@@ -43,7 +41,7 @@ pub fn parts() -> impl Distribution<(i64, String, &'static str, i64, &'static st
                 &PART_TYPES,
             ),
         ),
-        seeded(rng(1193163244), range(1, 51)),  // p_size: 1-50
+        seeded(rng(1193163244), range(1, 51)), // p_size: 1-50
         // p_container: pick from 40 combinations (5*8)
         seeded(
             rng(727633698),
@@ -52,7 +50,7 @@ pub fn parts() -> impl Distribution<(i64, String, &'static str, i64, &'static st
                 &PART_CONTAINERS,
             ),
         ),
-        seeded(rng(1), range(1, 6)), // p_mfgr: range 1-5
+        seeded(rng(1), range(1, 6)),        // p_mfgr: range 1-5
         seeded(rng(46831694), range(1, 6)), // p_brand_raw: range 1-5 (combined with mfgr below)
     )
         .map(|(key, name, typ, size, container, mfgr, brand_raw)| {

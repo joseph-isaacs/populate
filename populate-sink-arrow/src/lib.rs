@@ -8,7 +8,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink};
+use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink, Unnest};
 use std::sync::Arc;
 
 /// Trait for creating Arrow sinks for a type.
@@ -358,6 +358,39 @@ where
     }
 }
 
+/// Collect (D1, Unnest<(D2, D3)>) into RecordBatch
+/// This enables column-by-column generation for merged/unnested distributions.
+impl<T1, T2, T3, D1, D2, D3> Collector<(D1, Unnest<(D2, D3)>), (T1, T2, T3)> for RecordBatchW
+where
+    T1: IntoArrowArray,
+    T2: IntoArrowArray,
+    T3: IntoArrowArray,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type Output = RecordBatch;
+
+    fn collect(dist: &mut (D1, Unnest<(D2, D3)>), rng: &mut impl Rng, n: usize) -> Self::Output {
+        // Access each distribution directly, bypassing the flattening next()
+        let mut iter1 = dist.0.sample();
+        let mut iter2 = (dist.1).0.0.sample();
+        let mut iter3 = (dist.1).0.1.sample();
+
+        let a1 = T1::collect_array(&mut iter1, rng, n);
+        let a2 = T2::collect_array(&mut iter2, rng, n);
+        let a3 = T3::collect_array(&mut iter3, rng, n);
+
+        let schema = Schema::new(vec![
+            Field::new("c0", T1::data_type(), false),
+            Field::new("c1", T2::data_type(), false),
+            Field::new("c2", T3::data_type(), false),
+        ]);
+
+        RecordBatch::try_new(Arc::new(schema), vec![a1, a2, a3]).unwrap()
+    }
+}
+
 /// Collect List distribution into ListArray
 impl<T, L, E> Collector<List<L, E>, Vec<T>> for ListArrayW
 where
@@ -376,7 +409,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Array, Int32Array};
+    use arrow_array::{Array, Float64Array, Int32Array, Int64Array};
+    use populate_builtins::Range;
+    use populate_core::{CollectExt, unnest};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_primitive_sink() {
@@ -406,5 +443,48 @@ mod tests {
 
         let array = sink.finish();
         assert_eq!(array.len(), 2);
+    }
+
+    #[test]
+    fn test_unnest_record_batch_collection() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Test (D1, Unnest<(D2, D3)>) -> RecordBatch with 3 columns
+        let mut dist = (
+            Range::new(0i32, 100),
+            unnest((Range::new(100i64, 200), Range::new(0.0f64, 1.0))),
+        );
+
+        let batch: RecordBatch = dist.collect::<RecordBatchW>(&mut rng, 10);
+
+        assert_eq!(batch.num_rows(), 10);
+        assert_eq!(batch.num_columns(), 3);
+
+        // Check column types
+        let c0 = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let c1 = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let c2 = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+
+        assert_eq!(c0.len(), 10);
+        assert_eq!(c1.len(), 10);
+        assert_eq!(c2.len(), 10);
+
+        // Values should be in expected ranges
+        for i in 0..10 {
+            assert!(c0.value(i) >= 0 && c0.value(i) < 100);
+            assert!(c1.value(i) >= 100 && c1.value(i) < 200);
+            assert!(c2.value(i) >= 0.0 && c2.value(i) < 1.0);
+        }
     }
 }

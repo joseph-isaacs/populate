@@ -1,5 +1,5 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink};
+use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink, Unnest};
 
 // === Marker types for Vec collection ===
 
@@ -65,6 +65,32 @@ where
         v1.extend((0..n).map(|_| iter.0.next(rng)));
         v2.extend((0..n).map(|_| iter.1.next(rng)));
         v3.extend((0..n).map(|_| iter.2.next(rng)));
+        (v1, v2, v3)
+    }
+}
+
+/// Collect (D1, Unnest<(D2, D3)>) into (Vec<T1>, Vec<T2>, Vec<T3>)
+/// This enables column-by-column generation for merged/unnested distributions.
+impl<T1, T2, T3, D1, D2, D3> Collector<(D1, Unnest<(D2, D3)>), (T1, T2, T3)> for Cols
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
+
+    fn collect(dist: &mut (D1, Unnest<(D2, D3)>), rng: &mut impl Rng, n: usize) -> Self::Output {
+        // Access each distribution directly, bypassing the flattening next()
+        let mut iter1 = dist.0.sample();
+        let mut iter2 = (dist.1).0.0.sample();
+        let mut iter3 = (dist.1).0.1.sample();
+
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        v1.extend((0..n).map(|_| iter1.next(rng)));
+        v2.extend((0..n).map(|_| iter2.next(rng)));
+        v3.extend((0..n).map(|_| iter3.next(rng)));
         (v1, v2, v3)
     }
 }
@@ -187,6 +213,10 @@ impl<T> ListSink<T> for VecListSink<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use populate_builtins::Range;
+    use populate_core::{CollectExt, unnest};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_vec_sink() {
@@ -217,5 +247,25 @@ mod tests {
         let (values, offsets) = sink.finish();
         assert_eq!(values, vec![1, 2, 3]);
         assert_eq!(offsets, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn test_unnest_cols_collection() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Test (D1, Unnest<(D2, D3)>) -> (Vec<T1>, Vec<T2>, Vec<T3>)
+        let mut dist = (
+            Range::new(0i32, 100),
+            unnest((Range::new(100i64, 200), Range::new(0.0f64, 1.0))),
+        );
+
+        let (v1, v2, v3): (Vec<i32>, Vec<i64>, Vec<f64>) = dist.collect::<Cols>(&mut rng, 10);
+
+        assert_eq!(v1.len(), 10);
+        assert_eq!(v2.len(), 10);
+        assert_eq!(v3.len(), 10);
+        // Values should be in expected ranges
+        assert!(v1.iter().all(|&x| x >= 0 && x < 100));
+        assert!(v2.iter().all(|&x| x >= 100 && x < 200));
+        assert!(v3.iter().all(|&x| x >= 0.0 && x < 1.0));
     }
 }

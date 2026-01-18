@@ -4,6 +4,7 @@ members = [
     "populate-core",
     "populate-builtins",
     "populate-builtins-tpch",
+    "populate-faker",
     "populate-sink-vec",
     "populate-sink-arrow",
     "populate-sink-json",
@@ -32,3 +33,4 @@ populate-builtins-tpch = { path = "populate-builtins-tpch" }
 populate-sink-vec = { path = "populate-sink-vec" }
 populate-sink-arrow = { path = "populate-sink-arrow" }
 populate-sink-json = { path = "populate-sink-json" }
+populate-faker = { path = "populate-faker" }

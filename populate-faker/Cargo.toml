@@ -1,0 +1,25 @@
+[package]
+name = "populate-faker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "fake-rs integration for populate - semantic fake data as composable distributions"
+
+[dependencies]
+populate-core = { workspace = true }
+fake = { version = "4", default-features = false }
+rand = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+
+[features]
+default = []
+# Pass through fake-rs features
+derive = ["fake/derive"]
+chrono = ["fake/chrono"]
+chrono-tz = ["fake/chrono-tz"]
+uuid = ["fake/uuid"]
+bigdecimal = ["fake/bigdecimal"]
+rust_decimal = ["fake/rust_decimal"]
+time = ["fake/time"]

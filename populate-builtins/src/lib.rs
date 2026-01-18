@@ -14,8 +14,8 @@ pub use constant::{Constant, ConstantIter};
 pub use cycle::{Cycle, CycleIter};
 pub use inc::{Inc, IncIter};
 pub use join::{
-    Join, JoinExt, JoinIter, JoinTuple2, JoinTuple2Ext, JoinTuple2Iter, JoinTuple3, JoinTuple3Ext,
-    JoinTuple3Iter, JoinVec, JoinVecExt, JoinVecIter,
+    Join, JoinExt, JoinIter, JoinLazy, JoinLazyExt, JoinLazyIter, JoinTuple2, JoinTuple2Ext,
+    JoinTuple2Iter, JoinTuple3, JoinTuple3Ext, JoinTuple3Iter, JoinVec, JoinVecExt, JoinVecIter,
 };
 pub use list::{List, ListIter};
 pub use map::{Map, MapExt, MapIter};

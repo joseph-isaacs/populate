@@ -1,3 +1,4 @@
+use populate_core::JoinedParts;
 use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 use std::marker::PhantomData;
@@ -70,6 +71,70 @@ where
     T: AsRef<str>,
 {
 }
+
+// === Lazy Join (returns JoinedParts instead of String) ===
+
+/// Lazily joins array elements, returning JoinedParts instead of allocating a String.
+///
+/// The actual string concatenation is deferred until the value is written to a sink,
+/// avoiding per-row allocation overhead.
+pub struct JoinLazy<D, T, const N: usize> {
+    inner: D,
+    separator: &'static str,
+    _marker: PhantomData<T>,
+}
+
+impl<D, T, const N: usize> JoinLazy<D, T, N> {
+    pub fn new(inner: D, separator: &'static str) -> Self {
+        Self {
+            inner,
+            separator,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct JoinLazyIter<I> {
+    inner: I,
+    separator: &'static str,
+}
+
+impl<I, T: Clone, const N: usize> SampleIter for JoinLazyIter<I>
+where
+    I: SampleIter<Item = [T; N]>,
+{
+    type Item = JoinedParts<T, N>;
+
+    fn next(&mut self, rng: &mut impl Rng) -> JoinedParts<T, N> {
+        let parts = self.inner.next(rng);
+        JoinedParts::new(parts, self.separator)
+    }
+}
+
+impl<D, T: Clone, const N: usize> Distribution<JoinedParts<T, N>> for JoinLazy<D, T, N>
+where
+    D: Distribution<[T; N]>,
+    D::Iter: SampleIter<Item = [T; N]>,
+{
+    type Iter = JoinLazyIter<D::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        JoinLazyIter {
+            inner: self.inner.sample(),
+            separator: self.separator,
+        }
+    }
+}
+
+/// Extension trait to add .join_lazy() method to distributions producing arrays.
+pub trait JoinLazyExt<T, const N: usize>: Sized {
+    fn join_lazy(self, separator: &'static str) -> JoinLazy<Self, T, N> {
+        JoinLazy::new(self, separator)
+    }
+}
+
+impl<D, T: Clone, const N: usize> JoinLazyExt<T, N> for D where D: Distribution<[T; N]> {}
 
 /// Joins Vec elements into a String with a separator (runtime version).
 pub struct JoinVec<D, T> {
@@ -292,6 +357,7 @@ where
 mod tests {
     use super::*;
     use crate::{Pick, constant, list, pick_one, range};
+    use populate_core::{StrParts, StrPartsSink, collect_into};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -327,6 +393,53 @@ mod tests {
         assert_eq!(parts.len(), 3);
         for part in parts {
             assert!(COLORS.contains(&part));
+        }
+    }
+
+    #[test]
+    fn test_join_lazy() {
+        // Lazy version: returns JoinedParts instead of String
+        let mut dist =
+            Pick::<_, _, 3>::new(&COLORS, range(0i64, COLORS.len() as i64)).join_lazy(" ");
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut iter = dist.sample();
+
+        let joined_parts = iter.next(&mut rng);
+
+        // Can convert to string on demand
+        let joined: String = joined_parts.to_string();
+        let parts: Vec<_> = joined.split(' ').collect();
+        assert_eq!(parts.len(), 3);
+        for part in parts {
+            assert!(COLORS.contains(&part));
+        }
+    }
+
+    #[test]
+    fn test_join_lazy_with_sink() {
+        // Test that JoinedParts works with StrPartsSink for columnar collection
+        let mut dist =
+            Pick::<_, _, 3>::new(&COLORS, range(0i64, COLORS.len() as i64)).join_lazy(" ");
+        let mut rng = StdRng::seed_from_u64(42);
+        let iter = dist.sample();
+
+        // Collect 5 joined strings into a columnar buffer
+        let (buffer, offsets) = collect_into(iter, &mut rng, 5, StrPartsSink::new());
+
+        // Should have 5 strings (6 offsets including initial 0)
+        assert_eq!(offsets.len(), 6);
+        assert_eq!(offsets[0], 0);
+
+        // Each string should have 3 colors separated by spaces
+        for i in 0..5 {
+            let start = offsets[i];
+            let end = offsets[i + 1];
+            let s = &buffer[start..end];
+            let parts: Vec<_> = s.split(' ').collect();
+            assert_eq!(parts.len(), 3);
+            for part in parts {
+                assert!(COLORS.contains(&part));
+            }
         }
     }
 }

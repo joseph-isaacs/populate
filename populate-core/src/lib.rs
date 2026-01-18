@@ -81,6 +81,147 @@ pub trait ListSink<T> {
     fn finish(self) -> Self::Output;
 }
 
+// === StrParts trait for zero-allocation string composition ===
+
+/// Trait for types that can be written as string parts without intermediate allocation.
+///
+/// This enables lazy string composition where the actual concatenation happens
+/// at the sink level (once per column) rather than at the iterator level (once per row).
+pub trait StrParts {
+    /// Write all parts to a string buffer.
+    fn write_to(&self, buf: &mut String);
+
+    /// Optional length hint for pre-allocation.
+    fn len_hint(&self) -> usize {
+        0
+    }
+
+    /// Convenience method to collect into a String.
+    fn to_string(&self) -> String {
+        let mut s = String::with_capacity(self.len_hint());
+        self.write_to(&mut s);
+        s
+    }
+}
+
+// Implement StrParts for common string types
+
+impl StrParts for &str {
+    fn write_to(&self, buf: &mut String) {
+        buf.push_str(self);
+    }
+
+    fn len_hint(&self) -> usize {
+        self.len()
+    }
+}
+
+impl StrParts for String {
+    fn write_to(&self, buf: &mut String) {
+        buf.push_str(self);
+    }
+
+    fn len_hint(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<S: AsRef<str>> StrParts for &[S] {
+    fn write_to(&self, buf: &mut String) {
+        for s in *self {
+            buf.push_str(s.as_ref());
+        }
+    }
+
+    fn len_hint(&self) -> usize {
+        self.iter().map(|s| s.as_ref().len()).sum()
+    }
+}
+
+/// A lazy view of string parts joined by a separator.
+///
+/// This struct holds references to string parts and a separator,
+/// deferring the actual concatenation until `write_to` is called.
+#[derive(Clone, Debug)]
+pub struct JoinedParts<S, const N: usize> {
+    pub parts: [S; N],
+    pub sep: &'static str,
+}
+
+impl<S, const N: usize> JoinedParts<S, N> {
+    pub fn new(parts: [S; N], sep: &'static str) -> Self {
+        Self { parts, sep }
+    }
+}
+
+impl<S: AsRef<str>, const N: usize> StrParts for JoinedParts<S, N> {
+    fn write_to(&self, buf: &mut String) {
+        for (i, part) in self.parts.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(self.sep);
+            }
+            buf.push_str(part.as_ref());
+        }
+    }
+
+    fn len_hint(&self) -> usize {
+        let parts_len: usize = self.parts.iter().map(|s| s.as_ref().len()).sum();
+        let sep_len = if N > 1 { self.sep.len() * (N - 1) } else { 0 };
+        parts_len + sep_len
+    }
+}
+
+impl<S: AsRef<str>, const N: usize> From<JoinedParts<S, N>> for String {
+    fn from(parts: JoinedParts<S, N>) -> String {
+        parts.to_string()
+    }
+}
+
+/// Sink that accumulates StrParts into a contiguous buffer with offsets.
+///
+/// This is compatible with Arrow's StringArray format (one buffer + offsets).
+pub struct StrPartsSink {
+    buffer: String,
+    offsets: Vec<usize>,
+}
+
+impl StrPartsSink {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            offsets: vec![0], // Arrow convention: starts with 0
+        }
+    }
+
+    pub fn with_capacity(buffer_cap: usize, num_strings: usize) -> Self {
+        let mut offsets = Vec::with_capacity(num_strings + 1);
+        offsets.push(0);
+        Self {
+            buffer: String::with_capacity(buffer_cap),
+            offsets,
+        }
+    }
+}
+
+impl Default for StrPartsSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: StrParts> Sink<T> for StrPartsSink {
+    type Output = (String, Vec<usize>);
+
+    fn push(&mut self, value: T) {
+        value.write_to(&mut self.buffer);
+        self.offsets.push(self.buffer.len());
+    }
+
+    fn finish(self) -> Self::Output {
+        (self.buffer, self.offsets)
+    }
+}
+
 // === Tuple iterators and Distribution impls ===
 // These must be in the same crate as Distribution due to orphan rules.
 

@@ -1,4 +1,4 @@
-use populate_core::Sampler;
+use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 
 /// A distribution that cycles through a fixed list of values.
@@ -32,7 +32,7 @@ impl<T: Clone, const N: usize> Distribution<T> for Cycle<T, N> {
 impl<T: Clone, const N: usize> SampleIter for CycleIter<T, N> {
     type Item = T;
 
-    fn next(&mut self, _rng: &mut impl Sampler) -> T {
+    fn next(&mut self, _rng: &mut impl Rng) -> T {
         let v = self.values[self.index].clone();
         self.index = (self.index + 1) % N;
         v

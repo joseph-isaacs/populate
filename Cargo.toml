@@ -3,6 +3,7 @@ members = [
     "populate",
     "populate-core",
     "populate-builtins",
+    "populate-builtins-tpch",
     "populate-sink-vec",
     "populate-sink-arrow",
     "populate-sink-json",
@@ -17,6 +18,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+divan = "0.1"
 rand = "0.9"
 arrow = {version = "57.2.0"}
 arrow-array = "57"
@@ -26,6 +28,7 @@ serde_json = "1"
 tpchgen = "2.0"
 populate-core = { path = "populate-core" }
 populate-builtins = { path = "populate-builtins" }
+populate-builtins-tpch = { path = "populate-builtins-tpch" }
 populate-sink-vec = { path = "populate-sink-vec" }
 populate-sink-arrow = { path = "populate-sink-arrow" }
 populate-sink-json = { path = "populate-sink-json" }

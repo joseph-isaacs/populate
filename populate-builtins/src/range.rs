@@ -1,160 +1,95 @@
-use populate_core::Sampler;
+use std::marker::PhantomData;
+
 use populate_core::{Distribution, SampleIter};
 
-/// A distribution that produces values uniformly in [min, max).
-pub struct Range<T> {
-    min: T,
-    max: T,
+/// Trait for range sampling strategies.
+pub trait RangeSampler<T>: Clone {
+    fn sample_range(rng: &mut impl rand::Rng, min: T, max: T) -> T;
 }
 
-impl<T: Clone> Range<T> {
-    pub fn new(min: T, max: T) -> Self {
-        Self { min, max }
-    }
-}
+// === Standard sampling: () delegates to rand ===
 
-/// Iterator for range values.
-#[derive(Clone)]
-pub struct RangeIter<T> {
-    min: T,
-    max: T,
-}
-
-/// Macro for types that fit in i32 range.
-macro_rules! impl_range_i32 {
+macro_rules! impl_standard_sampler {
     ($t:ty) => {
-        impl Distribution<$t> for Range<$t> {
-            type Iter = RangeIter<$t>;
-
-            fn sample(&mut self) -> Self::Iter {
-                RangeIter {
-                    min: self.min,
-                    max: self.max,
-                }
-            }
-        }
-
-        impl SampleIter for RangeIter<$t> {
-            type Item = $t;
-
-            fn next(&mut self, rng: &mut impl Sampler) -> $t {
-                // [min, max) half-open range: use bounded_int(min, max-1)
-                rng.bounded_int(self.min as i64, self.max as i64 - 1) as $t
+        impl RangeSampler<$t> for () {
+            fn sample_range(rng: &mut impl rand::Rng, min: $t, max: $t) -> $t {
+                rng.random_range(min..max)
             }
         }
     };
 }
 
-impl_range_i32!(i8);
-impl_range_i32!(i16);
-impl_range_i32!(i32);
-impl_range_i32!(u8);
-impl_range_i32!(u16);
+impl_standard_sampler!(i8);
+impl_standard_sampler!(i16);
+impl_standard_sampler!(i32);
+impl_standard_sampler!(i64);
+impl_standard_sampler!(u8);
+impl_standard_sampler!(u16);
+impl_standard_sampler!(u32);
+impl_standard_sampler!(u64);
+impl_standard_sampler!(usize);
+impl_standard_sampler!(f32);
+impl_standard_sampler!(f64);
 
-// For larger types, we need bounded_int to work with the range
-// For now, cast through i32 (limits range but works for most TPC-H cases)
-impl Distribution<i64> for Range<i64> {
-    type Iter = RangeIter<i64>;
-    fn sample(&mut self) -> Self::Iter {
-        RangeIter {
-            min: self.min,
-            max: self.max,
+// === Range distribution ===
+
+pub struct Range<T, S = ()> {
+    min: T,
+    max: T,
+    _phantom: PhantomData<S>,
+}
+
+impl<T: Clone> Range<T, ()> {
+    pub fn new(min: T, max: T) -> Self {
+        Self {
+            min,
+            max,
+            _phantom: PhantomData::<()>,
         }
     }
 }
 
-impl SampleIter for RangeIter<i64> {
-    type Item = i64;
-    fn next(&mut self, rng: &mut impl Sampler) -> i64 {
-        rng.bounded_int(self.min, self.max - 1)
-    }
-}
-
-impl Distribution<u32> for Range<u32> {
-    type Iter = RangeIter<u32>;
-    fn sample(&mut self) -> Self::Iter {
-        RangeIter {
-            min: self.min,
-            max: self.max,
+impl<T: Clone, S> Range<T, S> {
+    pub fn with_sampler(min: T, max: T) -> Self {
+        Self {
+            min,
+            max,
+            _phantom: PhantomData::<S>,
         }
     }
 }
 
-impl SampleIter for RangeIter<u32> {
-    type Item = u32;
-    fn next(&mut self, rng: &mut impl Sampler) -> u32 {
-        rng.bounded_int(self.min as i64, self.max as i64 - 1) as u32
-    }
+#[derive(Clone)]
+pub struct RangeIter<T, S> {
+    min: T,
+    max: T,
+    _phantom_data: PhantomData<S>,
 }
 
-impl Distribution<u64> for Range<u64> {
-    type Iter = RangeIter<u64>;
+impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
+    type Iter = RangeIter<T, S>;
+
     fn sample(&mut self) -> Self::Iter {
         RangeIter {
-            min: self.min,
-            max: self.max,
+            min: self.min.clone(),
+            max: self.max.clone(),
+            _phantom_data: Default::default(),
         }
     }
 }
 
-impl SampleIter for RangeIter<u64> {
-    type Item = u64;
-    fn next(&mut self, rng: &mut impl Sampler) -> u64 {
-        rng.bounded_int(self.min as i64, self.max as i64 - 1) as u64
+impl<T: Clone, S: RangeSampler<T>> SampleIter for RangeIter<T, S> {
+    type Item = T;
+
+    fn next(&mut self, rng: &mut impl rand::Rng) -> T {
+        S::sample_range(rng, self.min.clone(), self.max.clone())
     }
 }
 
-impl Distribution<usize> for Range<usize> {
-    type Iter = RangeIter<usize>;
-    fn sample(&mut self) -> Self::Iter {
-        RangeIter {
-            min: self.min,
-            max: self.max,
-        }
-    }
-}
+// === Convenience function ===
 
-impl SampleIter for RangeIter<usize> {
-    type Item = usize;
-    fn next(&mut self, rng: &mut impl Sampler) -> usize {
-        rng.bounded_int(self.min as i64, self.max as i64 - 1) as usize
-    }
-}
-
-impl Distribution<f32> for Range<f32> {
-    type Iter = RangeIter<f32>;
-    fn sample(&mut self) -> Self::Iter {
-        RangeIter {
-            min: self.min,
-            max: self.max,
-        }
-    }
-}
-
-impl SampleIter for RangeIter<f32> {
-    type Item = f32;
-    fn next(&mut self, rng: &mut impl Sampler) -> f32 {
-        let t = populate_core::next_double(rng) as f32;
-        self.min + t * (self.max - self.min)
-    }
-}
-
-impl Distribution<f64> for Range<f64> {
-    type Iter = RangeIter<f64>;
-    fn sample(&mut self) -> Self::Iter {
-        RangeIter {
-            min: self.min,
-            max: self.max,
-        }
-    }
-}
-
-impl SampleIter for RangeIter<f64> {
-    type Item = f64;
-    fn next(&mut self, rng: &mut impl Sampler) -> f64 {
-        let t = populate_core::next_double(rng);
-        self.min + t * (self.max - self.min)
-    }
+pub fn range<T: Clone>(min: T, max: T) -> Range<T, ()> {
+    Range::new(min, max)
 }
 
 #[cfg(test)]
@@ -165,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_range_i32() {
-        let mut dist = Range::new(0i32, 100);
+        let mut dist = range(0i32, 100);
         let mut rng = StdRng::seed_from_u64(0);
         let mut iter = dist.sample();
 
@@ -176,14 +111,13 @@ mod tests {
     }
 
     #[test]
-    fn test_range_collect() {
-        let mut dist = Range::new(0i32, 100);
+    fn test_range_i64() {
+        let mut dist = range(0i64, 100);
         let mut rng = StdRng::seed_from_u64(0);
         let mut iter = dist.sample();
 
-        let data: Vec<i32> = (0..10).map(|_| iter.next(&mut rng)).collect();
-        assert_eq!(data.len(), 10);
-        for v in data {
+        for _ in 0..100 {
+            let v = iter.next(&mut rng);
             assert!(v >= 0 && v < 100);
         }
     }

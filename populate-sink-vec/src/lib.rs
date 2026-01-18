@@ -1,5 +1,5 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, SampleIter, Sampler, Sink};
+use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink};
 
 // === Marker types for Vec collection ===
 
@@ -24,7 +24,7 @@ where
 {
     type Output = Vec<T>;
 
-    fn collect(dist: &mut D, rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         (0..n).map(|_| iter.next(rng)).collect()
     }
@@ -38,7 +38,7 @@ where
 {
     type Output = (Vec<T1>, Vec<T2>);
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let mut v1 = Vec::with_capacity(n);
         let mut v2 = Vec::with_capacity(n);
@@ -57,7 +57,7 @@ where
 {
     type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let mut v1 = Vec::with_capacity(n);
         let mut v2 = Vec::with_capacity(n);
@@ -77,7 +77,7 @@ where
 {
     type Output = (Vec<T>, Vec<usize>);
 
-    fn collect(dist: &mut List<L, E>, rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let iter = dist.sample();
         populate_core::collect_list_into(iter.lengths, iter.elements, rng, n, VecListSink::new())
     }
@@ -91,7 +91,7 @@ where
 {
     type Output = Vec<Vec<T>>;
 
-    fn collect(dist: &mut List<L, E>, rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         (0..n)
             .map(|_| {

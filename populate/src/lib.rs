@@ -14,11 +14,11 @@
 //! # Example
 //!
 //! ```
-//! use populate::{Constant, Range, Distribution, collect_into, VecSink};
+//! use populate::{Distribution, collect_into, range, VecSink};
 //! use rand::SeedableRng;
 //!
 //! let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-//! let mut dist = Range::new(0i32, 100);
+//! let mut dist = range(0i32, 100);
 //!
 //! let data: Vec<i32> = collect_into(dist.sample(), &mut rng, 10, VecSink::new());
 //! assert_eq!(data.len(), 10);

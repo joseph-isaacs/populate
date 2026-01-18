@@ -6,6 +6,14 @@ license.workspace = true
 
 [dependencies]
 populate-builtins = { workspace = true }
+populate-builtins-tpch = { workspace = true }
 populate-core = { workspace = true }
 rand = { workspace = true }
 tpchgen = { workspace = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+
+[[bench]]
+name = "part_bench"
+harness = false

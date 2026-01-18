@@ -1,3 +1,4 @@
+mod combine;
 mod constant;
 mod cycle;
 mod inc;
@@ -7,8 +8,8 @@ mod map;
 mod pick;
 mod range;
 mod seeded;
-mod tpch_rng;
 
+pub use combine::{Combine, combine2, combine3};
 pub use constant::{Constant, ConstantIter};
 pub use cycle::{Cycle, CycleIter};
 pub use inc::{Inc, IncIter};
@@ -18,10 +19,9 @@ pub use join::{
 };
 pub use list::{List, ListIter};
 pub use map::{Map, MapExt, MapIter};
-pub use pick::{Pick, PickIter, PickOne, PickOneIter};
-pub use range::{Range, RangeIter};
+pub use pick::{Pick, PickIter, PickN, PickNIter, PickOne, PickOneIter, PickStrategy, Unique};
+pub use range::{Range, RangeIter, RangeSampler, range};
 pub use seeded::{Seeded, SeededIter};
-pub use tpch_rng::{TpchBoundedInt, TpchBoundedIntIter, TpchRng, tpch_bounded_int};
 
 // Re-export tuple types and unnest from core (they must be there due to orphan rules)
 use populate_core::Distribution;
@@ -43,10 +43,6 @@ pub fn inc<T: Clone>(start: T) -> Inc<T> {
     Inc::new(start)
 }
 
-pub fn range<T: Clone>(min: T, max: T) -> Range<T> {
-    Range::new(min, max)
-}
-
 pub fn list<L: Distribution<usize>, E>(lengths: L, elements: E) -> List<L, E> {
     List::new(lengths, elements)
 }
@@ -55,10 +51,10 @@ pub fn seeded<R, D>(rng: R, dist: D) -> Seeded<R, D> {
     Seeded::new(rng, dist)
 }
 
-pub fn pick_one<T>(values: &[T]) -> PickOne<'_, T> {
-    PickOne::new(values)
+pub fn pick_one<T, I>(indices: I, values: &[T]) -> PickOne<'_, T, I> {
+    PickOne::new(values, indices)
 }
 
-pub fn pick<T, const N: usize>(values: &[T]) -> Pick<'_, T, N> {
-    Pick::new(values)
+pub fn pick<T, I, const N: usize>(indices: I, values: &[T]) -> Pick<'_, T, I, N> {
+    Pick::new(values, indices)
 }

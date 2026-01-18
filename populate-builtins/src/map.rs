@@ -1,4 +1,4 @@
-use populate_core::Sampler;
+use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 use std::marker::PhantomData;
 
@@ -32,7 +32,7 @@ where
 {
     type Item = U;
 
-    fn next(&mut self, rng: &mut impl Sampler) -> U {
+    fn next(&mut self, rng: &mut impl Rng) -> U {
         (self.f)(self.inner.next(rng))
     }
 }

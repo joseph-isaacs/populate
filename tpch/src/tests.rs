@@ -46,51 +46,75 @@ fn test_parts_match_reference() {
     let mut iter = dist.sample();
     let mut rng = StdRng::seed_from_u64(0);
 
-    for p in &reference {
-        let (key, name, typ, size, container, mfgr, brand) = iter.next(&mut rng);
-
-        // Keys are deterministic - must match exactly
-        assert_eq!(key, p.p_partkey);
-
-        // Validate our generated fields are valid
-        assert!(part::is_valid_name(&name), "Invalid name: {}", name);
-        assert!(part::is_valid_type(&typ), "Invalid type: {}", typ);
-        assert!(
-            part::is_valid_container(&container),
-            "Invalid container: {}",
-            container
-        );
-        assert!(size >= 1 && size <= 50);
-        assert!(mfgr >= 1 && mfgr <= 5);
-        assert!(brand >= 1 && brand <= 5);
-
-        // Validate reference fields use correct distributions
-        assert!(part::is_valid_name(&p.p_name.to_string()));
-        assert!(part::is_valid_type(p.p_type));
-        assert!(part::is_valid_container(p.p_container));
-        assert!(p.p_size >= 1 && p.p_size <= 50);
-    }
-}
-
-#[test]
-fn test_parts_size_exact_match() {
-    let reference: Vec<_> = PartGenerator::new(1.0, 1, 1)
-        .into_iter()
-        .take(100)
-        .collect();
-
-    let mut dist = part::parts();
-    let mut iter = dist.sample();
-    let mut rng = StdRng::seed_from_u64(0);
-
     for (i, p) in reference.iter().enumerate() {
-        let (key, _, _, size, _, _, _) = iter.next(&mut rng);
+        let (key, name, typ, size, container, mfgr, brand, retailprice) = iter.next(&mut rng);
 
-        assert_eq!(key, p.p_partkey, "Key mismatch at row {}", i);
+        // p_partkey
+        assert_eq!(key, p.p_partkey, "partkey mismatch at row {}", i);
+
+        // p_name
+        assert_eq!(
+            name,
+            p.p_name.to_string(),
+            "name mismatch at row {}: ours={}, ref={}",
+            i,
+            name,
+            p.p_name
+        );
+
+        // p_type
+        assert_eq!(
+            typ, p.p_type,
+            "type mismatch at row {}: ours={}, ref={}",
+            i, typ, p.p_type
+        );
+
+        // p_size
         assert_eq!(
             size, p.p_size as i64,
-            "Size mismatch at row {}: ours={}, ref={}",
+            "size mismatch at row {}: ours={}, ref={}",
             i, size, p.p_size
+        );
+
+        // p_container
+        assert_eq!(
+            container, p.p_container,
+            "container mismatch at row {}: ours={}, ref={}",
+            i, container, p.p_container
+        );
+
+        // p_mfgr (extract number from "Manufacturer#N" format)
+        let ref_mfgr: i32 = p
+            .p_mfgr
+            .to_string()
+            .trim_start_matches("Manufacturer#")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            mfgr, ref_mfgr,
+            "mfgr mismatch at row {}: ours={}, ref={}",
+            i, mfgr, ref_mfgr
+        );
+
+        // p_brand (extract number from "Brand#NN" format)
+        let ref_brand: i32 = p
+            .p_brand
+            .to_string()
+            .trim_start_matches("Brand#")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            brand, ref_brand,
+            "brand mismatch at row {}: ours={}, ref={}",
+            i, brand, ref_brand
+        );
+
+        // p_retailprice (stored as cents, ref uses TPCHDecimal)
+        let ref_price = p.p_retailprice.0;
+        assert_eq!(
+            retailprice, ref_price,
+            "retailprice mismatch at row {}: ours={}, ref={}",
+            i, retailprice, ref_price
         );
     }
 }

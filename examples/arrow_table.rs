@@ -10,7 +10,7 @@ fn main() {
     let mut table = (
         range(1i64, 100_000),
         range(1i32, 10_000),
-        list(range(0, 10), range(0i32, 100)),
+        list(range(0usize, 10), range(0i32, 100)),
     );
     let batch = table.collect::<RecordBatchW>(&mut rng, 10);
     println!("RecordBatch:");

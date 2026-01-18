@@ -1,4 +1,4 @@
-use populate_core::Sampler;
+use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 use std::marker::PhantomData;
 
@@ -32,7 +32,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Sampler) -> String {
+    fn next(&mut self, rng: &mut impl Rng) -> String {
         let arr = self.inner.next(rng);
         arr.iter()
             .map(|s| s.as_ref())
@@ -101,7 +101,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Sampler) -> String {
+    fn next(&mut self, rng: &mut impl Rng) -> String {
         let vec = self.inner.next(rng);
         vec.iter()
             .map(|s| s.as_ref())
@@ -171,7 +171,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Sampler) -> String {
+    fn next(&mut self, rng: &mut impl Rng) -> String {
         let (a, b) = self.inner.next(rng);
         format!("{}{}{}", a.as_ref(), self.separator, b.as_ref())
     }
@@ -226,7 +226,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Sampler) -> String {
+    fn next(&mut self, rng: &mut impl Rng) -> String {
         let (a, b, c) = self.inner.next(rng);
         format!(
             "{}{}{}{}{}",
@@ -291,7 +291,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Pick, constant, list, pick_one};
+    use crate::{Pick, constant, list, pick_one, range};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut dist = Pick::<_, 3>::new(&COLORS).join(" ");
+        let mut dist = Pick::<_, _, 3>::new(&COLORS, range(0i64, COLORS.len() as i64)).join(" ");
         let mut rng = StdRng::seed_from_u64(42);
         let mut iter = dist.sample();
 
@@ -313,8 +313,12 @@ mod tests {
 
     #[test]
     fn test_join_vec() {
-        // Runtime version: list(constant(3), pick_one(&COLORS)).join_vec(" ")
-        let mut dist = list(constant(3usize), pick_one(&COLORS)).join_vec(" ");
+        // Runtime version: list(constant(3), pick_one(range, &COLORS)).join_vec(" ")
+        let mut dist = list(
+            constant(3usize),
+            pick_one(range(0i64, COLORS.len() as i64), &COLORS),
+        )
+        .join_vec(" ");
         let mut rng = StdRng::seed_from_u64(42);
         let mut iter = dist.sample();
 

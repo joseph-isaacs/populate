@@ -1,4 +1,4 @@
-use populate_core::Sampler;
+use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 
 /// A distribution that uses its own RNG instead of the passed-in one.
@@ -14,7 +14,7 @@ impl<R, D> Seeded<R, D> {
     }
 }
 
-impl<R: Sampler + Clone, T, D: Distribution<T>> Distribution<T> for Seeded<R, D> {
+impl<R: Rng + Clone, T, D: Distribution<T>> Distribution<T> for Seeded<R, D> {
     type Iter = SeededIter<R, D::Iter>;
 
     fn sample(&mut self) -> Self::Iter {
@@ -31,10 +31,10 @@ pub struct SeededIter<R, I> {
     iter: I,
 }
 
-impl<R: Sampler + Clone, I: SampleIter> SampleIter for SeededIter<R, I> {
+impl<R: Rng + Clone, I: SampleIter> SampleIter for SeededIter<R, I> {
     type Item = I::Item;
 
-    fn next(&mut self, _rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         self.iter.next(&mut self.rng)
     }
 }

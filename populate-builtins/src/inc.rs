@@ -1,4 +1,4 @@
-use populate_core::Sampler;
+use populate_core::Rng;
 use populate_core::{Distribution, SampleIter};
 
 /// A distribution that produces incrementing values starting from a given value.
@@ -32,7 +32,7 @@ macro_rules! impl_inc {
         impl SampleIter for IncIter<$t> {
             type Item = $t;
 
-            fn next(&mut self, _rng: &mut impl Sampler) -> $t {
+            fn next(&mut self, _rng: &mut impl Rng) -> $t {
                 let v = self.current;
                 self.current += 1;
                 v

@@ -1,5 +1,5 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, SampleIter, Sampler};
+use populate_core::{Collector, Distribution, Rng, SampleIter};
 use serde_json::{Value, json};
 
 /// Marker for collecting distributions into a JSON array of objects.
@@ -113,7 +113,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {
@@ -139,7 +139,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {
@@ -163,7 +163,7 @@ where
 {
     type Output = Value;
 
-    fn collect(dist: &mut List<L, E>, rng: &mut impl Sampler, n: usize) -> Self::Output {
+    fn collect(dist: &mut List<L, E>, rng: &mut impl Rng, n: usize) -> Self::Output {
         let mut iter = dist.sample();
         let rows: Vec<Value> = (0..n)
             .map(|_| {
@@ -186,14 +186,14 @@ pub fn pretty_print(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use populate_builtins::{Constant, Range};
+    use populate_builtins::{Constant, range};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
     #[test]
     fn test_json_2tuple() {
         let mut rng = StdRng::seed_from_u64(42);
-        let mut dist = (Range::new(0i32, 100), Constant::new(true));
+        let mut dist = (range(0i32, 100), Constant::new(true));
         let json = <JsonRows as Collector<_, _>>::collect(&mut dist, &mut rng, 2);
 
         assert!(json.is_array());
@@ -203,11 +203,7 @@ mod tests {
     #[test]
     fn test_json_3tuple() {
         let mut rng = StdRng::seed_from_u64(42);
-        let mut dist = (
-            Range::new(0i32, 100),
-            Range::new(0.0f64, 1.0),
-            Constant::new("hello"),
-        );
+        let mut dist = (range(0i32, 100), range(0.0f64, 1.0), Constant::new("hello"));
         let json = <JsonRows as Collector<_, _>>::collect(&mut dist, &mut rng, 3);
 
         assert!(json.is_array());
@@ -217,7 +213,7 @@ mod tests {
     #[test]
     fn test_json_list() {
         let mut rng = StdRng::seed_from_u64(42);
-        let mut dist = List::new(Range::new(1usize, 4), Range::new(0i32, 100));
+        let mut dist = List::new(range(1usize, 4), range(0i32, 100));
         let json = <JsonRows as Collector<_, _>>::collect(&mut dist, &mut rng, 3);
 
         assert!(json.is_array());

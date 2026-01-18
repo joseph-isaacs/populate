@@ -1,44 +1,5 @@
-// === Sampler trait ===
-
-/// Trait for random number generation with configurable sampling algorithm.
-///
-/// This trait abstracts over different RNG implementations, allowing the same
-/// distributions to work with standard RNGs (via rand) or TPC-H/TPC-DS compatible
-/// RNGs that use specific algorithms.
-///
-/// The core primitive is `bounded_int(min, max)` which returns a value in [min, max].
-/// Different implementations may use different formulas:
-/// - rand::Rng uses rejection sampling
-/// - TPC-H uses `floor((seed / MODULUS) * range) + min`
-/// - TPC-DS uses `seed % range + min`
-pub trait Sampler {
-    /// Generate a random i64 in [min, max] inclusive.
-    fn bounded_int(&mut self, min: i64, max: i64) -> i64;
-}
-
-/// Blanket implementation for all rand::Rng types.
-impl<R: rand::Rng> Sampler for R {
-    fn bounded_int(&mut self, min: i64, max: i64) -> i64 {
-        self.random_range(min..=max)
-    }
-}
-
-/// TPC-H modulus constant (2^31 - 1).
-pub const TPCH_MODULUS: i64 = 2147483647;
-
-/// Generate a random f64 in [0, 1) using the TPC-H formula.
-///
-/// This is exact for TPC-H compatible RNGs: `bounded_int(0, MODULUS-1) / MODULUS`.
-#[inline]
-pub fn next_double(rng: &mut impl Sampler) -> f64 {
-    rng.bounded_int(0, TPCH_MODULUS - 1) as f64 / TPCH_MODULUS as f64
-}
-
-/// Generate a random boolean with given probability.
-#[inline]
-pub fn next_bool(rng: &mut impl Sampler, probability: f64) -> bool {
-    next_double(rng) < probability
-}
+// Re-export rand::Rng
+pub use rand::Rng;
 
 // === Collection traits ===
 
@@ -48,12 +9,12 @@ pub fn next_bool(rng: &mut impl Sampler, probability: f64) -> bool {
 /// T is the item type produced by the distribution.
 pub trait Collector<D, T>: Sized {
     type Output;
-    fn collect(dist: &mut D, rng: &mut impl Sampler, n: usize) -> Self::Output;
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output;
 }
 
 /// Extension trait that adds `collect` method to all distributions.
 pub trait CollectExt<T>: Distribution<T> {
-    fn collect<C>(&mut self, rng: &mut impl Sampler, n: usize) -> C::Output
+    fn collect<C>(&mut self, rng: &mut impl Rng, n: usize) -> C::Output
     where
         C: Collector<Self, T>,
         Self: Sized,
@@ -84,7 +45,7 @@ impl<T, D: Distribution<T>> CollectExt<T> for D {}
 /// (e.g., the "current run value") to its initial condition.
 pub trait SampleIter: Clone {
     type Item;
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
 /// A factory that produces sample iterators.
@@ -130,7 +91,7 @@ pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     type Item = (I1::Item, I2::Item);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (self.0.next(rng), self.1.next(rng))
     }
 }
@@ -154,7 +115,7 @@ pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
     type Item = (I1::Item, I2::Item, I3::Item);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (self.0.next(rng), self.1.next(rng), self.2.next(rng))
     }
 }
@@ -181,7 +142,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -219,7 +180,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -261,7 +222,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -329,7 +290,7 @@ impl<
         I7::Item,
     );
 
-    fn next(&mut self, rng: &mut impl Sampler) -> Self::Item {
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -392,7 +353,7 @@ where
 {
     type Item = (A, B, C);
 
-    fn next(&mut self, rng: &mut impl Sampler) -> (A, B, C) {
+    fn next(&mut self, rng: &mut impl Rng) -> (A, B, C) {
         let a = self.0.next(rng);
         let (b, c) = self.1.next(rng);
         (a, b, c)
@@ -414,7 +375,7 @@ where
 // === Collection functions using Sink ===
 
 /// Collect elements into a sink (row-oriented).
-pub fn collect_into<I, S>(mut iter: I, rng: &mut impl Sampler, n: usize, mut sink: S) -> S::Output
+pub fn collect_into<I, S>(mut iter: I, rng: &mut impl Rng, n: usize, mut sink: S) -> S::Output
 where
     I: SampleIter,
     S: Sink<I::Item>,
@@ -428,7 +389,7 @@ where
 /// Collect elements using column-oriented bulk extend.
 pub fn collect_into_column<I, S>(
     mut iter: I,
-    rng: &mut impl Sampler,
+    rng: &mut impl Rng,
     n: usize,
     mut sink: S,
 ) -> S::Output
@@ -443,7 +404,7 @@ where
 /// Collect 2-tuple into separate sinks (column-oriented).
 pub fn collect_struct2_into<I1, I2, S1, S2>(
     mut iter: TupleIter2<I1, I2>,
-    rng: &mut impl Sampler,
+    rng: &mut impl Rng,
     n: usize,
     mut sink1: S1,
     mut sink2: S2,
@@ -462,7 +423,7 @@ where
 /// Collect 3-tuple into separate sinks (column-oriented).
 pub fn collect_struct3_into<I1, I2, I3, S1, S2, S3>(
     mut iter: TupleIter3<I1, I2, I3>,
-    rng: &mut impl Sampler,
+    rng: &mut impl Rng,
     n: usize,
     mut sink1: S1,
     mut sink2: S2,
@@ -486,7 +447,7 @@ where
 pub fn collect_list_into<L, E, S>(
     mut lengths: L,
     elements: E,
-    rng: &mut impl Sampler,
+    rng: &mut impl Rng,
     n: usize,
     mut sink: S,
 ) -> S::Output

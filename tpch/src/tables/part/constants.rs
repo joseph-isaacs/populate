@@ -1,3 +1,18 @@
+/// Type syllable 3 (first word of p_type)
+pub const TYPE_SYLLABLE3: [&str; 6] = ["STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"];
+
+/// Type syllable 2 (second word of p_type)
+pub const TYPE_SYLLABLE2: [&str; 5] = ["ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"];
+
+/// Type syllable 1 (third word of p_type)
+pub const TYPE_SYLLABLE1: [&str; 5] = ["TIN", "NICKEL", "BRASS", "STEEL", "COPPER"];
+
+/// Container size (first word of p_container) - order matches dists.dss
+pub const CONTAINER_SIZE: [&str; 5] = ["SM", "LG", "MED", "JUMBO", "WRAP"];
+
+/// Container type (second word of p_container) - order matches dists.dss
+pub const CONTAINER_TYPE: [&str; 8] = ["CASE", "BOX", "BAG", "JAR", "PACK", "PKG", "CAN", "DRUM"];
+
 /// Part colors from TPC-H spec (92 colors) - used for p_name (5 colors joined)
 pub const COLORS: [&str; 92] = [
     "almond",
@@ -93,12 +108,3 @@ pub const COLORS: [&str; 92] = [
     "white",
     "yellow",
 ];
-
-/// p_type = SYLLABLE3 + " " + SYLLABLE2 + " " + SYLLABLE1
-pub const TYPE_SYLLABLE1: [&str; 5] = ["TIN", "NICKEL", "BRASS", "STEEL", "COPPER"];
-pub const TYPE_SYLLABLE2: [&str; 5] = ["ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"];
-pub const TYPE_SYLLABLE3: [&str; 6] = ["STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"];
-
-/// p_container = SIZE + " " + TYPE
-pub const CONTAINER_SIZE: [&str; 5] = ["SM", "MED", "LG", "JUMBO", "WRAP"];
-pub const CONTAINER_TYPE: [&str; 8] = ["CASE", "BOX", "BAG", "JAR", "PACK", "PKG", "DRUM", "CAN"];

@@ -515,6 +515,190 @@ where
     }
 }
 
+// === CollectIntoSinks: compile-time structure drives runtime sink collection ===
+
+/// Trait for iterators that can collect directly into sink tuples.
+/// The generic type structure determines:
+/// - How many sinks are created
+/// - Which columns are collected column-by-column (independent)
+/// - Which columns are collected row-by-row and unzipped (coupled)
+///
+/// This avoids intermediate tuple allocations for coupled columns.
+pub trait CollectIntoSinks: SampleIter + Sized {
+    /// The sink types - typically a tuple of Vec<T> for each output column
+    type Sinks;
+
+    /// Create sinks with the given capacity
+    fn create_sinks(capacity: usize) -> Self::Sinks;
+
+    /// Collect n elements into the sinks
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks);
+
+    /// Convenience: create sinks and collect in one call
+    fn collect_to_vecs(self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut sinks = Self::create_sinks(n);
+        self.collect_into_sinks(rng, n, &mut sinks);
+        sinks
+    }
+}
+
+// TupleIter2: 2 independent columns -> 2 Vecs, column-by-column
+impl<I1, I2> CollectIntoSinks for TupleIter2<I1, I2>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+{
+    type Sinks = (Vec<I1::Item>, Vec<I2::Item>);
+
+    fn create_sinks(capacity: usize) -> Self::Sinks {
+        (Vec::with_capacity(capacity), Vec::with_capacity(capacity))
+    }
+
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks) {
+        let (mut c1, mut c2) = self.into_columns();
+        sinks.0.extend((0..n).map(|_| c1.next(rng)));
+        sinks.1.extend((0..n).map(|_| c2.next(rng)));
+    }
+}
+
+// TupleIter3: 3 independent columns -> 3 Vecs, column-by-column
+impl<I1, I2, I3> CollectIntoSinks for TupleIter3<I1, I2, I3>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+{
+    type Sinks = (Vec<I1::Item>, Vec<I2::Item>, Vec<I3::Item>);
+
+    fn create_sinks(capacity: usize) -> Self::Sinks {
+        (
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+        )
+    }
+
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks) {
+        let (mut c1, mut c2, mut c3) = self.into_columns();
+        sinks.0.extend((0..n).map(|_| c1.next(rng)));
+        sinks.1.extend((0..n).map(|_| c2.next(rng)));
+        sinks.2.extend((0..n).map(|_| c3.next(rng)));
+    }
+}
+
+// TupleIter4: 4 independent columns -> 4 Vecs, column-by-column
+impl<I1, I2, I3, I4> CollectIntoSinks for TupleIter4<I1, I2, I3, I4>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+{
+    type Sinks = (Vec<I1::Item>, Vec<I2::Item>, Vec<I3::Item>, Vec<I4::Item>);
+
+    fn create_sinks(capacity: usize) -> Self::Sinks {
+        (
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+        )
+    }
+
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks) {
+        let (mut c1, mut c2, mut c3, mut c4) = self.into_columns();
+        sinks.0.extend((0..n).map(|_| c1.next(rng)));
+        sinks.1.extend((0..n).map(|_| c2.next(rng)));
+        sinks.2.extend((0..n).map(|_| c3.next(rng)));
+        sinks.3.extend((0..n).map(|_| c4.next(rng)));
+    }
+}
+
+// TupleUnnest2Iter with TupleIter2 inner: 3 independent columns -> 3 Vecs
+impl<I1, I2, I3> CollectIntoSinks for TupleUnnest2Iter<I1, TupleIter2<I2, I3>>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+{
+    type Sinks = (Vec<I1::Item>, Vec<I2::Item>, Vec<I3::Item>);
+
+    fn create_sinks(capacity: usize) -> Self::Sinks {
+        (
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+        )
+    }
+
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks) {
+        let (mut c1, mut c2, mut c3) = self.into_columns();
+        sinks.0.extend((0..n).map(|_| c1.next(rng)));
+        sinks.1.extend((0..n).map(|_| c2.next(rng)));
+        sinks.2.extend((0..n).map(|_| c3.next(rng)));
+    }
+}
+
+// TupleUnnest7At5Iter: 6 independent + 1 coupled pair -> 8 Vecs
+// Coupled pair at position 5 is unzipped directly into 2 separate Vecs (no tuple allocation)
+impl<I1, I2, I3, I4, I5, I6, I7, T6, T7> CollectIntoSinks
+    for TupleUnnest7At5Iter<I1, I2, I3, I4, I5, I6, I7>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter<Item = (T6, T7)>,
+    I7: SampleIter,
+{
+    type Sinks = (
+        Vec<I1::Item>,
+        Vec<I2::Item>,
+        Vec<I3::Item>,
+        Vec<I4::Item>,
+        Vec<I5::Item>,
+        Vec<T6>,
+        Vec<T7>,
+        Vec<I7::Item>,
+    );
+
+    fn create_sinks(capacity: usize) -> Self::Sinks {
+        (
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+            Vec::with_capacity(capacity),
+        )
+    }
+
+    fn collect_into_sinks(self, rng: &mut impl Rng, n: usize, sinks: &mut Self::Sinks) {
+        let (mut c1, mut c2, mut c3, mut c4, mut c5, mut c6, mut c7) = self.into_columns();
+
+        // Independent columns: column-by-column
+        sinks.0.extend((0..n).map(|_| c1.next(rng)));
+        sinks.1.extend((0..n).map(|_| c2.next(rng)));
+        sinks.2.extend((0..n).map(|_| c3.next(rng)));
+        sinks.3.extend((0..n).map(|_| c4.next(rng)));
+        sinks.4.extend((0..n).map(|_| c5.next(rng)));
+
+        // Coupled column: row-by-row, unzip directly into separate vecs
+        // No intermediate (T6, T7) tuple stored - destructured immediately
+        for _ in 0..n {
+            let (a, b) = c6.next(rng);
+            sinks.5.push(a);
+            sinks.6.push(b);
+        }
+
+        // Last independent column
+        sinks.7.extend((0..n).map(|_| c7.next(rng)));
+    }
+}
+
 // === Collection functions using Sink ===
 
 /// Collect elements into a sink (row-oriented).
@@ -1385,5 +1569,210 @@ mod tests {
         println!("========================================");
         println!("ALL VALIDATION TESTS PASSED");
         println!("========================================\n");
+    }
+
+    /// Test CollectIntoSinks for TupleIter2 - 2 independent columns
+    #[test]
+    fn test_collect_into_sinks_tuple2() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            TrackingDist::new("B", log.clone()),
+        );
+
+        let iter = dist.sample();
+        let (col_a, col_b) = iter.collect_to_vecs(&mut rng, 3);
+
+        // Verify output
+        assert_eq!(col_a, vec![0, 1, 2]);
+        assert_eq!(col_b, vec![0, 1, 2]);
+
+        // Verify column-by-column execution order
+        assert_eq!(
+            *log.borrow(),
+            vec!["A:0", "A:1", "A:2", "B:0", "B:1", "B:2"],
+            "CollectIntoSinks should collect column-by-column"
+        );
+    }
+
+    /// Test CollectIntoSinks for TupleIter3 - 3 independent columns
+    #[test]
+    fn test_collect_into_sinks_tuple3() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            TrackingDist::new("B", log.clone()),
+            TrackingDist::new("C", log.clone()),
+        );
+
+        let iter = dist.sample();
+        let (col_a, col_b, col_c) = iter.collect_to_vecs(&mut rng, 3);
+
+        // Verify output
+        assert_eq!(col_a, vec![0, 1, 2]);
+        assert_eq!(col_b, vec![0, 1, 2]);
+        assert_eq!(col_c, vec![0, 1, 2]);
+
+        // Verify column-by-column execution order
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "A:0", "A:1", "A:2", "B:0", "B:1", "B:2", "C:0", "C:1", "C:2"
+            ],
+            "CollectIntoSinks should collect column-by-column"
+        );
+    }
+
+    /// Test CollectIntoSinks with coupled columns - unzips directly into separate vecs
+    #[test]
+    fn test_collect_into_sinks_with_coupled_unzip() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // (independent, coupled_pair) -> should produce 3 vecs
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            CoupledDist::new("B", "C", log.clone()),
+        );
+
+        let iter = dist.sample();
+        // Note: TupleIter2<TrackingIter, CoupledIter> where CoupledIter: Item=(usize, usize)
+        // This collects into (Vec<usize>, Vec<(usize, usize)>)
+        let (col_a, col_bc) = iter.collect_to_vecs(&mut rng, 3);
+
+        // Verify output
+        assert_eq!(col_a, vec![0, 1, 2]);
+        assert_eq!(col_bc, vec![(0, 0), (1, 10), (2, 20)]);
+
+        // Verify column-by-column for independent, row-by-row for coupled
+        let log = log.borrow();
+        assert_eq!(log[0], "A:0");
+        assert_eq!(log[1], "A:1");
+        assert_eq!(log[2], "A:2");
+        assert!(log[3].starts_with("(B,C)"));
+        assert!(log[4].starts_with("(B,C)"));
+        assert!(log[5].starts_with("(B,C)"));
+    }
+
+    /// Test CollectIntoSinks for TupleUnnest2Iter - inner tuple splits into 3 vecs
+    #[test]
+    fn test_collect_into_sinks_unnest2() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            Unnest((
+                TrackingDist::new("B", log.clone()),
+                TrackingDist::new("C", log.clone()),
+            )),
+        );
+
+        let iter = dist.sample();
+        let (col_a, col_b, col_c) = iter.collect_to_vecs(&mut rng, 3);
+
+        // Verify output
+        assert_eq!(col_a, vec![0, 1, 2]);
+        assert_eq!(col_b, vec![0, 1, 2]);
+        assert_eq!(col_c, vec![0, 1, 2]);
+
+        // Verify column-by-column execution order
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "A:0", "A:1", "A:2", "B:0", "B:1", "B:2", "C:0", "C:1", "C:2"
+            ],
+            "CollectIntoSinks with Unnest should split inner and collect column-by-column"
+        );
+    }
+
+    /// Test CollectIntoSinks for TupleUnnest7At5Iter - 8 vecs with coupled pair unzipped
+    #[test]
+    fn test_collect_into_sinks_unnest7at5() {
+        use crate::TupleUnnest7At5Iter;
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Create iterators directly to form TupleUnnest7At5Iter
+        let iter = TupleUnnest7At5Iter(
+            TrackingIter {
+                id: "A",
+                counter: 0,
+                log: log.clone(),
+            },
+            TrackingIter {
+                id: "B",
+                counter: 0,
+                log: log.clone(),
+            },
+            TrackingIter {
+                id: "C",
+                counter: 0,
+                log: log.clone(),
+            },
+            TrackingIter {
+                id: "D",
+                counter: 0,
+                log: log.clone(),
+            },
+            TrackingIter {
+                id: "E",
+                counter: 0,
+                log: log.clone(),
+            },
+            // Coupled iterator at position 5 - produces (usize, usize)
+            CoupledIter {
+                id1: "F",
+                id2: "G",
+                counter: 0,
+                log: log.clone(),
+            },
+            TrackingIter {
+                id: "H",
+                counter: 0,
+                log: log.clone(),
+            },
+        );
+
+        // Collect into 8 vecs (coupled pair F,G unzipped into 2 separate vecs)
+        let (a, b, c, d, e, f, g, h) = iter.collect_to_vecs(&mut rng, 2);
+
+        // Verify output shapes
+        assert_eq!(a, vec![0, 1]);
+        assert_eq!(b, vec![0, 1]);
+        assert_eq!(c, vec![0, 1]);
+        assert_eq!(d, vec![0, 1]);
+        assert_eq!(e, vec![0, 1]);
+        assert_eq!(f, vec![0, 1]); // First element of coupled pair
+        assert_eq!(g, vec![0, 10]); // Second element of coupled pair (counter * 10)
+        assert_eq!(h, vec![0, 1]);
+
+        // Verify execution order: independent cols first, then coupled, then last independent
+        let log = log.borrow();
+        assert_eq!(
+            *log,
+            vec![
+                "A:0",
+                "A:1",
+                "B:0",
+                "B:1",
+                "C:0",
+                "C:1",
+                "D:0",
+                "D:1",
+                "E:0",
+                "E:1",
+                "(F,G):(0,0)",
+                "(F,G):(1,10)", // Coupled pair generated row-by-row
+                "H:0",
+                "H:1",
+            ],
+            "TupleUnnest7At5Iter: independent columns first, coupled pair row-by-row, then last column"
+        );
     }
 }

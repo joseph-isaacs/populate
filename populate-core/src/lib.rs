@@ -372,6 +372,70 @@ where
     }
 }
 
+/// Iterator for 7-tuple with unnest at position 5: (A, B, C, D, E, Unnest<(F, G)>, H) -> 8-tuple
+#[derive(Clone)]
+pub struct TupleUnnest7At5Iter<I1, I2, I3, I4, I5, I6, I7>(
+    pub I1,
+    pub I2,
+    pub I3,
+    pub I4,
+    pub I5,
+    pub I6,
+    pub I7,
+);
+
+impl<I1, I2, I3, I4, I5, I6, I7, T1, T2, T3, T4, T5, T6, T7, T8> SampleIter
+    for TupleUnnest7At5Iter<I1, I2, I3, I4, I5, I6, I7>
+where
+    I1: SampleIter<Item = T1>,
+    I2: SampleIter<Item = T2>,
+    I3: SampleIter<Item = T3>,
+    I4: SampleIter<Item = T4>,
+    I5: SampleIter<Item = T5>,
+    I6: SampleIter<Item = (T6, T7)>,
+    I7: SampleIter<Item = T8>,
+{
+    type Item = (T1, T2, T3, T4, T5, T6, T7, T8);
+
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        let t1 = self.0.next(rng);
+        let t2 = self.1.next(rng);
+        let t3 = self.2.next(rng);
+        let t4 = self.3.next(rng);
+        let t5 = self.4.next(rng);
+        let (t6, t7) = self.5.next(rng);
+        let t8 = self.6.next(rng);
+        (t1, t2, t3, t4, t5, t6, t7, t8)
+    }
+}
+
+impl<D1, D2, D3, D4, D5, D6, D7, T1, T2, T3, T4, T5, T6, T7, T8>
+    Distribution<(T1, T2, T3, T4, T5, T6, T7, T8)> for (D1, D2, D3, D4, D5, Unnest<D6>, D7)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<(T6, T7)>,
+    D7: Distribution<T8>,
+{
+    type Iter =
+        TupleUnnest7At5Iter<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleUnnest7At5Iter(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+            self.5.0.sample(),
+            self.6.sample(),
+        )
+    }
+}
+
 // === IntoColumnIters trait for iterator-level column splitting ===
 
 /// Trait for iterators that can be split into independent column iterators.
@@ -430,6 +494,26 @@ where
 // TupleUnnest2Iter: when inner doesn't split (e.g., MapIter), keeps as (I1, I2)
 // This is the default - coupled columns stay together
 // Note: More specific impl above takes precedence for TupleIter2
+
+// TupleUnnest7At5Iter: splits into 7 column groups
+// Positions 0-4 and 6 are independent, position 5 is coupled (produces tuple)
+impl<I1, I2, I3, I4, I5, I6, I7, T6, T7> IntoColumnIters
+    for TupleUnnest7At5Iter<I1, I2, I3, I4, I5, I6, I7>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter<Item = (T6, T7)>, // Coupled - produces (T6, T7)
+    I7: SampleIter,
+{
+    type Columns = (I1, I2, I3, I4, I5, I6, I7);
+
+    fn into_columns(self) -> Self::Columns {
+        (self.0, self.1, self.2, self.3, self.4, self.5, self.6)
+    }
+}
 
 // === Collection functions using Sink ===
 

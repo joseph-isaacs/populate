@@ -947,4 +947,80 @@ mod tests {
         assert!(log[4].starts_with("(cust_id,cust_name)"));
         assert!(log[5].starts_with("(cust_id,cust_name)"));
     }
+
+    /// Test that OUTPUT struct field order doesn't affect GENERATION order.
+    /// The struct is just the target shape - iteration order is determined by source coupling.
+    #[test]
+    fn test_struct_field_order_independent_of_generation() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Distribution sources - this determines coupling
+        let mut dist = (
+            TrackingDist::new("id", log.clone()),
+            CoupledDist::new("cust_id", "cust_name", log.clone()),
+        );
+
+        let iter = dist.sample();
+        let (mut col_id, mut col_customer) = iter.into_columns();
+
+        // Output struct with DIFFERENT field order than sources:
+        // struct Order { customer_name, id, customer_id }
+        // But we still generate optimally based on SOURCE coupling
+        struct Order {
+            customer_name: usize,
+            id: usize,
+            customer_id: usize,
+        }
+
+        let mut orders: Vec<Order> = Vec::new();
+
+        // Collect into intermediate buffers with optimal generation order
+        let mut ids = Vec::new();
+        let mut cust_ids = Vec::new();
+        let mut cust_names = Vec::new();
+
+        // Fill independent first (cache-local)
+        for _ in 0..3 {
+            ids.push(col_id.next(&mut rng));
+        }
+
+        // Fill coupled together (row-by-row within group)
+        for _ in 0..3 {
+            let (cid, cname) = col_customer.next(&mut rng);
+            cust_ids.push(cid);
+            cust_names.push(cname);
+        }
+
+        // Now assemble structs - order matches struct definition, not generation
+        for i in 0..3 {
+            orders.push(Order {
+                customer_name: cust_names[i],
+                id: ids[i],
+                customer_id: cust_ids[i],
+            });
+        }
+
+        // Verify structs are correct
+        assert_eq!(orders[0].id, 0);
+        assert_eq!(orders[0].customer_id, 0);
+        assert_eq!(orders[0].customer_name, 0);
+        assert_eq!(orders[2].id, 2);
+        assert_eq!(orders[2].customer_id, 2);
+        assert_eq!(orders[2].customer_name, 20);
+
+        // Verify generation order was optimal (all ind, then all coupled)
+        let log = log.borrow();
+        assert_eq!(
+            *log,
+            vec![
+                "id:0",
+                "id:1",
+                "id:2",
+                "(cust_id,cust_name):(0,0)",
+                "(cust_id,cust_name):(1,10)",
+                "(cust_id,cust_name):(2,20)",
+            ]
+        );
+    }
 }

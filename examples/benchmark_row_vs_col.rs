@@ -1,214 +1,104 @@
 //! Benchmark: Row-by-row vs Column-by-column execution for Arrow export
 //!
-//! This benchmark compares two approaches for generating a wide table (10 columns):
+//! This benchmark compares two approaches for generating a wide table (1000 columns):
 //! 1. Row-by-row: Generate one row at a time, interleaving column generation
 //! 2. Column-by-column: Generate all values for column 1, then column 2, etc.
 //!
 //! Theory: Column-by-column should be faster due to better cache locality.
 //! When filling column 1, the iterator state for column 1 stays hot in cache.
-//! Row-by-row alternates between 10 different iterator states, causing cache misses.
+//! Row-by-row alternates between 1000 different iterator states, causing cache misses.
 
-use arrow_array::builder::PrimitiveBuilder;
-use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
 use populate::builtins::Range;
 use populate::core::{Distribution, Rng, SampleIter};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::sync::Arc;
 use std::time::Instant;
 
-/// 10-column distribution using primitive types
-type TenColDist = (
-    Range<i32>,
-    Range<i64>,
-    Range<f32>,
-    Range<f64>,
-    Range<i32>,
-    Range<i64>,
-    Range<f32>,
-    Range<f64>,
-    Range<i32>,
-    Range<i64>,
-);
+const NUM_COLS: usize = 1000;
 
-fn create_dist() -> TenColDist {
-    (
-        Range::new(0i32, 1000),
-        Range::new(0i64, 1000),
-        Range::new(0.0f32, 1000.0),
-        Range::new(0.0f64, 1000.0),
-        Range::new(0i32, 1000),
-        Range::new(0i64, 1000),
-        Range::new(0.0f32, 1000.0),
-        Range::new(0.0f64, 1000.0),
-        Range::new(0i32, 1000),
-        Range::new(0i64, 1000),
-    )
+/// Create 1000 Range distributions (cycling through i32, i64, f32, f64)
+fn create_iters(rng_seed: u64) -> (StdRng, Vec<Box<dyn Iterator<Item = f64>>>) {
+    let rng = StdRng::seed_from_u64(rng_seed);
+
+    // We'll create iterators that capture their RNG state
+    // Each iterator is independent
+    let iters: Vec<Box<dyn Iterator<Item = f64>>> = (0..NUM_COLS)
+        .map(|i| {
+            let mut local_rng = StdRng::seed_from_u64(rng_seed + i as u64);
+            match i % 4 {
+                0 => {
+                    let mut d = Range::new(0i32, 1000);
+                    let mut iter = d.sample();
+                    Box::new(std::iter::from_fn(move || {
+                        Some(iter.next(&mut local_rng) as f64)
+                    })) as Box<dyn Iterator<Item = f64>>
+                }
+                1 => {
+                    let mut d = Range::new(0i64, 1000);
+                    let mut iter = d.sample();
+                    Box::new(std::iter::from_fn(move || {
+                        Some(iter.next(&mut local_rng) as f64)
+                    })) as Box<dyn Iterator<Item = f64>>
+                }
+                2 => {
+                    let mut d = Range::new(0.0f32, 1000.0);
+                    let mut iter = d.sample();
+                    Box::new(std::iter::from_fn(move || {
+                        Some(iter.next(&mut local_rng) as f64)
+                    })) as Box<dyn Iterator<Item = f64>>
+                }
+                _ => {
+                    let mut d = Range::new(0.0f64, 1000.0);
+                    let mut iter = d.sample();
+                    Box::new(std::iter::from_fn(move || Some(iter.next(&mut local_rng))))
+                        as Box<dyn Iterator<Item = f64>>
+                }
+            }
+        })
+        .collect();
+
+    (rng, iters)
 }
 
 /// Row-by-row collection: interleaves column generation
-fn collect_row_by_row(dist: &mut TenColDist, rng: &mut impl Rng, n: usize) -> RecordBatch {
-    // Get iterators for each column
-    let mut i0 = dist.0.sample();
-    let mut i1 = dist.1.sample();
-    let mut i2 = dist.2.sample();
-    let mut i3 = dist.3.sample();
-    let mut i4 = dist.4.sample();
-    let mut i5 = dist.5.sample();
-    let mut i6 = dist.6.sample();
-    let mut i7 = dist.7.sample();
-    let mut i8 = dist.8.sample();
-    let mut i9 = dist.9.sample();
+fn collect_row_by_row(n: usize) -> Vec<Vec<f64>> {
+    let (_, mut iters) = create_iters(42);
 
-    // Create builders
-    let mut b0 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b1 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
-    let mut b2 = PrimitiveBuilder::<Float32Type>::with_capacity(n);
-    let mut b3 = PrimitiveBuilder::<Float64Type>::with_capacity(n);
-    let mut b4 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b5 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
-    let mut b6 = PrimitiveBuilder::<Float32Type>::with_capacity(n);
-    let mut b7 = PrimitiveBuilder::<Float64Type>::with_capacity(n);
-    let mut b8 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b9 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
+    // Pre-allocate output
+    let mut columns: Vec<Vec<f64>> = (0..NUM_COLS).map(|_| Vec::with_capacity(n)).collect();
 
     // Row-by-row: generate one value per column per iteration
-    // This interleaves access to all 10 iterator states
+    // This interleaves access to all 1000 iterator states
     for _ in 0..n {
-        b0.append_value(i0.next(rng));
-        b1.append_value(i1.next(rng));
-        b2.append_value(i2.next(rng));
-        b3.append_value(i3.next(rng));
-        b4.append_value(i4.next(rng));
-        b5.append_value(i5.next(rng));
-        b6.append_value(i6.next(rng));
-        b7.append_value(i7.next(rng));
-        b8.append_value(i8.next(rng));
-        b9.append_value(i9.next(rng));
+        for (col_idx, iter) in iters.iter_mut().enumerate() {
+            columns[col_idx].push(iter.next().unwrap());
+        }
     }
 
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(b0.finish()),
-        Arc::new(b1.finish()),
-        Arc::new(b2.finish()),
-        Arc::new(b3.finish()),
-        Arc::new(b4.finish()),
-        Arc::new(b5.finish()),
-        Arc::new(b6.finish()),
-        Arc::new(b7.finish()),
-        Arc::new(b8.finish()),
-        Arc::new(b9.finish()),
-    ];
-
-    let schema = Schema::new(vec![
-        Field::new("c0", DataType::Int32, false),
-        Field::new("c1", DataType::Int64, false),
-        Field::new("c2", DataType::Float32, false),
-        Field::new("c3", DataType::Float64, false),
-        Field::new("c4", DataType::Int32, false),
-        Field::new("c5", DataType::Int64, false),
-        Field::new("c6", DataType::Float32, false),
-        Field::new("c7", DataType::Float64, false),
-        Field::new("c8", DataType::Int32, false),
-        Field::new("c9", DataType::Int64, false),
-    ]);
-
-    RecordBatch::try_new(Arc::new(schema), arrays).unwrap()
+    columns
 }
 
 /// Column-by-column collection: fills each column entirely before moving to next
-fn collect_column_by_column(dist: &mut TenColDist, rng: &mut impl Rng, n: usize) -> RecordBatch {
-    // Get iterators for each column
-    let mut i0 = dist.0.sample();
-    let mut i1 = dist.1.sample();
-    let mut i2 = dist.2.sample();
-    let mut i3 = dist.3.sample();
-    let mut i4 = dist.4.sample();
-    let mut i5 = dist.5.sample();
-    let mut i6 = dist.6.sample();
-    let mut i7 = dist.7.sample();
-    let mut i8 = dist.8.sample();
-    let mut i9 = dist.9.sample();
+fn collect_column_by_column(n: usize) -> Vec<Vec<f64>> {
+    let (_, mut iters) = create_iters(42);
 
-    // Create builders
-    let mut b0 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b1 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
-    let mut b2 = PrimitiveBuilder::<Float32Type>::with_capacity(n);
-    let mut b3 = PrimitiveBuilder::<Float64Type>::with_capacity(n);
-    let mut b4 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b5 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
-    let mut b6 = PrimitiveBuilder::<Float32Type>::with_capacity(n);
-    let mut b7 = PrimitiveBuilder::<Float64Type>::with_capacity(n);
-    let mut b8 = PrimitiveBuilder::<Int32Type>::with_capacity(n);
-    let mut b9 = PrimitiveBuilder::<Int64Type>::with_capacity(n);
+    // Pre-allocate output
+    let mut columns: Vec<Vec<f64>> = (0..NUM_COLS).map(|_| Vec::with_capacity(n)).collect();
 
     // Column-by-column: fill each column entirely before moving to next
     // Iterator state stays hot in cache
-    for _ in 0..n {
-        b0.append_value(i0.next(rng));
-    }
-    for _ in 0..n {
-        b1.append_value(i1.next(rng));
-    }
-    for _ in 0..n {
-        b2.append_value(i2.next(rng));
-    }
-    for _ in 0..n {
-        b3.append_value(i3.next(rng));
-    }
-    for _ in 0..n {
-        b4.append_value(i4.next(rng));
-    }
-    for _ in 0..n {
-        b5.append_value(i5.next(rng));
-    }
-    for _ in 0..n {
-        b6.append_value(i6.next(rng));
-    }
-    for _ in 0..n {
-        b7.append_value(i7.next(rng));
-    }
-    for _ in 0..n {
-        b8.append_value(i8.next(rng));
-    }
-    for _ in 0..n {
-        b9.append_value(i9.next(rng));
+    for (col_idx, iter) in iters.iter_mut().enumerate() {
+        for _ in 0..n {
+            columns[col_idx].push(iter.next().unwrap());
+        }
     }
 
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(b0.finish()),
-        Arc::new(b1.finish()),
-        Arc::new(b2.finish()),
-        Arc::new(b3.finish()),
-        Arc::new(b4.finish()),
-        Arc::new(b5.finish()),
-        Arc::new(b6.finish()),
-        Arc::new(b7.finish()),
-        Arc::new(b8.finish()),
-        Arc::new(b9.finish()),
-    ];
-
-    let schema = Schema::new(vec![
-        Field::new("c0", DataType::Int32, false),
-        Field::new("c1", DataType::Int64, false),
-        Field::new("c2", DataType::Float32, false),
-        Field::new("c3", DataType::Float64, false),
-        Field::new("c4", DataType::Int32, false),
-        Field::new("c5", DataType::Int64, false),
-        Field::new("c6", DataType::Float32, false),
-        Field::new("c7", DataType::Float64, false),
-        Field::new("c8", DataType::Int32, false),
-        Field::new("c9", DataType::Int64, false),
-    ]);
-
-    RecordBatch::try_new(Arc::new(schema), arrays).unwrap()
+    columns
 }
 
-fn benchmark(name: &str, f: impl Fn() -> RecordBatch, iterations: usize) -> f64 {
+fn benchmark(name: &str, f: impl Fn() -> Vec<Vec<f64>>, iterations: usize) -> f64 {
     // Warmup
-    for _ in 0..3 {
+    for _ in 0..2 {
         let _ = f();
     }
 
@@ -230,36 +120,21 @@ fn benchmark(name: &str, f: impl Fn() -> RecordBatch, iterations: usize) -> f64 
 fn main() {
     println!("==============================================");
     println!("BENCHMARK: Row-by-row vs Column-by-column");
+    println!("         {} columns (wide table)", NUM_COLS);
     println!("==============================================\n");
 
-    let row_counts = [10_000, 100_000, 1_000_000, 10_000_000];
+    let row_counts = [1_000, 10_000, 100_000];
 
     for &n in &row_counts {
-        println!("--- {} rows, 10 columns ---", n);
+        println!("--- {} rows, {} columns ---", n, NUM_COLS);
 
-        let iterations = if n >= 1_000_000 { 5 } else { 20 };
+        let iterations = if n >= 100_000 { 3 } else { 10 };
 
         // Row-by-row
-        let row_ms = benchmark(
-            "Row-by-row    ",
-            || {
-                let mut dist = create_dist();
-                let mut rng = StdRng::seed_from_u64(42);
-                collect_row_by_row(&mut dist, &mut rng, n)
-            },
-            iterations,
-        );
+        let row_ms = benchmark("Row-by-row    ", || collect_row_by_row(n), iterations);
 
         // Column-by-column
-        let col_ms = benchmark(
-            "Column-by-col ",
-            || {
-                let mut dist = create_dist();
-                let mut rng = StdRng::seed_from_u64(42);
-                collect_column_by_column(&mut dist, &mut rng, n)
-            },
-            iterations,
-        );
+        let col_ms = benchmark("Column-by-col ", || collect_column_by_column(n), iterations);
 
         let speedup = row_ms / col_ms;
         let diff_pct = (row_ms - col_ms) / row_ms * 100.0;
@@ -271,13 +146,17 @@ fn main() {
     println!("ANALYSIS");
     println!("==============================================\n");
 
-    println!("Column-by-column should be faster because:");
-    println!("1. Iterator state stays in L1/L2 cache during column fill");
-    println!("2. Builder's internal buffer has sequential writes");
-    println!("3. No cache thrashing between 10 different iterator states");
+    println!(
+        "With {} columns, column-by-column should show larger gains:",
+        NUM_COLS
+    );
+    println!("1. {} iterator states exceed L1/L2 cache", NUM_COLS);
+    println!("2. Row-by-row causes severe cache thrashing");
+    println!("3. Column-by-column keeps one iterator hot at a time");
     println!();
-    println!("Row-by-row is slower because:");
-    println!("1. Alternates between 10 iterator states (cache misses)");
-    println!("2. Builder writes are still sequential, but iterator access isn't");
-    println!("3. RNG state also gets interleaved access patterns");
+    println!(
+        "Row-by-row must load/evict iterator state {} times per row",
+        NUM_COLS
+    );
+    println!("Column-by-column loads each iterator state once, uses it n times");
 }

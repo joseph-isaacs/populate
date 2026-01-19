@@ -1,6 +1,7 @@
 use populate_builtins::List;
 use populate_core::{
-    Collector, ColumnIters2, ColumnIters3, Distribution, ListSink, Rng, SampleIter, Sink,
+    Collector, ColumnIters2, ColumnIters3, Distribution, IntoColumnIters, ListSink, Rng,
+    SampleIter, Sink,
 };
 
 // === Marker types for Vec collection ===
@@ -21,9 +22,70 @@ pub struct Rows;
 /// Use when columns are coupled (e.g., from Map) and can't use ColumnIters.
 pub struct Unzip;
 
-/// Marker for cache-local grouped collection.
-/// Independent columns are filled first, then coupled groups.
+/// Marker for cache-local grouped collection using IntoColumnIters.
+/// Independent columns are filled first, then coupled groups are unzipped.
+/// No intermediate allocations - values go directly into output Vecs.
 pub struct GroupedCols;
+
+// === GroupedCols: 2 independent columns, no intermediate allocations ===
+impl<T1, T2, D, I1, I2> Collector<D, (T1, T2)> for GroupedCols
+where
+    D: Distribution<(T1, T2)>,
+    D::Iter: IntoColumnIters<Columns = (I1, I2)>,
+    I1: SampleIter<Item = T1>,
+    I2: SampleIter<Item = T2>,
+{
+    type Output = (Vec<T1>, Vec<T2>);
+
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let iter = dist.sample();
+        let (mut c1, mut c2) = iter.into_columns();
+
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+
+        // Fill column 1 entirely (cache-local)
+        v1.extend((0..n).map(|_| c1.next(rng)));
+        // Fill column 2 entirely
+        v2.extend((0..n).map(|_| c2.next(rng)));
+
+        (v1, v2)
+    }
+}
+
+// === GroupedCols: 1 independent + 1 coupled pair → 3 output columns ===
+// For (D1, Map<D2, F>) where Map produces (T2, T3)
+// No intermediate Vec<(T2, T3)> - unzip directly into output Vecs
+impl<T1, T2, T3, D, I1, ICoupled> Collector<D, (T1, T2, T3)> for GroupedCols
+where
+    D: Distribution<(T1, (T2, T3))>,
+    D::Iter: IntoColumnIters<Columns = (I1, ICoupled)>,
+    I1: SampleIter<Item = T1>,
+    ICoupled: SampleIter<Item = (T2, T3)>,
+{
+    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
+
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let iter = dist.sample();
+        let (mut c1, mut coupled) = iter.into_columns();
+
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+
+        // Fill independent column entirely first (cache-local)
+        v1.extend((0..n).map(|_| c1.next(rng)));
+
+        // Unzip coupled column directly into output - NO intermediate allocation
+        for _ in 0..n {
+            let (a, b) = coupled.next(rng);
+            v2.push(a);
+            v3.push(b);
+        }
+
+        (v1, v2, v3)
+    }
+}
 
 // === Collector implementations ===
 
@@ -250,5 +312,20 @@ mod tests {
         assert!(v1.iter().all(|&x| x >= 0 && x < 100));
         assert!(v2.iter().all(|&x| x >= 100 && x < 200));
         assert!(v3.iter().all(|&x| x >= 0.0 && x < 1.0));
+    }
+
+    #[test]
+    fn test_grouped_cols_independent() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Test GroupedCols with 2 independent columns
+        let mut dist = (Range::new(0i32, 100), Range::new(100i64, 200));
+
+        // Uses IntoColumnIters - no intermediate allocations
+        let (v1, v2): (Vec<i32>, Vec<i64>) = dist.collect::<GroupedCols>(&mut rng, 10);
+
+        assert_eq!(v1.len(), 10);
+        assert_eq!(v2.len(), 10);
+        assert!(v1.iter().all(|&x| x >= 0 && x < 100));
+        assert!(v2.iter().all(|&x| x >= 100 && x < 200));
     }
 }

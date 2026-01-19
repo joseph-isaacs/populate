@@ -19,7 +19,7 @@ pub struct ConstantIter<T>(T);
 impl<T: Clone> SampleIter for ConstantIter<T> {
     type Item = T;
 
-    fn next(&mut self, _rng: &mut impl Rng) -> T {
+    fn next(&mut self, _rng: &mut (impl Rng + ?Sized)) -> T {
         self.0.clone()
     }
 }

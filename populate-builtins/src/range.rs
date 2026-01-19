@@ -4,7 +4,7 @@ use populate_core::{Distribution, SampleIter};
 
 /// Trait for range sampling strategies.
 pub trait RangeSampler<T>: Clone {
-    fn sample_range(rng: &mut impl rand::Rng, min: T, max: T) -> T;
+    fn sample_range(rng: &mut (impl rand::Rng + ?Sized), min: T, max: T) -> T;
 }
 
 // === Standard sampling: () delegates to rand ===
@@ -12,7 +12,7 @@ pub trait RangeSampler<T>: Clone {
 macro_rules! impl_standard_sampler {
     ($t:ty) => {
         impl RangeSampler<$t> for () {
-            fn sample_range(rng: &mut impl rand::Rng, min: $t, max: $t) -> $t {
+            fn sample_range(rng: &mut (impl rand::Rng + ?Sized), min: $t, max: $t) -> $t {
                 rng.random_range(min..max)
             }
         }
@@ -81,7 +81,7 @@ impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
 impl<T: Clone, S: RangeSampler<T>> SampleIter for RangeIter<T, S> {
     type Item = T;
 
-    fn next(&mut self, rng: &mut impl rand::Rng) -> T {
+    fn next(&mut self, rng: &mut (impl rand::Rng + ?Sized)) -> T {
         S::sample_range(rng, self.min.clone(), self.max.clone())
     }
 }

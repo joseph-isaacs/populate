@@ -32,7 +32,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Rng) -> String {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> String {
         let arr = self.inner.next(rng);
         arr.iter()
             .map(|s| s.as_ref())
@@ -101,7 +101,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Rng) -> String {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> String {
         let vec = self.inner.next(rng);
         vec.iter()
             .map(|s| s.as_ref())
@@ -171,7 +171,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Rng) -> String {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> String {
         let (a, b) = self.inner.next(rng);
         format!("{}{}{}", a.as_ref(), self.separator, b.as_ref())
     }
@@ -226,7 +226,7 @@ where
 {
     type Item = String;
 
-    fn next(&mut self, rng: &mut impl Rng) -> String {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> String {
         let (a, b, c) = self.inner.next(rng);
         format!(
             "{}{}{}{}{}",

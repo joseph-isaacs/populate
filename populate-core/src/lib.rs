@@ -1,6 +1,10 @@
 // Re-export rand::Rng
 pub use rand::Rng;
 
+// Dynamic type-erased iterators and distributions
+mod dyn_iter;
+pub use dyn_iter::{DynDistribution, DynIter, IntoDyn, IntoDynIter};
+
 // === Collection traits ===
 
 /// Trait for a collector that can collect a distribution D into an output.
@@ -45,7 +49,7 @@ impl<T, D: Distribution<T>> CollectExt<T> for D {}
 /// (e.g., the "current run value") to its initial condition.
 pub trait SampleIter: Clone {
     type Item;
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item;
 }
 
 /// A factory that produces sample iterators.
@@ -91,7 +95,7 @@ pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     type Item = (I1::Item, I2::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (self.0.next(rng), self.1.next(rng))
     }
 }
@@ -115,7 +119,7 @@ pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
     type Item = (I1::Item, I2::Item, I3::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (self.0.next(rng), self.1.next(rng), self.2.next(rng))
     }
 }
@@ -142,7 +146,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -180,7 +184,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -222,7 +226,7 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter, I5: SampleI
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -290,7 +294,7 @@ impl<
         I7::Item,
     );
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         (
             self.0.next(rng),
             self.1.next(rng),
@@ -353,7 +357,7 @@ where
 {
     type Item = (A, B, C);
 
-    fn next(&mut self, rng: &mut impl Rng) -> (A, B, C) {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> (A, B, C) {
         let a = self.0.next(rng);
         let (b, c) = self.1.next(rng);
         (a, b, c)

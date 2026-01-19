@@ -32,7 +32,7 @@ where
 {
     type Item = U;
 
-    fn next(&mut self, rng: &mut impl Rng) -> U {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> U {
         (self.f)(self.inner.next(rng))
     }
 }

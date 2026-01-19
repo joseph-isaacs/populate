@@ -32,7 +32,7 @@ macro_rules! impl_inc {
         impl SampleIter for IncIter<$t> {
             type Item = $t;
 
-            fn next(&mut self, _rng: &mut impl Rng) -> $t {
+            fn next(&mut self, _rng: &mut (impl Rng + ?Sized)) -> $t {
                 let v = self.current;
                 self.current += 1;
                 v

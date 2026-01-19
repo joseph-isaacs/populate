@@ -30,7 +30,7 @@ where
 {
     type Item = Vec<E::Item>;
 
-    fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> Vec<E::Item> {
         let len = self.lengths.next(rng);
         (0..len).map(|_| self.elements.next(rng)).collect()
     }

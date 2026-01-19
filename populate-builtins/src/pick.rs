@@ -26,7 +26,7 @@ pub struct PickOneIter<'a, T, II> {
 impl<T: Clone, II: SampleIter<Item = i64>> SampleIter for PickOneIter<'_, T, II> {
     type Item = T;
 
-    fn next(&mut self, rng: &mut impl Rng) -> T {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> T {
         let idx = self.indices.next(rng) as usize;
         self.values[idx].clone()
     }
@@ -74,7 +74,7 @@ impl<T, II: Clone> Clone for PickOneRefIter<'_, T, II> {
 impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II> {
     type Item = &'a T;
 
-    fn next(&mut self, rng: &mut impl Rng) -> &'a T {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> &'a T {
         let idx = self.indices.next(rng) as usize;
         &self.values[idx]
     }
@@ -115,7 +115,7 @@ pub struct PickIter<'a, T, II, const N: usize> {
 impl<T: Clone, II: SampleIter<Item = i64>, const N: usize> SampleIter for PickIter<'_, T, II, N> {
     type Item = [T; N];
 
-    fn next(&mut self, rng: &mut impl Rng) -> [T; N] {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> [T; N] {
         std::array::from_fn(|_| {
             let idx = self.indices.next(rng) as usize;
             self.values[idx].clone()
@@ -142,7 +142,7 @@ impl<'a, T: Clone, I: Distribution<i64>, const N: usize> Distribution<[T; N]>
 /// Implementations define how indices are selected (Fisher-Yates, TPC-H, etc.)
 pub trait PickStrategy: Clone {
     /// Generate N unique indices from range [0, len) using partial Fisher-Yates shuffle.
-    fn pick_indices<const N: usize>(rng: &mut impl Rng, len: usize) -> [usize; N];
+    fn pick_indices<const N: usize>(rng: &mut (impl Rng + ?Sized), len: usize) -> [usize; N];
 }
 
 // === Unique: standard Fisher-Yates shuffle ===
@@ -152,7 +152,7 @@ pub trait PickStrategy: Clone {
 pub struct Unique;
 
 impl PickStrategy for Unique {
-    fn pick_indices<const N: usize>(rng: &mut impl Rng, len: usize) -> [usize; N] {
+    fn pick_indices<const N: usize>(rng: &mut (impl Rng + ?Sized), len: usize) -> [usize; N] {
         let mut indices: Vec<usize> = (0..len).collect();
         for i in 0..N {
             let j = rng.random_range(i..len);
@@ -198,7 +198,7 @@ pub struct PickNIter<'a, T, S, const N: usize> {
 impl<T: Clone, S: PickStrategy, const N: usize> SampleIter for PickNIter<'_, T, S, N> {
     type Item = [T; N];
 
-    fn next(&mut self, rng: &mut impl Rng) -> [T; N] {
+    fn next(&mut self, rng: &mut (impl Rng + ?Sized)) -> [T; N] {
         let indices = S::pick_indices::<N>(rng, self.values.len());
         std::array::from_fn(|i| self.values[indices[i]].clone())
     }

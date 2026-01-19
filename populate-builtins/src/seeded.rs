@@ -34,7 +34,7 @@ pub struct SeededIter<R, I> {
 impl<R: Rng + Clone, I: SampleIter> SampleIter for SeededIter<R, I> {
     type Item = I::Item;
 
-    fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
+    fn next(&mut self, _rng: &mut (impl Rng + ?Sized)) -> Self::Item {
         self.iter.next(&mut self.rng)
     }
 }

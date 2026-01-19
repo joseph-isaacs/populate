@@ -32,7 +32,7 @@ impl<T: Clone, const N: usize> Distribution<T> for Cycle<T, N> {
 impl<T: Clone, const N: usize> SampleIter for CycleIter<T, N> {
     type Item = T;
 
-    fn next(&mut self, _rng: &mut impl Rng) -> T {
+    fn next(&mut self, _rng: &mut (impl Rng + ?Sized)) -> T {
         let v = self.values[self.index].clone();
         self.index = (self.index + 1) % N;
         v

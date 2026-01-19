@@ -71,7 +71,7 @@ impl RngCore for TpchRng {
 pub struct TpcHRange;
 
 impl RangeSampler<i64> for TpcHRange {
-    fn sample_range(rng: &mut impl rand::Rng, min: i64, max: i64) -> i64 {
+    fn sample_range(rng: &mut (impl rand::Rng + ?Sized), min: i64, max: i64) -> i64 {
         let seed = rng.next_u64();
         let range = (max - min) as f64;
         let value = ((seed as f64 / TpchRng::MODULUS as f64) * range) as i64;
@@ -88,7 +88,7 @@ impl RangeSampler<i64> for TpcHRange {
 pub struct TpchUnique;
 
 impl PickStrategy for TpchUnique {
-    fn pick_indices<const N: usize>(rng: &mut impl rand::Rng, len: usize) -> [usize; N] {
+    fn pick_indices<const N: usize>(rng: &mut (impl rand::Rng + ?Sized), len: usize) -> [usize; N] {
         let mut indices: Vec<usize> = (0..len).collect();
 
         // Partial Fisher-Yates shuffle using TPC-H formula
@@ -143,7 +143,7 @@ impl<T, const N: usize> Clone for PickNBufferedIter<'_, T, N> {
 impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
     type Item = [T; N];
 
-    fn next(&mut self, rng: &mut impl rand::Rng) -> [T; N] {
+    fn next(&mut self, rng: &mut (impl rand::Rng + ?Sized)) -> [T; N] {
         let len = self.values.len();
 
         // Reset buffer in place

@@ -798,4 +798,153 @@ mod tests {
             "Column-by-column: sequential A,A,A,B,B,B"
         );
     }
+
+    /// A "Map-like" coupled distribution that produces tuples atomically.
+    /// Simulates Map<D, F> where F: T -> (U1, U2)
+    /// Cannot be split into independent column iterators.
+    #[derive(Clone)]
+    struct CoupledDist {
+        id1: &'static str,
+        id2: &'static str,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl CoupledDist {
+        fn new(id1: &'static str, id2: &'static str, log: Rc<RefCell<Vec<String>>>) -> Self {
+            Self { id1, id2, log }
+        }
+    }
+
+    /// Iterator for CoupledDist - produces (usize, usize) tuples atomically.
+    /// Both values are generated together (like Map output).
+    #[derive(Clone)]
+    struct CoupledIter {
+        id1: &'static str,
+        id2: &'static str,
+        counter: usize,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl SampleIter for CoupledIter {
+        type Item = (usize, usize);
+
+        fn next(&mut self, _rng: &mut impl Rng) -> (usize, usize) {
+            let v1 = self.counter;
+            let v2 = self.counter * 10;
+            // Log both atomically - they're coupled
+            self.log
+                .borrow_mut()
+                .push(format!("({},{}):({},{})", self.id1, self.id2, v1, v2));
+            self.counter += 1;
+            (v1, v2)
+        }
+    }
+
+    impl Distribution<(usize, usize)> for CoupledDist {
+        type Iter = CoupledIter;
+
+        fn sample(&mut self) -> CoupledIter {
+            CoupledIter {
+                id1: self.id1,
+                id2: self.id2,
+                counter: 0,
+                log: self.log.clone(),
+            }
+        }
+    }
+
+    /// Test struct-like scenario:
+    /// struct Order { id: i32, customer_id: i32, customer_name: String }
+    /// Where id is independent, but customer_id and customer_name come from same Map.
+    #[test]
+    fn test_struct_with_independent_and_coupled_columns() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Simulates: (id_dist, customer_map) where customer_map produces (customer_id, customer_name)
+        let mut dist = (
+            TrackingDist::new("id", log.clone()),
+            CoupledDist::new("cust_id", "cust_name", log.clone()),
+        );
+
+        // Get iterator: TupleIter2<TrackingIter, CoupledIter>
+        let iter = dist.sample();
+
+        // Split into columns - but CoupledIter stays together!
+        // Returns (TrackingIter, CoupledIter) - NOT (TrackingIter, Iter1, Iter2)
+        let (mut col_id, mut col_customer) = iter.into_columns();
+
+        // Generate independent column entirely first (cache-local)
+        for _ in 0..3 {
+            col_id.next(&mut rng);
+        }
+
+        // Then generate coupled column - values come out together row-by-row
+        for _ in 0..3 {
+            let (_cust_id, _cust_name) = col_customer.next(&mut rng);
+        }
+
+        let log = log.borrow();
+        // Expected: all id values first, then all coupled (cust_id, cust_name) together
+        assert_eq!(
+            *log,
+            vec![
+                "id:0",
+                "id:1",
+                "id:2",
+                "(cust_id,cust_name):(0,0)",
+                "(cust_id,cust_name):(1,10)",
+                "(cust_id,cust_name):(2,20)",
+            ],
+            "Independent column first, then coupled columns together"
+        );
+    }
+
+    /// Test that a sink can unzip coupled columns after independent ones are done.
+    /// This simulates the full collection pattern for a struct.
+    #[test]
+    fn test_struct_collection_with_unzip() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        let mut dist = (
+            TrackingDist::new("id", log.clone()),
+            CoupledDist::new("cust_id", "cust_name", log.clone()),
+        );
+
+        let iter = dist.sample();
+        let (mut col_id, mut col_customer) = iter.into_columns();
+
+        // Collect into separate output columns
+        let mut ids: Vec<usize> = Vec::new();
+        let mut cust_ids: Vec<usize> = Vec::new();
+        let mut cust_names: Vec<usize> = Vec::new();
+
+        // Fill independent column (cache-local)
+        for _ in 0..3 {
+            ids.push(col_id.next(&mut rng));
+        }
+
+        // Fill coupled columns - unzip as we go
+        for _ in 0..3 {
+            let (cid, cname) = col_customer.next(&mut rng);
+            cust_ids.push(cid);
+            cust_names.push(cname);
+        }
+
+        // Verify output
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(cust_ids, vec![0, 1, 2]);
+        assert_eq!(cust_names, vec![0, 10, 20]);
+
+        // Verify execution order: all independent, then all coupled
+        let log = log.borrow();
+        assert_eq!(log.len(), 6); // 3 id + 3 coupled
+        assert!(log[0].starts_with("id:"));
+        assert!(log[1].starts_with("id:"));
+        assert!(log[2].starts_with("id:"));
+        assert!(log[3].starts_with("(cust_id,cust_name)"));
+        assert!(log[4].starts_with("(cust_id,cust_name)"));
+        assert!(log[5].starts_with("(cust_id,cust_name)"));
+    }
 }

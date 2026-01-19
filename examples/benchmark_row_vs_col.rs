@@ -9,7 +9,7 @@
 //! Row-by-row alternates between 1000 different iterator states, causing cache misses.
 
 use populate::builtins::Range;
-use populate::core::{Distribution, Rng, SampleIter};
+use populate::core::{Distribution, SampleIter};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::time::Instant;

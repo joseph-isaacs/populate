@@ -140,6 +140,51 @@ where
     }
 }
 
+// === Unzip: Row-by-row collection that unzips tuples into columns ===
+// Use when columns are coupled (e.g., from Map) and can't use ColumnIters.
+
+/// Collect 2-tuple distribution into (Vec<T1>, Vec<T2>) row-by-row
+impl<T1, T2, D> Collector<D, (T1, T2)> for Unzip
+where
+    D: Distribution<(T1, T2)>,
+{
+    type Output = (Vec<T1>, Vec<T2>);
+
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (a, b) = iter.next(rng);
+            v1.push(a);
+            v2.push(b);
+        }
+        (v1, v2)
+    }
+}
+
+/// Collect 3-tuple distribution into (Vec<T1>, Vec<T2>, Vec<T3>) row-by-row
+impl<T1, T2, T3, D> Collector<D, (T1, T2, T3)> for Unzip
+where
+    D: Distribution<(T1, T2, T3)>,
+{
+    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
+
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (a, b, c) = iter.next(rng);
+            v1.push(a);
+            v2.push(b);
+            v3.push(c);
+        }
+        (v1, v2, v3)
+    }
+}
+
 /// Collect List distribution into (Vec<T>, Vec<usize>) - columnar (values and offsets)
 impl<T, L, E> Collector<List<L, E>, Vec<T>> for ListCol
 where
@@ -327,5 +372,39 @@ mod tests {
         assert_eq!(v2.len(), 10);
         assert!(v1.iter().all(|&x| x >= 0 && x < 100));
         assert!(v2.iter().all(|&x| x >= 100 && x < 200));
+    }
+
+    #[test]
+    fn test_unzip_2_tuple() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Test Unzip with 2-tuple - row-by-row collection
+        let mut dist = (Range::new(0i32, 100), Range::new(100i64, 200));
+
+        let (v1, v2): (Vec<i32>, Vec<i64>) = dist.collect::<Unzip>(&mut rng, 10);
+
+        assert_eq!(v1.len(), 10);
+        assert_eq!(v2.len(), 10);
+        assert!(v1.iter().all(|&x| x >= 0 && x < 100));
+        assert!(v2.iter().all(|&x| x >= 100 && x < 200));
+    }
+
+    #[test]
+    fn test_unzip_3_tuple() {
+        let mut rng = StdRng::seed_from_u64(42);
+        // Test Unzip with 3-tuple - row-by-row collection
+        let mut dist = (
+            Range::new(0i32, 100),
+            Range::new(100i64, 200),
+            Range::new(0.0f64, 1.0),
+        );
+
+        let (v1, v2, v3): (Vec<i32>, Vec<i64>, Vec<f64>) = dist.collect::<Unzip>(&mut rng, 10);
+
+        assert_eq!(v1.len(), 10);
+        assert_eq!(v2.len(), 10);
+        assert_eq!(v3.len(), 10);
+        assert!(v1.iter().all(|&x| x >= 0 && x < 100));
+        assert!(v2.iter().all(|&x| x >= 100 && x < 200));
+        assert!(v3.iter().all(|&x| x >= 0.0 && x < 1.0));
     }
 }

@@ -372,6 +372,65 @@ where
     }
 }
 
+// === IntoColumnIters trait for iterator-level column splitting ===
+
+/// Trait for iterators that can be split into independent column iterators.
+/// This enables column-by-column collection with proper execution order.
+///
+/// - Independent columns: fully splits, each column generated separately
+/// - Coupled columns (e.g., from Map): stays as tuple-producing iterator
+pub trait IntoColumnIters: SampleIter {
+    type Columns;
+    fn into_columns(self) -> Self::Columns;
+}
+
+// TupleIter2 splits into 2 independent column iterators
+impl<I1: SampleIter, I2: SampleIter> IntoColumnIters for TupleIter2<I1, I2> {
+    type Columns = (I1, I2);
+
+    fn into_columns(self) -> (I1, I2) {
+        (self.0, self.1)
+    }
+}
+
+// TupleIter3 splits into 3 independent column iterators
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> IntoColumnIters for TupleIter3<I1, I2, I3> {
+    type Columns = (I1, I2, I3);
+
+    fn into_columns(self) -> (I1, I2, I3) {
+        (self.0, self.1, self.2)
+    }
+}
+
+// TupleIter4 splits into 4 independent column iterators
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> IntoColumnIters
+    for TupleIter4<I1, I2, I3, I4>
+{
+    type Columns = (I1, I2, I3, I4);
+
+    fn into_columns(self) -> (I1, I2, I3, I4) {
+        (self.0, self.1, self.2, self.3)
+    }
+}
+
+// TupleUnnest2Iter: when inner is TupleIter2, splits into 3 columns
+impl<I1, I2, I3> IntoColumnIters for TupleUnnest2Iter<I1, TupleIter2<I2, I3>>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+{
+    type Columns = (I1, I2, I3);
+
+    fn into_columns(self) -> (I1, I2, I3) {
+        (self.0, self.1.0, self.1.1)
+    }
+}
+
+// TupleUnnest2Iter: when inner doesn't split (e.g., MapIter), keeps as (I1, I2)
+// This is the default - coupled columns stay together
+// Note: More specific impl above takes precedence for TupleIter2
+
 // === Collection functions using Sink ===
 
 /// Collect elements into a sink (row-oriented).
@@ -535,5 +594,208 @@ where
             (self.1).0.0.sample(),
             (self.1).0.1.sample(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A tracking distribution that records when values are generated.
+    /// Used to verify execution order.
+    #[derive(Clone)]
+    struct TrackingDist {
+        id: &'static str,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl TrackingDist {
+        fn new(id: &'static str, log: Rc<RefCell<Vec<String>>>) -> Self {
+            Self { id, log }
+        }
+    }
+
+    #[derive(Clone)]
+    struct TrackingIter {
+        id: &'static str,
+        counter: usize,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl SampleIter for TrackingIter {
+        type Item = usize;
+
+        fn next(&mut self, _rng: &mut impl Rng) -> usize {
+            let value = self.counter;
+            self.log.borrow_mut().push(format!("{}:{}", self.id, value));
+            self.counter += 1;
+            value
+        }
+    }
+
+    impl Distribution<usize> for TrackingDist {
+        type Iter = TrackingIter;
+
+        fn sample(&mut self) -> TrackingIter {
+            TrackingIter {
+                id: self.id,
+                counter: 0,
+                log: self.log.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_into_column_iters_execution_order_2_tuple() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Create a 2-tuple distribution
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            TrackingDist::new("B", log.clone()),
+        );
+
+        // Get iterator and split into columns
+        let iter = dist.sample();
+        let (mut col_a, mut col_b) = iter.into_columns();
+
+        // Generate column A entirely first
+        for _ in 0..3 {
+            col_a.next(&mut rng);
+        }
+        // Then generate column B entirely
+        for _ in 0..3 {
+            col_b.next(&mut rng);
+        }
+
+        let log = log.borrow();
+        assert_eq!(
+            *log,
+            vec!["A:0", "A:1", "A:2", "B:0", "B:1", "B:2"],
+            "Expected column-by-column order: all A, then all B"
+        );
+    }
+
+    #[test]
+    fn test_into_column_iters_execution_order_3_tuple() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Create a 3-tuple distribution
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            TrackingDist::new("B", log.clone()),
+            TrackingDist::new("C", log.clone()),
+        );
+
+        // Get iterator and split into columns
+        let iter = dist.sample();
+        let (mut col_a, mut col_b, mut col_c) = iter.into_columns();
+
+        // Generate all columns in order
+        for _ in 0..2 {
+            col_a.next(&mut rng);
+        }
+        for _ in 0..2 {
+            col_b.next(&mut rng);
+        }
+        for _ in 0..2 {
+            col_c.next(&mut rng);
+        }
+
+        let log = log.borrow();
+        assert_eq!(
+            *log,
+            vec!["A:0", "A:1", "B:0", "B:1", "C:0", "C:1"],
+            "Expected column-by-column order: all A, then all B, then all C"
+        );
+    }
+
+    #[test]
+    fn test_into_column_iters_unnest_splits_inner() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Create (D1, Unnest<(D2, D3)>) distribution
+        let mut dist = (
+            TrackingDist::new("A", log.clone()),
+            Unnest((
+                TrackingDist::new("B", log.clone()),
+                TrackingDist::new("C", log.clone()),
+            )),
+        );
+
+        // Get iterator - it's TupleUnnest2Iter<TrackingIter, TupleIter2<TrackingIter, TrackingIter>>
+        let iter = dist.sample();
+
+        // Split into 3 columns (because inner is TupleIter2)
+        let (mut col_a, mut col_b, mut col_c) = iter.into_columns();
+
+        // Generate all columns in order
+        for _ in 0..2 {
+            col_a.next(&mut rng);
+        }
+        for _ in 0..2 {
+            col_b.next(&mut rng);
+        }
+        for _ in 0..2 {
+            col_c.next(&mut rng);
+        }
+
+        let log = log.borrow();
+        assert_eq!(
+            *log,
+            vec!["A:0", "A:1", "B:0", "B:1", "C:0", "C:1"],
+            "Unnest should split inner tuple: all A, then all B, then all C"
+        );
+    }
+
+    #[test]
+    fn test_row_by_row_vs_column_by_column() {
+        let log_row = Rc::new(RefCell::new(Vec::new()));
+        let log_col = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Row-by-row: interleaved access pattern
+        {
+            let mut dist = (
+                TrackingDist::new("A", log_row.clone()),
+                TrackingDist::new("B", log_row.clone()),
+            );
+            let mut iter = dist.sample();
+            for _ in 0..3 {
+                iter.next(&mut rng); // produces (A, B) tuple
+            }
+        }
+
+        // Column-by-column: sequential access pattern
+        {
+            let mut dist = (
+                TrackingDist::new("A", log_col.clone()),
+                TrackingDist::new("B", log_col.clone()),
+            );
+            let iter = dist.sample();
+            let (mut col_a, mut col_b) = iter.into_columns();
+            for _ in 0..3 {
+                col_a.next(&mut rng);
+            }
+            for _ in 0..3 {
+                col_b.next(&mut rng);
+            }
+        }
+
+        assert_eq!(
+            *log_row.borrow(),
+            vec!["A:0", "B:0", "A:1", "B:1", "A:2", "B:2"],
+            "Row-by-row: interleaved A,B,A,B,A,B"
+        );
+        assert_eq!(
+            *log_col.borrow(),
+            vec!["A:0", "A:1", "A:2", "B:0", "B:1", "B:2"],
+            "Column-by-column: sequential A,A,A,B,B,B"
+        );
     }
 }

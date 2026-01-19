@@ -699,6 +699,271 @@ where
     }
 }
 
+// === Dynamic fallback: array of sinks for complex types ===
+
+use std::any::Any;
+
+/// Wrapper that makes &mut dyn RngCore usable with SampleIter::next
+struct ErasedRng<'a>(&'a mut dyn rand::RngCore);
+
+impl rand::RngCore for ErasedRng<'_> {
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest)
+    }
+}
+
+/// A column producer that can produce values into its internal sink.
+/// Used for dynamic fallback when static types get too complex.
+pub trait DynColumnProducer {
+    /// Produce n values into the internal sink
+    fn produce(&mut self, rng: &mut dyn rand::RngCore, n: usize);
+    /// Take the output as a boxed Any (typically Vec<T>)
+    fn take_output(&mut self) -> Box<dyn Any>;
+    /// Number of output columns this producer creates
+    fn num_outputs(&self) -> usize {
+        1
+    }
+    /// Take multiple outputs (for coupled columns)
+    fn take_outputs(&mut self) -> Vec<Box<dyn Any>> {
+        vec![self.take_output()]
+    }
+}
+
+/// Wraps a SampleIter with its output Vec - single column
+struct SingleColumn<I: SampleIter> {
+    iter: I,
+    output: Vec<I::Item>,
+}
+
+impl<I> DynColumnProducer for SingleColumn<I>
+where
+    I: SampleIter,
+    I::Item: 'static,
+{
+    fn produce(&mut self, rng: &mut dyn rand::RngCore, n: usize) {
+        self.output.reserve(n);
+        let mut erased = ErasedRng(rng);
+        for _ in 0..n {
+            self.output.push(self.iter.next(&mut erased));
+        }
+    }
+
+    fn take_output(&mut self) -> Box<dyn Any> {
+        Box::new(std::mem::take(&mut self.output))
+    }
+}
+
+/// Wraps a coupled iterator that produces tuples - unzips into separate vecs
+struct CoupledColumn2<I, T1, T2>
+where
+    I: SampleIter<Item = (T1, T2)>,
+{
+    iter: I,
+    output1: Vec<T1>,
+    output2: Vec<T2>,
+}
+
+impl<I, T1, T2> DynColumnProducer for CoupledColumn2<I, T1, T2>
+where
+    I: SampleIter<Item = (T1, T2)>,
+    T1: 'static,
+    T2: 'static,
+{
+    fn produce(&mut self, rng: &mut dyn rand::RngCore, n: usize) {
+        self.output1.reserve(n);
+        self.output2.reserve(n);
+        let mut erased = ErasedRng(rng);
+        for _ in 0..n {
+            let (a, b) = self.iter.next(&mut erased);
+            self.output1.push(a);
+            self.output2.push(b);
+        }
+    }
+
+    fn take_output(&mut self) -> Box<dyn Any> {
+        // Returns first output only - use take_outputs for both
+        Box::new(std::mem::take(&mut self.output1))
+    }
+
+    fn num_outputs(&self) -> usize {
+        2
+    }
+
+    fn take_outputs(&mut self) -> Vec<Box<dyn Any>> {
+        vec![
+            Box::new(std::mem::take(&mut self.output1)),
+            Box::new(std::mem::take(&mut self.output2)),
+        ]
+    }
+}
+
+/// Dynamic table builder - uses Vec of boxed column producers
+/// Fallback for when static tuple types get too complex
+pub struct DynTableBuilder {
+    columns: Vec<Box<dyn DynColumnProducer>>,
+}
+
+impl DynTableBuilder {
+    pub fn new() -> Self {
+        DynTableBuilder {
+            columns: Vec::new(),
+        }
+    }
+
+    /// Add an independent column
+    pub fn col<D, T>(mut self, mut dist: D) -> Self
+    where
+        D: Distribution<T>,
+        D::Iter: 'static,
+        T: 'static,
+    {
+        self.columns.push(Box::new(SingleColumn {
+            iter: dist.sample(),
+            output: Vec::new(),
+        }));
+        self
+    }
+
+    /// Add a coupled column pair (from map producing 2-tuple)
+    pub fn coupled2<D, T1, T2>(mut self, mut dist: D) -> Self
+    where
+        D: Distribution<(T1, T2)>,
+        D::Iter: 'static,
+        T1: 'static,
+        T2: 'static,
+    {
+        self.columns.push(Box::new(CoupledColumn2 {
+            iter: dist.sample(),
+            output1: Vec::new(),
+            output2: Vec::new(),
+        }));
+        self
+    }
+
+    /// Collect all columns, returns Vec of boxed outputs
+    /// Each output is a Vec<T> that can be downcast
+    pub fn collect(mut self, rng: &mut impl Rng, n: usize) -> Vec<Box<dyn Any>> {
+        // Produce all columns (column-by-column for cache locality)
+        for col in &mut self.columns {
+            col.produce(rng, n);
+        }
+
+        // Gather outputs, handling coupled columns that produce multiple
+        let mut outputs = Vec::new();
+        for mut col in self.columns {
+            if col.num_outputs() == 1 {
+                outputs.push(col.take_output());
+            } else {
+                outputs.extend(col.take_outputs());
+            }
+        }
+        outputs
+    }
+
+    /// Collect and downcast to expected types (panics if types don't match)
+    pub fn collect_typed<T: DynOutputs>(self, rng: &mut impl Rng, n: usize) -> T {
+        let outputs = self.collect(rng, n);
+        T::from_dyn_outputs(outputs)
+    }
+}
+
+impl Default for DynTableBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Trait for types that can be constructed from dynamic outputs
+pub trait DynOutputs: Sized {
+    fn from_dyn_outputs(outputs: Vec<Box<dyn Any>>) -> Self;
+}
+
+// Implement for common tuple sizes
+impl<T1: 'static> DynOutputs for (Vec<T1>,) {
+    fn from_dyn_outputs(mut outputs: Vec<Box<dyn Any>>) -> Self {
+        assert_eq!(outputs.len(), 1);
+        let v1 = outputs
+            .remove(0)
+            .downcast::<Vec<T1>>()
+            .expect("type mismatch");
+        (*v1,)
+    }
+}
+
+impl<T1: 'static, T2: 'static> DynOutputs for (Vec<T1>, Vec<T2>) {
+    fn from_dyn_outputs(mut outputs: Vec<Box<dyn Any>>) -> Self {
+        assert_eq!(outputs.len(), 2);
+        let v2 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T2>>()
+            .expect("type mismatch");
+        let v1 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T1>>()
+            .expect("type mismatch");
+        (*v1, *v2)
+    }
+}
+
+impl<T1: 'static, T2: 'static, T3: 'static> DynOutputs for (Vec<T1>, Vec<T2>, Vec<T3>) {
+    fn from_dyn_outputs(mut outputs: Vec<Box<dyn Any>>) -> Self {
+        assert_eq!(outputs.len(), 3);
+        let v3 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T3>>()
+            .expect("type mismatch");
+        let v2 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T2>>()
+            .expect("type mismatch");
+        let v1 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T1>>()
+            .expect("type mismatch");
+        (*v1, *v2, *v3)
+    }
+}
+
+impl<T1: 'static, T2: 'static, T3: 'static, T4: 'static> DynOutputs
+    for (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>)
+{
+    fn from_dyn_outputs(mut outputs: Vec<Box<dyn Any>>) -> Self {
+        assert_eq!(outputs.len(), 4);
+        let v4 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T4>>()
+            .expect("type mismatch");
+        let v3 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T3>>()
+            .expect("type mismatch");
+        let v2 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T2>>()
+            .expect("type mismatch");
+        let v1 = outputs
+            .pop()
+            .unwrap()
+            .downcast::<Vec<T1>>()
+            .expect("type mismatch");
+        (*v1, *v2, *v3, *v4)
+    }
+}
+
 // === Collection functions using Sink ===
 
 /// Collect elements into a sink (row-oriented).
@@ -1774,5 +2039,89 @@ mod tests {
             ],
             "TupleUnnest7At5Iter: independent columns first, coupled pair row-by-row, then last column"
         );
+    }
+
+    /// Test DynTableBuilder - dynamic fallback for complex types
+    #[test]
+    fn test_dyn_table_builder_basic() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Build a table with 2 independent columns
+        let table = DynTableBuilder::new()
+            .col(TrackingDist::new("A", log.clone()))
+            .col(TrackingDist::new("B", log.clone()));
+
+        // Collect
+        let outputs = table.collect(&mut rng, 3);
+
+        // Verify we got 2 outputs
+        assert_eq!(outputs.len(), 2);
+
+        // Downcast and verify values
+        let col_a = outputs[0].downcast_ref::<Vec<usize>>().unwrap();
+        let col_b = outputs[1].downcast_ref::<Vec<usize>>().unwrap();
+        assert_eq!(*col_a, vec![0, 1, 2]);
+        assert_eq!(*col_b, vec![0, 1, 2]);
+
+        // Verify column-by-column execution order
+        assert_eq!(
+            *log.borrow(),
+            vec!["A:0", "A:1", "A:2", "B:0", "B:1", "B:2"],
+            "DynTableBuilder should collect column-by-column"
+        );
+    }
+
+    /// Test DynTableBuilder with coupled columns
+    #[test]
+    fn test_dyn_table_builder_with_coupled() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        // Build a table with 1 independent + 1 coupled pair
+        let table = DynTableBuilder::new()
+            .col(TrackingDist::new("A", log.clone()))
+            .coupled2(CoupledDist::new("B", "C", log.clone()));
+
+        // Collect
+        let outputs = table.collect(&mut rng, 3);
+
+        // Verify we got 3 outputs (1 independent + 2 from coupled pair)
+        assert_eq!(outputs.len(), 3);
+
+        // Downcast and verify values
+        let col_a = outputs[0].downcast_ref::<Vec<usize>>().unwrap();
+        let col_b = outputs[1].downcast_ref::<Vec<usize>>().unwrap();
+        let col_c = outputs[2].downcast_ref::<Vec<usize>>().unwrap();
+
+        assert_eq!(*col_a, vec![0, 1, 2]);
+        assert_eq!(*col_b, vec![0, 1, 2]); // First element of coupled pair
+        assert_eq!(*col_c, vec![0, 10, 20]); // Second element (counter * 10)
+
+        // Verify execution order: independent first, then coupled
+        let log = log.borrow();
+        assert_eq!(log[0], "A:0");
+        assert_eq!(log[1], "A:1");
+        assert_eq!(log[2], "A:2");
+        assert!(log[3].starts_with("(B,C)"));
+        assert!(log[4].starts_with("(B,C)"));
+        assert!(log[5].starts_with("(B,C)"));
+    }
+
+    /// Test DynTableBuilder with typed collection
+    #[test]
+    fn test_dyn_table_builder_typed() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut rng = rand::rng();
+
+        let table = DynTableBuilder::new()
+            .col(TrackingDist::new("A", log.clone()))
+            .col(TrackingDist::new("B", log.clone()));
+
+        // Collect with type annotation
+        let (col_a, col_b): (Vec<usize>, Vec<usize>) = table.collect_typed(&mut rng, 3);
+
+        assert_eq!(col_a, vec![0, 1, 2]);
+        assert_eq!(col_b, vec![0, 1, 2]);
     }
 }

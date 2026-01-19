@@ -1138,4 +1138,168 @@ mod tests {
             ]
         );
     }
+
+    /// Print execution order to stdout for manual verification.
+    /// Run with: cargo test -p populate-core print_execution_order -- --nocapture
+    #[test]
+    fn print_execution_order_validation() {
+        let mut rng = rand::rng();
+
+        println!("\n========================================");
+        println!("EXECUTION ORDER VALIDATION");
+        println!("========================================\n");
+
+        // Test 1: Flat tuple - all independent
+        println!("--- Test 1: Flat tuple (A, B, C) - all independent ---");
+        {
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let mut dist = (
+                TrackingDist::new("A", log.clone()),
+                TrackingDist::new("B", log.clone()),
+                TrackingDist::new("C", log.clone()),
+            );
+            let iter = dist.sample();
+            let (mut a, mut b, mut c) = iter.into_columns();
+
+            for _ in 0..3 {
+                a.next(&mut rng);
+            }
+            for _ in 0..3 {
+                b.next(&mut rng);
+            }
+            for _ in 0..3 {
+                c.next(&mut rng);
+            }
+
+            println!("Log: {:?}", log.borrow());
+            println!("Expected: A:0, A:1, A:2, B:0, B:1, B:2, C:0, C:1, C:2");
+            assert_eq!(
+                *log.borrow(),
+                vec![
+                    "A:0", "A:1", "A:2", "B:0", "B:1", "B:2", "C:0", "C:1", "C:2"
+                ]
+            );
+            println!("✓ PASSED\n");
+        }
+
+        // Test 2: Unnest/merge - inner tuple splits
+        println!("--- Test 2: (A, Unnest<(B, C)>) - merge splits inner ---");
+        {
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let mut dist = (
+                TrackingDist::new("A", log.clone()),
+                Unnest((
+                    TrackingDist::new("B", log.clone()),
+                    TrackingDist::new("C", log.clone()),
+                )),
+            );
+            let iter = dist.sample();
+            let (mut a, mut b, mut c) = iter.into_columns();
+
+            for _ in 0..3 {
+                a.next(&mut rng);
+            }
+            for _ in 0..3 {
+                b.next(&mut rng);
+            }
+            for _ in 0..3 {
+                c.next(&mut rng);
+            }
+
+            println!("Log: {:?}", log.borrow());
+            println!("Expected: A:0, A:1, A:2, B:0, B:1, B:2, C:0, C:1, C:2");
+            assert_eq!(
+                *log.borrow(),
+                vec![
+                    "A:0", "A:1", "A:2", "B:0", "B:1", "B:2", "C:0", "C:1", "C:2"
+                ]
+            );
+            println!("✓ PASSED\n");
+        }
+
+        // Test 3: With coupled (Map-like)
+        println!("--- Test 3: (A, Coupled<B,C>) - A independent, BC coupled ---");
+        {
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let mut dist = (
+                TrackingDist::new("A", log.clone()),
+                CoupledDist::new("B", "C", log.clone()),
+            );
+            let iter = dist.sample();
+            let (mut a, mut bc) = iter.into_columns();
+
+            // A filled first (independent)
+            for _ in 0..3 {
+                a.next(&mut rng);
+            }
+            // BC filled together (coupled - can't split)
+            for _ in 0..3 {
+                bc.next(&mut rng);
+            }
+
+            println!("Log: {:?}", log.borrow());
+            println!("Expected: A:0, A:1, A:2, (B,C):(0,0), (B,C):(1,10), (B,C):(2,20)");
+            assert_eq!(
+                *log.borrow(),
+                vec![
+                    "A:0",
+                    "A:1",
+                    "A:2",
+                    "(B,C):(0,0)",
+                    "(B,C):(1,10)",
+                    "(B,C):(2,20)"
+                ]
+            );
+            println!("✓ PASSED\n");
+        }
+
+        // Test 4: Row-by-row comparison
+        println!("--- Test 4: Row-by-row vs Column-by-column comparison ---");
+        {
+            let log_row = Rc::new(RefCell::new(Vec::new()));
+            let log_col = Rc::new(RefCell::new(Vec::new()));
+
+            // Row-by-row (traditional)
+            let mut dist = (
+                TrackingDist::new("A", log_row.clone()),
+                TrackingDist::new("B", log_row.clone()),
+            );
+            let mut iter = dist.sample();
+            for _ in 0..3 {
+                iter.next(&mut rng);
+            }
+
+            // Column-by-column
+            let mut dist = (
+                TrackingDist::new("A", log_col.clone()),
+                TrackingDist::new("B", log_col.clone()),
+            );
+            let iter = dist.sample();
+            let (mut a, mut b) = iter.into_columns();
+            for _ in 0..3 {
+                a.next(&mut rng);
+            }
+            for _ in 0..3 {
+                b.next(&mut rng);
+            }
+
+            println!("Row-by-row:       {:?}", log_row.borrow());
+            println!("Column-by-column: {:?}", log_col.borrow());
+            println!("Row-by-row interleaves: A,B,A,B,A,B");
+            println!("Column-by-column groups: A,A,A,B,B,B");
+            assert_eq!(
+                *log_row.borrow(),
+                vec!["A:0", "B:0", "A:1", "B:1", "A:2", "B:2"]
+            );
+            assert_eq!(
+                *log_col.borrow(),
+                vec!["A:0", "A:1", "A:2", "B:0", "B:1", "B:2"]
+            );
+            println!("✓ PASSED\n");
+        }
+
+        println!("========================================");
+        println!("ALL VALIDATION TESTS PASSED");
+        println!("========================================\n");
+    }
 }

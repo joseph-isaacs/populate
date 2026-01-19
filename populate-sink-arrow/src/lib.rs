@@ -6,10 +6,120 @@ use arrow_array::{
         UInt32Type, UInt64Type,
     },
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
 use populate_builtins::List;
 use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink};
 use std::sync::Arc;
+
+// === RecordBatchBuilder for wide columns ===
+
+/// Builder for creating RecordBatch with arbitrary number of columns.
+///
+/// This provides an alternative to tuple-based collection for tables with many columns.
+/// Each column is generated independently and combined into a RecordBatch.
+///
+/// # Example
+///
+/// ```ignore
+/// use populate_sink_arrow::RecordBatchBuilder;
+/// use populate_builtins::{Inc, Range};
+/// use rand::SeedableRng;
+/// use rand::rngs::StdRng;
+///
+/// let mut rng = StdRng::seed_from_u64(42);
+/// let batch = RecordBatchBuilder::new(1000, &mut rng)
+///     .column::<i64, _>("id", Inc::new(1))
+///     .column::<f64, _>("price", Range::new(0.0, 100.0))
+///     .column::<i32, _>("quantity", Range::new(1, 100))
+///     .build()
+///     .unwrap();
+/// ```
+pub struct RecordBatchBuilder<'a, R: Rng> {
+    n: usize,
+    rng: &'a mut R,
+    columns: Vec<ArrayRef>,
+    fields: Vec<Field>,
+}
+
+impl<'a, R: Rng> RecordBatchBuilder<'a, R> {
+    /// Create a new builder for a RecordBatch with `n` rows.
+    pub fn new(n: usize, rng: &'a mut R) -> Self {
+        Self {
+            n,
+            rng,
+            columns: Vec::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Add a column with the given name and distribution.
+    ///
+    /// The type parameter `T` specifies the Rust type that maps to an Arrow type.
+    /// Supported types: i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, String.
+    pub fn column<T, D>(mut self, name: &str, mut dist: D) -> Self
+    where
+        T: IntoArrowArray,
+        D: Distribution<T>,
+    {
+        let mut iter = dist.sample();
+        let array = T::collect_array(&mut iter, self.rng, self.n);
+        self.fields.push(Field::new(name, T::data_type(), false));
+        self.columns.push(array);
+        self
+    }
+
+    /// Add a nullable column with the given name and distribution.
+    pub fn nullable_column<T, D>(mut self, name: &str, mut dist: D) -> Self
+    where
+        T: IntoArrowArray,
+        D: Distribution<T>,
+    {
+        let mut iter = dist.sample();
+        let array = T::collect_array(&mut iter, self.rng, self.n);
+        self.fields.push(Field::new(name, T::data_type(), true));
+        self.columns.push(array);
+        self
+    }
+
+    /// Add a pre-built ArrayRef as a column.
+    ///
+    /// Useful for adding columns that were built separately or with custom logic.
+    pub fn column_array(mut self, name: &str, data_type: DataType, array: ArrayRef) -> Self {
+        self.fields.push(Field::new(name, data_type, false));
+        self.columns.push(array);
+        self
+    }
+
+    /// Get the number of columns added so far.
+    pub fn num_columns(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// Get the number of rows this builder will produce.
+    pub fn num_rows(&self) -> usize {
+        self.n
+    }
+
+    /// Build the RecordBatch from the added columns.
+    pub fn build(self) -> Result<RecordBatch, ArrowError> {
+        let schema = Arc::new(Schema::new(self.fields));
+        RecordBatch::try_new(schema, self.columns)
+    }
+}
+
+/// Extension trait for Distribution to enable fluent column building.
+pub trait DistributionColumnExt<T>: Distribution<T> + Sized {
+    /// Collect this distribution into an ArrayRef.
+    fn into_array(mut self, rng: &mut impl Rng, n: usize) -> ArrayRef
+    where
+        T: IntoArrowArray,
+    {
+        let mut iter = self.sample();
+        T::collect_array(&mut iter, rng, n)
+    }
+}
+
+impl<T, D: Distribution<T>> DistributionColumnExt<T> for D {}
 
 /// Trait for creating Arrow sinks for a type.
 pub trait ArrowSinkType: Sized {
@@ -376,7 +486,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Array, Int32Array};
+    use arrow_array::{Array, Float64Array, Int32Array, Int64Array, StringArray};
+    use populate_builtins::{Constant, Inc, Range};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn test_primitive_sink() {
@@ -406,5 +519,128 @@ mod tests {
 
         let array = sink.finish();
         assert_eq!(array.len(), 2);
+    }
+
+    #[test]
+    fn test_record_batch_builder_basic() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(10, &mut rng)
+            .column::<i64, _>("id", Inc::new(1i64))
+            .column::<i32, _>("value", Range::new(0, 100))
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 2);
+        assert_eq!(batch.num_rows(), 10);
+
+        let id_col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(id_col.value(0), 1);
+        assert_eq!(id_col.value(9), 10);
+    }
+
+    #[test]
+    fn test_record_batch_builder_many_columns() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(100, &mut rng)
+            .column::<i64, _>("c0", Inc::new(0i64))
+            .column::<i32, _>("c1", Range::new(0, 100))
+            .column::<f64, _>("c2", Range::new(0.0, 1.0))
+            .column::<i64, _>("c3", Constant::new(42i64))
+            .column::<i32, _>("c4", Range::new(-50, 50))
+            .column::<f64, _>("c5", Range::new(100.0, 200.0))
+            .column::<i64, _>("c6", Inc::new(1000i64))
+            .column::<i32, _>("c7", Range::new(0, 10))
+            .column::<f64, _>("c8", Range::new(-1.0, 1.0))
+            .column::<i64, _>("c9", Constant::new(0i64))
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(batch.num_rows(), 100);
+
+        // Verify column names
+        let schema = batch.schema();
+        assert_eq!(schema.field(0).name(), "c0");
+        assert_eq!(schema.field(5).name(), "c5");
+        assert_eq!(schema.field(9).name(), "c9");
+    }
+
+    #[test]
+    fn test_record_batch_builder_with_strings() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(5, &mut rng)
+            .column::<i64, _>("id", Inc::new(1i64))
+            .column::<String, _>("name", Constant::new("test".to_string()))
+            .column::<f64, _>("score", Range::new(0.0, 100.0))
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.num_rows(), 5);
+
+        let name_col = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(name_col.value(0), "test");
+    }
+
+    #[test]
+    fn test_record_batch_builder_empty() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(0, &mut rng)
+            .column::<i64, _>("id", Inc::new(1i64))
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_record_batch_builder_deterministic() {
+        // Same seed should produce same results
+        let mut rng1 = StdRng::seed_from_u64(123);
+        let batch1 = RecordBatchBuilder::new(10, &mut rng1)
+            .column::<f64, _>("value", Range::new(0.0, 100.0))
+            .build()
+            .unwrap();
+
+        let mut rng2 = StdRng::seed_from_u64(123);
+        let batch2 = RecordBatchBuilder::new(10, &mut rng2)
+            .column::<f64, _>("value", Range::new(0.0, 100.0))
+            .build()
+            .unwrap();
+
+        let col1 = batch1
+            .column(0)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        let col2 = batch2
+            .column(0)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+
+        for i in 0..10 {
+            assert_eq!(col1.value(i), col2.value(i));
+        }
+    }
+
+    #[test]
+    fn test_distribution_column_ext() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let array = Inc::new(1i64).into_array(&mut rng, 5);
+
+        assert_eq!(array.len(), 5);
+        let int_array = array.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(int_array.value(0), 1);
+        assert_eq!(int_array.value(4), 5);
     }
 }

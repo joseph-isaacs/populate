@@ -105,6 +105,253 @@ impl<'a, R: Rng> RecordBatchBuilder<'a, R> {
         let schema = Arc::new(Schema::new(self.fields));
         RecordBatch::try_new(schema, self.columns)
     }
+
+    /// Add 2 columns from a tuple distribution.
+    ///
+    /// This allows using existing tuple-based distributions as building blocks.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let batch = RecordBatchBuilder::new(100, &mut rng)
+    ///     .columns2(["id", "value"], (Inc::new(1i64), Range::new(0, 100)))
+    ///     .columns2(["x", "y"], (Range::new(0.0, 1.0), Range::new(0.0, 1.0)))
+    ///     .build()?;
+    /// ```
+    pub fn columns2<T1, T2, D1, D2>(mut self, names: [&str; 2], mut dist: (D1, D2)) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self
+    }
+
+    /// Add 3 columns from a tuple distribution.
+    pub fn columns3<T1, T2, T3, D1, D2, D3>(
+        mut self,
+        names: [&str; 3],
+        mut dist: (D1, D2, D3),
+    ) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        T3: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+        D3: Distribution<T3>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+        let a3 = T3::collect_array(&mut iter.2, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.fields
+            .push(Field::new(names[2], T3::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self.columns.push(a3);
+        self
+    }
+
+    /// Add 4 columns from a tuple distribution.
+    pub fn columns4<T1, T2, T3, T4, D1, D2, D3, D4>(
+        mut self,
+        names: [&str; 4],
+        mut dist: (D1, D2, D3, D4),
+    ) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        T3: IntoArrowArray,
+        T4: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+        D3: Distribution<T3>,
+        D4: Distribution<T4>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+        let a3 = T3::collect_array(&mut iter.2, self.rng, self.n);
+        let a4 = T4::collect_array(&mut iter.3, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.fields
+            .push(Field::new(names[2], T3::data_type(), false));
+        self.fields
+            .push(Field::new(names[3], T4::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self.columns.push(a3);
+        self.columns.push(a4);
+        self
+    }
+
+    /// Add 5 columns from a tuple distribution.
+    pub fn columns5<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5>(
+        mut self,
+        names: [&str; 5],
+        mut dist: (D1, D2, D3, D4, D5),
+    ) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        T3: IntoArrowArray,
+        T4: IntoArrowArray,
+        T5: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+        D3: Distribution<T3>,
+        D4: Distribution<T4>,
+        D5: Distribution<T5>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+        let a3 = T3::collect_array(&mut iter.2, self.rng, self.n);
+        let a4 = T4::collect_array(&mut iter.3, self.rng, self.n);
+        let a5 = T5::collect_array(&mut iter.4, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.fields
+            .push(Field::new(names[2], T3::data_type(), false));
+        self.fields
+            .push(Field::new(names[3], T4::data_type(), false));
+        self.fields
+            .push(Field::new(names[4], T5::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self.columns.push(a3);
+        self.columns.push(a4);
+        self.columns.push(a5);
+        self
+    }
+
+    /// Add 6 columns from a tuple distribution.
+    pub fn columns6<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6>(
+        mut self,
+        names: [&str; 6],
+        mut dist: (D1, D2, D3, D4, D5, D6),
+    ) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        T3: IntoArrowArray,
+        T4: IntoArrowArray,
+        T5: IntoArrowArray,
+        T6: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+        D3: Distribution<T3>,
+        D4: Distribution<T4>,
+        D5: Distribution<T5>,
+        D6: Distribution<T6>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+        let a3 = T3::collect_array(&mut iter.2, self.rng, self.n);
+        let a4 = T4::collect_array(&mut iter.3, self.rng, self.n);
+        let a5 = T5::collect_array(&mut iter.4, self.rng, self.n);
+        let a6 = T6::collect_array(&mut iter.5, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.fields
+            .push(Field::new(names[2], T3::data_type(), false));
+        self.fields
+            .push(Field::new(names[3], T4::data_type(), false));
+        self.fields
+            .push(Field::new(names[4], T5::data_type(), false));
+        self.fields
+            .push(Field::new(names[5], T6::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self.columns.push(a3);
+        self.columns.push(a4);
+        self.columns.push(a5);
+        self.columns.push(a6);
+        self
+    }
+
+    /// Add 7 columns from a tuple distribution.
+    pub fn columns7<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>(
+        mut self,
+        names: [&str; 7],
+        mut dist: (D1, D2, D3, D4, D5, D6, D7),
+    ) -> Self
+    where
+        T1: IntoArrowArray,
+        T2: IntoArrowArray,
+        T3: IntoArrowArray,
+        T4: IntoArrowArray,
+        T5: IntoArrowArray,
+        T6: IntoArrowArray,
+        T7: IntoArrowArray,
+        D1: Distribution<T1>,
+        D2: Distribution<T2>,
+        D3: Distribution<T3>,
+        D4: Distribution<T4>,
+        D5: Distribution<T5>,
+        D6: Distribution<T6>,
+        D7: Distribution<T7>,
+    {
+        let mut iter = dist.sample();
+        let a1 = T1::collect_array(&mut iter.0, self.rng, self.n);
+        let a2 = T2::collect_array(&mut iter.1, self.rng, self.n);
+        let a3 = T3::collect_array(&mut iter.2, self.rng, self.n);
+        let a4 = T4::collect_array(&mut iter.3, self.rng, self.n);
+        let a5 = T5::collect_array(&mut iter.4, self.rng, self.n);
+        let a6 = T6::collect_array(&mut iter.5, self.rng, self.n);
+        let a7 = T7::collect_array(&mut iter.6, self.rng, self.n);
+
+        self.fields
+            .push(Field::new(names[0], T1::data_type(), false));
+        self.fields
+            .push(Field::new(names[1], T2::data_type(), false));
+        self.fields
+            .push(Field::new(names[2], T3::data_type(), false));
+        self.fields
+            .push(Field::new(names[3], T4::data_type(), false));
+        self.fields
+            .push(Field::new(names[4], T5::data_type(), false));
+        self.fields
+            .push(Field::new(names[5], T6::data_type(), false));
+        self.fields
+            .push(Field::new(names[6], T7::data_type(), false));
+        self.columns.push(a1);
+        self.columns.push(a2);
+        self.columns.push(a3);
+        self.columns.push(a4);
+        self.columns.push(a5);
+        self.columns.push(a6);
+        self.columns.push(a7);
+        self
+    }
 }
 
 /// Extension trait for Distribution to enable fluent column building.
@@ -642,5 +889,78 @@ mod tests {
         let int_array = array.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(int_array.value(0), 1);
         assert_eq!(int_array.value(4), 5);
+    }
+
+    #[test]
+    fn test_record_batch_builder_columns2() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(10, &mut rng)
+            .columns2(["id", "value"], (Inc::new(1i64), Range::new(0i32, 100)))
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 2);
+        assert_eq!(batch.num_rows(), 10);
+        assert_eq!(batch.schema().field(0).name(), "id");
+        assert_eq!(batch.schema().field(1).name(), "value");
+    }
+
+    #[test]
+    fn test_record_batch_builder_mixed_columns_and_tuples() {
+        // Compose 21 columns using mix of single columns and tuple chunks
+        let mut rng = StdRng::seed_from_u64(42);
+        let batch = RecordBatchBuilder::new(100, &mut rng)
+            // 7 columns via tuple
+            .columns7(
+                ["a", "b", "c", "d", "e", "f", "g"],
+                (
+                    Inc::new(1i64),
+                    Range::new(0i32, 100),
+                    Range::new(0.0, 1.0),
+                    Constant::new(42i64),
+                    Range::new(-50i32, 50),
+                    Range::new(100.0, 200.0),
+                    Inc::new(1000i64),
+                ),
+            )
+            // 7 more columns via tuple
+            .columns7(
+                ["h", "i", "j", "k", "l", "m", "n"],
+                (
+                    Range::new(0i32, 10),
+                    Range::new(-1.0, 1.0),
+                    Constant::new(0i64),
+                    Inc::new(2000i64),
+                    Range::new(0i32, 50),
+                    Range::new(0.0, 0.5),
+                    Constant::new(99i64),
+                ),
+            )
+            // 7 more columns via tuple
+            .columns7(
+                ["o", "p", "q", "r", "s", "t", "u"],
+                (
+                    Range::new(10i32, 20),
+                    Range::new(2.0, 3.0),
+                    Constant::new(1i64),
+                    Inc::new(3000i64),
+                    Range::new(0i32, 25),
+                    Range::new(0.0, 0.1),
+                    Constant::new(77i64),
+                ),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(batch.num_columns(), 21);
+        assert_eq!(batch.num_rows(), 100);
+
+        // Verify column names span from a to u
+        assert_eq!(batch.schema().field(0).name(), "a");
+        assert_eq!(batch.schema().field(6).name(), "g");
+        assert_eq!(batch.schema().field(7).name(), "h");
+        assert_eq!(batch.schema().field(13).name(), "n");
+        assert_eq!(batch.schema().field(14).name(), "o");
+        assert_eq!(batch.schema().field(20).name(), "u");
     }
 }

@@ -16,12 +16,18 @@ impl<R, D> Seeded<R, D> {
 
 impl<R: Rng + Clone, T, D: Distribution<T>> Distribution<T> for Seeded<R, D> {
     type Iter = SeededIter<R, D::Iter>;
+    type Sinks = D::Sinks;
 
     fn sample(&mut self) -> Self::Iter {
         SeededIter {
             rng: self.rng.clone(),
             iter: self.dist.sample(),
         }
+    }
+
+    fn collect_columns(&mut self, _rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        // Seeded uses its own RNG, ignore the passed-in one
+        self.dist.collect_columns(&mut self.rng.clone(), n)
     }
 }
 

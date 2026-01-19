@@ -26,9 +26,15 @@ impl<T: Clone> SampleIter for ConstantIter<T> {
 
 impl<T: Clone> Distribution<T> for Constant<T> {
     type Iter = ConstantIter<T>;
+    type Sinks = Vec<T>;
 
     fn sample(&mut self) -> Self::Iter {
         ConstantIter(self.value.clone())
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

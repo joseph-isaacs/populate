@@ -42,12 +42,18 @@ where
     E: Distribution<T>,
 {
     type Iter = ListIter<L::Iter, E::Iter>;
+    type Sinks = Vec<Vec<T>>;
 
     fn sample(&mut self) -> Self::Iter {
         ListIter {
             lengths: self.lengths.sample(),
             elements: self.elements.sample(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

@@ -43,12 +43,18 @@ where
     F: FnMut(T) -> U + Clone,
 {
     type Iter = MapIter<D::Iter, F>;
+    type Sinks = Vec<U>;
 
     fn sample(&mut self) -> Self::Iter {
         MapIter {
             inner: self.inner.sample(),
             f: self.f.clone(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

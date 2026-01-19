@@ -1,5 +1,6 @@
 use crate::tables::{nation, part, region};
-use populate_core::{Distribution, IntoColumnIters, SampleIter};
+use populate_core::{CollectExt, Distribution, IntoColumnIters, SampleIter};
+use populate_sink_vec::Cols;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tpchgen::generators::{NationGenerator, PartGenerator, RegionGenerator};
@@ -42,45 +43,48 @@ fn test_parts_match_reference() {
         .take(100)
         .collect();
 
+    let n = reference.len();
     let mut dist = part::parts();
-    let mut iter = dist.sample();
     let mut rng = StdRng::seed_from_u64(0);
 
-    for (i, p) in reference.iter().enumerate() {
-        let (key, name, typ, size, container, mfgr, brand, retailprice) = iter.next(&mut rng);
+    // Collect column-by-column using the Cols collector
+    let (keys, names, types, sizes, containers, mfgrs, brands, retailprices) =
+        dist.collect::<Cols>(&mut rng, n);
 
+    // Verify all columns against reference
+    for (i, p) in reference.iter().enumerate() {
         // p_partkey
-        assert_eq!(key, p.p_partkey, "partkey mismatch at row {}", i);
+        assert_eq!(keys[i], p.p_partkey, "partkey mismatch at row {}", i);
 
         // p_name
         assert_eq!(
-            name,
+            names[i],
             p.p_name.to_string(),
             "name mismatch at row {}: ours={}, ref={}",
             i,
-            name,
+            names[i],
             p.p_name
         );
 
         // p_type
         assert_eq!(
-            typ, p.p_type,
+            types[i], p.p_type,
             "type mismatch at row {}: ours={}, ref={}",
-            i, typ, p.p_type
+            i, types[i], p.p_type
         );
 
         // p_size
         assert_eq!(
-            size, p.p_size as i64,
+            sizes[i], p.p_size as i64,
             "size mismatch at row {}: ours={}, ref={}",
-            i, size, p.p_size
+            i, sizes[i], p.p_size
         );
 
         // p_container
         assert_eq!(
-            container, p.p_container,
+            containers[i], p.p_container,
             "container mismatch at row {}: ours={}, ref={}",
-            i, container, p.p_container
+            i, containers[i], p.p_container
         );
 
         // p_mfgr (extract number from "Manufacturer#N" format)
@@ -91,9 +95,9 @@ fn test_parts_match_reference() {
             .parse()
             .unwrap();
         assert_eq!(
-            mfgr, ref_mfgr,
+            mfgrs[i], ref_mfgr,
             "mfgr mismatch at row {}: ours={}, ref={}",
-            i, mfgr, ref_mfgr
+            i, mfgrs[i], ref_mfgr
         );
 
         // p_brand (extract number from "Brand#NN" format)
@@ -104,17 +108,17 @@ fn test_parts_match_reference() {
             .parse()
             .unwrap();
         assert_eq!(
-            brand, ref_brand,
+            brands[i], ref_brand,
             "brand mismatch at row {}: ours={}, ref={}",
-            i, brand, ref_brand
+            i, brands[i], ref_brand
         );
 
         // p_retailprice (stored as cents, ref uses TPCHDecimal)
         let ref_price = p.p_retailprice.0;
         assert_eq!(
-            retailprice, ref_price,
+            retailprices[i], ref_price,
             "retailprice mismatch at row {}: ours={}, ref={}",
-            i, retailprice, ref_price
+            i, retailprices[i], ref_price
         );
     }
 }
@@ -184,4 +188,61 @@ fn test_parts_structure_supports_column_by_column() {
         assert!(a >= 1 && a <= 5);
         assert!(combined >= a * 10 + 1 && combined <= a * 10 + 5);
     }
+}
+
+/// Test that demonstrates column-by-column execution order using Tap.
+/// Run with `cargo test test_parts_column_order -- --nocapture` to see output.
+#[test]
+fn test_parts_column_order() {
+    use populate_builtins::{MapExt, Range, TapExt, inc};
+    use populate_core::unnest;
+
+    println!("\n=== Column-by-column collection order ===\n");
+
+    // Create a simplified parts-like distribution with tap on each column
+    let mut dist = (
+        inc(1i64).tap("partkey"),
+        Range::new(0i32, 100).tap("name_placeholder"),
+        Range::new(0i64, 1000).tap("type_placeholder"),
+        Range::new(1i64, 51).tap("size"),
+        Range::new(0i32, 100).tap("container_placeholder"),
+        unnest(
+            (Range::new(1i32, 6), Range::new(1i32, 6))
+                .map(|(a, b)| (a, a * 10 + b))
+                .tap("mfgr_brand_coupled"),
+        ),
+        inc(1i64)
+            .map(part::calculate_retail_price)
+            .tap("retailprice"),
+    );
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let n = 3;
+
+    // Collect column-by-column using the Cols collector
+    let (_keys, _names, _types, _sizes, _containers, _mfgrs, _brands, _prices) =
+        dist.collect::<Cols>(&mut rng, n);
+
+    println!("\n=== Collection complete ===\n");
+    println!("Expected order: all partkey, then all name, then all type, etc.");
+    println!(
+        "Coupled columns (mfgr_brand) are collected together row-by-row within their group.\n"
+    );
+}
+
+/// Test the actual parts() distribution with tapping to show column-by-column order.
+/// Run with `cargo test test_parts_tapped -- --nocapture` to see output.
+#[test]
+fn test_parts_tapped() {
+    println!("\n=== Real parts() column-by-column collection order ===\n");
+
+    let mut dist = part::parts_tapped();
+    let mut rng = StdRng::seed_from_u64(0);
+    let n = 3;
+
+    // Collect column-by-column using the Cols collector
+    let (_keys, _names, _types, _sizes, _containers, _mfgrs, _brands, _prices) =
+        dist.collect::<Cols>(&mut rng, n);
+
+    println!("\n=== Collection complete ===\n");
 }

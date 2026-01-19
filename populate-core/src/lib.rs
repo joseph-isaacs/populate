@@ -49,9 +49,19 @@ pub trait SampleIter: Clone {
 }
 
 /// A factory that produces sample iterators.
+///
+/// The `Sinks` type represents the columnar output format when collecting.
+/// For scalar distributions, this is `Vec<T>`.
+/// For tuple distributions, this is a tuple of Vecs like `(Vec<T1>, Vec<T2>, ...)`.
 pub trait Distribution<T> {
     type Iter: SampleIter<Item = T>;
+    type Sinks;
+
     fn sample(&mut self) -> Self::Iter;
+
+    /// Collect n values into columnar sinks.
+    /// For tuple distributions, this collects column-by-column for cache efficiency.
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks;
 }
 
 /// A sink that consumes values and produces an output.
@@ -102,9 +112,19 @@ where
     D2: Distribution<T2>,
 {
     type Iter = TupleIter2<D1::Iter, D2::Iter>;
+    type Sinks = (Vec<T1>, Vec<T2>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter2(self.0.sample(), self.1.sample())
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let (mut i1, mut i2) = self.sample().into_columns();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
+        (v1, v2)
     }
 }
 
@@ -127,9 +147,21 @@ where
     D3: Distribution<T3>,
 {
     type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
+    type Sinks = (Vec<T1>, Vec<T2>, Vec<T3>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter3(self.0.sample(), self.1.sample(), self.2.sample())
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let (mut i1, mut i2, mut i3) = self.sample().into_columns();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
+        v3.extend((0..n).map(|_| i3.next(rng)));
+        (v1, v2, v3)
     }
 }
 
@@ -160,6 +192,7 @@ where
     D4: Distribution<T4>,
 {
     type Iter = TupleIter4<D1::Iter, D2::Iter, D3::Iter, D4::Iter>;
+    type Sinks = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter4(
@@ -168,6 +201,19 @@ where
             self.2.sample(),
             self.3.sample(),
         )
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let (mut i1, mut i2, mut i3, mut i4) = self.sample().into_columns();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        let mut v4 = Vec::with_capacity(n);
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
+        v3.extend((0..n).map(|_| i3.next(rng)));
+        v4.extend((0..n).map(|_| i4.next(rng)));
+        (v1, v2, v3, v4)
     }
 }
 
@@ -201,6 +247,7 @@ where
     D5: Distribution<T5>,
 {
     type Iter = TupleIter5<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter>;
+    type Sinks = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>, Vec<T5>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter5(
@@ -210,6 +257,24 @@ where
             self.3.sample(),
             self.4.sample(),
         )
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        let mut v4 = Vec::with_capacity(n);
+        let mut v5 = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (a, b, c, d, e) = iter.next(rng);
+            v1.push(a);
+            v2.push(b);
+            v3.push(c);
+            v4.push(d);
+            v5.push(e);
+        }
+        (v1, v2, v3, v4, v5)
     }
 }
 
@@ -245,6 +310,7 @@ where
     D6: Distribution<T6>,
 {
     type Iter = TupleIter6<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter>;
+    type Sinks = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>, Vec<T5>, Vec<T6>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter6(
@@ -255,6 +321,26 @@ where
             self.4.sample(),
             self.5.sample(),
         )
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        let mut v4 = Vec::with_capacity(n);
+        let mut v5 = Vec::with_capacity(n);
+        let mut v6 = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (a, b, c, d, e, f) = iter.next(rng);
+            v1.push(a);
+            v2.push(b);
+            v3.push(c);
+            v4.push(d);
+            v5.push(e);
+            v6.push(f);
+        }
+        (v1, v2, v3, v4, v5, v6)
     }
 }
 
@@ -315,6 +401,15 @@ where
     D7: Distribution<T7>,
 {
     type Iter = TupleIter7<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter>;
+    type Sinks = (
+        Vec<T1>,
+        Vec<T2>,
+        Vec<T3>,
+        Vec<T4>,
+        Vec<T5>,
+        Vec<T6>,
+        Vec<T7>,
+    );
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter7(
@@ -326,6 +421,28 @@ where
             self.5.sample(),
             self.6.sample(),
         )
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        let mut v4 = Vec::with_capacity(n);
+        let mut v5 = Vec::with_capacity(n);
+        let mut v6 = Vec::with_capacity(n);
+        let mut v7 = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (a, b, c, d, e, f, g) = iter.next(rng);
+            v1.push(a);
+            v2.push(b);
+            v3.push(c);
+            v4.push(d);
+            v5.push(e);
+            v6.push(f);
+            v7.push(g);
+        }
+        (v1, v2, v3, v4, v5, v6, v7)
     }
 }
 
@@ -366,9 +483,32 @@ where
     D2: Distribution<(B, C)>,
 {
     type Iter = TupleUnnest2Iter<D1::Iter, D2::Iter>;
+    type Sinks = (Vec<A>, Vec<B>, Vec<C>);
 
     fn sample(&mut self) -> Self::Iter {
         TupleUnnest2Iter(self.0.sample(), self.1.0.sample())
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        // Column 0 is independent, columns 1-2 are coupled
+        let mut i1 = self.0.sample();
+        let mut i_coupled = self.1.0.sample();
+
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+
+        // Independent column first (column-by-column)
+        v1.extend((0..n).map(|_| i1.next(rng)));
+
+        // Coupled columns (row-by-row)
+        for _ in 0..n {
+            let (b, c) = i_coupled.next(rng);
+            v2.push(b);
+            v3.push(c);
+        }
+
+        (v1, v2, v3)
     }
 }
 
@@ -422,6 +562,16 @@ where
 {
     type Iter =
         TupleUnnest7At5Iter<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter>;
+    type Sinks = (
+        Vec<T1>,
+        Vec<T2>,
+        Vec<T3>,
+        Vec<T4>,
+        Vec<T5>,
+        Vec<T6>,
+        Vec<T7>,
+        Vec<T8>,
+    );
 
     fn sample(&mut self) -> Self::Iter {
         TupleUnnest7At5Iter(
@@ -433,6 +583,45 @@ where
             self.5.0.sample(),
             self.6.sample(),
         )
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        // Columns 0-4 and 6 are independent, column 5 is coupled (produces T6, T7)
+        let mut i1 = self.0.sample();
+        let mut i2 = self.1.sample();
+        let mut i3 = self.2.sample();
+        let mut i4 = self.3.sample();
+        let mut i5 = self.4.sample();
+        let mut i_coupled = self.5.0.sample();
+        let mut i7 = self.6.sample();
+
+        let mut v1 = Vec::with_capacity(n);
+        let mut v2 = Vec::with_capacity(n);
+        let mut v3 = Vec::with_capacity(n);
+        let mut v4 = Vec::with_capacity(n);
+        let mut v5 = Vec::with_capacity(n);
+        let mut v6 = Vec::with_capacity(n);
+        let mut v7 = Vec::with_capacity(n);
+        let mut v8 = Vec::with_capacity(n);
+
+        // Independent columns first (column-by-column for cache efficiency)
+        v1.extend((0..n).map(|_| i1.next(rng)));
+        v2.extend((0..n).map(|_| i2.next(rng)));
+        v3.extend((0..n).map(|_| i3.next(rng)));
+        v4.extend((0..n).map(|_| i4.next(rng)));
+        v5.extend((0..n).map(|_| i5.next(rng)));
+
+        // Coupled columns (row-by-row, unzip directly)
+        for _ in 0..n {
+            let (a, b) = i_coupled.next(rng);
+            v6.push(a);
+            v7.push(b);
+        }
+
+        // Last independent column
+        v8.extend((0..n).map(|_| i7.next(rng)));
+
+        (v1, v2, v3, v4, v5, v6, v7, v8)
     }
 }
 
@@ -1155,6 +1344,75 @@ where
     }
 }
 
+/// Trait for distributions that can produce individual column iterators (7 column groups).
+/// Position 5 is a coupled pair that produces a tuple.
+/// Used by 7-tuple distributions with Unnest at position 5.
+#[allow(clippy::type_complexity)]
+pub trait ColumnIters7At5<T1, T2, T3, T4, T5, T6, T7, T8> {
+    type I1: SampleIter<Item = T1>;
+    type I2: SampleIter<Item = T2>;
+    type I3: SampleIter<Item = T3>;
+    type I4: SampleIter<Item = T4>;
+    type I5: SampleIter<Item = T5>;
+    type I6: SampleIter<Item = (T6, T7)>; // Coupled pair
+    type I7: SampleIter<Item = T8>;
+
+    fn column_iters(
+        &mut self,
+    ) -> (
+        Self::I1,
+        Self::I2,
+        Self::I3,
+        Self::I4,
+        Self::I5,
+        Self::I6,
+        Self::I7,
+    );
+}
+
+// Implement ColumnIters7At5 for (D1, D2, D3, D4, D5, Unnest<D6>, D7)
+impl<T1, T2, T3, T4, T5, T6, T7, T8, D1, D2, D3, D4, D5, D6, D7>
+    ColumnIters7At5<T1, T2, T3, T4, T5, T6, T7, T8> for (D1, D2, D3, D4, D5, Unnest<D6>, D7)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<(T6, T7)>,
+    D7: Distribution<T8>,
+{
+    type I1 = D1::Iter;
+    type I2 = D2::Iter;
+    type I3 = D3::Iter;
+    type I4 = D4::Iter;
+    type I5 = D5::Iter;
+    type I6 = D6::Iter;
+    type I7 = D7::Iter;
+
+    fn column_iters(
+        &mut self,
+    ) -> (
+        Self::I1,
+        Self::I2,
+        Self::I3,
+        Self::I4,
+        Self::I5,
+        Self::I6,
+        Self::I7,
+    ) {
+        (
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+            self.5.0.sample(),
+            self.6.sample(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1453,7 @@ mod tests {
 
     impl Distribution<usize> for TrackingDist {
         type Iter = TrackingIter;
+        type Sinks = Vec<usize>;
 
         fn sample(&mut self) -> TrackingIter {
             TrackingIter {
@@ -1202,6 +1461,11 @@ mod tests {
                 counter: 0,
                 log: self.log.clone(),
             }
+        }
+
+        fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+            let mut iter = self.sample();
+            (0..n).map(|_| iter.next(rng)).collect()
         }
     }
 
@@ -1400,6 +1664,7 @@ mod tests {
 
     impl Distribution<(usize, usize)> for CoupledDist {
         type Iter = CoupledIter;
+        type Sinks = (Vec<usize>, Vec<usize>);
 
         fn sample(&mut self) -> CoupledIter {
             CoupledIter {
@@ -1408,6 +1673,18 @@ mod tests {
                 counter: 0,
                 log: self.log.clone(),
             }
+        }
+
+        fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+            let mut iter = self.sample();
+            let mut v1 = Vec::with_capacity(n);
+            let mut v2 = Vec::with_capacity(n);
+            for _ in 0..n {
+                let (a, b) = iter.next(rng);
+                v1.push(a);
+                v2.push(b);
+            }
+            (v1, v2)
         }
     }
 

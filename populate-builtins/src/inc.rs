@@ -21,11 +21,17 @@ macro_rules! impl_inc {
     ($t:ty) => {
         impl Distribution<$t> for Inc<$t> {
             type Iter = IncIter<$t>;
+            type Sinks = Vec<$t>;
 
             fn sample(&mut self) -> Self::Iter {
                 IncIter {
                     current: self.start,
                 }
+            }
+
+            fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+                let mut iter = self.sample();
+                (0..n).map(|_| iter.next(rng)).collect()
             }
         }
 

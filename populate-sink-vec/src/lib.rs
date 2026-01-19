@@ -1,8 +1,5 @@
 use populate_builtins::List;
-use populate_core::{
-    Collector, ColumnIters2, ColumnIters3, Distribution, IntoColumnIters, ListSink, Rng,
-    SampleIter, Sink,
-};
+use populate_core::{Collector, Distribution, IntoColumnIters, ListSink, Rng, SampleIter, Sink};
 
 // === Marker types for Vec collection ===
 
@@ -103,40 +100,41 @@ where
 }
 
 /// Collect any 2-column distribution into (Vec<T1>, Vec<T2>)
-/// Works for flat tuples (D1, D2) and any type implementing ColumnIters2.
+/// Uses Distribution::collect_columns for column-by-column collection.
 impl<T1, T2, D> Collector<D, (T1, T2)> for Cols
 where
-    D: ColumnIters2<T1, T2>,
+    D: Distribution<(T1, T2)>,
 {
-    type Output = (Vec<T1>, Vec<T2>);
+    type Output = D::Sinks;
 
     fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
-        let (mut i1, mut i2) = dist.column_iters();
-        let mut v1 = Vec::with_capacity(n);
-        let mut v2 = Vec::with_capacity(n);
-        v1.extend((0..n).map(|_| i1.next(rng)));
-        v2.extend((0..n).map(|_| i2.next(rng)));
-        (v1, v2)
+        dist.collect_columns(rng, n)
     }
 }
 
 /// Collect any 3-column distribution into (Vec<T1>, Vec<T2>, Vec<T3>)
-/// Works for flat tuples (D1, D2, D3), unnested (D1, Unnest<(D2, D3)>), etc.
+/// Uses Distribution::collect_columns for column-by-column collection.
 impl<T1, T2, T3, D> Collector<D, (T1, T2, T3)> for Cols
 where
-    D: ColumnIters3<T1, T2, T3>,
+    D: Distribution<(T1, T2, T3)>,
 {
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
+    type Output = D::Sinks;
 
     fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
-        let (mut i1, mut i2, mut i3) = dist.column_iters();
-        let mut v1 = Vec::with_capacity(n);
-        let mut v2 = Vec::with_capacity(n);
-        let mut v3 = Vec::with_capacity(n);
-        v1.extend((0..n).map(|_| i1.next(rng)));
-        v2.extend((0..n).map(|_| i2.next(rng)));
-        v3.extend((0..n).map(|_| i3.next(rng)));
-        (v1, v2, v3)
+        dist.collect_columns(rng, n)
+    }
+}
+
+/// Collect any 8-column distribution into 8 Vecs.
+/// Uses Distribution::collect_columns for column-by-column collection.
+impl<T1, T2, T3, T4, T5, T6, T7, T8, D> Collector<D, (T1, T2, T3, T4, T5, T6, T7, T8)> for Cols
+where
+    D: Distribution<(T1, T2, T3, T4, T5, T6, T7, T8)>,
+{
+    type Output = D::Sinks;
+
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        dist.collect_columns(rng, n)
     }
 }
 

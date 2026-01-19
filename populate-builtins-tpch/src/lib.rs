@@ -170,12 +170,18 @@ impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
 
 impl<'a, T: Clone, const N: usize> Distribution<[T; N]> for PickNBuffered<'a, T, N> {
     type Iter = PickNBufferedIter<'a, T, N>;
+    type Sinks = Vec<[T; N]>;
 
     fn sample(&mut self) -> Self::Iter {
         PickNBufferedIter {
             values: self.values,
             buffer: (0..self.values.len()).collect(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl rand::Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

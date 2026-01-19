@@ -48,12 +48,18 @@ where
     T: AsRef<str>,
 {
     type Iter = JoinIter<D::Iter>;
+    type Sinks = Vec<String>;
 
     fn sample(&mut self) -> Self::Iter {
         JoinIter {
             inner: self.inner.sample(),
             separator: self.separator,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -117,12 +123,18 @@ where
     T: AsRef<str>,
 {
     type Iter = JoinVecIter<D::Iter>;
+    type Sinks = Vec<String>;
 
     fn sample(&mut self) -> Self::Iter {
         JoinVecIter {
             inner: self.inner.sample(),
             separator: self.separator,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -185,12 +197,18 @@ where
     T2: AsRef<str>,
 {
     type Iter = JoinTuple2Iter<D::Iter>;
+    type Sinks = Vec<String>;
 
     fn sample(&mut self) -> Self::Iter {
         JoinTuple2Iter {
             inner: self.inner.sample(),
             separator: self.separator,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -248,12 +266,18 @@ where
     T3: AsRef<str>,
 {
     type Iter = JoinTuple3Iter<D::Iter>;
+    type Sinks = Vec<String>;
 
     fn sample(&mut self) -> Self::Iter {
         JoinTuple3Iter {
             inner: self.inner.sample(),
             separator: self.separator,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

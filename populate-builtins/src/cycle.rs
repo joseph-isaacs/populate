@@ -20,12 +20,18 @@ pub struct CycleIter<T, const N: usize> {
 
 impl<T: Clone, const N: usize> Distribution<T> for Cycle<T, N> {
     type Iter = CycleIter<T, N>;
+    type Sinks = Vec<T>;
 
     fn sample(&mut self) -> Self::Iter {
         CycleIter {
             values: self.values.clone(),
             index: 0,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

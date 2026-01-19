@@ -778,6 +778,7 @@ dependencies = [
  "populate-builtins",
  "populate-builtins-tpch",
  "populate-core",
+ "populate-sink-vec",
  "rand",
  "tpchgen",
 ]

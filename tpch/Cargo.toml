@@ -13,6 +13,7 @@ tpchgen = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }
+populate-sink-vec = { workspace = true }
 
 [[bench]]
 name = "part_bench"

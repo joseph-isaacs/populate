@@ -8,6 +8,7 @@ mod map;
 mod pick;
 mod range;
 mod seeded;
+mod tap;
 
 pub use combine::{Combine, combine2, combine3};
 pub use constant::{Constant, ConstantIter};
@@ -26,6 +27,7 @@ pub use pick::{
 use rand::Rng;
 pub use range::{Range, RangeIter, RangeSampler, range};
 pub use seeded::{Seeded, SeededIter};
+pub use tap::{Tap, TapExt, TapIter};
 
 // Re-export tuple types and unnest from core (they must be there due to orphan rules)
 use populate_core::Distribution;
@@ -65,4 +67,8 @@ pub fn pick_one_ref<T, I>(indices: I, values: &[T]) -> PickOneRef<'_, T, I> {
 
 pub fn pick<T, I, const N: usize>(indices: I, values: &[T]) -> Pick<'_, T, I, N> {
     Pick::new(values, indices)
+}
+
+pub fn tap<D>(label: &'static str, dist: D) -> Tap<D> {
+    Tap::new(label, dist)
 }

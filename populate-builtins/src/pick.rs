@@ -34,12 +34,18 @@ impl<T: Clone, II: SampleIter<Item = i64>> SampleIter for PickOneIter<'_, T, II>
 
 impl<'a, T: Clone, I: Distribution<i64>> Distribution<T> for PickOne<'a, T, I> {
     type Iter = PickOneIter<'a, T, I::Iter>;
+    type Sinks = Vec<T>;
 
     fn sample(&mut self) -> Self::Iter {
         PickOneIter {
             values: self.values,
             indices: self.indices.sample(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -82,12 +88,18 @@ impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II>
 
 impl<'a, T, I: Distribution<i64>> Distribution<&'a T> for PickOneRef<'a, T, I> {
     type Iter = PickOneRefIter<'a, T, I::Iter>;
+    type Sinks = Vec<&'a T>;
 
     fn sample(&mut self) -> Self::Iter {
         PickOneRefIter {
             values: self.values,
             indices: self.indices.sample(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -127,12 +139,18 @@ impl<'a, T: Clone, I: Distribution<i64>, const N: usize> Distribution<[T; N]>
     for Pick<'a, T, I, N>
 {
     type Iter = PickIter<'a, T, I::Iter, N>;
+    type Sinks = Vec<[T; N]>;
 
     fn sample(&mut self) -> Self::Iter {
         PickIter {
             values: self.values,
             indices: self.indices.sample(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 
@@ -206,12 +224,18 @@ impl<T: Clone, S: PickStrategy, const N: usize> SampleIter for PickNIter<'_, T, 
 
 impl<'a, T: Clone, S: PickStrategy, const N: usize> Distribution<[T; N]> for PickN<'a, T, S, N> {
     type Iter = PickNIter<'a, T, S, N>;
+    type Sinks = Vec<[T; N]>;
 
     fn sample(&mut self) -> Self::Iter {
         PickNIter {
             values: self.values,
             _phantom: PhantomData,
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

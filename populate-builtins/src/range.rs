@@ -68,6 +68,7 @@ pub struct RangeIter<T, S> {
 
 impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
     type Iter = RangeIter<T, S>;
+    type Sinks = Vec<T>;
 
     fn sample(&mut self) -> Self::Iter {
         RangeIter {
@@ -75,6 +76,11 @@ impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
             max: self.max.clone(),
             _phantom_data: Default::default(),
         }
+    }
+
+    fn collect_columns(&mut self, rng: &mut impl rand::Rng, n: usize) -> Self::Sinks {
+        let mut iter = self.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
     }
 }
 

@@ -8,6 +8,8 @@ publish = false
 populate = { path = "../populate", features = ["arrow", "json"] }
 rand.workspace = true
 arrow-cast = { workspace = true, features = ["prettyprint"] }
+arrow-array.workspace = true
+arrow-schema.workspace = true
 
 [[bin]]
 name = "arrow_table"
@@ -20,3 +22,7 @@ path = "vec_collection.rs"
 [[bin]]
 name = "json_output"
 path = "json_output.rs"
+
+[[bin]]
+name = "benchmark_row_vs_col"
+path = "benchmark_row_vs_col.rs"

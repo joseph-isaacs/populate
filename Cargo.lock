@@ -308,7 +308,9 @@ dependencies = [
 name = "examples"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
  "arrow-cast",
+ "arrow-schema",
  "populate",
  "rand",
 ]

@@ -8,7 +8,7 @@ pub trait SampleIter {
 
 /// Trait for types that can be split into head and tail.
 /// Scalars split to (Self, ()), tuples split to (Head, Tail).
-pub trait Splittable: 'static {
+pub trait Splittable {
     type Head: Splittable;
     type Tail: Splittable;
 }
@@ -99,7 +99,7 @@ impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> Splittable
 }
 
 /// Sink that accepts items and can be split into sub-sinks
-pub trait Sink<T: Splittable>: Sized + 'static {
+pub trait Sink<T: Splittable>: Sized {
     type HeadSink: Sink<T::Head>;
     type TailSink: Sink<T::Tail>;
 
@@ -218,23 +218,21 @@ impl<
     }
 }
 
-/// Distribution trait
+/// Distribution trait - basic interface for data generators
 pub trait Distribution {
-    type Item: Splittable;
+    type Item;
     type RowIter: SampleIter<Item = Self::Item>;
 
     fn row_iter(&mut self) -> Self::RowIter;
+}
 
+/// ColumnDistribution trait - distributions that support column-by-column collection
+pub trait ColumnDistribution: Distribution
+where
+    Self::Item: Splittable,
+{
     /// Collect n items into the sink, returning the sink.
-    /// Default implementation uses row_iter (row-by-row).
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
     where
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(sample_iter.next(rng));
-        }
-        sink
-    }
+        Self: Sized;
 }

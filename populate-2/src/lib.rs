@@ -4,7 +4,7 @@ pub mod traits;
 #[cfg(test)]
 mod tests {
     use crate::dist::{constant, map, range};
-    use crate::traits::{Distribution, SampleIter, Sink};
+    use crate::traits::{ColumnDistribution, Distribution, SampleIter, Sink, Splittable};
     use rand::rng;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -23,7 +23,7 @@ mod tests {
         range(0, 1)
     }
 
-    fn make_tuple() -> impl Distribution<Item = (i32, i64)> {
+    fn make_tuple() -> impl ColumnDistribution<Item = (i32, i64)> {
         (constant(1), range(0, 10))
     }
 
@@ -31,15 +31,15 @@ mod tests {
         map(range(0, 1), |x| x * 2)
     }
 
-    fn make_nested_tuple() -> impl Distribution<Item = ((i32, i64), i64)> {
+    fn make_nested_tuple() -> impl ColumnDistribution<Item = ((i32, i64), i64)> {
         ((constant(1i32), range(0, 1)), range(100, 10))
     }
 
-    fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)> {
+    fn make_3tuple() -> impl ColumnDistribution<Item = (i32, i64, bool)> {
         (constant(1i32), range(0, 10), constant(true))
     }
 
-    fn make_4tuple() -> impl Distribution<Item = (i32, i64, bool, f64)> {
+    fn make_4tuple() -> impl ColumnDistribution<Item = (i32, i64, bool, f64)> {
         (
             constant(1i32),
             range(0, 10),
@@ -48,9 +48,7 @@ mod tests {
         )
     }
 
-    fn make_tracked_3tuple(
-        log: &Rc<RefCell<Vec<&'static str>>>,
-    ) -> impl Distribution<Item = (i64, i64, i64)> {
+    fn make_tracked_3tuple(log: &Log) -> impl ColumnDistribution<Item = (i64, i64, i64)> {
         (
             tracked("COL1", range(0, 1), log),
             tracked("COL2", range(100, 1), log),
@@ -58,9 +56,7 @@ mod tests {
         )
     }
 
-    fn make_tracked_4tuple(
-        log: &Rc<RefCell<Vec<&'static str>>>,
-    ) -> impl Distribution<Item = (i64, i64, i64, i64)> {
+    fn make_tracked_4tuple(log: &Log) -> impl ColumnDistribution<Item = (i64, i64, i64, i64)> {
         (
             tracked("COL1", range(0, 1), log),
             tracked("COL2", range(100, 1), log),
@@ -78,7 +74,9 @@ mod tests {
         sink: &mut S,
         n: usize,
         rng: &mut impl rand::Rng,
-    ) {
+    ) where
+        D::Item: Splittable,
+    {
         let mut iter = dist.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -188,13 +186,13 @@ mod tests {
     struct Tracked<D> {
         name: &'static str,
         inner: D,
-        log: Rc<RefCell<Vec<&'static str>>>,
+        log: Log,
     }
 
     struct TrackedIter<I> {
         name: &'static str,
         inner: I,
-        log: Rc<RefCell<Vec<&'static str>>>,
+        log: Log,
     }
 
     impl<I: SampleIter> SampleIter for TrackedIter<I> {
@@ -218,11 +216,28 @@ mod tests {
         }
     }
 
-    fn tracked<D: Distribution>(
-        name: &'static str,
-        inner: D,
-        log: &Rc<RefCell<Vec<&'static str>>>,
-    ) -> Tracked<D> {
+    impl<D: ColumnDistribution> ColumnDistribution for Tracked<D>
+    where
+        D::Item: Splittable,
+    {
+        fn collect_into<S: Sink<Self::Item>>(
+            &mut self,
+            rng: &mut impl rand::Rng,
+            mut sink: S,
+            n: usize,
+        ) -> S
+        where
+            Self: Sized,
+        {
+            let mut sample_iter = self.row_iter();
+            for _ in 0..n {
+                sink.push(sample_iter.next(rng));
+            }
+            sink
+        }
+    }
+
+    fn tracked<D: Distribution>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
         Tracked {
             name,
             inner,
@@ -230,9 +245,7 @@ mod tests {
         }
     }
 
-    fn make_tracked_tuple(
-        log: &Rc<RefCell<Vec<&'static str>>>,
-    ) -> impl Distribution<Item = (i64, i64)> {
+    fn make_tracked_tuple(log: &Log) -> impl ColumnDistribution<Item = (i64, i64)> {
         (
             tracked("COL1", range(0, 1), log),
             tracked("COL2", range(100, 1), log),
@@ -372,6 +385,162 @@ mod tests {
             *log.borrow(),
             vec![
                 "COL1", "COL1", "COL2", "COL2", "COL3", "COL3", "COL4", "COL4"
+            ]
+        );
+    }
+
+    // ========================================================================
+    // Nested tuple tests
+    // ========================================================================
+
+    fn make_nested_tracked(log: &Log) -> impl ColumnDistribution<Item = ((i64, i64), i64)> {
+        (
+            (
+                tracked("COL1", range(0, 1), log),
+                tracked("COL2", range(100, 1), log),
+            ),
+            tracked("COL3", range(1000, 1), log),
+        )
+    }
+
+    #[test]
+    fn test_nested_col_by_col() {
+        let mut dist = make_nested_tuple();
+        let ((inner1, inner2), outer) =
+            dist.collect_into(&mut rng(), ((Vec::new(), Vec::new()), Vec::new()), 3);
+        assert_eq!(inner1, vec![1, 1, 1]);
+        assert_eq!(inner2, vec![0, 1, 2]);
+        assert_eq!(outer, vec![100, 110, 120]);
+    }
+
+    #[test]
+    fn test_nested_col_by_col_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_nested_tracked(&log);
+        let sink = dist.collect_into(&mut rng(), ((Vec::new(), Vec::new()), Vec::new()), 2);
+
+        // Assert sink values
+        assert_eq!(sink.0.0, vec![0, 1]);
+        assert_eq!(sink.0.1, vec![100, 101]);
+        assert_eq!(sink.1, vec![1000, 1001]);
+
+        // Col-by-col order: COL1 (all), COL2 (all), COL3 (all)
+        assert_eq!(
+            *log.borrow(),
+            vec!["COL1", "COL1", "COL2", "COL2", "COL3", "COL3"]
+        );
+    }
+
+    // ========================================================================
+    // Map with tuple tests (non-independent columns)
+    // ========================================================================
+
+    fn make_map_with_independent(log: &Log) -> impl ColumnDistribution<Item = (i64, i64, i64)> {
+        // COL1 is independent, COL2 is mapped (depends on inner), COL3 is independent
+        (
+            tracked("COL1", range(0, 1), log),
+            map(tracked("MAP_SRC", range(100, 1), log), |x| x * 2),
+            tracked("COL3", range(1000, 1), log),
+        )
+    }
+
+    #[test]
+    fn test_map_in_tuple_values() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_map_with_independent(&log);
+        let sink = dist.collect_into(&mut rng(), (Vec::new(), Vec::new(), Vec::new()), 3);
+
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1, 2]); // COL1: 0, 1, 2
+        assert_eq!(sink.1, vec![200, 202, 204]); // MAP_SRC: 100, 101, 102 -> *2 = 200, 202, 204
+        assert_eq!(sink.2, vec![1000, 1001, 1002]); // COL3: 1000, 1001, 1002
+    }
+
+    #[test]
+    fn test_map_in_tuple_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_map_with_independent(&log);
+        let sink = dist.collect_into(&mut rng(), (Vec::new(), Vec::new(), Vec::new()), 3);
+
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1, 2]);
+        assert_eq!(sink.1, vec![200, 202, 204]);
+        assert_eq!(sink.2, vec![1000, 1001, 1002]);
+
+        // Order: COL1 (col-by-col), then MAP_SRC (row-by-row inside map), then COL3 (col-by-col)
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "COL1", "COL1", "COL1", // first column, all rows
+                "MAP_SRC", "MAP_SRC", "MAP_SRC", // map iterates row-by-row
+                "COL3", "COL3", "COL3" // third column, all rows
+            ]
+        );
+    }
+
+    // Map that takes a tuple and produces a tuple (coupled columns)
+    fn make_map_tuple_to_tuple(
+        log: &Log,
+    ) -> impl ColumnDistribution<Item = (i64, (i64, i64), i64)> {
+        // COL1 is independent, the map produces two coupled columns from two inputs
+        (
+            tracked("COL1", range(0, 1), log),
+            map(
+                (
+                    tracked("MAP_A", range(100, 1), log),
+                    tracked("MAP_B", range(1000, 1), log),
+                ),
+                |(a, b)| (a + b, a * b),
+            ),
+            tracked("COL2", range(0, 5), log),
+        )
+    }
+
+    #[test]
+    fn test_map_tuple_to_tuple_values() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_map_tuple_to_tuple(&log);
+        let sink = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), (Vec::new(), Vec::new()), Vec::new()),
+            3,
+        );
+
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1, 2]); // COL1
+        // MAP_A: 100, 101, 102; MAP_B: 1000, 1001, 1002
+        // sum: 1100, 1102, 1104; product: 100000, 101101, 102204
+        assert_eq!(sink.1.0, vec![1100, 1102, 1104]);
+        assert_eq!(sink.1.1, vec![100000, 101101, 102204]);
+    }
+
+    #[test]
+    fn test_map_tuple_to_tuple_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_map_tuple_to_tuple(&log);
+        let (outer1, (inner1, inner2), outer2) = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), (Vec::new(), Vec::new()), Vec::new()),
+            3,
+        );
+
+        // Assert sink values
+        assert_eq!(outer1, vec![0, 1, 2]);
+        assert_eq!(inner1, vec![1100, 1102, 1104]);
+        assert_eq!(inner2, vec![100000, 101101, 102204]);
+        assert_eq!(outer2, vec![100000, 101101, 102204]);
+
+        // Order: COL1 (col-by-col), then the map which iterates row-by-row
+        // Inside the map, each row samples MAP_A then MAP_B
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "COL1", "COL1", "COL1", // first column, all rows
+                // Map iterates row-by-row, each row does MAP_A then MAP_B
+                "MAP_A", "MAP_B", // row 0
+                "MAP_A", "MAP_B", // row 1
+                "MAP_A", "MAP_B", // row 2
+                "COL2", "COL2", "COL2"
             ]
         );
     }

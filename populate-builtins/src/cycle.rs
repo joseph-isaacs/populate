@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// A distribution that cycles through a fixed list of values.
 pub struct Cycle<T, const N: usize> {
@@ -36,6 +36,18 @@ impl<T: Clone, const N: usize> SampleIter for CycleIter<T, N> {
         let v = self.values[self.index].clone();
         self.index = (self.index + 1) % N;
         v
+    }
+}
+
+impl<T: Clone, const N: usize, S: SinkTuple<T>> CollectColumnar<S> for CycleIter<T, N> {
+    const IS_COLUMNAR: bool = true; // Leaf iterator is columnar
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

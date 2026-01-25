@@ -1,4 +1,4 @@
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// A distribution wrapper that prints a label each time a value is sampled.
 pub struct Print<D> {
@@ -32,6 +32,20 @@ impl<I: SampleIter> SampleIter for PrintIter<I> {
     fn next(&mut self, rng: &mut impl rand::Rng) -> Self::Item {
         println!("{}", self.label);
         self.inner.next(rng)
+    }
+}
+
+/// PrintIter preserves columnar capability from the inner iterator.
+impl<I: SampleIter, S: SinkTuple<I::Item>> CollectColumnar<S> for PrintIter<I> {
+    const IS_COLUMNAR: bool = false; // Print breaks columnar due to interleaved output
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl rand::Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            println!("{}", self.label);
+            sinks.push_row(self.inner.next(rng));
+        }
+        sinks.finish()
     }
 }
 

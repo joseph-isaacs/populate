@@ -888,6 +888,7 @@ dependencies = [
  "populate-builtins-tpch",
  "populate-core",
  "populate-derive",
+ "populate-sink-vec",
  "rand",
  "tpchgen",
  "tpchgen-arrow",

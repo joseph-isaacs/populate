@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 use std::marker::PhantomData;
 
 /// Maps the output of a distribution through a function.
@@ -34,6 +34,25 @@ where
 
     fn next(&mut self, rng: &mut impl Rng) -> U {
         (self.f)(self.inner.next(rng))
+    }
+}
+
+/// MapIter breaks columnar execution since the function can arbitrarily transform data.
+/// This implementation falls back to row-by-row collection.
+impl<I, F, T, U, S: SinkTuple<U>> CollectColumnar<S> for MapIter<I, F>
+where
+    I: SampleIter<Item = T>,
+    F: FnMut(T) -> U + Clone,
+{
+    const IS_COLUMNAR: bool = false; // Map breaks columnar
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        // Row-by-row fallback - can't do better since map can combine columns
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

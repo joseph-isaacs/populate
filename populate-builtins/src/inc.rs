@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// A distribution that produces incrementing values starting from a given value.
 pub struct Inc<T> {
@@ -36,6 +36,18 @@ macro_rules! impl_inc {
                 let v = self.current;
                 self.current += 1;
                 v
+            }
+        }
+
+        impl<S: SinkTuple<$t>> CollectColumnar<S> for IncIter<$t> {
+            const IS_COLUMNAR: bool = true; // Leaf iterator is columnar
+            type Output = S::Output;
+
+            fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+                for _ in 0..n {
+                    sinks.push_row(self.next(rng));
+                }
+                sinks.finish()
             }
         }
     };

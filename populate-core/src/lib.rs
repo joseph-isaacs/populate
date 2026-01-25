@@ -26,6 +26,36 @@ pub trait CollectExt<T>: Distribution<T> {
 // Blanket impl for all Distribution<T>
 impl<T, D: Distribution<T>> CollectExt<T> for D {}
 
+/// Extension trait that adds `collect_columnar` method to distributions.
+///
+/// This allows calling `dist.collect_columnar(rng, n, sinks)` directly on a distribution
+/// without needing to call `.sample()` first. Useful for `impl Distribution<T>` return types.
+pub trait DistributionCollectColumnarExt<T>: Distribution<T> + Sized {
+    fn collect_columnar<S>(
+        &mut self,
+        rng: &mut impl Rng,
+        n: usize,
+        sinks: S,
+    ) -> <Self::Iter as CollectColumnar<S>>::Output
+    where
+        Self::Iter: CollectColumnar<S>;
+}
+
+impl<T, D: Distribution<T>> DistributionCollectColumnarExt<T> for D {
+    fn collect_columnar<S>(
+        &mut self,
+        rng: &mut impl Rng,
+        n: usize,
+        sinks: S,
+    ) -> <Self::Iter as CollectColumnar<S>>::Output
+    where
+        Self::Iter: CollectColumnar<S>,
+    {
+        let iter = self.sample();
+        CollectColumnar::collect_columnar(iter, rng, n, sinks)
+    }
+}
+
 // === Core traits ===
 
 /// An infinite iterator that produces values using an RNG.
@@ -52,7 +82,6 @@ pub trait SampleIter: Clone {
     /// This is zero-allocation: values are generated and processed one at a time.
     /// Useful for column-by-column collection where all values from one column
     /// are processed before moving to the next.
-    #[inline]
     fn next_n_with<F>(&mut self, n: usize, rng: &mut impl Rng, mut f: F)
     where
         F: FnMut(Self::Item),
@@ -67,6 +96,23 @@ pub trait SampleIter: Clone {
 pub trait Distribution<T> {
     type Iter: SampleIter<Item = T>;
     fn sample(&mut self) -> Self::Iter;
+
+    /// Collect n values into sinks using columnar collection.
+    ///
+    /// This method is provided on the Distribution trait directly so that
+    /// `impl Distribution<T>` return types can use columnar collection.
+    fn collect_columnar<S>(
+        &mut self,
+        rng: &mut impl Rng,
+        n: usize,
+        sinks: S,
+    ) -> <Self::Iter as CollectColumnar<S>>::Output
+    where
+        Self::Iter: CollectColumnar<S>,
+    {
+        let iter = self.sample();
+        CollectColumnar::collect_columnar(iter, rng, n, sinks)
+    }
 }
 
 /// A sink that consumes values and produces an output.
@@ -355,6 +401,84 @@ where
             self.4.sample(),
             self.5.sample(),
             self.6.sample(),
+        )
+    }
+}
+
+/// Iterator for 8-tuple distributions.
+#[derive(Clone)]
+pub struct TupleIter8<I1, I2, I3, I4, I5, I6, I7, I8>(
+    pub I1,
+    pub I2,
+    pub I3,
+    pub I4,
+    pub I5,
+    pub I6,
+    pub I7,
+    pub I8,
+);
+
+impl<
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    I7: SampleIter,
+    I8: SampleIter,
+> SampleIter for TupleIter8<I1, I2, I3, I4, I5, I6, I7, I8>
+{
+    type Item = (
+        I1::Item,
+        I2::Item,
+        I3::Item,
+        I4::Item,
+        I5::Item,
+        I6::Item,
+        I7::Item,
+        I8::Item,
+    );
+
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        (
+            self.0.next(rng),
+            self.1.next(rng),
+            self.2.next(rng),
+            self.3.next(rng),
+            self.4.next(rng),
+            self.5.next(rng),
+            self.6.next(rng),
+            self.7.next(rng),
+        )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, T8, D1, D2, D3, D4, D5, D6, D7, D8>
+    Distribution<(T1, T2, T3, T4, T5, T6, T7, T8)> for (D1, D2, D3, D4, D5, D6, D7, D8)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<T6>,
+    D7: Distribution<T7>,
+    D8: Distribution<T8>,
+{
+    type Iter =
+        TupleIter8<D1::Iter, D2::Iter, D3::Iter, D4::Iter, D5::Iter, D6::Iter, D7::Iter, D8::Iter>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TupleIter8(
+            self.0.sample(),
+            self.1.sample(),
+            self.2.sample(),
+            self.3.sample(),
+            self.4.sample(),
+            self.5.sample(),
+            self.6.sample(),
+            self.7.sample(),
         )
     }
 }
@@ -672,4 +796,912 @@ where
         sink.end_list();
     }
     sink.finish()
+}
+
+// === Columnar collection traits ===
+
+/// A tuple of sinks that can receive values from a tuple row.
+/// This enables collecting tuple-producing iterators into separate column sinks.
+pub trait SinkTuple<Row>: Sized {
+    type Output;
+
+    /// Push a row, destructuring it into the individual sinks.
+    fn push_row(&mut self, row: Row);
+
+    /// Finish all sinks and return the outputs.
+    fn finish(self) -> Self::Output;
+}
+
+// SinkTuple implementations for tuples of sinks
+
+impl<S1: Sink<T1>, T1> SinkTuple<(T1,)> for (S1,) {
+    type Output = (S1::Output,);
+
+    fn push_row(&mut self, (a,): (T1,)) {
+        self.0.push(a);
+    }
+
+    fn finish(self) -> Self::Output {
+        (self.0.finish(),)
+    }
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, T1, T2> SinkTuple<(T1, T2)> for (S1, S2) {
+    type Output = (S1::Output, S2::Output);
+
+    fn push_row(&mut self, (a, b): (T1, T2)) {
+        self.0.push(a);
+        self.1.push(b);
+    }
+
+    fn finish(self) -> Self::Output {
+        (self.0.finish(), self.1.finish())
+    }
+}
+
+/// Trait for 2-column sink tuples with column-wise access.
+pub trait SinkTuple2<T1, T2>: SinkTuple<(T1, T2)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, T1, T2> SinkTuple2<T1, T2> for (S1, S2) {
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, T1, T2, T3> SinkTuple<(T1, T2, T3)>
+    for (S1, S2, S3)
+{
+    type Output = (S1::Output, S2::Output, S3::Output);
+
+    fn push_row(&mut self, (a, b, c): (T1, T2, T3)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+    }
+
+    fn finish(self) -> Self::Output {
+        (self.0.finish(), self.1.finish(), self.2.finish())
+    }
+}
+
+/// Trait for 3-column sink tuples with column-wise access.
+pub trait SinkTuple3<T1, T2, T3>: SinkTuple<(T1, T2, T3)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, T1, T2, T3> SinkTuple3<T1, T2, T3> for (S1, S2, S3) {
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>, T1, T2, T3, T4>
+    SinkTuple<(T1, T2, T3, T4)> for (S1, S2, S3, S4)
+{
+    type Output = (S1::Output, S2::Output, S3::Output, S4::Output);
+
+    fn push_row(&mut self, (a, b, c, d): (T1, T2, T3, T4)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+    }
+
+    fn finish(self) -> Self::Output {
+        (
+            self.0.finish(),
+            self.1.finish(),
+            self.2.finish(),
+            self.3.finish(),
+        )
+    }
+}
+
+/// Trait for 4-column sink tuples with column-wise access.
+pub trait SinkTuple4<T1, T2, T3, T4>: SinkTuple<(T1, T2, T3, T4)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+    fn push3(&mut self, v: T4);
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>, T1, T2, T3, T4>
+    SinkTuple4<T1, T2, T3, T4> for (S1, S2, S3, S4)
+{
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+    fn push3(&mut self, v: T4) {
+        self.3.push(v);
+    }
+}
+
+/// Trait for 5-column sink tuples with column-wise access.
+pub trait SinkTuple5<T1, T2, T3, T4, T5>: SinkTuple<(T1, T2, T3, T4, T5)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+    fn push3(&mut self, v: T4);
+    fn push4(&mut self, v: T5);
+}
+
+/// Trait for 6-column sink tuples with column-wise access.
+pub trait SinkTuple6<T1, T2, T3, T4, T5, T6>: SinkTuple<(T1, T2, T3, T4, T5, T6)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+    fn push3(&mut self, v: T4);
+    fn push4(&mut self, v: T5);
+    fn push5(&mut self, v: T6);
+}
+
+/// Trait for 7-column sink tuples with column-wise access.
+pub trait SinkTuple7<T1, T2, T3, T4, T5, T6, T7>: SinkTuple<(T1, T2, T3, T4, T5, T6, T7)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+    fn push3(&mut self, v: T4);
+    fn push4(&mut self, v: T5);
+    fn push5(&mut self, v: T6);
+    fn push6(&mut self, v: T7);
+}
+
+/// Trait for 8-column sink tuples with column-wise access.
+pub trait SinkTuple8<T1, T2, T3, T4, T5, T6, T7, T8>: SinkTuple<(T1, T2, T3, T4, T5, T6, T7, T8)> {
+    fn push0(&mut self, v: T1);
+    fn push1(&mut self, v: T2);
+    fn push2(&mut self, v: T3);
+    fn push3(&mut self, v: T4);
+    fn push4(&mut self, v: T5);
+    fn push5(&mut self, v: T6);
+    fn push6(&mut self, v: T7);
+    fn push7(&mut self, v: T8);
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>, S5: Sink<T5>, T1, T2, T3, T4, T5>
+    SinkTuple<(T1, T2, T3, T4, T5)> for (S1, S2, S3, S4, S5)
+{
+    type Output = (S1::Output, S2::Output, S3::Output, S4::Output, S5::Output);
+
+    fn push_row(&mut self, (a, b, c, d, e): (T1, T2, T3, T4, T5)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+        self.4.push(e);
+    }
+
+    fn finish(self) -> Self::Output {
+        (
+            self.0.finish(),
+            self.1.finish(),
+            self.2.finish(),
+            self.3.finish(),
+            self.4.finish(),
+        )
+    }
+}
+
+impl<S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>, S5: Sink<T5>, T1, T2, T3, T4, T5>
+    SinkTuple5<T1, T2, T3, T4, T5> for (S1, S2, S3, S4, S5)
+{
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+    fn push3(&mut self, v: T4) {
+        self.3.push(v);
+    }
+    fn push4(&mut self, v: T5) {
+        self.4.push(v);
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+> SinkTuple<(T1, T2, T3, T4, T5, T6)> for (S1, S2, S3, S4, S5, S6)
+{
+    type Output = (
+        S1::Output,
+        S2::Output,
+        S3::Output,
+        S4::Output,
+        S5::Output,
+        S6::Output,
+    );
+
+    fn push_row(&mut self, (a, b, c, d, e, f): (T1, T2, T3, T4, T5, T6)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+        self.4.push(e);
+        self.5.push(f);
+    }
+
+    fn finish(self) -> Self::Output {
+        (
+            self.0.finish(),
+            self.1.finish(),
+            self.2.finish(),
+            self.3.finish(),
+            self.4.finish(),
+            self.5.finish(),
+        )
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+> SinkTuple6<T1, T2, T3, T4, T5, T6> for (S1, S2, S3, S4, S5, S6)
+{
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+    fn push3(&mut self, v: T4) {
+        self.3.push(v);
+    }
+    fn push4(&mut self, v: T5) {
+        self.4.push(v);
+    }
+    fn push5(&mut self, v: T6) {
+        self.5.push(v);
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    S7: Sink<T7>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+    T7,
+> SinkTuple<(T1, T2, T3, T4, T5, T6, T7)> for (S1, S2, S3, S4, S5, S6, S7)
+{
+    type Output = (
+        S1::Output,
+        S2::Output,
+        S3::Output,
+        S4::Output,
+        S5::Output,
+        S6::Output,
+        S7::Output,
+    );
+
+    fn push_row(&mut self, (a, b, c, d, e, f, g): (T1, T2, T3, T4, T5, T6, T7)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+        self.4.push(e);
+        self.5.push(f);
+        self.6.push(g);
+    }
+
+    fn finish(self) -> Self::Output {
+        (
+            self.0.finish(),
+            self.1.finish(),
+            self.2.finish(),
+            self.3.finish(),
+            self.4.finish(),
+            self.5.finish(),
+            self.6.finish(),
+        )
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    S7: Sink<T7>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+    T7,
+> SinkTuple7<T1, T2, T3, T4, T5, T6, T7> for (S1, S2, S3, S4, S5, S6, S7)
+{
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+    fn push3(&mut self, v: T4) {
+        self.3.push(v);
+    }
+    fn push4(&mut self, v: T5) {
+        self.4.push(v);
+    }
+    fn push5(&mut self, v: T6) {
+        self.5.push(v);
+    }
+    fn push6(&mut self, v: T7) {
+        self.6.push(v);
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    S7: Sink<T7>,
+    S8: Sink<T8>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+    T7,
+    T8,
+> SinkTuple<(T1, T2, T3, T4, T5, T6, T7, T8)> for (S1, S2, S3, S4, S5, S6, S7, S8)
+{
+    type Output = (
+        S1::Output,
+        S2::Output,
+        S3::Output,
+        S4::Output,
+        S5::Output,
+        S6::Output,
+        S7::Output,
+        S8::Output,
+    );
+
+    fn push_row(&mut self, (a, b, c, d, e, f, g, h): (T1, T2, T3, T4, T5, T6, T7, T8)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+        self.4.push(e);
+        self.5.push(f);
+        self.6.push(g);
+        self.7.push(h);
+    }
+
+    fn finish(self) -> Self::Output {
+        (
+            self.0.finish(),
+            self.1.finish(),
+            self.2.finish(),
+            self.3.finish(),
+            self.4.finish(),
+            self.5.finish(),
+            self.6.finish(),
+            self.7.finish(),
+        )
+    }
+}
+
+impl<
+    S1: Sink<T1>,
+    S2: Sink<T2>,
+    S3: Sink<T3>,
+    S4: Sink<T4>,
+    S5: Sink<T5>,
+    S6: Sink<T6>,
+    S7: Sink<T7>,
+    S8: Sink<T8>,
+    T1,
+    T2,
+    T3,
+    T4,
+    T5,
+    T6,
+    T7,
+    T8,
+> SinkTuple8<T1, T2, T3, T4, T5, T6, T7, T8> for (S1, S2, S3, S4, S5, S6, S7, S8)
+{
+    fn push0(&mut self, v: T1) {
+        self.0.push(v);
+    }
+    fn push1(&mut self, v: T2) {
+        self.1.push(v);
+    }
+    fn push2(&mut self, v: T3) {
+        self.2.push(v);
+    }
+    fn push3(&mut self, v: T4) {
+        self.3.push(v);
+    }
+    fn push4(&mut self, v: T5) {
+        self.4.push(v);
+    }
+    fn push5(&mut self, v: T6) {
+        self.5.push(v);
+    }
+    fn push6(&mut self, v: T7) {
+        self.6.push(v);
+    }
+    fn push7(&mut self, v: T8) {
+        self.7.push(v);
+    }
+}
+
+/// Trait for joining sink tuple outputs after collection.
+pub trait JoinOutputs<Other> {
+    type Output;
+    fn join(self, other: Other) -> Self::Output;
+}
+
+impl<A, B> JoinOutputs<(B,)> for (A,) {
+    type Output = (A, B);
+    fn join(self, other: (B,)) -> (A, B) {
+        (self.0, other.0)
+    }
+}
+
+impl<A, B, C> JoinOutputs<(C,)> for (A, B) {
+    type Output = (A, B, C);
+    fn join(self, other: (C,)) -> (A, B, C) {
+        (self.0, self.1, other.0)
+    }
+}
+
+impl<A, B, C> JoinOutputs<(B, C)> for (A,) {
+    type Output = (A, B, C);
+    fn join(self, other: (B, C)) -> (A, B, C) {
+        (self.0, other.0, other.1)
+    }
+}
+
+impl<A, B, C, D> JoinOutputs<(D,)> for (A, B, C) {
+    type Output = (A, B, C, D);
+    fn join(self, other: (D,)) -> (A, B, C, D) {
+        (self.0, self.1, self.2, other.0)
+    }
+}
+
+impl<A, B, C, D> JoinOutputs<(C, D)> for (A, B) {
+    type Output = (A, B, C, D);
+    fn join(self, other: (C, D)) -> (A, B, C, D) {
+        (self.0, self.1, other.0, other.1)
+    }
+}
+
+impl<A, B, C, D> JoinOutputs<(B, C, D)> for (A,) {
+    type Output = (A, B, C, D);
+    fn join(self, other: (B, C, D)) -> (A, B, C, D) {
+        (self.0, other.0, other.1, other.2)
+    }
+}
+
+impl<A, B, C, D, E> JoinOutputs<(E,)> for (A, B, C, D) {
+    type Output = (A, B, C, D, E);
+    fn join(self, other: (E,)) -> (A, B, C, D, E) {
+        (self.0, self.1, self.2, self.3, other.0)
+    }
+}
+
+impl<A, B, C, D, E> JoinOutputs<(D, E)> for (A, B, C) {
+    type Output = (A, B, C, D, E);
+    fn join(self, other: (D, E)) -> (A, B, C, D, E) {
+        (self.0, self.1, self.2, other.0, other.1)
+    }
+}
+
+impl<A, B, C, D, E> JoinOutputs<(C, D, E)> for (A, B) {
+    type Output = (A, B, C, D, E);
+    fn join(self, other: (C, D, E)) -> (A, B, C, D, E) {
+        (self.0, self.1, other.0, other.1, other.2)
+    }
+}
+
+impl<A, B, C, D, E> JoinOutputs<(B, C, D, E)> for (A,) {
+    type Output = (A, B, C, D, E);
+    fn join(self, other: (B, C, D, E)) -> (A, B, C, D, E) {
+        (self.0, other.0, other.1, other.2, other.3)
+    }
+}
+
+impl<A, B, C, D, E, F> JoinOutputs<(F,)> for (A, B, C, D, E) {
+    type Output = (A, B, C, D, E, F);
+    fn join(self, other: (F,)) -> (A, B, C, D, E, F) {
+        (self.0, self.1, self.2, self.3, self.4, other.0)
+    }
+}
+
+impl<A, B, C, D, E, F> JoinOutputs<(E, F)> for (A, B, C, D) {
+    type Output = (A, B, C, D, E, F);
+    fn join(self, other: (E, F)) -> (A, B, C, D, E, F) {
+        (self.0, self.1, self.2, self.3, other.0, other.1)
+    }
+}
+
+impl<A, B, C, D, E, F> JoinOutputs<(D, E, F)> for (A, B, C) {
+    type Output = (A, B, C, D, E, F);
+    fn join(self, other: (D, E, F)) -> (A, B, C, D, E, F) {
+        (self.0, self.1, self.2, other.0, other.1, other.2)
+    }
+}
+
+impl<A, B, C, D, E, F> JoinOutputs<(C, D, E, F)> for (A, B) {
+    type Output = (A, B, C, D, E, F);
+    fn join(self, other: (C, D, E, F)) -> (A, B, C, D, E, F) {
+        (self.0, self.1, other.0, other.1, other.2, other.3)
+    }
+}
+
+impl<A, B, C, D, E, F> JoinOutputs<(B, C, D, E, F)> for (A,) {
+    type Output = (A, B, C, D, E, F);
+    fn join(self, other: (B, C, D, E, F)) -> (A, B, C, D, E, F) {
+        (self.0, other.0, other.1, other.2, other.3, other.4)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(G,)> for (A, B, C, D, E, F) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (G,)) -> (A, B, C, D, E, F, G) {
+        (self.0, self.1, self.2, self.3, self.4, self.5, other.0)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(F, G)> for (A, B, C, D, E) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (F, G)) -> (A, B, C, D, E, F, G) {
+        (self.0, self.1, self.2, self.3, self.4, other.0, other.1)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(E, F, G)> for (A, B, C, D) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (E, F, G)) -> (A, B, C, D, E, F, G) {
+        (self.0, self.1, self.2, self.3, other.0, other.1, other.2)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(D, E, F, G)> for (A, B, C) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (D, E, F, G)) -> (A, B, C, D, E, F, G) {
+        (self.0, self.1, self.2, other.0, other.1, other.2, other.3)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(C, D, E, F, G)> for (A, B) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (C, D, E, F, G)) -> (A, B, C, D, E, F, G) {
+        (self.0, self.1, other.0, other.1, other.2, other.3, other.4)
+    }
+}
+
+impl<A, B, C, D, E, F, G> JoinOutputs<(B, C, D, E, F, G)> for (A,) {
+    type Output = (A, B, C, D, E, F, G);
+    fn join(self, other: (B, C, D, E, F, G)) -> (A, B, C, D, E, F, G) {
+        (self.0, other.0, other.1, other.2, other.3, other.4, other.5)
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(H,)> for (A, B, C, D, E, F, G) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (H,)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, self.2, self.3, self.4, self.5, self.6, other.0,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(G, H)> for (A, B, C, D, E, F) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, self.2, self.3, self.4, self.5, other.0, other.1,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(F, G, H)> for (A, B, C, D, E) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (F, G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, self.2, self.3, self.4, other.0, other.1, other.2,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(E, F, G, H)> for (A, B, C, D) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (E, F, G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, self.2, self.3, other.0, other.1, other.2, other.3,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(D, E, F, G, H)> for (A, B, C) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (D, E, F, G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, self.2, other.0, other.1, other.2, other.3, other.4,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(C, D, E, F, G, H)> for (A, B) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (C, D, E, F, G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, self.1, other.0, other.1, other.2, other.3, other.4, other.5,
+        )
+    }
+}
+
+impl<A, B, C, D, E, F, G, H> JoinOutputs<(B, C, D, E, F, G, H)> for (A,) {
+    type Output = (A, B, C, D, E, F, G, H);
+    fn join(self, other: (B, C, D, E, F, G, H)) -> (A, B, C, D, E, F, G, H) {
+        (
+            self.0, other.0, other.1, other.2, other.3, other.4, other.5, other.6,
+        )
+    }
+}
+
+/// Trait for iterators that support columnar collection.
+///
+/// This enables true column-by-column collection for tuple iterators,
+/// where each column is fully generated before moving to the next.
+///
+/// The `Sinks` type parameter specifies what sink type this iterator can collect into.
+/// `IS_COLUMNAR` indicates whether this iterator can be collected column-by-column.
+pub trait CollectColumnar<Sinks>: SampleIter + Sized {
+    /// Whether this iterator supports true column-by-column collection.
+    /// - `true`: Each column can be generated independently
+    /// - `false`: Columns have dependencies and must be generated row-by-row
+    const IS_COLUMNAR: bool;
+
+    type Output;
+
+    /// Collect n values into the provided sinks.
+    /// For columnar iterators, this collects each column separately (column-by-column).
+    /// For non-columnar iterators, this collects row-by-row.
+    fn collect_columnar(self, rng: &mut impl Rng, n: usize, sinks: Sinks) -> Self::Output;
+}
+
+// === CollectColumnar implementations for TupleIterN ===
+
+impl<I1, I2, S> CollectColumnar<S> for TupleIter2<I1, I2>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    S: SinkTuple2<I1::Item, I2::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        // True column-by-column: collect all of column 0, then all of column 1
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, S> CollectColumnar<S> for TupleIter3<I1, I2, I3>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    S: SinkTuple3<I1::Item, I2::Item, I3::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, I4, S> CollectColumnar<S> for TupleIter4<I1, I2, I3, I4>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    S: SinkTuple4<I1::Item, I2::Item, I3::Item, I4::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        self.3.next_n_with(n, rng, |v| sinks.push3(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, I4, I5, S> CollectColumnar<S> for TupleIter5<I1, I2, I3, I4, I5>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    S: SinkTuple5<I1::Item, I2::Item, I3::Item, I4::Item, I5::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        self.3.next_n_with(n, rng, |v| sinks.push3(v));
+        self.4.next_n_with(n, rng, |v| sinks.push4(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, I4, I5, I6, S> CollectColumnar<S> for TupleIter6<I1, I2, I3, I4, I5, I6>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    S: SinkTuple6<I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        self.3.next_n_with(n, rng, |v| sinks.push3(v));
+        self.4.next_n_with(n, rng, |v| sinks.push4(v));
+        self.5.next_n_with(n, rng, |v| sinks.push5(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, I4, I5, I6, I7, S> CollectColumnar<S> for TupleIter7<I1, I2, I3, I4, I5, I6, I7>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    I7: SampleIter,
+    S: SinkTuple7<I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item, I7::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        self.3.next_n_with(n, rng, |v| sinks.push3(v));
+        self.4.next_n_with(n, rng, |v| sinks.push4(v));
+        self.5.next_n_with(n, rng, |v| sinks.push5(v));
+        self.6.next_n_with(n, rng, |v| sinks.push6(v));
+        sinks.finish()
+    }
+}
+
+impl<I1, I2, I3, I4, I5, I6, I7, I8, S> CollectColumnar<S>
+    for TupleIter8<I1, I2, I3, I4, I5, I6, I7, I8>
+where
+    I1: SampleIter,
+    I2: SampleIter,
+    I3: SampleIter,
+    I4: SampleIter,
+    I5: SampleIter,
+    I6: SampleIter,
+    I7: SampleIter,
+    I8: SampleIter,
+    S: SinkTuple8<I1::Item, I2::Item, I3::Item, I4::Item, I5::Item, I6::Item, I7::Item, I8::Item>,
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        self.0.next_n_with(n, rng, |v| sinks.push0(v));
+        self.1.next_n_with(n, rng, |v| sinks.push1(v));
+        self.2.next_n_with(n, rng, |v| sinks.push2(v));
+        self.3.next_n_with(n, rng, |v| sinks.push3(v));
+        self.4.next_n_with(n, rng, |v| sinks.push4(v));
+        self.5.next_n_with(n, rng, |v| sinks.push5(v));
+        self.6.next_n_with(n, rng, |v| sinks.push6(v));
+        self.7.next_n_with(n, rng, |v| sinks.push7(v));
+        sinks.finish()
+    }
+}
+
+/// Extension trait providing `collect_columnar` as a method on any `SampleIter`.
+///
+/// This allows calling `iter.collect_columnar(rng, n, sinks)` where the concrete
+/// iterator type implements `CollectColumnar<S>` for the given sink type `S`.
+pub trait CollectColumnarExt: SampleIter + Sized {
+    fn collect_columnar<S>(self, rng: &mut impl Rng, n: usize, sinks: S) -> <Self as CollectColumnar<S>>::Output
+    where
+        Self: CollectColumnar<S>;
+}
+
+impl<I: SampleIter + Sized> CollectColumnarExt for I {
+    fn collect_columnar<S>(self, rng: &mut impl Rng, n: usize, sinks: S) -> <Self as CollectColumnar<S>>::Output
+    where
+        Self: CollectColumnar<S>,
+    {
+        <Self as CollectColumnar<S>>::collect_columnar(self, rng, n, sinks)
+    }
 }

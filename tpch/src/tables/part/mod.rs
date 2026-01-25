@@ -64,16 +64,6 @@ pub fn calculate_retail_price(partkey: i64) -> i64 {
 
 /// Distribution producing PartRow tuples.
 pub fn parts() -> impl Distribution<PartRow> {
-    //     let key_retail = inc(1i64).map(|key| (key, calculate_retail_price(key)));
-    //
-    //     PartRow {
-    //         p_partkey: key_retail.0,
-    //         p_retailprice: key_retail.1,
-    //         p_name:                 seeded(rng(709314158), pick_n::<_, 5>(&COLORS)).join(" "), // p_name
-    // ...
-    //
-    //     }
-
     merge(
         merge(
             print("key_inc", inc(1i64)).map(|key| (key, calculate_retail_price(key))), // (key, retail)
@@ -83,7 +73,7 @@ pub fn parts() -> impl Distribution<PartRow> {
                     print("p_name", pick_n::<_, 5>(&COLORS)).join(" "),
                 ), // p_name
                 seeded(rng(1841581359), print("p_type", pick_one(&PART_TYPES))), // p_type
-                seeded(rng(1193163244), range(1, 51)),                           // p_size
+                seeded(rng(1193163244), print("p_size", range(1, 51))),          // p_size
                 seeded(rng(727633698), pick_one(&PART_CONTAINERS)),              // p_container
             ),
         ),

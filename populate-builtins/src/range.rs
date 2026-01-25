@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// Trait for range sampling strategies.
 pub trait RangeSampler<T>: Clone {
@@ -83,6 +83,18 @@ impl<T: Clone, S: RangeSampler<T>> SampleIter for RangeIter<T, S> {
 
     fn next(&mut self, rng: &mut impl rand::Rng) -> T {
         S::sample_range(rng, self.min.clone(), self.max.clone())
+    }
+}
+
+impl<T: Clone, RS: RangeSampler<T>, S: SinkTuple<T>> CollectColumnar<S> for RangeIter<T, RS> {
+    const IS_COLUMNAR: bool = true; // Leaf iterator is columnar
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl rand::Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

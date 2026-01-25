@@ -1,4 +1,4 @@
-use crate::traits::{Distribution, SampleIter, Sink, Splittable};
+use crate::traits::{ColumnDistribution, Distribution, SampleIter, Sink, Splittable};
 use rand::Rng;
 use std::marker::PhantomData;
 
@@ -18,7 +18,7 @@ pub struct ConstantIter<T> {
     value: T,
 }
 
-impl<T: Copy + 'static> SampleIter for ConstantIter<T> {
+impl<T: Copy> SampleIter for ConstantIter<T> {
     type Item = T;
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         self.value
@@ -31,6 +31,19 @@ impl<T: Copy + Splittable> Distribution for Constant<T> {
 
     fn row_iter(&mut self) -> Self::RowIter {
         ConstantIter { value: self.value }
+    }
+}
+
+impl<T: Copy + Splittable> ColumnDistribution for Constant<T> {
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+    where
+        Self: Sized,
+    {
+        let mut sample_iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
+        sink
     }
 }
 
@@ -73,17 +86,26 @@ impl Distribution for Range {
     }
 }
 
+impl ColumnDistribution for Range {
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+    where
+        Self: Sized,
+    {
+        let mut sample_iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
+        sink
+    }
+}
+
 // ============================================================================
 // Tuple (D1, D2) - col-by-col collection using split/unsplit
 // ============================================================================
 
 pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 
-impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2>
-where
-    I1::Item: 'static,
-    I2::Item: 'static,
-{
+impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     type Item = (I1::Item, I2::Item);
 
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
@@ -98,7 +120,13 @@ impl<D1: Distribution, D2: Distribution> Distribution for (D1, D2) {
     fn row_iter(&mut self) -> Self::RowIter {
         TupleIter2(self.0.row_iter(), self.1.row_iter())
     }
+}
 
+impl<D1: ColumnDistribution, D2: ColumnDistribution> ColumnDistribution for (D1, D2)
+where
+    D1::Item: Splittable,
+    D2::Item: Splittable,
+{
     /// Col-by-col collection: fills all of column 0, then all of column 1
     fn collect_into<S: Sink<(D1::Item, D2::Item)>>(
         &mut self,
@@ -122,12 +150,7 @@ impl<D1: Distribution, D2: Distribution> Distribution for (D1, D2) {
 
 pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 
-impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3>
-where
-    I1::Item: 'static,
-    I2::Item: 'static,
-    I3::Item: 'static,
-{
+impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
     type Item = (I1::Item, I2::Item, I3::Item);
 
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
@@ -142,7 +165,15 @@ impl<D1: Distribution, D2: Distribution, D3: Distribution> Distribution for (D1,
     fn row_iter(&mut self) -> Self::RowIter {
         TupleIter3(self.0.row_iter(), self.1.row_iter(), self.2.row_iter())
     }
+}
 
+impl<D1: ColumnDistribution, D2: ColumnDistribution, D3: ColumnDistribution> ColumnDistribution
+    for (D1, D2, D3)
+where
+    D1::Item: Splittable,
+    D2::Item: Splittable,
+    D3::Item: Splittable,
+{
     /// Col-by-col collection: fills columns in order
     fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item)>>(
         &mut self,
@@ -171,11 +202,6 @@ pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
     for TupleIter4<I1, I2, I3, I4>
-where
-    I1::Item: 'static,
-    I2::Item: 'static,
-    I3::Item: 'static,
-    I4::Item: 'static,
 {
     type Item = (I1::Item, I2::Item, I3::Item, I4::Item);
 
@@ -203,7 +229,16 @@ impl<D1: Distribution, D2: Distribution, D3: Distribution, D4: Distribution> Dis
             self.3.row_iter(),
         )
     }
+}
 
+impl<D1: ColumnDistribution, D2: ColumnDistribution, D3: ColumnDistribution, D4: ColumnDistribution>
+    ColumnDistribution for (D1, D2, D3, D4)
+where
+    D1::Item: Splittable,
+    D2::Item: Splittable,
+    D3::Item: Splittable,
+    D4::Item: Splittable,
+{
     /// Col-by-col collection: fills columns in order
     fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item, D4::Item)>>(
         &mut self,
@@ -254,7 +289,7 @@ pub struct MapIter<I, F> {
     f: F,
 }
 
-impl<I, F, Out: 'static> SampleIter for MapIter<I, F>
+impl<I, F, Out> SampleIter for MapIter<I, F>
 where
     I: SampleIter,
     F: Fn(I::Item) -> Out,
@@ -279,5 +314,23 @@ where
             source: self.source.row_iter(),
             f: self.f.clone(),
         }
+    }
+}
+
+impl<D, F, In, Out: Splittable> ColumnDistribution for Map<D, F, In, Out>
+where
+    D: Distribution<Item = In>,
+    F: Fn(In) -> Out + Clone,
+{
+    /// Map must use row-by-row collection since the function couples input columns
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+    where
+        Self: Sized,
+    {
+        let mut sample_iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
+        sink
     }
 }

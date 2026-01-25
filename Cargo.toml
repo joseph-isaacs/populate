@@ -1,28 +1,29 @@
 [workspace]
 members = [
-#    "populate",
+    #    "populate",
     "populate-2",
-#    "populate-core",
-#    "populate-builtins",
-#    "populate-builtins-tpch",
-#    "populate-derive",
-#    "populate-sink-vec",
-#    "populate-sink-arrow",
-#    "populate-sink-json",
-#    "examples",
-#    "tpch",
+    #    "populate-core",
+    #    "populate-builtins",
+    #    "populate-builtins-tpch",
+    #    "populate-derive",
+    #    "populate-sink-vec",
+    #    "populate-sink-arrow",
+    #    "populate-sink-json",
+    #    "examples",
+    #    "tpch",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.92"
 license = "MIT"
 
 [workspace.dependencies]
 divan = "0.1"
 rand = "0.9"
-arrow = {version = "57.2.0"}
+arrow = { version = "57.2.0" }
 arrow-array = "57"
 arrow-schema = "57"
 arrow-cast = "57"

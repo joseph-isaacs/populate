@@ -13,72 +13,41 @@ pub trait Splittable {
     type Tail: Splittable;
 }
 
+/// Extension trait for splitting values into head and tail components
+pub trait SplittableExt: Splittable + Sized {
+    fn split_head_tail(self) -> (Self::Head, Self::Tail);
+}
+
 // Base case: () splits to ((), ())
 impl Splittable for () {
     type Head = ();
     type Tail = ();
 }
 
-// Scalar implementations
-impl Splittable for i8 {
-    type Head = i8;
-    type Tail = ();
+impl SplittableExt for () {
+    fn split_head_tail(self) -> ((), ()) {
+        ((), ())
+    }
 }
 
-impl Splittable for i16 {
-    type Head = i16;
-    type Tail = ();
+// Macro to implement Splittable for scalar types
+macro_rules! impl_splittable_scalar {
+    ($($t:ty),*) => {
+        $(
+            impl Splittable for $t {
+                type Head = $t;
+                type Tail = ();
+            }
+            impl SplittableExt for $t {
+                fn split_head_tail(self) -> ($t, ()) {
+                    (self, ())
+                }
+            }
+        )*
+    };
 }
 
-impl Splittable for i32 {
-    type Head = i32;
-    type Tail = ();
-}
-
-impl Splittable for i64 {
-    type Head = i64;
-    type Tail = ();
-}
-
-impl Splittable for u8 {
-    type Head = u8;
-    type Tail = ();
-}
-
-impl Splittable for u16 {
-    type Head = u16;
-    type Tail = ();
-}
-
-impl Splittable for u32 {
-    type Head = u32;
-    type Tail = ();
-}
-
-impl Splittable for u64 {
-    type Head = u64;
-    type Tail = ();
-}
-
-impl Splittable for f32 {
-    type Head = f32;
-    type Tail = ();
-}
-
-impl Splittable for f64 {
-    type Head = f64;
-    type Tail = ();
-}
-
-impl Splittable for bool {
-    type Head = bool;
-    type Tail = ();
-}
-
-impl Splittable for String {
-    type Head = String;
-    type Tail = ();
-}
+impl_splittable_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, String);
 
 // Tuple implementations - split into head and tail
 impl<T1: Splittable, T2: Splittable> Splittable for (T1, T2) {
@@ -86,9 +55,21 @@ impl<T1: Splittable, T2: Splittable> Splittable for (T1, T2) {
     type Tail = T2;
 }
 
+impl<T1: Splittable, T2: Splittable> SplittableExt for (T1, T2) {
+    fn split_head_tail(self) -> (T1, T2) {
+        (self.0, self.1)
+    }
+}
+
 impl<T1: Splittable, T2: Splittable, T3: Splittable> Splittable for (T1, T2, T3) {
     type Head = T1;
     type Tail = (T2, T3);
+}
+
+impl<T1: Splittable, T2: Splittable, T3: Splittable> SplittableExt for (T1, T2, T3) {
+    fn split_head_tail(self) -> (T1, (T2, T3)) {
+        (self.0, (self.1, self.2))
+    }
 }
 
 impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> Splittable
@@ -96,6 +77,14 @@ impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> Splittable
 {
     type Head = T1;
     type Tail = (T2, T3, T4);
+}
+
+impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> SplittableExt
+    for (T1, T2, T3, T4)
+{
+    fn split_head_tail(self) -> (T1, (T2, T3, T4)) {
+        (self.0, (self.1, self.2, self.3))
+    }
 }
 
 /// Sink that accepts items and can be split into sub-sinks

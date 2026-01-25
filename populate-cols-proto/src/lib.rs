@@ -496,6 +496,49 @@ mod tests {
         assert_eq!(v2.len(), 5);  // Can collect different amounts!
     }
 
+    // Test returning split distributions from a function
+    fn make_split_dists() -> (Range<i32>, Range<i64>) {
+        let dist = (range(0i32, 100), range(0i64, 1000));
+        dist.split()
+    }
+
+    #[test]
+    fn test_split_across_fn_boundary() {
+        // Get distributions from a function
+        let (mut d1, mut d2) = make_split_dists();
+
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Use them independently
+        let v1: Vec<i32> = d1.collect::<Col>(&mut rng, 5);
+        let v2: Vec<i64> = d2.collect::<Col>(&mut rng, 3);
+
+        assert_eq!(v1.len(), 5);
+        assert_eq!(v2.len(), 3);
+    }
+
+    // Can also return with impl trait
+    fn make_pair_dists() -> (impl Distribution<i32>, impl Distribution<f64>) {
+        let dist = (range(0i32, 100), range(0.0f64, 1.0));
+        dist.split()
+    }
+
+    #[test]
+    fn test_split_with_impl_trait_return() {
+        let (mut d1, mut d2) = make_pair_dists();
+
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let mut iter1 = d1.sample();
+        let mut iter2 = d2.sample();
+
+        let v1 = iter1.next(&mut rng);
+        let v2 = iter2.next(&mut rng);
+
+        assert!(v1 >= 0 && v1 < 100);
+        assert!(v2 >= 0.0 && v2 < 1.0);
+    }
+
     #[test]
     fn test_map_cols_stays_bundled() {
         let mut dist = (range(0i64, 100), range(0i64, 100)).map(|(a, b)| (a + b, a * b));

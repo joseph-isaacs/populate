@@ -539,6 +539,32 @@ mod tests {
         assert!(v2 >= 0.0 && v2 < 1.0);
     }
 
+    // Return as a single Distribution, caller decides to split
+    fn make_tuple_dist() -> impl Distribution<(i32, f64)> + Split<Parts = (Range<i32>, Range<f64>)> {
+        (range(0i32, 100), range(0.0f64, 1.0))
+    }
+
+    #[test]
+    fn test_return_as_distribution_then_split() {
+        // Get as a single distribution
+        let mut dist = make_tuple_dist();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Can use as row-by-row
+        let pairs: Vec<(i32, f64)> = dist.collect::<Col>(&mut rng, 3);
+        assert_eq!(pairs.len(), 3);
+
+        // Or split at call site
+        let dist2 = make_tuple_dist();
+        let (mut d1, mut d2) = dist2.split();
+
+        let v1: Vec<i32> = d1.collect::<Col>(&mut rng, 5);
+        let v2: Vec<f64> = d2.collect::<Col>(&mut rng, 3);
+
+        assert_eq!(v1.len(), 5);
+        assert_eq!(v2.len(), 3);
+    }
+
     #[test]
     fn test_map_cols_stays_bundled() {
         let mut dist = (range(0i64, 100), range(0i64, 100)).map(|(a, b)| (a + b, a * b));

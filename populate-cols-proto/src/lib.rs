@@ -191,6 +191,27 @@ where
 
 // === Tuple distributions ===
 
+/// Trait for splitting a tuple distribution into its component distributions.
+/// This returns the actual distributions, not iterators.
+pub trait Split {
+    type Parts;
+    fn split(self) -> Self::Parts;
+}
+
+impl<D1, D2> Split for (D1, D2) {
+    type Parts = (D1, D2);
+    fn split(self) -> Self::Parts {
+        self  // Just return the tuple of distributions
+    }
+}
+
+impl<D1, D2, D3> Split for (D1, D2, D3) {
+    type Parts = (D1, D2, D3);
+    fn split(self) -> Self::Parts {
+        self
+    }
+}
+
 /// Row-by-row iterator for 2-tuples (newtype, implements SampleIter)
 #[derive(Clone)]
 pub struct TupleIter2<I1, I2>(pub I1, pub I2);
@@ -407,6 +428,72 @@ mod tests {
         let b = c2.next(&mut rng);
         assert!(a >= 0 && a < 100);
         assert!(b >= 0.0 && b < 1.0);
+    }
+
+    #[test]
+    fn test_split_gives_independent_distributions() {
+        // split() returns the actual distributions, not iterators
+        let dist = (range(0i64, 100), range(0.0f64, 1.0));
+
+        // Split into two independent distributions
+        let (mut d1, mut d2) = dist.split();
+
+        // Each distribution can be sampled independently
+        let mut rng1 = StdRng::seed_from_u64(42);
+        let mut rng2 = StdRng::seed_from_u64(99);
+
+        // Get iterators from each distribution
+        let mut iter1 = d1.sample();
+        let mut iter2 = d2.sample();
+
+        // Iterate them completely independently with different RNGs
+        let vals1: Vec<i64> = (0..5).map(|_| iter1.next(&mut rng1)).collect();
+        let vals2: Vec<f64> = (0..3).map(|_| iter2.next(&mut rng2)).collect();
+
+        assert_eq!(vals1.len(), 5);
+        assert_eq!(vals2.len(), 3);
+
+        // Can also get fresh iterators
+        let mut iter1b = d1.sample();
+        let another_val = iter1b.next(&mut rng1);
+        assert!(another_val >= 0 && another_val < 100);
+    }
+
+    #[test]
+    fn test_split_3tuple() {
+        let dist = (range(0i32, 10), constant(42i64), range(0.0f64, 1.0));
+
+        let (mut d1, mut d2, mut d3) = dist.split();
+
+        let mut rng = StdRng::seed_from_u64(0);
+
+        // Each is an independent distribution
+        let mut i1 = d1.sample();
+        let mut i2 = d2.sample();
+        let mut i3 = d3.sample();
+
+        let v1 = i1.next(&mut rng);
+        let v2 = i2.next(&mut rng);
+        let v3 = i3.next(&mut rng);
+
+        assert!(v1 >= 0 && v1 < 10);
+        assert_eq!(v2, 42);
+        assert!(v3 >= 0.0 && v3 < 1.0);
+    }
+
+    #[test]
+    fn test_split_then_collect_each() {
+        let dist = (range(0i32, 100), range(0i64, 1000));
+        let (mut d1, mut d2) = dist.split();
+
+        let mut rng = StdRng::seed_from_u64(0);
+
+        // Collect each distribution independently using Col
+        let v1: Vec<i32> = d1.collect::<Col>(&mut rng, 10);
+        let v2: Vec<i64> = d2.collect::<Col>(&mut rng, 5);  // Different count!
+
+        assert_eq!(v1.len(), 10);
+        assert_eq!(v2.len(), 5);  // Can collect different amounts!
     }
 
     #[test]

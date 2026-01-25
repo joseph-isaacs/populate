@@ -561,6 +561,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-cols-proto"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "populate-core"
 version = "0.1.0"
 dependencies = [

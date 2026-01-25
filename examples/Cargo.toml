@@ -20,3 +20,7 @@ path = "vec_collection.rs"
 [[bin]]
 name = "json_output"
 path = "json_output.rs"
+
+[[bin]]
+name = "profile_columnar"
+path = "profile_columnar.rs"

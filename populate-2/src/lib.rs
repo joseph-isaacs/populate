@@ -3,7 +3,7 @@ pub mod traits;
 
 #[cfg(test)]
 mod tests {
-    use crate::dist::{constant, map, range};
+    use crate::dist::{NotUnnest, constant, map, range, unnest};
     use crate::traits::{ColumnDistribution, Distribution, SampleIter, Sink, Splittable};
     use rand::rng;
     use std::cell::RefCell;
@@ -215,6 +215,8 @@ mod tests {
             }
         }
     }
+
+    impl<D: NotUnnest> NotUnnest for Tracked<D> {}
 
     impl<D: ColumnDistribution> ColumnDistribution for Tracked<D>
     where
@@ -528,7 +530,7 @@ mod tests {
         assert_eq!(outer1, vec![0, 1, 2]);
         assert_eq!(inner1, vec![1100, 1102, 1104]);
         assert_eq!(inner2, vec![100000, 101101, 102204]);
-        assert_eq!(outer2, vec![100000, 101101, 102204]);
+        assert_eq!(outer2, vec![0, 5, 10]);
 
         // Order: COL1 (col-by-col), then the map which iterates row-by-row
         // Inside the map, each row samples MAP_A then MAP_B
@@ -541,6 +543,109 @@ mod tests {
                 "MAP_A", "MAP_B", // row 1
                 "MAP_A", "MAP_B", // row 2
                 "COL2", "COL2", "COL2"
+            ]
+        );
+    }
+
+    // ========================================================================
+    // Unnest tests
+    // ========================================================================
+
+    fn make_unnested(log: &Log) -> impl ColumnDistribution<Item = (i64, i64, i64, i64)> {
+        (
+            tracked("COL1", range(0, 1), log),
+            unnest(map(
+                (
+                    tracked("MAP_A", range(100, 1), log),
+                    tracked("MAP_B", range(1000, 1), log),
+                ),
+                |(a, b)| (a + b, a * b),
+            )),
+            tracked("COL4", range(0, 5), log),
+        )
+    }
+
+    fn make_unnested_ind(log: &Log) -> impl ColumnDistribution<Item = (i64, i64, i64, i64)> {
+        (
+            tracked("COL1", range(0, 1), log),
+            unnest((
+                tracked("MAP_A", range(100, 1), log),
+                tracked("MAP_B", range(1000, 1), log),
+            )),
+            tracked("COL4", range(0, 5), log),
+        )
+    }
+
+    #[test]
+    fn test_unnest_values() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_unnested(&log);
+        let sink = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            3,
+        );
+
+        // Assert unnested sink values
+        assert_eq!(sink.0, vec![0, 1, 2]); // COL1
+        assert_eq!(sink.1, vec![1100, 1102, 1104]); // sum
+        assert_eq!(sink.2, vec![100000, 101101, 102204]); // product
+        assert_eq!(sink.3, vec![0, 5, 10]); // COL4
+    }
+
+    #[test]
+    fn test_unnest_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_unnested(&log);
+        let sink = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            3,
+        );
+
+        // Assert unnested sink values
+        assert_eq!(sink.0, vec![0, 1, 2]);
+        assert_eq!(sink.1, vec![1100, 1102, 1104]);
+        assert_eq!(sink.2, vec![100000, 101101, 102204]);
+        assert_eq!(sink.3, vec![0, 5, 10]);
+
+        // COL1 fills col-by-col, then MAP fills row-by-row, then COL4 fills col-by-col
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "COL1", "COL1", "COL1", // col 1 (col-by-col)
+                "MAP_A", "MAP_B", // row 0 of unnested map
+                "MAP_A", "MAP_B", // row 1 of unnested map
+                "MAP_A", "MAP_B", // row 2 of unnested map
+                "COL4", "COL4", "COL4", // col 4 (col-by-col)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_unnest_order_ind() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_unnested_ind(&log);
+        let sink = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            3,
+        );
+
+        // Assert unnested sink values
+        assert_eq!(sink.0, vec![0, 1, 2]);
+        assert_eq!(sink.1, vec![100, 101, 102]);
+        assert_eq!(sink.2, vec![1000, 1001, 1002]);
+        assert_eq!(sink.3, vec![0, 5, 10]);
+
+        // All columns fill col-by-col since inner tuple has independent distributions
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "COL1", "COL1", "COL1",   // col 1 (col-by-col)
+                "MAP_A", "MAP_A", "MAP_A", // col 2 (col-by-col)
+                "MAP_B", "MAP_B", "MAP_B", // col 3 (col-by-col)
+                "COL4", "COL4", "COL4",   // col 4 (col-by-col)
             ]
         );
     }

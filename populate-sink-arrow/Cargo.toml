@@ -11,3 +11,10 @@ populate-builtins.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "arrow_write_bench"
+harness = false

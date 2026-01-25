@@ -1,7 +1,7 @@
 use arrow_array::RecordBatch;
 use divan::{Bencher, black_box};
 use populate_builtins::{constant, range, seeded};
-use populate_core::CollectExt;
+use populate_core::{BatchCollectExt, CollectExt};
 use populate_sink_arrow::{RecordBatchRowW, RecordBatchW};
 use populate_sink_vec::{Col, Cols, ColumnarCols};
 use rand::rngs::{SmallRng, StdRng};
@@ -444,6 +444,66 @@ fn arrow_row_by_row_seeded_rng(bencher: Bencher) {
             seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
         );
         let result: RecordBatch = dist.collect::<RecordBatchRowW>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+// === BatchFill trait benchmarks ===
+
+/// Using BatchFill::collect_batch method
+#[divan::bench]
+fn batch_fill_trait_single_col(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mut dist = range(0i64, 1_000_000);
+        let result: Vec<i64> = dist.collect_batch(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// 7-tuple seeded columnar (per-column RNG)
+#[divan::bench]
+fn seeded_7tuple_columnar(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+            seeded(SmallRng::seed_from_u64(4), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(5), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(6), range(0.0f64, 1.0)),
+            seeded(SmallRng::seed_from_u64(7), range(0i64, 1_000_000)),
+        );
+        let result: (
+            Vec<i64>,
+            Vec<i32>,
+            Vec<f64>,
+            Vec<i64>,
+            Vec<i32>,
+            Vec<f64>,
+            Vec<i64>,
+        ) = dist.collect::<ColumnarCols>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// 7-tuple seeded row-by-row (per-column RNG)
+#[divan::bench]
+fn seeded_7tuple_row_by_row(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+            seeded(SmallRng::seed_from_u64(4), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(5), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(6), range(0.0f64, 1.0)),
+            seeded(SmallRng::seed_from_u64(7), range(0i64, 1_000_000)),
+        );
+        let result: Vec<(i64, i32, f64, i64, i32, f64, i64)> =
+            dist.collect::<Col>(&mut rng, black_box(ROWS));
         black_box(result)
     });
 }

@@ -429,4 +429,101 @@ mod tests {
         assert_eq!(order, vec![0, 0, 0]);
         assert_eq!(result.len(), 3);
     }
+
+    #[test]
+    fn test_auto_wrapper_provides_default_columnar_impl() {
+        // A distribution without explicit ColumnarDistribution impl
+        #[derive(Clone)]
+        struct CustomDist;
+
+        #[derive(Clone)]
+        struct CustomIter;
+
+        impl SampleIter for CustomIter {
+            type Item = i32;
+            fn next(&mut self, rng: &mut impl Rng) -> i32 {
+                rng.random_range(0..100)
+            }
+        }
+
+        impl Distribution<i32> for CustomDist {
+            type Iter = CustomIter;
+            fn sample(&mut self) -> Self::Iter {
+                CustomIter
+            }
+        }
+
+        // CustomDist doesn't impl ColumnarDistribution, so this won't compile:
+        // let mut dist = (range(0i32, 100), CustomDist);
+        // let _: (Vec<i32>, Vec<i32>) = dist.collect::<ColumnarCols>(&mut rng, 5);
+
+        // But wrapping in Auto makes it work:
+        use populate_core::auto;
+
+        let mut dist = (range(0i32, 100), auto(CustomDist));
+        let mut rng = StdRng::seed_from_u64(42);
+        let (v1, v2): (Vec<i32>, Vec<i32>) = dist.collect::<ColumnarCols>(&mut rng, 5);
+
+        assert_eq!(v1.len(), 5);
+        assert_eq!(v2.len(), 5);
+    }
+
+    #[test]
+    fn test_auto_wrapper_order() {
+        // Verify Auto-wrapped distributions participate correctly in columnar collection
+        use populate_core::auto;
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        // TrackedDist has explicit ColumnarDistribution impl
+        let tracked = TrackedDist {
+            col_id: 1,
+            log: log.clone(),
+        };
+
+        // Create another tracker without ColumnarDistribution impl
+        #[derive(Clone)]
+        struct UnimplDist {
+            col_id: u8,
+            log: Rc<RefCell<Vec<u8>>>,
+        }
+
+        #[derive(Clone)]
+        struct UnimplIter {
+            col_id: u8,
+            log: Rc<RefCell<Vec<u8>>>,
+        }
+
+        impl SampleIter for UnimplIter {
+            type Item = u8;
+            fn next(&mut self, _rng: &mut impl Rng) -> u8 {
+                self.log.borrow_mut().push(self.col_id);
+                self.col_id
+            }
+        }
+
+        impl Distribution<u8> for UnimplDist {
+            type Iter = UnimplIter;
+            fn sample(&mut self) -> Self::Iter {
+                UnimplIter {
+                    col_id: self.col_id,
+                    log: self.log.clone(),
+                }
+            }
+        }
+
+        let unimpl = UnimplDist {
+            col_id: 2,
+            log: log.clone(),
+        };
+
+        // Mix explicit impl with Auto-wrapped
+        let mut dist = (tracked, auto(unimpl));
+        let mut rng = StdRng::seed_from_u64(42);
+        let _: (Vec<u8>, Vec<u8>) = dist.collect::<ColumnarCols>(&mut rng, 3);
+
+        // Should still generate column-by-column: [1,1,1, 2,2,2]
+        let order = log.borrow().clone();
+        assert_eq!(order, vec![1, 1, 1, 2, 2, 2]);
+    }
 }

@@ -26,8 +26,8 @@
 
 // Re-export core traits
 pub use populate_core::{
-    BatchCollectExt, BatchFill, CollectExt, Collector, ColumnarDistribution, Distribution,
-    ListSink, SampleIter, Sink, TupleIter2, TupleIter3, collect_into, collect_into_column,
+    Auto, BatchCollectExt, BatchFill, CollectExt, Collector, ColumnarDistribution, Distribution,
+    ListSink, SampleIter, Sink, TupleIter2, TupleIter3, auto, collect_into, collect_into_column,
     collect_list_into, collect_struct2_into, collect_struct3_into,
 };
 

@@ -127,6 +127,47 @@ impl<T, D: Distribution<T>> ColumnarCollect for SingleCol<D, T> {
     }
 }
 
+/// Wrapper that provides a default `ColumnarDistribution` implementation for any `Distribution`.
+///
+/// Use this when you have a distribution that doesn't implement `ColumnarDistribution`
+/// but you want to use it with columnar collectors. The wrapped distribution is treated
+/// as a single bundled column.
+///
+/// # Example
+/// ```ignore
+/// // Custom distribution without ColumnarDistribution impl
+/// let custom = MyCustomDist::new();
+///
+/// // Won't compile - MyCustomDist doesn't impl ColumnarDistribution
+/// // let data = (range(0..100), custom).collect::<ColumnarCols>(&mut rng, 1000);
+///
+/// // Works - Auto provides default impl
+/// let data = (range(0..100), auto(custom)).collect::<ColumnarCols>(&mut rng, 1000);
+/// ```
+#[derive(Clone)]
+pub struct Auto<D>(pub D);
+
+/// Convenience function to wrap a distribution with Auto.
+pub fn auto<D>(dist: D) -> Auto<D> {
+    Auto(dist)
+}
+
+impl<T, D: Distribution<T>> Distribution<T> for Auto<D> {
+    type Iter = D::Iter;
+
+    fn sample(&mut self) -> Self::Iter {
+        self.0.sample()
+    }
+}
+
+impl<T, D: Distribution<T> + Clone> ColumnarDistribution<T> for Auto<D> {
+    type Cols = SingleCol<Self, T>;
+
+    fn into_cols(self) -> Self::Cols {
+        SingleCol::new(self)
+    }
+}
+
 /// A sink that consumes values and produces an output.
 pub trait Sink<T> {
     type Output;

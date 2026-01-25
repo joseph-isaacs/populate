@@ -299,54 +299,107 @@ mod strings {
 
     const NUM_ROWS: usize = 100_000;
 
+    // Builder with preallocation (knows size)
     #[divan::bench]
-    fn short_strings_10_chars(bencher: Bencher) {
+    fn short_10c_builder_prealloc(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings(&data.short_strings));
+        bencher.bench(|| build_with_capacity(&data.short_strings, 10));
     }
 
     #[divan::bench]
-    fn medium_strings_50_chars(bencher: Bencher) {
+    fn medium_50c_builder_prealloc(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings(&data.medium_strings));
+        bencher.bench(|| build_with_capacity(&data.medium_strings, 50));
     }
 
     #[divan::bench]
-    fn long_strings_200_chars(bencher: Bencher) {
+    fn long_200c_builder_prealloc(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings(&data.long_strings));
+        bencher.bench(|| build_with_capacity(&data.long_strings, 200));
+    }
+
+    // Builder without preallocation (fair comparison)
+    #[divan::bench]
+    fn short_10c_builder_no_prealloc(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        bencher.bench(|| build_no_capacity(&data.short_strings));
     }
 
     #[divan::bench]
-    fn short_strings_bulk(bencher: Bencher) {
+    fn medium_50c_builder_no_prealloc(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings_bulk(&data.short_strings));
+        bencher.bench(|| build_no_capacity(&data.medium_strings));
     }
 
     #[divan::bench]
-    fn medium_strings_bulk(bencher: Bencher) {
+    fn long_200c_builder_no_prealloc(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings_bulk(&data.medium_strings));
+        bencher.bench(|| build_no_capacity(&data.long_strings));
+    }
+
+    // Bulk from Vec<String>
+    #[divan::bench]
+    fn short_10c_from_vec(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        bencher.bench(|| build_from_vec(data.short_strings.clone()));
     }
 
     #[divan::bench]
-    fn long_strings_bulk(bencher: Bencher) {
+    fn medium_50c_from_vec(bencher: Bencher) {
         let data = StringData::new(NUM_ROWS);
-        bencher.bench(|| build_strings_bulk(&data.long_strings));
+        bencher.bench(|| build_from_vec(data.medium_strings.clone()));
     }
 
-    fn build_strings(data: &[String]) -> ArrayRef {
-        let mut builder = StringBuilder::with_capacity(data.len(), data.len() * 50);
+    #[divan::bench]
+    fn long_200c_from_vec(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        bencher.bench(|| build_from_vec(data.long_strings.clone()));
+    }
+
+    // Bulk from &[&str] slice
+    #[divan::bench]
+    fn short_10c_from_slice(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        let refs: Vec<&str> = data.short_strings.iter().map(|s| s.as_str()).collect();
+        bencher.bench(|| build_from_slice(&refs));
+    }
+
+    #[divan::bench]
+    fn medium_50c_from_slice(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        let refs: Vec<&str> = data.medium_strings.iter().map(|s| s.as_str()).collect();
+        bencher.bench(|| build_from_slice(&refs));
+    }
+
+    #[divan::bench]
+    fn long_200c_from_slice(bencher: Bencher) {
+        let data = StringData::new(NUM_ROWS);
+        let refs: Vec<&str> = data.long_strings.iter().map(|s| s.as_str()).collect();
+        bencher.bench(|| build_from_slice(&refs));
+    }
+
+    fn build_with_capacity(data: &[String], avg_len: usize) -> ArrayRef {
+        let mut builder = StringBuilder::with_capacity(data.len(), data.len() * avg_len);
         for s in data {
             builder.append_value(s);
         }
         black_box(Arc::new(builder.finish()))
     }
 
-    fn build_strings_bulk(data: &[String]) -> ArrayRef {
-        black_box(Arc::new(StringArray::from_iter_values(
-            data.iter().map(|s| s.as_str()),
-        )))
+    fn build_no_capacity(data: &[String]) -> ArrayRef {
+        let mut builder = StringBuilder::new();
+        for s in data {
+            builder.append_value(s);
+        }
+        black_box(Arc::new(builder.finish()))
+    }
+
+    fn build_from_vec(data: Vec<String>) -> ArrayRef {
+        black_box(Arc::new(StringArray::from(data)))
+    }
+
+    fn build_from_slice(data: &[&str]) -> ArrayRef {
+        black_box(Arc::new(StringArray::from(data.to_vec())))
     }
 }
 

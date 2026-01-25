@@ -54,6 +54,29 @@ pub trait Distribution<T> {
     fn sample(&mut self) -> Self::Iter;
 }
 
+/// Trait for distributions that can fill a slice in bulk for better performance.
+/// This is typically implemented for numeric distributions that can use `Rng::fill`.
+pub trait BatchFill<T> {
+    /// Fill the slice with random values using the RNG.
+    fn fill(&mut self, rng: &mut impl Rng, buf: &mut [T]);
+}
+
+/// Extension trait for batch collection using BatchFill.
+pub trait BatchCollectExt<T>: Distribution<T> {
+    /// Collect n samples into a pre-allocated Vec using batch fill if available.
+    fn collect_batch(&mut self, rng: &mut impl Rng, n: usize) -> Vec<T>
+    where
+        Self: BatchFill<T>,
+        T: Default + Clone,
+    {
+        let mut buf = vec![T::default(); n];
+        self.fill(rng, &mut buf);
+        buf
+    }
+}
+
+impl<T, D: Distribution<T>> BatchCollectExt<T> for D {}
+
 /// A distribution that can be decomposed into independent column groups for columnar generation.
 ///
 /// The `Cols` type represents how the distribution factors into independent pieces:
@@ -65,10 +88,43 @@ pub trait Distribution<T> {
 pub trait ColumnarDistribution<T>: Distribution<T> {
     /// The factorization of this distribution into independent column groups.
     /// Each element of `Cols` can be generated independently.
-    type Cols;
+    type Cols: ColumnarCollect;
 
     /// Decompose this distribution into its independent column groups.
     fn into_cols(self) -> Self::Cols;
+}
+
+/// Trait for columnar collection of distribution column groups.
+///
+/// This trait defines how to collect a `Cols` type in a columnar fashion:
+/// - For single distributions (via SingleCol): generates all n values into a Vec
+/// - For tuples: generates each element fully before the next
+pub trait ColumnarCollect {
+    /// The output type when collecting columnar-style.
+    type Output;
+
+    /// Collect n samples in columnar fashion.
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output;
+}
+
+/// Wrapper for a single-column distribution in columnar collection.
+/// This distinguishes single distributions from tuple distributions.
+pub struct SingleCol<D, T>(pub D, std::marker::PhantomData<T>);
+
+impl<D, T> SingleCol<D, T> {
+    /// Create a new SingleCol wrapper.
+    pub fn new(dist: D) -> Self {
+        SingleCol(dist, std::marker::PhantomData)
+    }
+}
+
+impl<T, D: Distribution<T>> ColumnarCollect for SingleCol<D, T> {
+    type Output = Vec<T>;
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = self.0.sample();
+        (0..n).map(|_| iter.next(rng)).collect()
+    }
 }
 
 /// A sink that consumes values and produces an output.
@@ -127,13 +183,24 @@ where
 
 impl<T1, T2, D1, D2> ColumnarDistribution<(T1, T2)> for (D1, D2)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
 {
-    type Cols = (D1, D2);
+    type Cols = (D1::Cols, D2::Cols);
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (self.0.into_cols(), self.1.into_cols())
+    }
+}
+
+// ColumnarCollect for 2-tuple of Cols
+impl<C1: ColumnarCollect, C2: ColumnarCollect> ColumnarCollect for (C1, C2) {
+    type Output = (C1::Output, C2::Output);
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        (v1, v2)
     }
 }
 
@@ -164,14 +231,28 @@ where
 
 impl<T1, T2, T3, D1, D2, D3> ColumnarDistribution<(T1, T2, T3)> for (D1, D2, D3)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
+    D3: ColumnarDistribution<T3>,
 {
-    type Cols = (D1, D2, D3);
+    type Cols = (D1::Cols, D2::Cols, D3::Cols);
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (self.0.into_cols(), self.1.into_cols(), self.2.into_cols())
+    }
+}
+
+// ColumnarCollect for 3-tuple of Cols
+impl<C1: ColumnarCollect, C2: ColumnarCollect, C3: ColumnarCollect> ColumnarCollect
+    for (C1, C2, C3)
+{
+    type Output = (C1::Output, C2::Output, C3::Output);
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        let v3 = self.2.columnar_collect(rng, n);
+        (v1, v2, v3)
     }
 }
 
@@ -215,15 +296,35 @@ where
 
 impl<T1, T2, T3, T4, D1, D2, D3, D4> ColumnarDistribution<(T1, T2, T3, T4)> for (D1, D2, D3, D4)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
+    D3: ColumnarDistribution<T3>,
+    D4: ColumnarDistribution<T4>,
 {
-    type Cols = (D1, D2, D3, D4);
+    type Cols = (D1::Cols, D2::Cols, D3::Cols, D4::Cols);
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (
+            self.0.into_cols(),
+            self.1.into_cols(),
+            self.2.into_cols(),
+            self.3.into_cols(),
+        )
+    }
+}
+
+// ColumnarCollect for 4-tuple of Cols
+impl<C1: ColumnarCollect, C2: ColumnarCollect, C3: ColumnarCollect, C4: ColumnarCollect>
+    ColumnarCollect for (C1, C2, C3, C4)
+{
+    type Output = (C1::Output, C2::Output, C3::Output, C4::Output);
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        let v3 = self.2.columnar_collect(rng, n);
+        let v4 = self.3.columnar_collect(rng, n);
+        (v1, v2, v3, v4)
     }
 }
 
@@ -272,16 +373,43 @@ where
 impl<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5> ColumnarDistribution<(T1, T2, T3, T4, T5)>
     for (D1, D2, D3, D4, D5)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
+    D3: ColumnarDistribution<T3>,
+    D4: ColumnarDistribution<T4>,
+    D5: ColumnarDistribution<T5>,
 {
-    type Cols = (D1, D2, D3, D4, D5);
+    type Cols = (D1::Cols, D2::Cols, D3::Cols, D4::Cols, D5::Cols);
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (
+            self.0.into_cols(),
+            self.1.into_cols(),
+            self.2.into_cols(),
+            self.3.into_cols(),
+            self.4.into_cols(),
+        )
+    }
+}
+
+// ColumnarCollect for 5-tuple of Cols
+impl<
+    C1: ColumnarCollect,
+    C2: ColumnarCollect,
+    C3: ColumnarCollect,
+    C4: ColumnarCollect,
+    C5: ColumnarCollect,
+> ColumnarCollect for (C1, C2, C3, C4, C5)
+{
+    type Output = (C1::Output, C2::Output, C3::Output, C4::Output, C5::Output);
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        let v3 = self.2.columnar_collect(rng, n);
+        let v4 = self.3.columnar_collect(rng, n);
+        let v5 = self.4.columnar_collect(rng, n);
+        (v1, v2, v3, v4, v5)
     }
 }
 
@@ -333,17 +461,54 @@ where
 impl<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6> ColumnarDistribution<(T1, T2, T3, T4, T5, T6)>
     for (D1, D2, D3, D4, D5, D6)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
-    D6: Distribution<T6>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
+    D3: ColumnarDistribution<T3>,
+    D4: ColumnarDistribution<T4>,
+    D5: ColumnarDistribution<T5>,
+    D6: ColumnarDistribution<T6>,
 {
-    type Cols = (D1, D2, D3, D4, D5, D6);
+    type Cols = (D1::Cols, D2::Cols, D3::Cols, D4::Cols, D5::Cols, D6::Cols);
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (
+            self.0.into_cols(),
+            self.1.into_cols(),
+            self.2.into_cols(),
+            self.3.into_cols(),
+            self.4.into_cols(),
+            self.5.into_cols(),
+        )
+    }
+}
+
+// ColumnarCollect for 6-tuple of Cols
+impl<
+    C1: ColumnarCollect,
+    C2: ColumnarCollect,
+    C3: ColumnarCollect,
+    C4: ColumnarCollect,
+    C5: ColumnarCollect,
+    C6: ColumnarCollect,
+> ColumnarCollect for (C1, C2, C3, C4, C5, C6)
+{
+    type Output = (
+        C1::Output,
+        C2::Output,
+        C3::Output,
+        C4::Output,
+        C5::Output,
+        C6::Output,
+    );
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        let v3 = self.2.columnar_collect(rng, n);
+        let v4 = self.3.columnar_collect(rng, n);
+        let v5 = self.4.columnar_collect(rng, n);
+        let v6 = self.5.columnar_collect(rng, n);
+        (v1, v2, v3, v4, v5, v6)
     }
 }
 
@@ -421,18 +586,67 @@ where
 impl<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>
     ColumnarDistribution<(T1, T2, T3, T4, T5, T6, T7)> for (D1, D2, D3, D4, D5, D6, D7)
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
-    D6: Distribution<T6>,
-    D7: Distribution<T7>,
+    D1: ColumnarDistribution<T1>,
+    D2: ColumnarDistribution<T2>,
+    D3: ColumnarDistribution<T3>,
+    D4: ColumnarDistribution<T4>,
+    D5: ColumnarDistribution<T5>,
+    D6: ColumnarDistribution<T6>,
+    D7: ColumnarDistribution<T7>,
 {
-    type Cols = (D1, D2, D3, D4, D5, D6, D7);
+    type Cols = (
+        D1::Cols,
+        D2::Cols,
+        D3::Cols,
+        D4::Cols,
+        D5::Cols,
+        D6::Cols,
+        D7::Cols,
+    );
 
     fn into_cols(self) -> Self::Cols {
-        self
+        (
+            self.0.into_cols(),
+            self.1.into_cols(),
+            self.2.into_cols(),
+            self.3.into_cols(),
+            self.4.into_cols(),
+            self.5.into_cols(),
+            self.6.into_cols(),
+        )
+    }
+}
+
+// ColumnarCollect for 7-tuple of Cols
+impl<
+    C1: ColumnarCollect,
+    C2: ColumnarCollect,
+    C3: ColumnarCollect,
+    C4: ColumnarCollect,
+    C5: ColumnarCollect,
+    C6: ColumnarCollect,
+    C7: ColumnarCollect,
+> ColumnarCollect for (C1, C2, C3, C4, C5, C6, C7)
+{
+    type Output = (
+        C1::Output,
+        C2::Output,
+        C3::Output,
+        C4::Output,
+        C5::Output,
+        C6::Output,
+        C7::Output,
+    );
+
+    fn columnar_collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let v1 = self.0.columnar_collect(rng, n);
+        let v2 = self.1.columnar_collect(rng, n);
+        let v3 = self.2.columnar_collect(rng, n);
+        let v4 = self.3.columnar_collect(rng, n);
+        let v5 = self.4.columnar_collect(rng, n);
+        let v6 = self.5.columnar_collect(rng, n);
+        let v7 = self.6.columnar_collect(rng, n);
+        (v1, v2, v3, v4, v5, v6, v7)
     }
 }
 

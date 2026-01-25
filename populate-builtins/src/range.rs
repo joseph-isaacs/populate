@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use populate_core::{ColumnarDistribution, Distribution, SampleIter};
+use populate_core::{BatchFill, ColumnarDistribution, Distribution, Rng, SampleIter, SingleCol};
 
 /// Trait for range sampling strategies.
 pub trait RangeSampler<T>: Clone {
@@ -33,6 +33,7 @@ impl_standard_sampler!(f64);
 
 // === Range distribution ===
 
+#[derive(Clone)]
 pub struct Range<T, S = ()> {
     min: T,
     max: T,
@@ -79,10 +80,10 @@ impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
 }
 
 impl<T: Clone, S: RangeSampler<T>> ColumnarDistribution<T> for Range<T, S> {
-    type Cols = Self;
+    type Cols = SingleCol<Self, T>;
 
     fn into_cols(self) -> Self::Cols {
-        self
+        SingleCol::new(self)
     }
 }
 
@@ -91,6 +92,17 @@ impl<T: Clone, S: RangeSampler<T>> SampleIter for RangeIter<T, S> {
 
     fn next(&mut self, rng: &mut impl rand::Rng) -> T {
         S::sample_range(rng, self.min.clone(), self.max.clone())
+    }
+}
+
+// === BatchFill implementation ===
+
+impl<T: Clone, S: RangeSampler<T>> BatchFill<T> for Range<T, S> {
+    fn fill(&mut self, rng: &mut impl Rng, buf: &mut [T]) {
+        let mut iter = self.sample();
+        for slot in buf.iter_mut() {
+            *slot = iter.next(rng);
+        }
     }
 }
 

@@ -1,8 +1,8 @@
-use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter, SingleCol};
 
 /// A distribution that uses its own RNG instead of the passed-in one.
 /// This allows subtrees to have independent random streams.
+#[derive(Clone)]
 pub struct Seeded<R, D> {
     rng: R,
     dist: D,
@@ -36,5 +36,14 @@ impl<R: Rng + Clone, I: SampleIter> SampleIter for SeededIter<R, I> {
 
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         self.iter.next(&mut self.rng)
+    }
+}
+
+impl<R: Rng + Clone, T, D: Distribution<T>> ColumnarDistribution<T> for Seeded<R, D> {
+    // Seeded stays bundled - it has its own RNG state
+    type Cols = SingleCol<Self, T>;
+
+    fn into_cols(self) -> Self::Cols {
+        SingleCol::new(self)
     }
 }

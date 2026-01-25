@@ -1,6 +1,7 @@
-use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter};
+use populate_core::{BatchFill, ColumnarDistribution, Distribution, Rng, SampleIter, SingleCol};
 
 /// A distribution that always produces the same value.
+#[derive(Clone)]
 pub struct Constant<T> {
     value: T,
 }
@@ -32,10 +33,18 @@ impl<T: Clone> Distribution<T> for Constant<T> {
 }
 
 impl<T: Clone> ColumnarDistribution<T> for Constant<T> {
-    type Cols = Self;
+    type Cols = SingleCol<Self, T>;
 
     fn into_cols(self) -> Self::Cols {
-        self
+        SingleCol::new(self)
+    }
+}
+
+impl<T: Clone> BatchFill<T> for Constant<T> {
+    fn fill(&mut self, _rng: &mut impl Rng, buf: &mut [T]) {
+        for slot in buf.iter_mut() {
+            *slot = self.value.clone();
+        }
     }
 }
 

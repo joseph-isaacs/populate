@@ -1,5 +1,7 @@
 use populate_builtins::List;
-use populate_core::{Collector, Distribution, ListSink, Rng, SampleIter, Sink};
+use populate_core::{
+    Collector, ColumnarCollect, ColumnarDistribution, Distribution, ListSink, Rng, SampleIter, Sink,
+};
 
 // === Marker types for Vec collection ===
 
@@ -106,197 +108,22 @@ where
     }
 }
 
-// === ColumnarCols implementations ===
-// These generate each column fully before moving to the next column.
+// === ColumnarCols implementation ===
+// Uses ColumnarDistribution::into_cols() and ColumnarCollect::columnar_collect()
+// to generate each column group fully before moving to the next.
 
-/// Collect 2-tuple distribution columnar-style into (Vec<T1>, Vec<T2>)
-impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for ColumnarCols
+/// Generic columnar collection using the ColumnarDistribution trait.
+/// This works for any distribution that implements ColumnarDistribution,
+/// including tuples of independent distributions and bundled distributions like Map.
+impl<T, D> Collector<D, T> for ColumnarCols
 where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
+    D: ColumnarDistribution<T> + Clone,
 {
-    type Output = (Vec<T1>, Vec<T2>);
+    type Output = <D::Cols as ColumnarCollect>::Output;
 
-    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
-        // Generate column 1 fully
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        // Then generate column 2 fully
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        (v1, v2)
-    }
-}
-
-/// Collect 3-tuple distribution columnar-style into (Vec<T1>, Vec<T2>, Vec<T3>)
-impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for ColumnarCols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-{
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>);
-
-    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        let mut iter3 = dist.2.sample();
-        let v3: Vec<T3> = (0..n).map(|_| iter3.next(rng)).collect();
-
-        (v1, v2, v3)
-    }
-}
-
-/// Collect 4-tuple distribution columnar-style
-impl<T1, T2, T3, T4, D1, D2, D3, D4> Collector<(D1, D2, D3, D4), (T1, T2, T3, T4)> for ColumnarCols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-{
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>);
-
-    fn collect(dist: &mut (D1, D2, D3, D4), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        let mut iter3 = dist.2.sample();
-        let v3: Vec<T3> = (0..n).map(|_| iter3.next(rng)).collect();
-
-        let mut iter4 = dist.3.sample();
-        let v4: Vec<T4> = (0..n).map(|_| iter4.next(rng)).collect();
-
-        (v1, v2, v3, v4)
-    }
-}
-
-/// Collect 5-tuple distribution columnar-style
-impl<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5> Collector<(D1, D2, D3, D4, D5), (T1, T2, T3, T4, T5)>
-    for ColumnarCols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
-{
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>, Vec<T5>);
-
-    fn collect(dist: &mut (D1, D2, D3, D4, D5), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        let mut iter3 = dist.2.sample();
-        let v3: Vec<T3> = (0..n).map(|_| iter3.next(rng)).collect();
-
-        let mut iter4 = dist.3.sample();
-        let v4: Vec<T4> = (0..n).map(|_| iter4.next(rng)).collect();
-
-        let mut iter5 = dist.4.sample();
-        let v5: Vec<T5> = (0..n).map(|_| iter5.next(rng)).collect();
-
-        (v1, v2, v3, v4, v5)
-    }
-}
-
-/// Collect 6-tuple distribution columnar-style
-impl<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6>
-    Collector<(D1, D2, D3, D4, D5, D6), (T1, T2, T3, T4, T5, T6)> for ColumnarCols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
-    D6: Distribution<T6>,
-{
-    type Output = (Vec<T1>, Vec<T2>, Vec<T3>, Vec<T4>, Vec<T5>, Vec<T6>);
-
-    fn collect(dist: &mut (D1, D2, D3, D4, D5, D6), rng: &mut impl Rng, n: usize) -> Self::Output {
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        let mut iter3 = dist.2.sample();
-        let v3: Vec<T3> = (0..n).map(|_| iter3.next(rng)).collect();
-
-        let mut iter4 = dist.3.sample();
-        let v4: Vec<T4> = (0..n).map(|_| iter4.next(rng)).collect();
-
-        let mut iter5 = dist.4.sample();
-        let v5: Vec<T5> = (0..n).map(|_| iter5.next(rng)).collect();
-
-        let mut iter6 = dist.5.sample();
-        let v6: Vec<T6> = (0..n).map(|_| iter6.next(rng)).collect();
-
-        (v1, v2, v3, v4, v5, v6)
-    }
-}
-
-/// Collect 7-tuple distribution columnar-style
-impl<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>
-    Collector<(D1, D2, D3, D4, D5, D6, D7), (T1, T2, T3, T4, T5, T6, T7)> for ColumnarCols
-where
-    D1: Distribution<T1>,
-    D2: Distribution<T2>,
-    D3: Distribution<T3>,
-    D4: Distribution<T4>,
-    D5: Distribution<T5>,
-    D6: Distribution<T6>,
-    D7: Distribution<T7>,
-{
-    type Output = (
-        Vec<T1>,
-        Vec<T2>,
-        Vec<T3>,
-        Vec<T4>,
-        Vec<T5>,
-        Vec<T6>,
-        Vec<T7>,
-    );
-
-    fn collect(
-        dist: &mut (D1, D2, D3, D4, D5, D6, D7),
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> Self::Output {
-        let mut iter1 = dist.0.sample();
-        let v1: Vec<T1> = (0..n).map(|_| iter1.next(rng)).collect();
-
-        let mut iter2 = dist.1.sample();
-        let v2: Vec<T2> = (0..n).map(|_| iter2.next(rng)).collect();
-
-        let mut iter3 = dist.2.sample();
-        let v3: Vec<T3> = (0..n).map(|_| iter3.next(rng)).collect();
-
-        let mut iter4 = dist.3.sample();
-        let v4: Vec<T4> = (0..n).map(|_| iter4.next(rng)).collect();
-
-        let mut iter5 = dist.4.sample();
-        let v5: Vec<T5> = (0..n).map(|_| iter5.next(rng)).collect();
-
-        let mut iter6 = dist.5.sample();
-        let v6: Vec<T6> = (0..n).map(|_| iter6.next(rng)).collect();
-
-        let mut iter7 = dist.6.sample();
-        let v7: Vec<T7> = (0..n).map(|_| iter7.next(rng)).collect();
-
-        (v1, v2, v3, v4, v5, v6, v7)
+    fn collect(dist: &mut D, rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut cols = dist.clone().into_cols();
+        cols.columnar_collect(rng, n)
     }
 }
 
@@ -425,6 +252,7 @@ mod tests {
 
     /// A distribution that records the order in which values are generated.
     /// Each value is tagged with a column ID.
+    #[derive(Clone)]
     struct TrackedDist {
         col_id: u8,
         log: Rc<RefCell<Vec<u8>>>,
@@ -453,6 +281,14 @@ mod tests {
                 col_id: self.col_id,
                 log: self.log.clone(),
             }
+        }
+    }
+
+    impl ColumnarDistribution<u8> for TrackedDist {
+        type Cols = populate_core::SingleCol<Self, u8>;
+
+        fn into_cols(self) -> Self::Cols {
+            populate_core::SingleCol::new(self)
         }
     }
 
@@ -563,5 +399,34 @@ mod tests {
 
         assert_eq!(v1.len(), 5);
         assert_eq!(v2.len(), 5);
+    }
+
+    #[test]
+    fn test_map_stays_bundled() {
+        // Map distributions should stay bundled because their output depends on input.
+        // When a mapped distribution produces a tuple, the entire map is generated
+        // as a single unit (row-by-row), not split into independent columns.
+        use populate_builtins::MapExt;
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        // Create a map that produces (col1, col2) from a single source
+        // The source tracks when it's called
+        let source = TrackedDist {
+            col_id: 0,
+            log: log.clone(),
+        };
+
+        // Map produces a 2-tuple from each source value
+        let mut dist = source.map(|v| (v, v + 10));
+
+        let mut rng = StdRng::seed_from_u64(42);
+        // Collecting into Vec of tuples should call source once per row
+        let result: Vec<(u8, u8)> = dist.collect::<Col>(&mut rng, 3);
+
+        // Source should be called 3 times (once per row)
+        let order = log.borrow().clone();
+        assert_eq!(order, vec![0, 0, 0]);
+        assert_eq!(result.len(), 3);
     }
 }

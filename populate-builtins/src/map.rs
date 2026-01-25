@@ -1,7 +1,8 @@
-use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter};
+use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter, SingleCol};
 use std::marker::PhantomData;
 
 /// Maps the output of a distribution through a function.
+#[derive(Clone)]
 pub struct Map<D, F, T> {
     inner: D,
     f: F,
@@ -57,10 +58,10 @@ where
     F: FnMut(T) -> U + Clone,
 {
     // Map stays bundled - the output depends on the input
-    type Cols = Self;
+    type Cols = SingleCol<Self, U>;
 
     fn into_cols(self) -> Self::Cols {
-        self
+        SingleCol::new(self)
     }
 }
 

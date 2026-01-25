@@ -5,8 +5,11 @@ pub mod traits;
 mod tests {
     use crate::dist::{constant, map, range};
     use crate::traits::{Distribution, SampleIter, Sink};
+    use rand::rng;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    type Log = Rc<RefCell<Vec<&'static str>>>;
 
     // ========================================================================
     // Helper functions returning impl Distribution
@@ -30,6 +33,40 @@ mod tests {
 
     fn make_nested_tuple() -> impl Distribution<Item = ((i32, i64), i64)> {
         ((constant(1i32), range(0, 1)), range(100, 10))
+    }
+
+    fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)> {
+        (constant(1i32), range(0, 10), constant(true))
+    }
+
+    fn make_4tuple() -> impl Distribution<Item = (i32, i64, bool, f64)> {
+        (
+            constant(1i32),
+            range(0, 10),
+            constant(true),
+            constant(2.5f64),
+        )
+    }
+
+    fn make_tracked_3tuple(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+    ) -> impl Distribution<Item = (i64, i64, i64)> {
+        (
+            tracked("COL1", range(0, 1), log),
+            tracked("COL2", range(100, 1), log),
+            tracked("COL3", range(1000, 1), log),
+        )
+    }
+
+    fn make_tracked_4tuple(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+    ) -> impl Distribution<Item = (i64, i64, i64, i64)> {
+        (
+            tracked("COL1", range(0, 1), log),
+            tracked("COL2", range(100, 1), log),
+            tracked("COL3", range(1000, 1), log),
+            tracked("COL4", range(10000, 1), log),
+        )
     }
 
     // ========================================================================
@@ -56,7 +93,7 @@ mod tests {
     fn test_constant_row_iter() {
         let mut dist = make_constant();
         let mut iter = dist.row_iter();
-        let mut rng = rand::rng();
+        let mut rng = rng();
         let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();
         assert_eq!(results, vec![42, 42, 42, 42, 42]);
     }
@@ -65,7 +102,7 @@ mod tests {
     fn test_range_row_iter() {
         let mut dist = make_range();
         let mut iter = dist.row_iter();
-        let mut rng = rand::rng();
+        let mut rng = rng();
         let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();
         assert_eq!(results, vec![0, 1, 2, 3, 4]);
     }
@@ -74,7 +111,7 @@ mod tests {
     fn test_tuple_row_iter() {
         let mut dist = make_tuple();
         let mut iter = dist.row_iter();
-        let mut rng = rand::rng();
+        let mut rng = rng();
         let results: Vec<_> = (0..4).map(|_| iter.next(&mut rng)).collect();
         assert_eq!(results, vec![(1, 0), (1, 10), (1, 20), (1, 30)]);
     }
@@ -83,7 +120,7 @@ mod tests {
     fn test_map_row_iter() {
         let mut dist = make_mapped();
         let mut iter = dist.row_iter();
-        let mut rng = rand::rng();
+        let mut rng = rng();
         let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();
         assert_eq!(results, vec![0, 2, 4, 6, 8]);
     }
@@ -92,7 +129,7 @@ mod tests {
     fn test_nested_tuple_row_iter() {
         let mut dist = make_nested_tuple();
         let mut iter = dist.row_iter();
-        let mut rng = rand::rng();
+        let mut rng = rng();
         let results: Vec<_> = (0..3).map(|_| iter.next(&mut rng)).collect();
         assert_eq!(results, vec![((1, 0), 100), ((1, 1), 110), ((1, 2), 120)]);
     }
@@ -105,7 +142,7 @@ mod tests {
     fn test_constant_collect() {
         let mut dist = make_constant();
         let mut sink = Vec::new();
-        collect(&mut dist, &mut sink, 5, &mut rand::rng());
+        collect(&mut dist, &mut sink, 5, &mut rng());
         assert_eq!(sink, vec![42, 42, 42, 42, 42]);
     }
 
@@ -113,7 +150,7 @@ mod tests {
     fn test_range_collect() {
         let mut dist = make_range();
         let mut sink = Vec::new();
-        collect(&mut dist, &mut sink, 5, &mut rand::rng());
+        collect(&mut dist, &mut sink, 5, &mut rng());
         assert_eq!(sink, vec![0, 1, 2, 3, 4]);
     }
 
@@ -121,7 +158,7 @@ mod tests {
     fn test_tuple_collect() {
         let mut dist = make_tuple();
         let mut sink = (Vec::new(), Vec::new());
-        collect(&mut dist, &mut sink, 4, &mut rand::rng());
+        collect(&mut dist, &mut sink, 4, &mut rng());
         assert_eq!(sink.0, vec![1, 1, 1, 1]);
         assert_eq!(sink.1, vec![0, 10, 20, 30]);
     }
@@ -130,7 +167,7 @@ mod tests {
     fn test_map_collect() {
         let mut dist = make_mapped();
         let mut sink = Vec::new();
-        collect(&mut dist, &mut sink, 5, &mut rand::rng());
+        collect(&mut dist, &mut sink, 5, &mut rng());
         assert_eq!(sink, vec![0, 2, 4, 6, 8]);
     }
 
@@ -138,9 +175,9 @@ mod tests {
     fn test_nested_tuple_collect() {
         let mut dist = make_nested_tuple();
         let mut sink = ((Vec::new(), Vec::new()), Vec::new());
-        collect(&mut dist, &mut sink, 3, &mut rand::rng());
-        assert_eq!(sink.0 .0, vec![1, 1, 1]);
-        assert_eq!(sink.0 .1, vec![0, 1, 2]);
+        collect(&mut dist, &mut sink, 3, &mut rng());
+        assert_eq!(sink.0.0, vec![1, 1, 1]);
+        assert_eq!(sink.0.1, vec![0, 1, 2]);
         assert_eq!(sink.1, vec![100, 110, 120]);
     }
 
@@ -204,16 +241,138 @@ mod tests {
 
     #[test]
     fn test_row_order() {
-        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = make_tracked_tuple(&log);
         let mut sink: (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
 
-        collect(&mut dist, &mut sink, 3, &mut rand::rng());
+        collect(&mut dist, &mut sink, 3, &mut rng());
 
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1, 2]);
+        assert_eq!(sink.1, vec![100, 101, 102]);
         // Row-by-row: COL1, COL2, COL1, COL2, COL1, COL2
         assert_eq!(
             *log.borrow(),
             vec!["COL1", "COL2", "COL1", "COL2", "COL1", "COL2"]
+        );
+    }
+
+    // ========================================================================
+    // Col-by-col collection tests
+    // ========================================================================
+
+    #[test]
+    fn test_col_by_col_basic() {
+        let mut dist = make_tuple();
+        let sink: (Vec<i32>, Vec<i64>) = (Vec::new(), Vec::new());
+
+        let sink = dist.collect_into(&mut rng(), sink, 4);
+
+        assert_eq!(sink.0, vec![1, 1, 1, 1]);
+        assert_eq!(sink.1, vec![0, 10, 20, 30]);
+    }
+
+    #[test]
+    fn test_col_by_col_order() {
+        let log: Log = Log::default();
+        let mut dist = make_tracked_tuple(&log);
+
+        let sink = dist.collect_into(&mut rng(), (Vec::new(), Vec::new()), 3);
+
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1, 2]);
+        assert_eq!(sink.1, vec![100, 101, 102]);
+        // Col-by-col: COL1, COL1, COL1, COL2, COL2, COL2
+        assert_eq!(
+            *log.borrow(),
+            vec!["COL1", "COL1", "COL1", "COL2", "COL2", "COL2"]
+        );
+    }
+
+    // ========================================================================
+    // 3-tuple tests
+    // ========================================================================
+
+    #[test]
+    fn test_3tuple_row_iter() {
+        let mut dist = make_3tuple();
+        let mut iter = dist.row_iter();
+        let mut rng = rng();
+        let results: Vec<_> = (0..3).map(|_| iter.next(&mut rng)).collect();
+        assert_eq!(results, vec![(1, 0, true), (1, 10, true), (1, 20, true)]);
+    }
+
+    #[test]
+    fn test_3tuple_col_by_col() {
+        let mut dist = make_3tuple();
+        let sink: (Vec<i32>, Vec<i64>, Vec<bool>) = (Vec::new(), Vec::new(), Vec::new());
+        let sink = dist.collect_into(&mut rng(), sink, 3);
+        assert_eq!(sink.0, vec![1, 1, 1]);
+        assert_eq!(sink.1, vec![0, 10, 20]);
+        assert_eq!(sink.2, vec![true, true, true]);
+    }
+
+    #[test]
+    fn test_3tuple_col_by_col_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_tracked_3tuple(&log);
+        let sink = dist.collect_into(&mut rng(), (Vec::new(), Vec::new(), Vec::new()), 2);
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1]);
+        assert_eq!(sink.1, vec![100, 101]);
+        assert_eq!(sink.2, vec![1000, 1001]);
+        // Col-by-col: COL1, COL1, COL2, COL2, COL3, COL3
+        assert_eq!(
+            *log.borrow(),
+            vec!["COL1", "COL1", "COL2", "COL2", "COL3", "COL3"]
+        );
+    }
+
+    // ========================================================================
+    // 4-tuple tests
+    // ========================================================================
+
+    #[test]
+    fn test_4tuple_row_iter() {
+        let mut dist = make_4tuple();
+        let mut iter = dist.row_iter();
+        let mut rng = rng();
+        let results: Vec<_> = (0..2).map(|_| iter.next(&mut rng)).collect();
+        assert_eq!(results, vec![(1, 0, true, 2.5), (1, 10, true, 2.5)]);
+    }
+
+    #[test]
+    fn test_4tuple_col_by_col() {
+        let mut dist = make_4tuple();
+        let sink: (Vec<i32>, Vec<i64>, Vec<bool>, Vec<f64>) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let sink = dist.collect_into(&mut rng(), sink, 3);
+        assert_eq!(sink.0, vec![1, 1, 1]);
+        assert_eq!(sink.1, vec![0, 10, 20]);
+        assert_eq!(sink.2, vec![true, true, true]);
+        assert_eq!(sink.3, vec![2.5, 2.5, 2.5]);
+    }
+
+    #[test]
+    fn test_4tuple_col_by_col_order() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = make_tracked_4tuple(&log);
+        let sink = dist.collect_into(
+            &mut rng(),
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            2,
+        );
+        // Assert sink values
+        assert_eq!(sink.0, vec![0, 1]);
+        assert_eq!(sink.1, vec![100, 101]);
+        assert_eq!(sink.2, vec![1000, 1001]);
+        assert_eq!(sink.3, vec![10000, 10001]);
+        // Col-by-col: COL1, COL1, COL2, COL2, COL3, COL3, COL4, COL4
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "COL1", "COL1", "COL2", "COL2", "COL3", "COL3", "COL4", "COL4"
+            ]
         );
     }
 }

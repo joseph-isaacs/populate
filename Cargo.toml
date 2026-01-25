@@ -1,15 +1,16 @@
 [workspace]
 members = [
-    "populate",
-    "populate-core",
-    "populate-builtins",
-    "populate-builtins-tpch",
-    "populate-derive",
-    "populate-sink-vec",
-    "populate-sink-arrow",
-    "populate-sink-json",
-    "examples",
-    "tpch",
+#    "populate",
+    "populate-2",
+#    "populate-core",
+#    "populate-builtins",
+#    "populate-builtins-tpch",
+#    "populate-derive",
+#    "populate-sink-vec",
+#    "populate-sink-arrow",
+#    "populate-sink-json",
+#    "examples",
+#    "tpch",
 ]
 resolver = "2"
 
@@ -28,10 +29,13 @@ arrow-cast = "57"
 serde_json = "1"
 tpchgen = "2.0"
 tpchgen-arrow = "2.0"
-populate-core = { path = "populate-core" }
-populate-derive = { path = "populate-derive" }
-populate-builtins = { path = "populate-builtins" }
-populate-builtins-tpch = { path = "populate-builtins-tpch" }
-populate-sink-vec = { path = "populate-sink-vec" }
-populate-sink-arrow = { path = "populate-sink-arrow" }
-populate-sink-json = { path = "populate-sink-json" }
+populate-2 = { path = "populate-2" }
+
+#populate-core = { path = "populate-core" }
+#populate-derive = { path = "populate-derive" }
+#populate-builtins = { path = "populate-builtins" }
+#populate-builtins-tpch = { path = "populate-builtins-tpch" }
+#populate-sink-vec = { path = "populate-sink-vec" }
+#populate-sink-arrow = { path = "populate-sink-arrow" }
+#populate-sink-json = { path = "populate-sink-json" }
+#

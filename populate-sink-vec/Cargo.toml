@@ -12,6 +12,8 @@ rand.workspace = true
 
 [dev-dependencies]
 divan.workspace = true
+populate-sink-arrow = { path = "../populate-sink-arrow" }
+arrow-array.workspace = true
 
 [[bench]]
 name = "columnar_bench"

@@ -1,6 +1,8 @@
-use populate::{range, Col, CollectExt, ColumnarCols};
-use rand::rngs::StdRng;
+#![allow(clippy::type_complexity)]
+
+use populate::{Col, CollectExt, ColumnarCols, range};
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 const ROWS: usize = 1_000_000;
 
@@ -38,8 +40,15 @@ fn main() {
                 range(0.0f64, 1.0),
                 range(0i64, 1_000_000),
             );
-            let result: (Vec<i64>, Vec<i32>, Vec<f64>, Vec<i64>, Vec<i32>, Vec<f64>, Vec<i64>) =
-                dist.collect::<ColumnarCols>(&mut rng, ROWS);
+            let result: (
+                Vec<i64>,
+                Vec<i32>,
+                Vec<f64>,
+                Vec<i64>,
+                Vec<i32>,
+                Vec<f64>,
+                Vec<i64>,
+            ) = dist.collect::<ColumnarCols>(&mut rng, ROWS);
             std::hint::black_box(result);
             println!("Columnar mode completed");
         }

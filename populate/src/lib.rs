@@ -33,7 +33,8 @@ pub use populate_core::{
 
 // Re-export built-in combinators
 pub use populate_builtins::{
-    Constant, ConstantIter, List, ListIter, Range, RangeIter, constant, list, range,
+    Constant, ConstantIter, List, ListIter, Range, RangeIter, Seeded, SeededIter, constant, list,
+    range, seeded,
 };
 
 // Re-export Vec collectors and sinks
@@ -43,7 +44,7 @@ pub use populate_sink_vec::{Col, Cols, ColumnarCols, ListCol, Rows, VecListSink,
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow::{
     ArrayRefW, ArrowListSink, ArrowListSinkType, ArrowSinkType, BooleanSink, IntoArrowArray,
-    ListArrayW, PrimitiveSink, RecordBatchW, StringSink,
+    ListArrayW, PrimitiveSink, RecordBatchRowW, RecordBatchW, StringSink,
 };
 
 // Also expose the sub-crates as modules for direct access

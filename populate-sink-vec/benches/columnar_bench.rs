@@ -1,8 +1,8 @@
 use arrow_array::RecordBatch;
 use divan::{Bencher, black_box};
-use populate_builtins::{constant, range};
+use populate_builtins::{constant, range, seeded};
 use populate_core::CollectExt;
-use populate_sink_arrow::RecordBatchW;
+use populate_sink_arrow::{RecordBatchRowW, RecordBatchW};
 use populate_sink_vec::{Col, Cols, ColumnarCols};
 use rand::rngs::{SmallRng, StdRng};
 use rand::{Rng, SeedableRng};
@@ -349,6 +349,101 @@ fn arrow_recordbatch_smallrng(bencher: Bencher) {
             range(0.0f64, 1.0),
         );
         let result: RecordBatch = dist.collect::<RecordBatchW>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+// === Arrow row-by-row benchmarks ===
+
+/// Arrow RecordBatch row-by-row with StdRng
+#[divan::bench]
+fn arrow_row_by_row_stdrng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut dist = (
+            range(0i64, 1_000_000),
+            range(0i32, 100_000),
+            range(0.0f64, 1.0),
+        );
+        let result: RecordBatch = dist.collect::<RecordBatchRowW>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// Arrow RecordBatch row-by-row with SmallRng
+#[divan::bench]
+fn arrow_row_by_row_smallrng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mut dist = (
+            range(0i64, 1_000_000),
+            range(0i32, 100_000),
+            range(0.0f64, 1.0),
+        );
+        let result: RecordBatch = dist.collect::<RecordBatchRowW>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+// === Seeded per-column RNG benchmarks ===
+
+/// Vec columnar with seeded per-column RNG (each column has its own RNG)
+#[divan::bench]
+fn vec_columnar_seeded_rng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0); // Dummy, not used by seeded columns
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+        );
+        let result: (Vec<i64>, Vec<i32>, Vec<f64>) =
+            dist.collect::<ColumnarCols>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// Vec row-by-row with seeded per-column RNG
+#[divan::bench]
+fn vec_row_by_row_seeded_rng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0); // Dummy, not used by seeded columns
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+        );
+        let result: Vec<(i64, i32, f64)> = dist.collect::<Col>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// Arrow columnar with seeded per-column RNG
+#[divan::bench]
+fn arrow_columnar_seeded_rng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0); // Dummy, not used by seeded columns
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+        );
+        let result: RecordBatch = dist.collect::<RecordBatchW>(&mut rng, black_box(ROWS));
+        black_box(result)
+    });
+}
+
+/// Arrow row-by-row with seeded per-column RNG
+#[divan::bench]
+fn arrow_row_by_row_seeded_rng(bencher: Bencher) {
+    bencher.bench(|| {
+        let mut rng = SmallRng::seed_from_u64(0); // Dummy, not used by seeded columns
+        let mut dist = (
+            seeded(SmallRng::seed_from_u64(1), range(0i64, 1_000_000)),
+            seeded(SmallRng::seed_from_u64(2), range(0i32, 100_000)),
+            seeded(SmallRng::seed_from_u64(3), range(0.0f64, 1.0)),
+        );
+        let result: RecordBatch = dist.collect::<RecordBatchRowW>(&mut rng, black_box(ROWS));
         black_box(result)
     });
 }

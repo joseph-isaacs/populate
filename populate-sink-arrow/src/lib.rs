@@ -281,7 +281,12 @@ impl<T: ArrowListSinkType + ArrowSinkType> IntoArrowArray for Vec<T> {
 pub struct ArrayRefW;
 
 /// Marker for collecting tuple distributions into RecordBatch (columnar).
+/// Generates each column fully before moving to the next column.
 pub struct RecordBatchW;
+
+/// Marker for collecting tuple distributions into RecordBatch row-by-row.
+/// Iterates through rows, pushing values to all column builders simultaneously.
+pub struct RecordBatchRowW;
 
 /// Marker for collecting List distributions into ArrayRef (ListArray).
 pub struct ListArrayW;
@@ -347,6 +352,78 @@ where
         let a1 = T1::collect_array(&mut iter.0, rng, n);
         let a2 = T2::collect_array(&mut iter.1, rng, n);
         let a3 = T3::collect_array(&mut iter.2, rng, n);
+
+        let schema = Schema::new(vec![
+            Field::new("c0", T1::data_type(), false),
+            Field::new("c1", T2::data_type(), false),
+            Field::new("c2", T3::data_type(), false),
+        ]);
+
+        RecordBatch::try_new(Arc::new(schema), vec![a1, a2, a3]).unwrap()
+    }
+}
+
+/// Collect 2-tuple distribution into RecordBatch row-by-row
+impl<T1, T2, D1, D2> Collector<(D1, D2), (T1, T2)> for RecordBatchRowW
+where
+    T1: ArrowSinkType,
+    T2: ArrowSinkType,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+{
+    type Output = RecordBatch;
+
+    fn collect(dist: &mut (D1, D2), rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut sink1 = T1::new_sink(n);
+        let mut sink2 = T2::new_sink(n);
+
+        // Row-by-row: interleaved writes to all columns
+        for _ in 0..n {
+            sink1.push(iter.0.next(rng));
+            sink2.push(iter.1.next(rng));
+        }
+
+        let a1 = sink1.finish();
+        let a2 = sink2.finish();
+
+        let schema = Schema::new(vec![
+            Field::new("c0", T1::data_type(), false),
+            Field::new("c1", T2::data_type(), false),
+        ]);
+
+        RecordBatch::try_new(Arc::new(schema), vec![a1, a2]).unwrap()
+    }
+}
+
+/// Collect 3-tuple distribution into RecordBatch row-by-row
+impl<T1, T2, T3, D1, D2, D3> Collector<(D1, D2, D3), (T1, T2, T3)> for RecordBatchRowW
+where
+    T1: ArrowSinkType,
+    T2: ArrowSinkType,
+    T3: ArrowSinkType,
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type Output = RecordBatch;
+
+    fn collect(dist: &mut (D1, D2, D3), rng: &mut impl Rng, n: usize) -> Self::Output {
+        let mut iter = dist.sample();
+        let mut sink1 = T1::new_sink(n);
+        let mut sink2 = T2::new_sink(n);
+        let mut sink3 = T3::new_sink(n);
+
+        // Row-by-row: interleaved writes to all columns
+        for _ in 0..n {
+            sink1.push(iter.0.next(rng));
+            sink2.push(iter.1.next(rng));
+            sink3.push(iter.2.next(rng));
+        }
+
+        let a1 = sink1.finish();
+        let a2 = sink2.finish();
+        let a3 = sink3.finish();
 
         let schema = Schema::new(vec![
             Field::new("c0", T1::data_type(), false),

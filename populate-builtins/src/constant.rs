@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// A distribution that always produces the same value.
 pub struct Constant<T> {
@@ -21,6 +21,18 @@ impl<T: Clone> SampleIter for ConstantIter<T> {
 
     fn next(&mut self, _rng: &mut impl Rng) -> T {
         self.0.clone()
+    }
+}
+
+impl<T: Clone, S: SinkTuple<T>> CollectColumnar<S> for ConstantIter<T> {
+    const IS_COLUMNAR: bool = true; // Leaf iterator is columnar
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 use std::marker::PhantomData;
 
 /// Joins array elements into a String with a separator.
@@ -38,6 +38,22 @@ where
             .map(|s| s.as_ref())
             .collect::<Vec<_>>()
             .join(self.separator)
+    }
+}
+
+impl<I, T, const N: usize, S: SinkTuple<String>> CollectColumnar<S> for JoinIter<I>
+where
+    I: SampleIter<Item = [T; N]>,
+    T: AsRef<str>,
+{
+    const IS_COLUMNAR: bool = false; // Join breaks columnar
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 
@@ -110,6 +126,22 @@ where
     }
 }
 
+impl<I, T, S: SinkTuple<String>> CollectColumnar<S> for JoinVecIter<I>
+where
+    I: SampleIter<Item = Vec<T>>,
+    T: AsRef<str>,
+{
+    const IS_COLUMNAR: bool = false;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
+    }
+}
+
 impl<D, T> Distribution<String> for JoinVec<D, T>
 where
     D: Distribution<Vec<T>>,
@@ -177,6 +209,23 @@ where
     }
 }
 
+impl<I, T1, T2, S: SinkTuple<String>> CollectColumnar<S> for JoinTuple2Iter<I>
+where
+    I: SampleIter<Item = (T1, T2)>,
+    T1: AsRef<str>,
+    T2: AsRef<str>,
+{
+    const IS_COLUMNAR: bool = false;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
+    }
+}
+
 impl<D, T1, T2> Distribution<String> for JoinTuple2<D, T1, T2>
 where
     D: Distribution<(T1, T2)>,
@@ -236,6 +285,24 @@ where
             self.separator,
             c.as_ref()
         )
+    }
+}
+
+impl<I, T1, T2, T3, S: SinkTuple<String>> CollectColumnar<S> for JoinTuple3Iter<I>
+where
+    I: SampleIter<Item = (T1, T2, T3)>,
+    T1: AsRef<str>,
+    T2: AsRef<str>,
+    T3: AsRef<str>,
+{
+    const IS_COLUMNAR: bool = false;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

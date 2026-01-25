@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 use crate::{Range, RangeSampler};
 
@@ -31,6 +31,20 @@ impl<T: Clone, II: SampleIter<Item = i64>> SampleIter for PickOneIter<'_, T, II>
     fn next(&mut self, rng: &mut impl Rng) -> T {
         let idx = self.indices.next(rng) as usize;
         self.values[idx].clone()
+    }
+}
+
+impl<T: Clone, II: SampleIter<Item = i64>, S: SinkTuple<T>> CollectColumnar<S>
+    for PickOneIter<'_, T, II>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 
@@ -88,6 +102,20 @@ impl<'a, T, II: SampleIter<Item = i64>> SampleIter for PickOneRefIter<'a, T, II>
     }
 }
 
+impl<'a, T, II: SampleIter<Item = i64>, S: SinkTuple<&'a T>> CollectColumnar<S>
+    for PickOneRefIter<'a, T, II>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
+    }
+}
+
 impl<'a, T, I: Distribution<i64>> Distribution<&'a T> for PickOneRef<'a, T, I> {
     type Iter = PickOneRefIter<'a, T, I::Iter>;
 
@@ -128,6 +156,20 @@ impl<T: Clone, II: SampleIter<Item = i64>, const N: usize> SampleIter for PickIt
             let idx = self.indices.next(rng) as usize;
             self.values[idx].clone()
         })
+    }
+}
+
+impl<T: Clone, II: SampleIter<Item = i64>, const N: usize, S: SinkTuple<[T; N]>> CollectColumnar<S>
+    for PickIter<'_, T, II, N>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 
@@ -209,6 +251,20 @@ impl<T: Clone, S: PickStrategy, const N: usize> SampleIter for PickNIter<'_, T, 
     fn next(&mut self, rng: &mut impl Rng) -> [T; N] {
         let indices = S::pick_indices::<N>(rng, self.values.len());
         std::array::from_fn(|i| self.values[indices[i]].clone())
+    }
+}
+
+impl<T: Clone, PS: PickStrategy, const N: usize, S: SinkTuple<[T; N]>> CollectColumnar<S>
+    for PickNIter<'_, T, PS, N>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

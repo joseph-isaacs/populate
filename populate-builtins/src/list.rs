@@ -1,5 +1,5 @@
 use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 /// A distribution for lists with a length distribution and element distribution.
 pub struct List<L: Distribution<usize>, E> {
@@ -33,6 +33,23 @@ where
     fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
         let len = self.lengths.next(rng);
         (0..len).map(|_| self.elements.next(rng)).collect()
+    }
+}
+
+impl<L, E, S> CollectColumnar<S> for ListIter<L, E>
+where
+    L: SampleIter<Item = usize>,
+    E: SampleIter,
+    S: SinkTuple<Vec<E::Item>>,
+{
+    const IS_COLUMNAR: bool = true; // List is a leaf column (produces Vec)
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

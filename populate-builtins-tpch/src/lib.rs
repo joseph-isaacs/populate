@@ -33,7 +33,7 @@ impl TpchRng {
     }
 
     /// Advance the seed and return the new value.
-    fn next_rand(&mut self) -> i64 {
+    pub fn next_rand(&mut self) -> i64 {
         self.seed = (self.seed * Self::MULTIPLIER) % Self::MODULUS;
         self.seed
     }
@@ -47,6 +47,33 @@ impl TpchRng {
         let range = (max - min).wrapping_add(1) as f64;
         let value = ((seed as f64 / Self::MODULUS as f64) * range) as i64;
         min + value
+    }
+
+    /// Skip n iterations using O(log n) binary exponentiation.
+    ///
+    /// For LCG: seed' = seed * multiplier^n mod modulus
+    /// This is equivalent to calling next_rand() n times, but in O(log n).
+    pub fn skip(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        // Compute multiplier^n mod modulus using binary exponentiation
+        let mult_pow_n = Self::mod_pow(Self::MULTIPLIER, n as u64, Self::MODULUS);
+        self.seed = (self.seed * mult_pow_n) % Self::MODULUS;
+    }
+
+    /// Compute base^exp mod modulus using binary exponentiation.
+    fn mod_pow(base: i64, mut exp: u64, modulus: i64) -> i64 {
+        let mut result = 1i64;
+        let mut base = base % modulus;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                result = (result * base) % modulus;
+            }
+            exp >>= 1;
+            base = (base * base) % modulus;
+        }
+        result
     }
 }
 
@@ -119,12 +146,117 @@ impl PickStrategy for TpchUnique {
     }
 }
 
-// === PickNBuffered: pick N unique elements with reusable buffer ===
+// === TpchPickN: pick N unique elements with O(log n) seed accounting ===
 
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
+
+/// Pick N unique elements with owned TpchRng and O(log n) seed accounting.
+///
+/// Unlike `PickNBuffered` which does O(n) RNG calls per row for TPC-H seed
+/// accounting, this uses binary exponentiation to skip in O(log n).
+///
+/// Performance: For 92 colors, this reduces from 92 RNG calls to 5 + O(log 87).
+pub struct TpchPickN<'a, T, const N: usize> {
+    values: &'a [T],
+    rng: TpchRng,
+}
+
+impl<'a, T, const N: usize> TpchPickN<'a, T, N> {
+    pub fn new(values: &'a [T], rng: TpchRng) -> Self {
+        assert!(
+            values.len() <= 255,
+            "TpchPickN only supports up to 255 elements"
+        );
+        assert!(N <= values.len(), "N must be <= values.len()");
+        Self { values, rng }
+    }
+}
+
+/// Iterator for TpchPickN with reusable shuffle buffer and owned RNG.
+pub struct TpchPickNIter<'a, T, const N: usize> {
+    values: &'a [T],
+    buffer: Vec<u8>,
+    rng: TpchRng,
+}
+
+impl<T, const N: usize> Clone for TpchPickNIter<'_, T, N> {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values,
+            buffer: (0..self.values.len() as u8).collect(),
+            rng: self.rng.clone(),
+        }
+    }
+}
+
+impl<'a, T: Clone, const N: usize> SampleIter for TpchPickNIter<'a, T, N> {
+    type Item = [T; N];
+
+    fn next(&mut self, _rng: &mut impl rand::Rng) -> [T; N] {
+        let len = self.values.len();
+
+        // Track swaps for restoration
+        let mut swaps = [(0u8, 0u8); N];
+
+        // Only N RNG calls for actual picks
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..N {
+            let seed = self.rng.next_rand();
+            let range = (len - i) as f64;
+            let j = i + ((seed as f64 / TpchRng::MODULUS as f64) * range) as usize;
+            swaps[i] = (i as u8, j as u8);
+            self.buffer.swap(i, j);
+        }
+
+        // O(log n) skip for seed accounting instead of O(n) linear calls
+        self.rng.skip(len - N);
+
+        // Collect results
+        let result = std::array::from_fn(|i| self.values[self.buffer[i] as usize].clone());
+
+        // Restore swapped elements
+        for i in (0..N).rev() {
+            let (a, b) = swaps[i];
+            self.buffer.swap(a as usize, b as usize);
+        }
+
+        result
+    }
+}
+
+impl<'a, T: Clone, const N: usize, S: SinkTuple<[T; N]>> CollectColumnar<S>
+    for TpchPickNIter<'a, T, N>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl rand::Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
+    }
+}
+
+impl<'a, T: Clone, const N: usize> Distribution<[T; N]> for TpchPickN<'a, T, N> {
+    type Iter = TpchPickNIter<'a, T, N>;
+
+    fn sample(&mut self) -> Self::Iter {
+        TpchPickNIter {
+            values: self.values,
+            buffer: (0..self.values.len() as u8).collect(),
+            rng: self.rng.clone(),
+        }
+    }
+}
+
+// === PickNBuffered: pick N unique elements with reusable buffer (legacy) ===
 
 /// Pick N unique elements from a slice, reusing the shuffle buffer across calls.
 /// Uses TPC-H's Fisher-Yates with seed accounting.
+///
+/// NOTE: This does O(n) RNG calls per row for seed accounting.
+/// For better performance with TpchRng, use `TpchPickN` instead.
 ///
 /// Optimizations:
 /// - Uses u8 indices (max 255 elements) to reduce memory bandwidth
@@ -193,6 +325,20 @@ impl<'a, T: Clone, const N: usize> SampleIter for PickNBufferedIter<'a, T, N> {
         }
 
         result
+    }
+}
+
+impl<'a, T: Clone, const N: usize, S: SinkTuple<[T; N]>> CollectColumnar<S>
+    for PickNBufferedIter<'a, T, N>
+{
+    const IS_COLUMNAR: bool = true;
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl rand::Rng, n: usize, mut sinks: S) -> Self::Output {
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

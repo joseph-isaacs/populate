@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use populate_core::{Distribution, SampleIter};
+use populate_core::{CollectColumnar, Distribution, SampleIter, SinkTuple};
 
 // === ExtendColumn: append one element to a tuple (N impls) ===
 
@@ -206,6 +206,25 @@ where
         let first = self.first.next(rng);
         let second = self.second.next(rng);
         second.append_columns_to(first)
+    }
+}
+
+impl<I1, I2, T1, T2, S> CollectColumnar<S> for MergeIter<I1, I2, T1, T2>
+where
+    I1: SampleIter<Item = T1>,
+    I2: SampleIter<Item = T2>,
+    T2: AppendColumnsTo<T1>,
+    S: SinkTuple<T2::Output>,
+{
+    const IS_COLUMNAR: bool = false; // TODO: implement true columnar for merge
+    type Output = S::Output;
+
+    fn collect_columnar(mut self, rng: &mut impl rand::Rng, n: usize, mut sinks: S) -> Self::Output {
+        // Use row-by-row collection, pushing to sinks that handle destructuring
+        for _ in 0..n {
+            sinks.push_row(self.next(rng));
+        }
+        sinks.finish()
     }
 }
 

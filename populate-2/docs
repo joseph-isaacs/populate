@@ -1,0 +1,7 @@
+right lets start again. I want to create a combinator library where I build larger and larger distrubutions which represent datasets tabular ones. we have
+   some some combinators above. these would be lazy and itered using something ismilar to SampleIter. I also want to be able to collect these into either Arrow
+   record batches where each column should be build one-by-one where possible, also split into (Vec<..>, .., Vec<..>) this is collecting into different types,
+   internally the iteration should be as col by col as possible fro these types if I want to collect into a json I want true row-by-row iteration. the choice
+   should be hidden from the person calling collect. I want a Distrubution trait an Iter trait, A row sink and a column sink trait. where teh row is clear, but
+   the column sink should try and execution colm- one by one. but if there is a column like (Com1, Col2).map(|c, c2| (c1 + c2, c1 * c2)) this might be iterated
+   as pairs of (i32, i32) in both row and column

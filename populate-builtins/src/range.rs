@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use populate_core::{Distribution, SampleIter};
+use populate_core::{ColumnarDistribution, Distribution, SampleIter};
 
 /// Trait for range sampling strategies.
 pub trait RangeSampler<T>: Clone {
@@ -75,6 +75,14 @@ impl<T: Clone, S: RangeSampler<T>> Distribution<T> for Range<T, S> {
             max: self.max.clone(),
             _phantom_data: Default::default(),
         }
+    }
+}
+
+impl<T: Clone, S: RangeSampler<T>> ColumnarDistribution<T> for Range<T, S> {
+    type Cols = Self;
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 

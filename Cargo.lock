@@ -592,6 +592,7 @@ dependencies = [
 name = "populate-sink-vec"
 version = "0.1.0"
 dependencies = [
+ "divan",
  "populate-builtins",
  "populate-core",
  "rand",

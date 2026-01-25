@@ -26,9 +26,9 @@
 
 // Re-export core traits
 pub use populate_core::{
-    CollectExt, Collector, Distribution, ListSink, SampleIter, Sink, TupleIter2, TupleIter3,
-    collect_into, collect_into_column, collect_list_into, collect_struct2_into,
-    collect_struct3_into,
+    CollectExt, Collector, ColumnarDistribution, Distribution, ListSink, SampleIter, Sink,
+    TupleIter2, TupleIter3, collect_into, collect_into_column, collect_list_into,
+    collect_struct2_into, collect_struct3_into,
 };
 
 // Re-export built-in combinators
@@ -37,7 +37,7 @@ pub use populate_builtins::{
 };
 
 // Re-export Vec collectors and sinks
-pub use populate_sink_vec::{Col, Cols, ListCol, Rows, VecListSink, VecSink};
+pub use populate_sink_vec::{Col, Cols, ColumnarCols, ListCol, Rows, VecListSink, VecSink};
 
 // Re-export Arrow collectors and sinks when feature is enabled
 #[cfg(feature = "arrow")]

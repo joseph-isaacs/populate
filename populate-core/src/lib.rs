@@ -54,6 +54,23 @@ pub trait Distribution<T> {
     fn sample(&mut self) -> Self::Iter;
 }
 
+/// A distribution that can be decomposed into independent column groups for columnar generation.
+///
+/// The `Cols` type represents how the distribution factors into independent pieces:
+/// - For independent columns in a tuple: splits into separate distributions
+/// - For dependent columns (e.g., from map): stays bundled as a single unit
+///
+/// This enables cache-friendly columnar generation where independent columns
+/// are generated one at a time (full column, then next column).
+pub trait ColumnarDistribution<T>: Distribution<T> {
+    /// The factorization of this distribution into independent column groups.
+    /// Each element of `Cols` can be generated independently.
+    type Cols;
+
+    /// Decompose this distribution into its independent column groups.
+    fn into_cols(self) -> Self::Cols;
+}
+
 /// A sink that consumes values and produces an output.
 pub trait Sink<T> {
     type Output;
@@ -108,6 +125,18 @@ where
     }
 }
 
+impl<T1, T2, D1, D2> ColumnarDistribution<(T1, T2)> for (D1, D2)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+{
+    type Cols = (D1, D2);
+
+    fn into_cols(self) -> Self::Cols {
+        self
+    }
+}
+
 /// Iterator for 3-tuple distributions.
 #[derive(Clone)]
 pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
@@ -130,6 +159,19 @@ where
 
     fn sample(&mut self) -> Self::Iter {
         TupleIter3(self.0.sample(), self.1.sample(), self.2.sample())
+    }
+}
+
+impl<T1, T2, T3, D1, D2, D3> ColumnarDistribution<(T1, T2, T3)> for (D1, D2, D3)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+{
+    type Cols = (D1, D2, D3);
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 
@@ -168,6 +210,20 @@ where
             self.2.sample(),
             self.3.sample(),
         )
+    }
+}
+
+impl<T1, T2, T3, T4, D1, D2, D3, D4> ColumnarDistribution<(T1, T2, T3, T4)> for (D1, D2, D3, D4)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+{
+    type Cols = (D1, D2, D3, D4);
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 
@@ -213,6 +269,22 @@ where
     }
 }
 
+impl<T1, T2, T3, T4, T5, D1, D2, D3, D4, D5> ColumnarDistribution<(T1, T2, T3, T4, T5)>
+    for (D1, D2, D3, D4, D5)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+{
+    type Cols = (D1, D2, D3, D4, D5);
+
+    fn into_cols(self) -> Self::Cols {
+        self
+    }
+}
+
 /// Iterator for 6-tuple distributions.
 #[derive(Clone)]
 pub struct TupleIter6<I1, I2, I3, I4, I5, I6>(pub I1, pub I2, pub I3, pub I4, pub I5, pub I6);
@@ -255,6 +327,23 @@ where
             self.4.sample(),
             self.5.sample(),
         )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, T6, D1, D2, D3, D4, D5, D6> ColumnarDistribution<(T1, T2, T3, T4, T5, T6)>
+    for (D1, D2, D3, D4, D5, D6)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<T6>,
+{
+    type Cols = (D1, D2, D3, D4, D5, D6);
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 
@@ -326,6 +415,24 @@ where
             self.5.sample(),
             self.6.sample(),
         )
+    }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, D1, D2, D3, D4, D5, D6, D7>
+    ColumnarDistribution<(T1, T2, T3, T4, T5, T6, T7)> for (D1, D2, D3, D4, D5, D6, D7)
+where
+    D1: Distribution<T1>,
+    D2: Distribution<T2>,
+    D3: Distribution<T3>,
+    D4: Distribution<T4>,
+    D5: Distribution<T5>,
+    D6: Distribution<T6>,
+    D7: Distribution<T7>,
+{
+    type Cols = (D1, D2, D3, D4, D5, D6, D7);
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 

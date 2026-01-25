@@ -9,3 +9,10 @@ license.workspace = true
 populate-core.workspace = true
 populate-builtins.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "columnar_bench"
+harness = false

@@ -1,5 +1,4 @@
-use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter};
 
 /// A distribution that always produces the same value.
 pub struct Constant<T> {
@@ -29,6 +28,14 @@ impl<T: Clone> Distribution<T> for Constant<T> {
 
     fn sample(&mut self) -> Self::Iter {
         ConstantIter(self.value.clone())
+    }
+}
+
+impl<T: Clone> ColumnarDistribution<T> for Constant<T> {
+    type Cols = Self;
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 

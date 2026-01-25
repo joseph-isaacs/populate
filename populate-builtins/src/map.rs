@@ -1,5 +1,4 @@
-use populate_core::Rng;
-use populate_core::{Distribution, SampleIter};
+use populate_core::{ColumnarDistribution, Distribution, Rng, SampleIter};
 use std::marker::PhantomData;
 
 /// Maps the output of a distribution through a function.
@@ -49,6 +48,19 @@ where
             inner: self.inner.sample(),
             f: self.f.clone(),
         }
+    }
+}
+
+impl<D, F, T, U> ColumnarDistribution<U> for Map<D, F, T>
+where
+    D: Distribution<T>,
+    F: FnMut(T) -> U + Clone,
+{
+    // Map stays bundled - the output depends on the input
+    type Cols = Self;
+
+    fn into_cols(self) -> Self::Cols {
+        self
     }
 }
 

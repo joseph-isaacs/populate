@@ -642,10 +642,10 @@ mod tests {
         assert_eq!(
             *log.borrow(),
             vec![
-                "COL1", "COL1", "COL1",   // col 1 (col-by-col)
+                "COL1", "COL1", "COL1", // col 1 (col-by-col)
                 "MAP_A", "MAP_A", "MAP_A", // col 2 (col-by-col)
                 "MAP_B", "MAP_B", "MAP_B", // col 3 (col-by-col)
-                "COL4", "COL4", "COL4",   // col 4 (col-by-col)
+                "COL4", "COL4", "COL4", // col 4 (col-by-col)
             ]
         );
     }

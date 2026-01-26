@@ -1,5 +1,5 @@
 use crate::traits::{
-    CollectInto, ColumnDistribution, Distribution, SampleIter, Sink, Splittable, SplittableExt,
+    ColumnDistribution, Distribution, HasMode, SampleIter, Sink, Splittable, SplittableExt,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -36,16 +36,15 @@ impl<T: Copy + Splittable> Distribution for Constant<T> {
     }
 }
 
-impl<T: Copy + Splittable<Head = T, Tail = ()>, M: CollectInto<T>> ColumnDistribution<M>
-    for Constant<T>
-{
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+impl<T: Copy + Splittable<Head = T, Tail = ()> + HasMode> ColumnDistribution for Constant<T> {
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
         sink
     }
 }
@@ -89,14 +88,15 @@ impl Distribution for Range {
     }
 }
 
-impl<M: CollectInto<i64>> ColumnDistribution<M> for Range {
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+impl ColumnDistribution for Range {
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
         sink
     }
 }
@@ -124,18 +124,22 @@ impl<D1: Distribution, D2: Distribution> Distribution for (D1, D2) {
     }
 }
 
-impl<D1, D2, M> ColumnDistribution<M> for (D1, D2)
+impl<D1, D2> ColumnDistribution for (D1, D2)
 where
-    D1: ColumnDistribution<M>,
-    D2: ColumnDistribution<M>,
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-    M: CollectInto<D1::Item> + CollectInto<D2::Item> + CollectInto<(D1::Item, D2::Item)>,
+    D1: ColumnDistribution,
+    D2: ColumnDistribution,
+    D1::Item: Splittable + HasMode,
+    D2::Item: Splittable + HasMode,
+    (D1::Item, D2::Item): HasMode,
 {
     /// Col-by-col collection: fills all of column 0, then all of column 1
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
+    fn collect_into<S: Sink<(D1::Item, D2::Item)>>(
+        &mut self,
+        rng: &mut impl Rng,
+        sink: S,
+        n: usize,
+    ) -> S
     where
-        S: Sink<(D1::Item, D2::Item), Mode = M>,
         Self: Sized,
     {
         let (head_sink, tail_sink) = sink.split();
@@ -184,24 +188,25 @@ impl<D1: Distribution, D2: Distribution + NotUnnest, D3: Distribution> Distribut
     }
 }
 
-impl<D1, D2, D3, M> ColumnDistribution<M> for (D1, D2, D3)
+impl<D1, D2, D3> ColumnDistribution for (D1, D2, D3)
 where
-    D1: ColumnDistribution<M>,
-    D2: ColumnDistribution<M> + NotUnnest,
-    D3: ColumnDistribution<M>,
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-    D3::Item: Splittable,
-    M: CollectInto<D1::Item>
-        + CollectInto<D2::Item>
-        + CollectInto<D3::Item>
-        + CollectInto<(D2::Item, D3::Item)>
-        + CollectInto<(D1::Item, D2::Item, D3::Item)>,
+    D1: ColumnDistribution,
+    D2: ColumnDistribution + NotUnnest,
+    D3: ColumnDistribution,
+    D1::Item: Splittable + HasMode,
+    D2::Item: Splittable + HasMode,
+    D3::Item: Splittable + HasMode,
+    (D1::Item, D2::Item, D3::Item): HasMode,
+    (D2::Item, D3::Item): HasMode,
 {
     /// Col-by-col collection: fills columns in order
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
+    fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item)>>(
+        &mut self,
+        rng: &mut impl Rng,
+        sink: S,
+        n: usize,
+    ) -> S
     where
-        S: Sink<(D1::Item, D2::Item, D3::Item), Mode = M>,
         Self: Sized,
     {
         let (s1, tail) = sink.split();
@@ -251,28 +256,28 @@ impl<D1: Distribution, D2: Distribution, D3: Distribution, D4: Distribution> Dis
     }
 }
 
-impl<D1, D2, D3, D4, M> ColumnDistribution<M> for (D1, D2, D3, D4)
+impl<D1, D2, D3, D4> ColumnDistribution for (D1, D2, D3, D4)
 where
-    D1: ColumnDistribution<M>,
-    D2: ColumnDistribution<M>,
-    D3: ColumnDistribution<M>,
-    D4: ColumnDistribution<M>,
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-    D3::Item: Splittable,
-    D4::Item: Splittable,
-    M: CollectInto<D1::Item>
-        + CollectInto<D2::Item>
-        + CollectInto<D3::Item>
-        + CollectInto<D4::Item>
-        + CollectInto<(D3::Item, D4::Item)>
-        + CollectInto<(D2::Item, D3::Item, D4::Item)>
-        + CollectInto<(D1::Item, D2::Item, D3::Item, D4::Item)>,
+    D1: ColumnDistribution,
+    D2: ColumnDistribution,
+    D3: ColumnDistribution,
+    D4: ColumnDistribution,
+    D1::Item: Splittable + HasMode,
+    D2::Item: Splittable + HasMode,
+    D3::Item: Splittable + HasMode,
+    D4::Item: Splittable + HasMode,
+    (D1::Item, D2::Item, D3::Item, D4::Item): HasMode,
+    (D2::Item, D3::Item, D4::Item): HasMode,
+    (D3::Item, D4::Item): HasMode,
 {
     /// Col-by-col collection: fills columns in order
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
+    fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item, D4::Item)>>(
+        &mut self,
+        rng: &mut impl Rng,
+        sink: S,
+        n: usize,
+    ) -> S
     where
-        S: Sink<(D1::Item, D2::Item, D3::Item, D4::Item), Mode = M>,
         Self: Sized,
     {
         let (s1, tail) = sink.split();
@@ -343,19 +348,20 @@ where
     }
 }
 
-impl<D, F, In, Out: Splittable, M: CollectInto<Out>> ColumnDistribution<M> for Map<D, F, In, Out>
+impl<D, F, In, Out: Splittable + HasMode> ColumnDistribution for Map<D, F, In, Out>
 where
     D: Distribution<Item = In>,
     F: Fn(In) -> Out + Clone,
 {
     /// Map must use row-by-row collection since the function couples input columns
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
+        for _ in 0..n {
+            sink.push(sample_iter.next(rng));
+        }
         sink
     }
 }
@@ -390,14 +396,13 @@ impl<D: Distribution> Distribution for Unnest<D> {
     }
 }
 
-impl<D: ColumnDistribution<M>, M: CollectInto<D::Item>> ColumnDistribution<M> for Unnest<D>
+impl<D: ColumnDistribution> ColumnDistribution for Unnest<D>
 where
-    D::Item: SplittableExt,
+    D::Item: SplittableExt + HasMode,
 {
     /// Delegates to inner's collect_into - preserves col-by-col for independent columns
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         self.0.collect_into(rng, sink, n)
@@ -460,27 +465,22 @@ where
     }
 }
 
-impl<D1, D2, H, T, D3, M> ColumnDistribution<M> for (D1, Unnest<D2>, D3)
+impl<D1, D2, H, T, D3> ColumnDistribution for (D1, Unnest<D2>, D3)
 where
-    D1: ColumnDistribution<M>,
-    D2: ColumnDistribution<M, Item = (H, T)>,
-    H: Splittable,
-    T: Splittable,
-    D3: ColumnDistribution<M>,
-    D1::Item: Splittable,
-    D3::Item: Splittable,
-    M: CollectInto<D1::Item>
-        + CollectInto<H>
-        + CollectInto<T>
-        + CollectInto<D3::Item>
-        + CollectInto<(H, T)>
-        + CollectInto<(T, D3::Item)>
-        + CollectInto<(H, T, D3::Item)>
-        + CollectInto<(D1::Item, H, T, D3::Item)>,
+    D1: ColumnDistribution,
+    D2: ColumnDistribution<Item = (H, T)>,
+    H: Splittable + HasMode,
+    T: Splittable + HasMode,
+    D3: ColumnDistribution,
+    D1::Item: Splittable + HasMode,
+    D3::Item: Splittable + HasMode,
+    (H, T): HasMode,
+    (T, D3::Item): HasMode,
+    (H, T, D3::Item): HasMode,
+    (D1::Item, H, T, D3::Item): HasMode,
 {
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
+    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         // Split: S -> (S1, TailSink) where TailSink: Sink<(H, T, D3::Item)>

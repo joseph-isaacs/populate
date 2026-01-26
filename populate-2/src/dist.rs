@@ -1,5 +1,5 @@
 use crate::traits::{
-    Column, ColumnDistribution, Distribution, SampleIter, Scalar, Sink, Splittable, SplittableExt,
+    CollectInto, ColumnDistribution, Distribution, SampleIter, Sink, Splittable, SplittableExt,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -36,28 +36,16 @@ impl<T: Copy + Splittable> Distribution for Constant<T> {
     }
 }
 
-impl<T: Copy + Splittable> ColumnDistribution<Scalar> for Constant<T> {
+impl<T: Copy + Splittable<Head = T, Tail = ()>, M: CollectInto<T>> ColumnDistribution<M>
+    for Constant<T>
+{
     fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = Scalar>,
+        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(sample_iter.next(rng));
-        }
-        sink
-    }
-}
-
-impl<T: Copy + Splittable<Head = T, Tail = ()>> ColumnDistribution<Column> for Constant<T> {
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
-    where
-        S: Sink<Self::Item, Mode = Column>,
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
-        sink.push_list((0..n).map(|_| sample_iter.next(rng)));
+        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
         sink
     }
 }
@@ -101,28 +89,14 @@ impl Distribution for Range {
     }
 }
 
-impl ColumnDistribution<Scalar> for Range {
+impl<M: CollectInto<i64>> ColumnDistribution<M> for Range {
     fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
     where
-        S: Sink<Self::Item, Mode = Scalar>,
+        S: Sink<Self::Item, Mode = M>,
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(sample_iter.next(rng));
-        }
-        sink
-    }
-}
-
-impl ColumnDistribution<Column> for Range {
-    fn collect_into<S>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
-    where
-        S: Sink<Self::Item, Mode = Column>,
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
-        sink.push_list((0..n).map(|_| sample_iter.next(rng)));
+        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
         sink
     }
 }
@@ -156,6 +130,7 @@ where
     D2: ColumnDistribution<M>,
     D1::Item: Splittable,
     D2::Item: Splittable,
+    M: CollectInto<D1::Item> + CollectInto<D2::Item> + CollectInto<(D1::Item, D2::Item)>,
 {
     /// Col-by-col collection: fills all of column 0, then all of column 1
     fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
@@ -217,6 +192,11 @@ where
     D1::Item: Splittable,
     D2::Item: Splittable,
     D3::Item: Splittable,
+    M: CollectInto<D1::Item>
+        + CollectInto<D2::Item>
+        + CollectInto<D3::Item>
+        + CollectInto<(D2::Item, D3::Item)>
+        + CollectInto<(D1::Item, D2::Item, D3::Item)>,
 {
     /// Col-by-col collection: fills columns in order
     fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
@@ -281,6 +261,13 @@ where
     D2::Item: Splittable,
     D3::Item: Splittable,
     D4::Item: Splittable,
+    M: CollectInto<D1::Item>
+        + CollectInto<D2::Item>
+        + CollectInto<D3::Item>
+        + CollectInto<D4::Item>
+        + CollectInto<(D3::Item, D4::Item)>
+        + CollectInto<(D2::Item, D3::Item, D4::Item)>
+        + CollectInto<(D1::Item, D2::Item, D3::Item, D4::Item)>,
 {
     /// Col-by-col collection: fills columns in order
     fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
@@ -356,7 +343,7 @@ where
     }
 }
 
-impl<D, F, In, Out: Splittable, M> ColumnDistribution<M> for Map<D, F, In, Out>
+impl<D, F, In, Out: Splittable, M: CollectInto<Out>> ColumnDistribution<M> for Map<D, F, In, Out>
 where
     D: Distribution<Item = In>,
     F: Fn(In) -> Out + Clone,
@@ -368,9 +355,7 @@ where
         Self: Sized,
     {
         let mut sample_iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(sample_iter.next(rng));
-        }
+        M::collect((0..n).map(|_| sample_iter.next(rng)), &mut sink);
         sink
     }
 }
@@ -405,7 +390,7 @@ impl<D: Distribution> Distribution for Unnest<D> {
     }
 }
 
-impl<D: ColumnDistribution<M>, M> ColumnDistribution<M> for Unnest<D>
+impl<D: ColumnDistribution<M>, M: CollectInto<D::Item>> ColumnDistribution<M> for Unnest<D>
 where
     D::Item: SplittableExt,
 {
@@ -484,6 +469,14 @@ where
     D3: ColumnDistribution<M>,
     D1::Item: Splittable,
     D3::Item: Splittable,
+    M: CollectInto<D1::Item>
+        + CollectInto<H>
+        + CollectInto<T>
+        + CollectInto<D3::Item>
+        + CollectInto<(H, T)>
+        + CollectInto<(T, D3::Item)>
+        + CollectInto<(H, T, D3::Item)>
+        + CollectInto<(D1::Item, H, T, D3::Item)>,
 {
     fn collect_into<S>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
     where

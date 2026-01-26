@@ -10,6 +10,49 @@ pub struct Scalar;
 /// Marker for column sinks - supports push_list() for batched collection
 pub struct Column;
 
+/// Marker for list sinks - supports push_list() with list-specific semantics
+pub struct List;
+
+// ============================================================================
+// CollectInto - Mode-based dispatch for collection
+// ============================================================================
+
+/// Trait that Mode types implement to provide collection behavior.
+/// This allows the distribution to call `M::collect(...)` and have
+/// the correct method called based on the sink's Mode.
+///
+/// The trait is parameterized only by T (not S), so it can be used
+/// with any sink that has the matching Mode.
+pub trait CollectInto<T: Splittable>: Sized {
+    fn collect<S: Sink<T, Mode = Self>>(iter: impl Iterator<Item = T>, sink: &mut S);
+}
+
+/// Scalar mode - uses push() one item at a time
+impl<T: Splittable> CollectInto<T> for Scalar {
+    fn collect<S: Sink<T, Mode = Scalar>>(iter: impl Iterator<Item = T>, sink: &mut S) {
+        for item in iter {
+            sink.push(item);
+        }
+    }
+}
+
+/// Column mode - uses push_list() for batched collection
+impl<T: Splittable> CollectInto<T> for Column {
+    fn collect<S: Sink<T, Mode = Column>>(iter: impl Iterator<Item = T>, sink: &mut S) {
+        sink.push_list(iter);
+    }
+}
+
+// ============================================================================
+// ListSink - sinks that support list operations
+// ============================================================================
+
+/// Trait for sinks that support list-specific push operations.
+/// Only sinks with Mode = List implement this.
+pub trait ListSink<T: Splittable>: Sink<T, Mode = List> {
+    fn push_list(&mut self, items: impl IntoIterator<Item = T>);
+}
+
 /// Iterator that produces samples
 pub trait SampleIter {
     type Item;
@@ -257,7 +300,7 @@ pub trait Distribution {
 
 /// ColumnDistribution trait - distributions that support column-by-column collection
 /// Generic over Mode: Scalar uses push(), Column uses push_list()
-pub trait ColumnDistribution<M = Column>: Distribution
+pub trait ColumnDistribution<M: CollectInto<Self::Item> = Column>: Distribution
 where
     Self::Item: Splittable,
 {

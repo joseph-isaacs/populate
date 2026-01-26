@@ -1,37 +1,10 @@
 use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand_chacha::ChaCha20Rng;
 
 const N: usize = 1_000_000;
 const CHUNK: usize = 100;
 
-// Approach 1: Iterator that calls rng.random() for each element
-struct NextIter<'a, R> {
-    rng: &'a mut R,
-    remaining: usize,
-}
-
-impl<R: Rng> Iterator for NextIter<'_, R> {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        self.remaining -= 1;
-        Some(self.rng.random())
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
-}
-
-impl<R: Rng> ExactSizeIterator for NextIter<'_, R> {}
-
-fn iter_next(rng: &mut impl Rng, n: usize) -> impl ExactSizeIterator<Item = u64> + '_ {
-    NextIter { rng, remaining: n }
-}
-
-// Approach 2: Iterator with internal buffer that uses fill() in chunks
+// Iterator with internal buffer that uses fill() in chunks
 struct ChunkedFillIter<'a, R, const CHUNK_SIZE: usize> {
     rng: &'a mut R,
     buf: [u64; CHUNK_SIZE],
@@ -82,55 +55,102 @@ impl<R: Rng, const CHUNK_SIZE: usize> Iterator for ChunkedFillIter<'_, R, CHUNK_
 
 impl<R: Rng, const CHUNK_SIZE: usize> ExactSizeIterator for ChunkedFillIter<'_, R, CHUNK_SIZE> {}
 
-fn iter_chunked_fill<const CHUNK_SIZE: usize>(
-    rng: &mut impl Rng,
-    n: usize,
-) -> ChunkedFillIter<'_, impl Rng, CHUNK_SIZE> {
-    ChunkedFillIter::new(rng, n)
+// Iterator that calls rng.random() for each element
+struct NextIter<'a, R> {
+    rng: &'a mut R,
+    remaining: usize,
 }
 
-// Approach 3: Fill into pre-allocated buffer
-fn fill_into(rng: &mut impl Rng, buf: &mut [u64]) {
-    rng.fill(buf);
-}
+impl<R: Rng> Iterator for NextIter<'_, R> {
+    type Item = u64;
 
-// Approach 4: Loop with next into pre-allocated buffer
-fn next_into(rng: &mut impl Rng, buf: &mut [u64]) {
-    for slot in buf.iter_mut() {
-        *slot = rng.random();
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        Some(self.rng.random())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
     }
 }
 
+impl<R: Rng> ExactSizeIterator for NextIter<'_, R> {}
+
+// ===== SmallRng (fast) =====
+
 #[divan::bench]
-fn bench_next_iter() -> Vec<u64> {
+fn smallrng_next_iter() -> Vec<u64> {
     let mut rng = SmallRng::seed_from_u64(42);
-    iter_next(&mut rng, N).collect()
+    NextIter { rng: &mut rng, remaining: N }.collect()
 }
 
 #[divan::bench]
-fn bench_chunked_fill_iter() -> Vec<u64> {
+fn smallrng_chunked_fill() -> Vec<u64> {
     let mut rng = SmallRng::seed_from_u64(42);
-    iter_chunked_fill::<CHUNK>(&mut rng, N).collect()
+    ChunkedFillIter::<_, CHUNK>::new(&mut rng, N).collect()
 }
 
 #[divan::bench]
-fn bench_fill_into(bencher: divan::Bencher) {
+fn smallrng_fill_direct(bencher: divan::Bencher) {
     bencher
         .with_inputs(|| vec![0u64; N])
         .bench_local_values(|mut buf| {
             let mut rng = SmallRng::seed_from_u64(42);
-            fill_into(&mut rng, &mut buf);
+            rng.fill(&mut buf[..]);
             buf
         })
 }
 
 #[divan::bench]
-fn bench_next_into(bencher: divan::Bencher) {
+fn smallrng_next_direct(bencher: divan::Bencher) {
     bencher
         .with_inputs(|| vec![0u64; N])
         .bench_local_values(|mut buf| {
             let mut rng = SmallRng::seed_from_u64(42);
-            next_into(&mut rng, &mut buf);
+            for slot in buf.iter_mut() {
+                *slot = rng.random();
+            }
+            buf
+        })
+}
+
+// ===== ChaCha20Rng (slower, cryptographic) =====
+
+#[divan::bench]
+fn chacha_next_iter() -> Vec<u64> {
+    let mut rng = ChaCha20Rng::seed_from_u64(42);
+    NextIter { rng: &mut rng, remaining: N }.collect()
+}
+
+#[divan::bench]
+fn chacha_chunked_fill() -> Vec<u64> {
+    let mut rng = ChaCha20Rng::seed_from_u64(42);
+    ChunkedFillIter::<_, CHUNK>::new(&mut rng, N).collect()
+}
+
+#[divan::bench]
+fn chacha_fill_direct(bencher: divan::Bencher) {
+    bencher
+        .with_inputs(|| vec![0u64; N])
+        .bench_local_values(|mut buf| {
+            let mut rng = ChaCha20Rng::seed_from_u64(42);
+            rng.fill(&mut buf[..]);
+            buf
+        })
+}
+
+#[divan::bench]
+fn chacha_next_direct(bencher: divan::Bencher) {
+    bencher
+        .with_inputs(|| vec![0u64; N])
+        .bench_local_values(|mut buf| {
+            let mut rng = ChaCha20Rng::seed_from_u64(42);
+            for slot in buf.iter_mut() {
+                *slot = rng.random();
+            }
             buf
         })
 }

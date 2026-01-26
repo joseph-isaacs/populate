@@ -10,6 +10,7 @@ rand = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+rand_chacha = "0.9"
 divan = { workspace = true }
 
 [[bench]]

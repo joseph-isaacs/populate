@@ -6,207 +6,6 @@ pub trait SampleIter {
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
-/// Trait for types that can be split into head and tail.
-/// Scalars split to (Self, ()), tuples split to (Head, Tail).
-pub trait Splittable {
-    type Head: Splittable;
-    type Tail: Splittable;
-}
-
-/// Extension trait for splitting values into head and tail components
-pub trait SplittableExt: Splittable + Sized {
-    fn split_head_tail(self) -> (Self::Head, Self::Tail);
-}
-
-// Base case: () splits to ((), ())
-impl Splittable for () {
-    type Head = ();
-    type Tail = ();
-}
-
-impl SplittableExt for () {
-    fn split_head_tail(self) -> ((), ()) {
-        ((), ())
-    }
-}
-
-// Macro to implement Splittable for scalar types
-macro_rules! impl_splittable_scalar {
-    ($($t:ty),*) => {
-        $(
-            impl Splittable for $t {
-                type Head = $t;
-                type Tail = ();
-            }
-            impl SplittableExt for $t {
-                fn split_head_tail(self) -> ($t, ()) {
-                    (self, ())
-                }
-            }
-        )*
-    };
-}
-
-impl_splittable_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, String);
-
-// Tuple implementations - split into head and tail
-impl<T1: Splittable, T2: Splittable> Splittable for (T1, T2) {
-    type Head = T1;
-    type Tail = T2;
-}
-
-impl<T1: Splittable, T2: Splittable> SplittableExt for (T1, T2) {
-    fn split_head_tail(self) -> (T1, T2) {
-        (self.0, self.1)
-    }
-}
-
-impl<T1: Splittable, T2: Splittable, T3: Splittable> Splittable for (T1, T2, T3) {
-    type Head = T1;
-    type Tail = (T2, T3);
-}
-
-impl<T1: Splittable, T2: Splittable, T3: Splittable> SplittableExt for (T1, T2, T3) {
-    fn split_head_tail(self) -> (T1, (T2, T3)) {
-        (self.0, (self.1, self.2))
-    }
-}
-
-impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> Splittable
-    for (T1, T2, T3, T4)
-{
-    type Head = T1;
-    type Tail = (T2, T3, T4);
-}
-
-impl<T1: Splittable, T2: Splittable, T3: Splittable, T4: Splittable> SplittableExt
-    for (T1, T2, T3, T4)
-{
-    fn split_head_tail(self) -> (T1, (T2, T3, T4)) {
-        (self.0, (self.1, self.2, self.3))
-    }
-}
-
-/// Sink that accepts items and can be split into sub-sinks
-pub trait Sink<T: Splittable>: Sized {
-    type HeadSink: Sink<T::Head>;
-    type TailSink: Sink<T::Tail>;
-
-    fn push(&mut self, item: T);
-
-    /// Split this sink into head and tail sinks (consumes self)
-    fn split(self) -> (Self::HeadSink, Self::TailSink);
-
-    /// Reconstruct sink from head and tail sinks
-    fn unsplit(head: Self::HeadSink, tail: Self::TailSink) -> Self;
-}
-
-/// Unit sink - does nothing, used as tail for scalar sinks
-impl Sink<()> for () {
-    type HeadSink = ();
-    type TailSink = ();
-
-    fn push(&mut self, _: ()) {}
-
-    fn split(self) -> ((), ()) {
-        ((), ())
-    }
-
-    fn unsplit(_head: (), _tail: ()) -> Self {}
-}
-
-// Vec<T> as sink for scalar T (where T::Tail = ())
-impl<T: Splittable<Head = T, Tail = ()>> Sink<T> for Vec<T> {
-    type HeadSink = Vec<T>;
-    type TailSink = ();
-
-    fn push(&mut self, item: T) {
-        Vec::push(self, item);
-    }
-
-    fn split(self) -> (Vec<T>, ()) {
-        (self, ())
-    }
-
-    fn unsplit(head: Vec<T>, _tail: ()) -> Self {
-        head
-    }
-}
-
-// Tuple sink (S1, S2) for tuple item (T1, T2)
-impl<T1: Splittable, T2: Splittable, S1: Sink<T1>, S2: Sink<T2>> Sink<(T1, T2)> for (S1, S2) {
-    type HeadSink = S1;
-    type TailSink = S2;
-
-    fn push(&mut self, (a, b): (T1, T2)) {
-        self.0.push(a);
-        self.1.push(b);
-    }
-
-    fn split(self) -> (S1, S2) {
-        (self.0, self.1)
-    }
-
-    fn unsplit(head: S1, tail: S2) -> Self {
-        (head, tail)
-    }
-}
-
-// Tuple sink (S1, S2, S3) for tuple item (T1, T2, T3)
-// TailSink is (S2, S3) to match Tail = (T2, T3)
-impl<T1: Splittable, T2: Splittable, T3: Splittable, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>>
-    Sink<(T1, T2, T3)> for (S1, S2, S3)
-{
-    type HeadSink = S1;
-    type TailSink = (S2, S3);
-
-    fn push(&mut self, (a, b, c): (T1, T2, T3)) {
-        self.0.push(a);
-        self.1.push(b);
-        self.2.push(c);
-    }
-
-    fn split(self) -> (S1, (S2, S3)) {
-        (self.0, (self.1, self.2))
-    }
-
-    fn unsplit(head: S1, tail: (S2, S3)) -> Self {
-        (head, tail.0, tail.1)
-    }
-}
-
-// Tuple sink (S1, S2, S3, S4) for tuple item (T1, T2, T3, T4)
-// TailSink is (S2, S3, S4) to match Tail = (T2, T3, T4)
-impl<
-    T1: Splittable,
-    T2: Splittable,
-    T3: Splittable,
-    T4: Splittable,
-    S1: Sink<T1>,
-    S2: Sink<T2>,
-    S3: Sink<T3>,
-    S4: Sink<T4>,
-> Sink<(T1, T2, T3, T4)> for (S1, S2, S3, S4)
-{
-    type HeadSink = S1;
-    type TailSink = (S2, S3, S4);
-
-    fn push(&mut self, (a, b, c, d): (T1, T2, T3, T4)) {
-        self.0.push(a);
-        self.1.push(b);
-        self.2.push(c);
-        self.3.push(d);
-    }
-
-    fn split(self) -> (S1, (S2, S3, S4)) {
-        (self.0, (self.1, self.2, self.3))
-    }
-
-    fn unsplit(head: S1, tail: (S2, S3, S4)) -> Self {
-        (head, tail.0, tail.1, tail.2)
-    }
-}
-
 /// Distribution trait - basic interface for data generators
 pub trait Distribution {
     type Item;
@@ -215,13 +14,115 @@ pub trait Distribution {
     fn row_iter(&mut self) -> Self::RowIter;
 }
 
-/// ColumnDistribution trait - distributions that support column-by-column collection
-pub trait ColumnDistribution: Distribution
-where
-    Self::Item: Splittable,
+// ============================================================================
+// Sink<T> — accepts values via push. Works for both primitives and tuples.
+//
+// - Primitive sink: Vec<f64> impl Sink<f64>
+// - Tuple sink: (S1, S2) impl Sink<(T1, T2)> — destructures and pushes
+// - List sink: see ListSink<T> below
+// ============================================================================
+
+pub trait Sink<T> {
+    fn push(&mut self, value: T);
+}
+
+// Vec<T> is a primitive sink
+impl<T> Sink<T> for Vec<T> {
+    fn push(&mut self, value: T) {
+        Vec::push(self, value);
+    }
+}
+
+// Tuple sinks — destructure row and push to sub-sinks (for row-by-row / Map)
+
+impl<T1, T2, S1: Sink<T1>, S2: Sink<T2>> Sink<(T1, T2)> for (S1, S2) {
+    fn push(&mut self, (a, b): (T1, T2)) {
+        self.0.push(a);
+        self.1.push(b);
+    }
+}
+
+impl<T1, T2, T3, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>> Sink<(T1, T2, T3)> for (S1, S2, S3) {
+    fn push(&mut self, (a, b, c): (T1, T2, T3)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+    }
+}
+
+impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sink<(T1, T2, T3, T4)>
+    for (S1, S2, S3, S4)
 {
-    /// Collect n items into the sink, returning the sink.
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
-    where
-        Self: Sized;
+    fn push(&mut self, (a, b, c, d): (T1, T2, T3, T4)) {
+        self.0.push(a);
+        self.1.push(b);
+        self.2.push(c);
+        self.3.push(d);
+    }
+}
+
+// ============================================================================
+// ListSink<T> — sink for list/array columns.
+//
+// Accepts fixed-size element iterators. Zero allocation — elements flow
+// directly from distribution iterator to the underlying storage.
+//
+// Works for both:
+// - Vec-based: (Vec<T>, Vec<usize>) storing values + offsets
+// - Arrow-based: ListBuilder<PrimitiveBuilder<T>>
+// ============================================================================
+
+pub trait ListSink<T> {
+    /// Push one list of `len` elements from the iterator.
+    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
+}
+
+/// Vec-based list sink: flat values buffer + offsets.
+pub struct VecListSink<T> {
+    pub values: Vec<T>,
+    pub offsets: Vec<usize>,
+}
+
+impl<T> VecListSink<T> {
+    pub fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            offsets: vec![0],
+        }
+    }
+
+    pub fn into_parts(self) -> (Vec<T>, Vec<usize>) {
+        (self.values, self.offsets)
+    }
+}
+
+impl<T> Default for VecListSink<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> ListSink<T> for VecListSink<T> {
+    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.values.extend(elems);
+        self.offsets.push(self.values.len());
+    }
+}
+
+// ============================================================================
+// CollectInto<S> — distribution-driven collection into a typed sink.
+//
+// The distribution knows its structure and fills the sink accordingly:
+// - Scalar dists: iterate and push
+// - Tuple dists (independent): split sink, fill each column, reassemble
+// - Map (dependent): iterate row-by-row, push via Sink<T>
+// - List dists: iterate, push_list with element iterators
+// - Unnest: regroup middle sinks, delegate to inner dist
+//
+// Sink is owned (taken and returned) so tuple/unnest impls can freely
+// destructure and reassemble the sink structure.
+// ============================================================================
+
+pub trait CollectInto<S> {
+    fn collect_into(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S;
 }

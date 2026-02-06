@@ -215,12 +215,8 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 }
 
 // ============================================================================
-// ListSink<T> — sink for list/array columns
+// VecListSink<T> — columnar sink for list/array columns
 // ============================================================================
-
-pub trait ListSink<T> {
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
-}
 
 pub struct VecListSink<T> {
     pub values: Vec<T>,
@@ -238,6 +234,11 @@ impl<T> VecListSink<T> {
     pub fn into_parts(self) -> (Vec<T>, Vec<usize>) {
         (self.values, self.offsets)
     }
+
+    pub fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.values.extend(elems);
+        self.offsets.push(self.values.len());
+    }
 }
 
 impl<T> Default for VecListSink<T> {
@@ -246,17 +247,10 @@ impl<T> Default for VecListSink<T> {
     }
 }
 
-impl<T> ListSink<T> for VecListSink<T> {
-    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
-        self.values.extend(elems);
-        self.offsets.push(self.values.len());
-    }
-}
-
-// HList ListSink — wrap a ListSink in a 1-element HList
-impl<T, S: ListSink<T>> ListSink<T> for HCons<S, HNil> {
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
-        self.0.push_list(len, elems);
+impl<T> Sink<Vec<T>> for VecListSink<T> {
+    fn push(&mut self, value: Vec<T>) {
+        let len = value.len();
+        self.push_list(len, value.into_iter());
     }
 }
 

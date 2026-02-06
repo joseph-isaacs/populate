@@ -536,6 +536,34 @@ mod tests {
     }
 
     // ========================================================================
+    // Tracked<List> — exercises Sink<Vec<T>> through generic wrapper
+    // ========================================================================
+
+    #[test]
+    fn test_tracked_list_in_tuple() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut dist = (
+            tracked("COL1", constant(42i32), &log),
+            tracked("LIST", list(constant(2usize), range(0, 1)), &log),
+        );
+        let (scalars, list_sink) = dist.collect_flat(
+            (Vec::<i32>::new(), VecListSink::<i64>::new()),
+            &mut rng(),
+            3,
+        );
+        let (values, offsets) = list_sink.into_parts();
+
+        assert_eq!(scalars, vec![42, 42, 42]);
+        assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
+        assert_eq!(offsets, vec![0, 2, 4, 6]);
+        // Col-by-col: COL1 x3, then LIST x3
+        assert_eq!(
+            *log.borrow(),
+            vec!["COL1", "COL1", "COL1", "LIST", "LIST", "LIST"]
+        );
+    }
+
+    // ========================================================================
     // Row-by-row iteration order test
     // ========================================================================
 

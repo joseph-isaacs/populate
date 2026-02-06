@@ -1,4 +1,4 @@
-use crate::traits::{DefaultSink, Distribution, HAppend, HCons, HNil, ListSink, SampleIter, Sink};
+use crate::traits::{DefaultSink, Distribution, HAppend, HCons, HNil, SampleIter, Sink};
 use rand::Rng;
 use std::marker::PhantomData;
 
@@ -383,7 +383,7 @@ where
         for _ in 0..n {
             let len = len_iter.next(rng);
             let mut elems = elem_base.clone();
-            sink.push_list(len, (0..len).map(|_| elems.next(rng)));
+            sink.0.push_list(len, (0..len).map(|_| elems.next(rng)));
         }
         sink
     }

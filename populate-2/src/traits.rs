@@ -52,6 +52,10 @@ pub trait DefaultSink {
     type Sink;
 }
 
+impl DefaultSink for i16 {
+    type Sink = HCons<Vec<i16>, HNil>;
+}
+
 impl DefaultSink for i32 {
     type Sink = HCons<Vec<i32>, HNil>;
 }

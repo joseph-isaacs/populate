@@ -4,7 +4,9 @@ pub mod traits;
 #[cfg(test)]
 mod tests {
     use crate::dist::{constant, list, map, range};
-    use crate::traits::{DefaultSink, Distribution, HCons, HNil, SampleIter, Sink, VecListSink};
+    use crate::traits::{
+        DefaultSink, Distribution, HCons, HNil, IntoHList, IntoTuple, SampleIter, Sink, VecListSink,
+    };
     use rand::rng;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -28,7 +30,7 @@ mod tests {
     }
 
     fn make_mapped() -> impl Distribution<Item = i64> {
-        map(range(0, 1), |x| x * 2)
+        map(range(0, 1), |x| x * 2i64)
     }
 
     fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)> {
@@ -205,8 +207,8 @@ mod tests {
     fn test_col_by_col_order() {
         let log: Log = Log::default();
         let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            tracked("COL2", range(100, 1), &log),
+            tracked("COL1", range(0i64, 1), &log),
+            tracked("COL2", range(100i64, 1), &log),
         );
         let (col1, col2) = dist.collect_flat((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
 
@@ -249,12 +251,12 @@ mod tests {
     fn test_3tuple_col_by_col_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            tracked("COL2", range(100, 1), &log),
-            tracked("COL3", range(1000, 1), &log),
+            tracked("COL1", range(0i64, 1), &log),
+            tracked("COL2", range(100i64, 1), &log),
+            tracked("COL3", range(1000i32, 1), &log),
         );
         let (col1, col2, col3) = dist.collect_flat(
-            (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
+            (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i32>::new()),
             &mut rng(),
             2,
         );
@@ -275,7 +277,7 @@ mod tests {
     fn test_4tuple_col_by_col() {
         let mut dist = (
             constant(1i32),
-            range(0, 10),
+            range(0i64, 10),
             constant(true),
             constant(2.5f64),
         );
@@ -299,10 +301,10 @@ mod tests {
     fn test_4tuple_col_by_col_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            tracked("COL2", range(100, 1), &log),
-            tracked("COL3", range(1000, 1), &log),
-            tracked("COL4", range(10000, 1), &log),
+            tracked("COL1", range(0i64, 1), &log),
+            tracked("COL2", range(100i64, 1), &log),
+            tracked("COL3", range(1000i64, 1), &log),
+            tracked("COL4", range(10000i64, 1), &log),
         );
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
@@ -334,9 +336,9 @@ mod tests {
     fn test_map_in_tuple_values() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            map(tracked("MAP_SRC", range(100, 1), &log), |x| x * 2),
-            tracked("COL3", range(1000, 1), &log),
+            tracked("COL1", range(0i64, 1), &log),
+            map(tracked("MAP_SRC", range(100i64, 1), &log), |x| x * 2),
+            tracked("COL3", range(1000i64, 1), &log),
         );
         let (c1, c2, c3) = dist.collect_flat(
             (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
@@ -353,9 +355,9 @@ mod tests {
     fn test_map_in_tuple_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            map(tracked("MAP_SRC", range(100, 1), &log), |x| x * 2),
-            tracked("COL3", range(1000, 1), &log),
+            tracked("COL1", range(0i64, 1), &log),
+            map(tracked("MAP_SRC", range(100i64, 1), &log), |x| x * 2),
+            tracked("COL3", range(1000i64, 1), &log),
         );
         let (c1, c2, c3) = dist.collect_flat(
             (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
@@ -381,30 +383,36 @@ mod tests {
     // AUTO-FLATTENING: Map producing tuple → flat columns, no Unnest needed!
     // ========================================================================
 
-    #[test]
-    fn test_map_tuple_auto_flatten() {
-        // Map produces (i64, i64) → Sink = HCons<Vec<i64>, HCons<Vec<i64>, HNil>>
-        // (d1, map(src, f), d3) with map returning (A, B) → 4 flat columns!
-        let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0, 1), &log),
+    fn gen_col4(log: &Log) -> impl Distribution<Item = (i16, i64, i64, i32)> {
+        (
+            tracked("COL1", range(0i16, 1), &log),
             map(
                 (
-                    tracked("MAP_A", range(100, 1), &log),
+                    tracked("MAP_A", range(100i64, 1), &log),
                     tracked("MAP_B", range(1000, 1), &log),
                 ),
                 |(a, b)| (a + b, a * b),
             ),
-            tracked("COL4", range(0, 5), &log),
-        );
+            tracked("COL4", range(0i32, 5), &log),
+        )
+            .into_hlist()
+            .into_tuple()
+    }
+
+    #[test]
+    fn test_map_tuple_auto_flatten() {
+        // Map produces (i64, i64) → Sink = HCons<Vec<i64>, HCons<Vec<i64>, HNil>>
+        // (d1, map(src, f), d3) with map returning (A, B) → 4 flat columns!
+        let log = Log::default();
+        let mut dist = gen_col4(&log);
 
         // 4 flat columns — no nesting, no Unnest!
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
+                Vec::<i16>::new(),
                 Vec::<i64>::new(),
                 Vec::<i64>::new(),
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
+                Vec::<i32>::new(),
             ),
             &mut rng(),
             3,
@@ -433,10 +441,10 @@ mod tests {
 
         let (_, _, _, _) = dist.collect_flat(
             (
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
             ),
             &mut rng(),
             3,
@@ -472,10 +480,10 @@ mod tests {
 
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
-                Vec::<i64>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
+                Vec::<i32>::new(),
             ),
             &mut rng(),
             3,
@@ -509,12 +517,16 @@ mod tests {
         assert_eq!(result, vec![7, 7, 7]);
     }
 
+    fn gen_list() -> impl Distribution<Item = Vec<i64>> {
+        list(range(0usize, 1), range(0, 1))
+    }
+
     #[test]
     fn test_list_collect_into() {
-        let mut dist = list(constant(2usize), range(0, 1));
+        let mut dist = gen_list();
         let sink = HCons(VecListSink::new(), HNil);
-        let result = dist.collect_into(sink, &mut rng(), 3);
-        let (values, offsets) = result.0.into_parts();
+        let (result,) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (values, offsets) = result.into_parts();
         assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
         assert_eq!(offsets, vec![0, 2, 4, 6]);
     }

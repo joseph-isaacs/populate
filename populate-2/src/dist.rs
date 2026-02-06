@@ -1,7 +1,7 @@
 use crate::traits::{DefaultSink, Distribution, HAppend, HCons, HNil, SampleIter, Sink};
 use rand::Rng;
 use std::marker::PhantomData;
-
+use std::ops::Add;
 // ============================================================================
 // Constant
 // ============================================================================
@@ -55,33 +55,36 @@ where
 // Range
 // ============================================================================
 
-pub struct Range {
-    pub start: i64,
-    pub step: i64,
+pub struct Range<T> {
+    pub start: T,
+    pub step: T,
 }
 
-pub fn range(start: i64, step: i64) -> Range {
+pub fn range<T: Add>(start: T, step: T) -> Range<T> {
     Range { start, step }
 }
 
 #[derive(Clone)]
-pub struct RangeIter {
-    pub current: i64,
-    pub step: i64,
+pub struct RangeIter<T> {
+    pub current: T,
+    pub step: T,
 }
 
-impl SampleIter for RangeIter {
-    type Item = i64;
+impl<T: Add<Output = T> + Copy> SampleIter for RangeIter<T> {
+    type Item = T;
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         let v = self.current;
-        self.current += self.step;
+        self.current = self.current + self.step;
         v
     }
 }
 
-impl Distribution for Range {
-    type Item = i64;
-    type RowIter = RangeIter;
+impl<T: DefaultSink + Add<Output = T> + Copy> Distribution for Range<T>
+where
+    T::Sink: Sink<T>,
+{
+    type Item = T;
+    type RowIter = RangeIter<T>;
 
     fn row_iter(&mut self) -> Self::RowIter {
         RangeIter {
@@ -92,10 +95,10 @@ impl Distribution for Range {
 
     fn collect_into(
         &mut self,
-        mut sink: HCons<Vec<i64>, HNil>,
+        mut sink: <T as DefaultSink>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> HCons<Vec<i64>, HNil> {
+    ) -> <T as DefaultSink>::Sink {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -103,6 +106,32 @@ impl Distribution for Range {
         sink
     }
 }
+
+//
+// impl Distribution for Range {
+//     type Item = i64;
+//     type RowIter = RangeIter;
+//
+//     fn row_iter(&mut self) -> Self::RowIter {
+//         RangeIter {
+//             current: self.start,
+//             step: self.step,
+//         }
+//     }
+//
+//     fn collect_into(
+//         &mut self,
+//         mut sink: HCons<Vec<i64>, HNil>,
+//         rng: &mut impl Rng,
+//         n: usize,
+//     ) -> HCons<Vec<i64>, HNil> {
+//         let mut iter = self.row_iter();
+//         for _ in 0..n {
+//             sink.push(iter.next(rng));
+//         }
+//         sink
+//     }
+// }
 
 // ============================================================================
 // Tuple (D1, D2) — col-by-col using HAppend

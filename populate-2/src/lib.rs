@@ -4,10 +4,7 @@ pub mod traits;
 #[cfg(test)]
 mod tests {
     use crate::dist::{constant, list, map, range};
-    use crate::traits::{
-        CollectInto, Distribution, HCons, HNil, HasWidth, IntoHList, IntoTuple, SampleIter, Sink,
-        VecListSink,
-    };
+    use crate::traits::{DefaultSink, Distribution, HCons, HNil, SampleIter, Sink, VecListSink};
     use rand::rng;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -15,7 +12,7 @@ mod tests {
     type Log = Rc<RefCell<Vec<&'static str>>>;
 
     // ========================================================================
-    // Helper functions returning impl Distribution
+    // Helper functions returning impl Distribution — NO extra bounds needed!
     // ========================================================================
 
     fn make_constant() -> impl Distribution<Item = i32> {
@@ -26,18 +23,15 @@ mod tests {
         range(0, 1)
     }
 
-    fn make_tuple()
-    -> impl Distribution<Item = (i32, i64)> + CollectInto<HCons<Vec<i32>, HCons<Vec<i64>, HNil>>>
-    {
+    fn make_tuple() -> impl Distribution<Item = (i32, i64)> {
         (constant(1), range(0, 10))
     }
 
-    fn make_mapped() -> impl Distribution<Item = i64> + CollectInto<Vec<i64>> {
+    fn make_mapped() -> impl Distribution<Item = i64> {
         map(range(0, 1), |x| x * 2)
     }
 
-    fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)>
-    + CollectInto<HCons<Vec<i32>, HCons<Vec<i64>, HCons<Vec<bool>, HNil>>>> {
+    fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)> {
         (constant(1i32), range(0, 10), constant(true))
     }
 
@@ -158,7 +152,10 @@ mod tests {
         }
     }
 
-    impl<D: Distribution> Distribution for Tracked<D> {
+    impl<D: Distribution> Distribution for Tracked<D>
+    where
+        <D::Item as DefaultSink>::Sink: Sink<D::Item>,
+    {
         type Item = D::Item;
         type RowIter = TrackedIter<D::RowIter>;
 
@@ -169,14 +166,13 @@ mod tests {
                 log: Rc::clone(&self.log),
             }
         }
-    }
 
-    impl<D: HasWidth> HasWidth for Tracked<D> {
-        type Width = D::Width;
-    }
-
-    impl<D: Distribution, S: Sink<D::Item>> CollectInto<S> for Tracked<D> {
-        fn collect_into(&mut self, mut sink: S, rng: &mut impl rand::Rng, n: usize) -> S {
+        fn collect_into(
+            &mut self,
+            mut sink: <D::Item as DefaultSink>::Sink,
+            rng: &mut impl rand::Rng,
+            n: usize,
+        ) -> <D::Item as DefaultSink>::Sink {
             let mut iter = self.row_iter();
             for _ in 0..n {
                 sink.push(iter.next(rng));
@@ -194,14 +190,13 @@ mod tests {
     }
 
     // ========================================================================
-    // Col-by-col collection tests (via CollectInto with HList sinks)
+    // Col-by-col collection tests (via collect_flat — no HCons visible!)
     // ========================================================================
 
     #[test]
     fn test_col_by_col_basic() {
         let mut dist = make_tuple();
-        let sink = (Vec::<i32>::new(), Vec::<i64>::new()).into_hlist();
-        let (col1, col2) = dist.collect_into(sink, &mut rng(), 4).into_tuple();
+        let (col1, col2) = dist.collect_flat((Vec::<i32>::new(), Vec::<i64>::new()), &mut rng(), 4);
         assert_eq!(col1, vec![1, 1, 1, 1]);
         assert_eq!(col2, vec![0, 10, 20, 30]);
     }
@@ -213,8 +208,7 @@ mod tests {
             tracked("COL1", range(0, 1), &log),
             tracked("COL2", range(100, 1), &log),
         );
-        let sink = (Vec::<i64>::new(), Vec::<i64>::new()).into_hlist();
-        let (col1, col2) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (col1, col2) = dist.collect_flat((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
 
         assert_eq!(col1, vec![0, 1, 2]);
         assert_eq!(col2, vec![100, 101, 102]);
@@ -241,8 +235,11 @@ mod tests {
     #[test]
     fn test_3tuple_col_by_col() {
         let mut dist = make_3tuple();
-        let sink = (Vec::<i32>::new(), Vec::<i64>::new(), Vec::<bool>::new()).into_hlist();
-        let (col1, col2, col3) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (col1, col2, col3) = dist.collect_flat(
+            (Vec::<i32>::new(), Vec::<i64>::new(), Vec::<bool>::new()),
+            &mut rng(),
+            3,
+        );
         assert_eq!(col1, vec![1, 1, 1]);
         assert_eq!(col2, vec![0, 10, 20]);
         assert_eq!(col3, vec![true, true, true]);
@@ -256,8 +253,11 @@ mod tests {
             tracked("COL2", range(100, 1), &log),
             tracked("COL3", range(1000, 1), &log),
         );
-        let sink = (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()).into_hlist();
-        let (col1, col2, col3) = dist.collect_into(sink, &mut rng(), 2).into_tuple();
+        let (col1, col2, col3) = dist.collect_flat(
+            (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
+            &mut rng(),
+            2,
+        );
         assert_eq!(col1, vec![0, 1]);
         assert_eq!(col2, vec![100, 101]);
         assert_eq!(col3, vec![1000, 1001]);
@@ -279,14 +279,16 @@ mod tests {
             constant(true),
             constant(2.5f64),
         );
-        let sink = (
-            Vec::<i32>::new(),
-            Vec::<i64>::new(),
-            Vec::<bool>::new(),
-            Vec::<f64>::new(),
-        )
-            .into_hlist();
-        let (c1, c2, c3, c4) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (c1, c2, c3, c4) = dist.collect_flat(
+            (
+                Vec::<i32>::new(),
+                Vec::<i64>::new(),
+                Vec::<bool>::new(),
+                Vec::<f64>::new(),
+            ),
+            &mut rng(),
+            3,
+        );
         assert_eq!(c1, vec![1, 1, 1]);
         assert_eq!(c2, vec![0, 10, 20]);
         assert_eq!(c3, vec![true, true, true]);
@@ -302,14 +304,16 @@ mod tests {
             tracked("COL3", range(1000, 1), &log),
             tracked("COL4", range(10000, 1), &log),
         );
-        let sink = (
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-        )
-            .into_hlist();
-        let (c1, c2, c3, c4) = dist.collect_into(sink, &mut rng(), 2).into_tuple();
+        let (c1, c2, c3, c4) = dist.collect_flat(
+            (
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+            ),
+            &mut rng(),
+            2,
+        );
         assert_eq!(c1, vec![0, 1]);
         assert_eq!(c2, vec![100, 101]);
         assert_eq!(c3, vec![1000, 1001]);
@@ -334,8 +338,11 @@ mod tests {
             map(tracked("MAP_SRC", range(100, 1), &log), |x| x * 2),
             tracked("COL3", range(1000, 1), &log),
         );
-        let sink = (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()).into_hlist();
-        let (c1, c2, c3) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (c1, c2, c3) = dist.collect_flat(
+            (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
+            &mut rng(),
+            3,
+        );
 
         assert_eq!(c1, vec![0, 1, 2]);
         assert_eq!(c2, vec![200, 202, 204]);
@@ -350,8 +357,11 @@ mod tests {
             map(tracked("MAP_SRC", range(100, 1), &log), |x| x * 2),
             tracked("COL3", range(1000, 1), &log),
         );
-        let sink = (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()).into_hlist();
-        let (c1, c2, c3) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (c1, c2, c3) = dist.collect_flat(
+            (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
+            &mut rng(),
+            3,
+        );
 
         assert_eq!(c1, vec![0, 1, 2]);
         assert_eq!(c2, vec![200, 202, 204]);
@@ -373,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_map_tuple_auto_flatten() {
-        // Map produces (i64, i64) → Width = N2 → takes 2 sink slots
+        // Map produces (i64, i64) → Sink = HCons<Vec<i64>, HCons<Vec<i64>, HNil>>
         // (d1, map(src, f), d3) with map returning (A, B) → 4 flat columns!
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
@@ -389,14 +399,16 @@ mod tests {
         );
 
         // 4 flat columns — no nesting, no Unnest!
-        let sink = (
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-        )
-            .into_hlist();
-        let (c1, c2, c3, c4) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (c1, c2, c3, c4) = dist.collect_flat(
+            (
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+            ),
+            &mut rng(),
+            3,
+        );
 
         assert_eq!(c1, vec![0, 1, 2]); // COL1
         assert_eq!(c2, vec![1100, 1102, 1104]); // sum
@@ -419,14 +431,16 @@ mod tests {
             tracked("COL4", range(0, 5), &log),
         );
 
-        let sink = (
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-        )
-            .into_hlist();
-        let _ = dist.collect_into(sink, &mut rng(), 3);
+        let (_, _, _, _) = dist.collect_flat(
+            (
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+            ),
+            &mut rng(),
+            3,
+        );
 
         // COL1 col-by-col, then Map row-by-row (MAP_A, MAP_B per row), then COL4 col-by-col
         assert_eq!(
@@ -444,8 +458,8 @@ mod tests {
 
     #[test]
     fn test_independent_tuple_auto_flatten() {
-        // Inner tuple (D2, D3) has Width = N2 → takes 2 sink slots
-        // No Unnest needed — the width system handles it automatically!
+        // Inner tuple (D2, D3) has 2 sink slots → takes 2 slots in outer tuple
+        // No Unnest needed — HAppend handles it automatically!
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut dist = (
             tracked("COL1", range(0, 1), &log),
@@ -456,14 +470,16 @@ mod tests {
             tracked("COL4", range(0, 5), &log),
         );
 
-        let sink = (
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-        )
-            .into_hlist();
-        let (c1, c2, c3, c4) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (c1, c2, c3, c4) = dist.collect_flat(
+            (
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+                Vec::<i64>::new(),
+            ),
+            &mut rng(),
+            3,
+        );
 
         assert_eq!(c1, vec![0, 1, 2]);
         assert_eq!(c2, vec![100, 101, 102]);
@@ -494,11 +510,11 @@ mod tests {
     }
 
     #[test]
-    fn test_list_collect_into_vec_list_sink() {
+    fn test_list_collect_into() {
         let mut dist = list(constant(2usize), range(0, 1));
-        let sink = VecListSink::new();
-        let sink = dist.collect_into(sink, &mut rng(), 3);
-        let (values, offsets) = sink.into_parts();
+        let sink = HCons(VecListSink::new(), HNil);
+        let result = dist.collect_into(sink, &mut rng(), 3);
+        let (values, offsets) = result.0.into_parts();
         assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
         assert_eq!(offsets, vec![0, 2, 4, 6]);
     }
@@ -507,8 +523,11 @@ mod tests {
     fn test_list_in_tuple() {
         // (scalar, list) — scalar takes 1 slot, list takes 1 slot
         let mut dist = (constant(42i32), list(constant(2usize), range(0, 1)));
-        let sink = (Vec::<i32>::new(), VecListSink::<i64>::new()).into_hlist();
-        let (scalars, list_sink) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
+        let (scalars, list_sink) = dist.collect_flat(
+            (Vec::<i32>::new(), VecListSink::<i64>::new()),
+            &mut rng(),
+            3,
+        );
         let (values, offsets) = list_sink.into_parts();
 
         assert_eq!(scalars, vec![42, 42, 42]);

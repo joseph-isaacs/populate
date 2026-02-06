@@ -1,30 +1,4 @@
 use rand::Rng;
-use std::marker::PhantomData;
-
-// ============================================================================
-// Type-level natural numbers
-// ============================================================================
-
-pub struct Z;
-pub struct Succ<N>(PhantomData<N>);
-
-pub type N0 = Z;
-pub type N1 = Succ<N0>;
-pub type N2 = Succ<N1>;
-pub type N3 = Succ<N2>;
-pub type N4 = Succ<N3>;
-
-pub trait NAdd<R> {
-    type Sum;
-}
-
-impl<R> NAdd<R> for Z {
-    type Sum = R;
-}
-
-impl<N: NAdd<R>, R> NAdd<R> for Succ<N> {
-    type Sum = Succ<N::Sum>;
-}
 
 // ============================================================================
 // HList
@@ -34,97 +8,94 @@ pub struct HNil;
 pub struct HCons<H, T>(pub H, pub T);
 
 // ============================================================================
-// HSplitAt<N> — split an HList at type-level position N
+// HAppend — concatenate two HLists, and split them back apart
 // ============================================================================
 
-pub trait HSplitAt<N> {
-    type Left;
-    type Right;
-    fn split(self) -> (Self::Left, Self::Right);
-    fn unsplit(left: Self::Left, right: Self::Right) -> Self;
+pub trait HAppend<R> {
+    type Output;
+    fn append(self, right: R) -> Self::Output;
+    fn unappend(combined: Self::Output) -> (Self, R)
+    where
+        Self: Sized;
 }
 
-impl<L> HSplitAt<Z> for L {
-    type Left = HNil;
-    type Right = L;
+impl<R> HAppend<R> for HNil {
+    type Output = R;
 
-    fn split(self) -> (HNil, L) {
-        (HNil, self)
-    }
-
-    fn unsplit(_: HNil, right: L) -> L {
+    fn append(self, right: R) -> R {
         right
     }
+
+    fn unappend(combined: R) -> (HNil, R) {
+        (HNil, combined)
+    }
 }
 
-impl<H, T: HSplitAt<N>, N> HSplitAt<Succ<N>> for HCons<H, T> {
-    type Left = HCons<H, T::Left>;
-    type Right = T::Right;
+impl<H, T: HAppend<R>, R> HAppend<R> for HCons<H, T> {
+    type Output = HCons<H, T::Output>;
 
-    fn split(self) -> (Self::Left, Self::Right) {
-        let (left, right) = self.1.split();
-        (HCons(self.0, left), right)
+    fn append(self, right: R) -> HCons<H, T::Output> {
+        HCons(self.0, self.1.append(right))
     }
 
-    fn unsplit(left: HCons<H, T::Left>, right: T::Right) -> Self {
-        HCons(left.0, T::unsplit(left.1, right))
+    fn unappend(combined: HCons<H, T::Output>) -> (HCons<H, T>, R) {
+        let (tail, right) = T::unappend(combined.1);
+        (HCons(combined.0, tail), right)
     }
 }
 
 // ============================================================================
-// HasWidth — how many sink columns a distribution contributes
+// DefaultSink — maps a value type to its HList-of-Vecs sink type
 // ============================================================================
 
-pub trait HasWidth {
-    type Width;
+pub trait DefaultSink {
+    type Sink;
 }
 
-// Width for primitive value types (needed for Map<D, F, In, Out>)
-impl HasWidth for i32 {
-    type Width = N1;
+impl DefaultSink for i32 {
+    type Sink = HCons<Vec<i32>, HNil>;
 }
-impl HasWidth for i64 {
-    type Width = N1;
+impl DefaultSink for i64 {
+    type Sink = HCons<Vec<i64>, HNil>;
 }
-impl HasWidth for f64 {
-    type Width = N1;
+impl DefaultSink for f64 {
+    type Sink = HCons<Vec<f64>, HNil>;
 }
-impl HasWidth for bool {
-    type Width = N1;
+impl DefaultSink for bool {
+    type Sink = HCons<Vec<bool>, HNil>;
 }
-impl HasWidth for usize {
-    type Width = N1;
+impl DefaultSink for usize {
+    type Sink = HCons<Vec<usize>, HNil>;
 }
 
-// Width for tuple value types — sum of component widths
-impl<A: HasWidth, B: HasWidth> HasWidth for (A, B)
+impl<T> DefaultSink for Vec<T> {
+    type Sink = HCons<VecListSink<T>, HNil>;
+}
+
+impl<A: DefaultSink, B: DefaultSink> DefaultSink for (A, B)
 where
-    A::Width: NAdd<B::Width>,
+    A::Sink: HAppend<B::Sink>,
 {
-    type Width = <A::Width as NAdd<B::Width>>::Sum;
+    type Sink = <A::Sink as HAppend<B::Sink>>::Output;
 }
 
-impl<A: HasWidth, B: HasWidth, C: HasWidth> HasWidth for (A, B, C)
+impl<A: DefaultSink, B: DefaultSink, C: DefaultSink> DefaultSink for (A, B, C)
 where
-    A::Width: NAdd<B::Width>,
-    <A::Width as NAdd<B::Width>>::Sum: NAdd<C::Width>,
+    A::Sink: HAppend<B::Sink>,
+    <A::Sink as HAppend<B::Sink>>::Output: HAppend<C::Sink>,
 {
-    type Width = <<A::Width as NAdd<B::Width>>::Sum as NAdd<C::Width>>::Sum;
+    type Sink = <<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output;
 }
 
-impl<A: HasWidth, B: HasWidth, C: HasWidth, D: HasWidth> HasWidth for (A, B, C, D)
+impl<A: DefaultSink, B: DefaultSink, C: DefaultSink, D: DefaultSink> DefaultSink for (A, B, C, D)
 where
-    A::Width: NAdd<B::Width>,
-    <A::Width as NAdd<B::Width>>::Sum: NAdd<C::Width>,
-    <<A::Width as NAdd<B::Width>>::Sum as NAdd<C::Width>>::Sum: NAdd<D::Width>,
+    A::Sink: HAppend<B::Sink>,
+    <A::Sink as HAppend<B::Sink>>::Output: HAppend<C::Sink>,
+    <<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output: HAppend<D::Sink>,
 {
-    type Width =
-        <<<A::Width as NAdd<B::Width>>::Sum as NAdd<C::Width>>::Sum as NAdd<D::Width>>::Sum;
-}
-
-// Width for Vec<T> — a list column is 1 column
-impl<T> HasWidth for Vec<T> {
-    type Width = N1;
+    type Sink = <<<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output as HAppend<
+        D::Sink,
+    >>::Output;
 }
 
 // ============================================================================
@@ -136,10 +107,29 @@ pub trait SampleIter {
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
+/// Sink type is always `<Self::Item as DefaultSink>::Sink` — no separate
+/// associated type needed. Users write `impl Distribution<Item = (i32, i64)>`
+/// and the sink shape is fully determined by the Item.
 pub trait Distribution {
-    type Item;
+    type Item: DefaultSink;
     type RowIter: SampleIter<Item = Self::Item>;
+
     fn row_iter(&mut self) -> Self::RowIter;
+
+    fn collect_into(
+        &mut self,
+        sink: <Self::Item as DefaultSink>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <Self::Item as DefaultSink>::Sink;
+
+    fn collect_flat<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
+    where
+        T: IntoHList<HList = <Self::Item as DefaultSink>::Sink>,
+        <Self::Item as DefaultSink>::Sink: IntoTuple<Tuple = T>,
+    {
+        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
+    }
 }
 
 // ============================================================================
@@ -197,7 +187,7 @@ impl<A, B, C, D, SA: Sink<A>, SB: Sink<B>, SC: Sink<C>, SD: Sink<D>> Sink<(A, B,
     }
 }
 
-// Tuple sinks — for row-by-row collection (Map uses these)
+// Tuple sinks — for row-by-row collection (collect helper in tests uses these)
 impl<T1, T2, S1: Sink<T1>, S2: Sink<T2>> Sink<(T1, T2)> for (S1, S2) {
     fn push(&mut self, (a, b): (T1, T2)) {
         self.0.push(a);
@@ -271,14 +261,6 @@ impl<T, S: ListSink<T>> ListSink<T> for HCons<S, HNil> {
 }
 
 // ============================================================================
-// CollectInto<S> — distribution-driven collection into a typed sink
-// ============================================================================
-
-pub trait CollectInto<S> {
-    fn collect_into(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S;
-}
-
-// ============================================================================
 // IntoHList / IntoTuple — conversion between flat tuples and HLists
 // ============================================================================
 
@@ -290,6 +272,23 @@ pub trait IntoHList {
 pub trait IntoTuple {
     type Tuple;
     fn into_tuple(self) -> Self::Tuple;
+}
+
+// 1-tuple
+impl<A> IntoHList for (A,) {
+    type HList = HCons<A, HNil>;
+
+    fn into_hlist(self) -> Self::HList {
+        HCons(self.0, HNil)
+    }
+}
+
+impl<A> IntoTuple for HCons<A, HNil> {
+    type Tuple = (A,);
+
+    fn into_tuple(self) -> (A,) {
+        (self.0,)
+    }
 }
 
 // 2-tuple
@@ -343,7 +342,7 @@ impl<A, B, C, D> IntoTuple for HCons<A, HCons<B, HCons<C, HCons<D, HNil>>>> {
     }
 }
 
-// 5-tuple (for unnest cases producing 5 columns)
+// 5-tuple
 impl<A, B, C, D, E> IntoHList for (A, B, C, D, E) {
     type HList = HCons<A, HCons<B, HCons<C, HCons<D, HCons<E, HNil>>>>>;
 

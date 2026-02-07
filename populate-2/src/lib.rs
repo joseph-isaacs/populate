@@ -5,7 +5,8 @@ pub mod traits;
 mod tests {
     use crate::dist::{constant, list, map, range};
     use crate::traits::{
-        DefaultSink, Distribution, HCons, HNil, IntoHList, IntoTuple, SampleIter, Sink, VecListSink,
+        DefaultSink, Distribution, DistributionExt, HCons, HNil, IntoTuple, SampleIter, Sink,
+        VecListSink,
     };
     use rand::rng;
     use std::cell::RefCell;
@@ -395,8 +396,7 @@ mod tests {
             ),
             tracked("COL4", range(0i32, 5), &log),
         )
-            .into_hlist()
-            .into_tuple()
+            .flatten()
     }
 
     #[test]
@@ -527,8 +527,8 @@ mod tests {
         let sink = HCons(VecListSink::new(), HNil);
         let (result,) = dist.collect_into(sink, &mut rng(), 3).into_tuple();
         let (values, offsets) = result.into_parts();
-        assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
-        assert_eq!(offsets, vec![0, 2, 4, 6]);
+        assert_eq!(values, vec![0, 0, 1]);
+        assert_eq!(offsets, vec![0, 0, 1, 3]);
     }
 
     #[test]

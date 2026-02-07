@@ -127,13 +127,6 @@ pub trait Distribution {
         n: usize,
     ) -> <Self::Item as DefaultSink>::Sink;
 
-    fn collect_flat<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
-    where
-        T: IntoHList<HList = <Self::Item as DefaultSink>::Sink>,
-        <Self::Item as DefaultSink>::Sink: IntoTuple<Tuple = T>,
-    {
-        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
-    }
 }
 
 // ============================================================================
@@ -357,5 +350,140 @@ impl<A, B, C, D, E> IntoTuple for HCons<A, HCons<B, HCons<C, HCons<D, HCons<E, H
 
     fn into_tuple(self) -> (A, B, C, D, E) {
         (self.0, self.1.0, self.1.1.0, self.1.1.1.0, self.1.1.1.1.0)
+    }
+}
+
+// ============================================================================
+// ValueHList — recursive value-to-HList (mirrors DefaultSink but for values)
+// ============================================================================
+
+pub trait ValueHList {
+    type HList;
+    fn into_hlist(self) -> Self::HList;
+}
+
+macro_rules! impl_value_hlist_scalar {
+    ($($t:ty),*) => {
+        $(impl ValueHList for $t {
+            type HList = HCons<$t, HNil>;
+            fn into_hlist(self) -> Self::HList { HCons(self, HNil) }
+        })*
+    }
+}
+
+impl_value_hlist_scalar!(i16, i32, i64, f64, bool, usize);
+
+impl<T> ValueHList for Vec<T> {
+    type HList = HCons<Vec<T>, HNil>;
+    fn into_hlist(self) -> Self::HList {
+        HCons(self, HNil)
+    }
+}
+
+impl<A: ValueHList, B: ValueHList> ValueHList for (A, B)
+where
+    A::HList: HAppend<B::HList>,
+{
+    type HList = <A::HList as HAppend<B::HList>>::Output;
+    fn into_hlist(self) -> Self::HList {
+        self.0.into_hlist().append(self.1.into_hlist())
+    }
+}
+
+impl<A: ValueHList, B: ValueHList, C: ValueHList> ValueHList for (A, B, C)
+where
+    A::HList: HAppend<B::HList>,
+    <A::HList as HAppend<B::HList>>::Output: HAppend<C::HList>,
+{
+    type HList = <<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output;
+    fn into_hlist(self) -> Self::HList {
+        self.0
+            .into_hlist()
+            .append(self.1.into_hlist())
+            .append(self.2.into_hlist())
+    }
+}
+
+impl<A: ValueHList, B: ValueHList, C: ValueHList, D: ValueHList> ValueHList for (A, B, C, D)
+where
+    A::HList: HAppend<B::HList>,
+    <A::HList as HAppend<B::HList>>::Output: HAppend<C::HList>,
+    <<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output: HAppend<D::HList>,
+{
+    type HList = <<<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output as HAppend<
+        D::HList,
+    >>::Output;
+    fn into_hlist(self) -> Self::HList {
+        self.0
+            .into_hlist()
+            .append(self.1.into_hlist())
+            .append(self.2.into_hlist())
+            .append(self.3.into_hlist())
+    }
+}
+
+// ============================================================================
+// Flatten<D> — distribution wrapper that flattens nested Item types
+// ============================================================================
+
+pub trait DistributionExt: Distribution {
+    fn collect_flat<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
+    where
+        T: IntoHList<HList = <Self::Item as DefaultSink>::Sink>,
+        <Self::Item as DefaultSink>::Sink: IntoTuple<Tuple = T>,
+    {
+        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
+    }
+
+    fn flatten(self) -> Flatten<Self>
+    where
+        Self: Sized,
+        Self::Item: ValueHList,
+        <Self::Item as ValueHList>::HList: IntoTuple,
+        <<Self::Item as ValueHList>::HList as IntoTuple>::Tuple:
+            DefaultSink<Sink = <Self::Item as DefaultSink>::Sink>,
+    {
+        Flatten(self)
+    }
+}
+
+impl<D: Distribution> DistributionExt for D {}
+
+pub struct Flatten<D>(pub D);
+
+pub struct FlattenIter<I>(pub I);
+
+impl<I: SampleIter> SampleIter for FlattenIter<I>
+where
+    I::Item: ValueHList,
+    <I::Item as ValueHList>::HList: IntoTuple,
+{
+    type Item = <<I::Item as ValueHList>::HList as IntoTuple>::Tuple;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        self.0.next(rng).into_hlist().into_tuple()
+    }
+}
+
+impl<D: Distribution> Distribution for Flatten<D>
+where
+    D::Item: ValueHList,
+    <D::Item as ValueHList>::HList: IntoTuple,
+    <<D::Item as ValueHList>::HList as IntoTuple>::Tuple:
+        DefaultSink<Sink = <D::Item as DefaultSink>::Sink>,
+{
+    type Item = <<D::Item as ValueHList>::HList as IntoTuple>::Tuple;
+    type RowIter = FlattenIter<D::RowIter>;
+
+    fn row_iter(&mut self) -> Self::RowIter {
+        FlattenIter(self.0.row_iter())
+    }
+
+    fn collect_into(
+        &mut self,
+        sink: <Self::Item as DefaultSink>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <Self::Item as DefaultSink>::Sink {
+        self.0.collect_into(sink, rng, n)
     }
 }

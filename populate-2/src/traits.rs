@@ -30,6 +30,33 @@ impl Backend for DequeBackend {
     type Column<S> = Transparent<S>;
 }
 
+pub struct NamedVecBackend;
+
+impl Backend for NamedVecBackend {
+    type Prim<T> = NamedCol<Vec<T>>;
+    type List<T> = NamedCol<Vec<Vec<T>>>;
+    type Column<S> = Transparent<S>;
+}
+
+// ============================================================================
+// NamedCol<S> — a column with a name, used by NamedVecBackend
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedCol<S> {
+    pub name: &'static str,
+    pub inner: S,
+}
+
+impl<S: Default> Default for NamedCol<S> {
+    fn default() -> Self {
+        NamedCol {
+            name: "",
+            inner: S::default(),
+        }
+    }
+}
+
 // ============================================================================
 // GroupSink — wrap/unwrap for column groups (used by Named columns)
 // ============================================================================
@@ -143,19 +170,29 @@ where
 // SampleIter and Distribution
 // ============================================================================
 
+pub type SinkOf<B, V> = <V as SinkFor<B>>::Sink;
+
 pub trait SampleIter {
     type Item;
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
 pub trait Distribution<B: Backend> {
-    type Value;
-    type Sink;
+    type Value: SinkFor<B>;
     type Iter: SampleIter<Item = Self::Value>;
 
     fn row_iter(&mut self) -> Self::Iter;
-    fn default_sink(&self) -> Self::Sink;
-    fn collect_into(&mut self, sink: Self::Sink, rng: &mut impl Rng, n: usize) -> Self::Sink;
+
+    fn default_sink(&self) -> SinkOf<B, Self::Value> {
+        Default::default()
+    }
+
+    fn collect_into(
+        &mut self,
+        sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value>;
 }
 
 // ============================================================================
@@ -185,6 +222,17 @@ impl<T> Sink<T> for Vec<T> {
 impl<T> Sink<T> for VecDeque<T> {
     fn push(&mut self, value: T) {
         self.push_back(value);
+    }
+}
+
+// NamedCol<S> delegates Sink to inner S
+impl<T, S: Sink<T>> Sink<T> for NamedCol<S> {
+    fn push(&mut self, value: T) {
+        self.inner.push(value);
+    }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        self.inner.push_n(value);
     }
 }
 
@@ -319,6 +367,13 @@ impl<T> ListSink<T> for Vec<Vec<T>> {
     }
 }
 
+// NamedCol<S> delegates ListSink to inner S
+impl<T, S: ListSink<T>> ListSink<T> for NamedCol<S> {
+    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
+        self.inner.push_list(len, elems);
+    }
+}
+
 // ============================================================================
 // DequeListSink<T> — columnar sink for list/array columns using VecDeque
 // ============================================================================
@@ -364,20 +419,44 @@ impl<T> Sink<Vec<T>> for DequeListSink<T> {
 }
 
 // ============================================================================
+// NamedDefault — construct a sink with a column name (for Named combinator)
+// ============================================================================
+
+pub trait NamedDefault {
+    fn named_default(name: &'static str) -> Self;
+}
+
+impl<S: Default> NamedDefault for HCons<NamedCol<S>, HNil> {
+    fn named_default(name: &'static str) -> Self {
+        HCons(
+            NamedCol {
+                name,
+                inner: S::default(),
+            },
+            HNil,
+        )
+    }
+}
+
+// ============================================================================
 // DistributionExt — ergonomic methods (collect, collect_flat, collect_flat_into)
 // ============================================================================
 
 pub trait DistributionExt<B: Backend>: Distribution<B> {
     /// Collect using default_sink, return native Sink type (HList)
-    fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sink {
+    fn collect(&mut self, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
         let sink = self.default_sink();
         self.collect_into(sink, rng, n)
     }
 
     /// Collect using default_sink, return flat tuple
-    fn collect_flat(&mut self, rng: &mut impl Rng, n: usize) -> <Self::Sink as IntoTuple>::Tuple
+    fn collect_flat(
+        &mut self,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <SinkOf<B, Self::Value> as IntoTuple>::Tuple
     where
-        Self::Sink: IntoTuple,
+        SinkOf<B, Self::Value>: IntoTuple,
     {
         self.collect(rng, n).into_tuple()
     }
@@ -385,8 +464,8 @@ pub trait DistributionExt<B: Backend>: Distribution<B> {
     /// Collect with explicit sink tuple, return flat tuple
     fn collect_flat_into<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
     where
-        T: IntoHList<HList = Self::Sink>,
-        Self::Sink: IntoTuple<Tuple = T>,
+        T: IntoHList<HList = SinkOf<B, Self::Value>>,
+        SinkOf<B, Self::Value>: IntoTuple<Tuple = T>,
     {
         self.collect_into(sink.into_hlist(), rng, n).into_tuple()
     }
@@ -401,7 +480,7 @@ impl<B: Backend, D: Distribution<B>> DistributionExt<B> for D {}
 pub trait DistributionScalar<B: Backend>: Distribution<B> {
     fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
     where
-        Self: Distribution<B, Sink = HCons<S, HNil>>,
+        Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
     {
         self.collect_into(HCons(sink, HNil), rng, n).0
     }

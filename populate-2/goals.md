@@ -247,7 +247,125 @@ VecBackend ignores column names — `Transparent<S>` is a zero-cost newtype. Bac
 
 ---
 
-## 10. Extensibility
+## 10. Parallel generation via skip
+
+### 10a. Goal
+
+Partition N total rows across T threads. Thread `i` generates rows `[i*chunk, (i+1)*chunk)`. Each thread gets its own clone of the distribution + its own sink, calls `skip(offset)` to jump ahead, then `collect_into` for its chunk. Results are concatenated (or written to disjoint buffer regions).
+
+```rust
+let handles: Vec<_> = (0..num_threads).map(|i| {
+    let mut dist = dist.clone();
+    let chunk = total / num_threads;
+    let offset = i * chunk;
+    thread::spawn(move || {
+        let mut rng = make_rng(seed + i);
+        dist.skip(offset, &mut rng);  // advance to this thread's starting point
+        let sink = dist.default_sink_with_capacity(chunk);
+        dist.collect_into(sink, &mut rng, chunk)
+    })
+}).collect();
+```
+
+### 10b. What skip means per distribution
+
+`skip(n, rng)` advances the distribution's internal state as if `n` rows had been generated, without producing output.
+
+| Distribution | Skip behaviour | Cost |
+|-------------|---------------|------|
+| Constant | No-op (stateless) | O(1) |
+| Range/Inc | `self.start += n * self.step` | O(1) |
+| Random (uniform, etc.) | Advance RNG by `n` calls | O(n) or O(log n) with special RNG |
+| TpchRng | `rng.skip(n)` via binary exponentiation | O(log n) |
+| Map<D, F> | `self.source.skip(n, rng)` — skip the source, function is stateless | Same as source |
+| Tuple (D1, D2) | `self.0.skip(n, rng); self.1.skip(n, rng)` — skip each independently | Sum of children |
+| Flatten<D> | Delegates to inner | Same as inner |
+| Nested<D> | Delegates to inner | Same as inner |
+| Tracked<D> | Delegates to inner (don't log) | Same as inner |
+
+### 10c. List — the hard case
+
+List columns are fundamentally difficult to skip because the number of *elements* to skip depends on the *generated lengths* of the skipped rows.
+
+To skip `n` list rows:
+1. Generate all `n` lengths from the length distribution (advancing its RNG)
+2. Sum them to get total elements to skip
+3. Skip the element distribution by that sum
+
+```rust
+impl List<L, E> {
+    fn skip(&mut self, n: usize, rng: &mut impl Rng) {
+        let mut len_iter = self.lengths.row_iter();
+        let total_elements: usize = (0..n).map(|_| len_iter.next(rng)).sum();
+        self.lengths.skip(n, rng);
+        self.elements.skip(total_elements, rng);
+    }
+}
+```
+
+**Cost:** O(n) for the length generation (can't skip without knowing lengths). If the length distribution is Constant, this could be optimized to O(1): `total = n * constant_len`.
+
+For depth-2 lists (`list(list(i64))`), this recurses — skip outer lengths, generate them to compute inner lengths, skip inner lengths, generate them to compute leaf element count, skip leaf elements. Each level is O(rows_at_that_level).
+
+### 10d. Seeded distributions
+
+`Seeded<R, D>` wraps a distribution with its own RNG. Skip must advance both the seeded RNG and the inner distribution:
+
+```rust
+fn skip(&mut self, n: usize) {
+    // Use own RNG, not the passed-in one
+    self.inner.skip(n, &mut self.rng);
+}
+```
+
+Each seeded column has an independent RNG that can be skipped independently. This is a natural fit for parallel generation — each thread clones the distribution and skips its own seeded RNGs.
+
+### 10e. Graph walk — how to know skip is complete
+
+**Question:** When a distribution tree has complex structure (tuples of maps of tuples with lists), how do we know every node has been correctly skipped?
+
+**Answer:** `skip` is a recursive tree walk, same structure as `collect_into`. Each node is responsible for skipping itself and its children. The trait method signature ensures every implementor handles it:
+
+```rust
+pub trait Distribution<B: Backend> {
+    // ...existing methods...
+    fn skip(&mut self, n: usize, rng: &mut impl Rng);
+}
+```
+
+**Completeness is structural:** If every `Distribution` impl correctly skips its children, the full tree is skipped. This is the same guarantee as `collect_into` — if every impl correctly collects its children, the full tree is collected. No separate "walk complete" check is needed.
+
+**Where state lives:** On the distribution structs themselves (`&mut self`). Each distribution holds whatever state it needs:
+- `Range` holds `start: T` — skip mutates it
+- `List` holds `lengths: L, elements: E` — skip advances both
+- `Seeded` holds `rng: R` — skip advances it
+- `Constant` holds `value: T` — skip is a no-op
+
+### 10f. Requirements for parallel skip
+
+For parallel generation to work, distributions must be **`Clone`**. Each thread gets its own clone, skips independently. This mirrors v1's `SampleIter: Clone` requirement.
+
+**Clone semantics:** A cloned distribution produces the same sequence given the same RNG state. Skip + generate on a clone is equivalent to generate-all on the original and taking a slice.
+
+**Determinism constraint:** For reproducible output, the RNG seed scheme must be deterministic. Options:
+- Single seed → derive per-thread seeds: `seed + thread_id`
+- Per-column seeds (like TPC-H) → each thread clones the per-column seed and skips
+
+### 10g. Open questions
+
+1. **RNG skip cost:** Standard `rand` RNGs (ChaCha, etc.) don't have O(log n) skip. Options: (a) accept O(n) skip cost (fine if skip is done once per thread), (b) use a skippable RNG like TpchRng or PCG, (c) derive independent seeds per thread instead of skipping.
+
+2. **Skip without RNG:** Some distributions don't need the RNG at all (Constant, Range/Inc). Should `skip` take `Option<&mut Rng>` or always require it? Always requiring it is simpler — callers always have one, and no-op impls just ignore it.
+
+3. **Skip for Map:** Map's closure is stateless, but the *source* distribution may have state. `Map::skip` = `self.source.skip(n, rng)`. But if Map's source is a tuple that collects col-by-col, skip must advance each sub-distribution by `n`. This is handled by the recursive walk — Map skips its source, source (tuple) skips its children.
+
+4. **Verification:** How to test that skip produces correct output? Generate N rows normally, compare against skip(K) + generate(N-K). For lists, verify that skipped length generation matches.
+
+5. **Concatenation:** After parallel generation, thread sinks must be merged. For Vec sinks this is `Vec::append` or writing to pre-partitioned slices. For Arrow builders, this is `concat_batches`. Should the framework provide merge utilities?
+
+---
+
+## 11. Extensibility
 
 ### 10a. Custom distributions
 

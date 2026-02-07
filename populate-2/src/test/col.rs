@@ -10,8 +10,6 @@ use crate::test::dist::{
 };
 use crate::traits::{DistributionExt, VecBackend};
 use rand::rng;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 #[test]
 fn test_col_by_col_basic() {
@@ -57,7 +55,7 @@ fn test_3tuple_col_by_col() {
 
 #[test]
 fn test_3tuple_col_by_col_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_tracked_3tuple(&log);
     let (col1, col2, col3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i32>::new()),
@@ -98,7 +96,7 @@ fn test_4tuple_col_by_col() {
 
 #[test]
 fn test_4tuple_col_by_col_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_tracked_4tuple(&log);
     let (c1, c2, c3, c4) = dist.collect_flat_into(
         (
@@ -128,7 +126,7 @@ fn test_4tuple_col_by_col_order() {
 
 #[test]
 fn test_map_in_tuple_values() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_map_in_tuple(&log);
     let (c1, c2, c3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
@@ -143,7 +141,7 @@ fn test_map_in_tuple_values() {
 
 #[test]
 fn test_map_in_tuple_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_map_in_tuple(&log);
     let (c1, c2, c3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
@@ -193,7 +191,7 @@ fn test_map_tuple_auto_flatten() {
 
 #[test]
 fn test_map_tuple_auto_flatten_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_flatten_order::<VecBackend>(&log);
 
     let (_, _, _, _) = dist.collect_flat_into(
@@ -223,7 +221,7 @@ fn test_map_tuple_auto_flatten_order() {
 
 #[test]
 fn test_independent_tuple_auto_flatten() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_nested_tuple(&log);
 
     let (c1, c2, c3, c4) = dist.collect_flat_into(
@@ -258,7 +256,7 @@ fn test_independent_tuple_auto_flatten() {
 
 #[test]
 fn test_row_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_row_order(&log);
     let mut sink: (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
 

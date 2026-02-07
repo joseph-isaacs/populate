@@ -6,8 +6,6 @@ use crate::test::Log;
 use crate::test::dist::{gen_list, make_list_in_tuple, make_tracked_list_in_tuple};
 use crate::traits::{Distribution, DistributionExt, DistributionScalar, SampleIter};
 use rand::rng;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 #[test]
 fn test_list_row_iter() {
@@ -44,7 +42,7 @@ fn test_list_in_tuple() {
 
 #[test]
 fn test_tracked_list_in_tuple() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Log::default();
     let mut dist = make_tracked_list_in_tuple(&log);
     let (scalars, lists) =
         dist.collect_flat_into((Vec::<i32>::new(), Vec::<Vec<i64>>::new()), &mut rng(), 3);

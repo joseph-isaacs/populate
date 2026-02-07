@@ -12,21 +12,21 @@ mod test {
     #[test]
     fn test_constant_deque_backend() {
         let mut dist = make_constant::<DequeBackend>();
-        let (col,) = dist.collect_flat((VecDeque::<i32>::new(),), &mut rng(), 5);
+        let (col,) = dist.collect_flat_into((VecDeque::<i32>::new(),), &mut rng(), 5);
         assert_eq!(col, VecDeque::from([42, 42, 42, 42, 42]));
     }
 
     #[test]
     fn test_range_deque_backend() {
         let mut dist = make_range::<DequeBackend>();
-        let (col,) = dist.collect_flat((VecDeque::<i64>::new(),), &mut rng(), 5);
+        let (col,) = dist.collect_flat_into((VecDeque::<i64>::new(),), &mut rng(), 5);
         assert_eq!(col, VecDeque::from([0, 1, 2, 3, 4]));
     }
 
     #[test]
     fn test_tuple_deque_backend() {
         let mut dist = make_tuple::<DequeBackend>();
-        let (c1, c2) = dist.collect_flat(
+        let (c1, c2) = dist.collect_flat_into(
             (VecDeque::<i32>::new(), VecDeque::<i64>::new()),
             &mut rng(),
             4,

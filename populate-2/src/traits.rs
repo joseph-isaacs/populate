@@ -8,9 +8,10 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 // Backend — selects concrete sink types for each column kind
 // ============================================================================
 
-pub trait Backend {
-    type Prim<T>: Sink<T>;
-    type List<T>: ListSink<T>;
+pub trait Backend: Sized {
+    type Prim<T>: Sink<T> + Default;
+    type List<T>: ListSink<T> + Sink<Vec<T>> + Default;
+    type Column<S>: GroupSink<Inner = S>;
 }
 
 pub struct VecBackend;
@@ -18,6 +19,7 @@ pub struct VecBackend;
 impl Backend for VecBackend {
     type Prim<T> = Vec<T>;
     type List<T> = Vec<Vec<T>>;
+    type Column<S> = Transparent<S>;
 }
 
 pub struct DequeBackend;
@@ -25,14 +27,53 @@ pub struct DequeBackend;
 impl Backend for DequeBackend {
     type Prim<T> = VecDeque<T>;
     type List<T> = DequeListSink<T>;
+    type Column<S> = Transparent<S>;
 }
 
 // ============================================================================
-// DefaultSink<B> — maps (value type, backend) to HList sink type
+// GroupSink — wrap/unwrap for column groups (used by Named columns)
 // ============================================================================
 
-pub trait DefaultSink<B: Backend> {
-    type Sink;
+pub trait GroupSink: Sized {
+    type Inner;
+    fn new(name: &'static str, inner: Self::Inner) -> Self;
+    fn into_inner(self) -> Self::Inner;
+}
+
+// ============================================================================
+// Transparent — Vec/Deque ignore column names, delegate HAppend to inner
+// ============================================================================
+
+pub struct Transparent<S>(pub S);
+
+impl<S> GroupSink for Transparent<S> {
+    type Inner = S;
+    fn new(_name: &'static str, inner: S) -> Self {
+        Transparent(inner)
+    }
+    fn into_inner(self) -> S {
+        self.0
+    }
+}
+
+impl<S: HAppend<R>, R> HAppend<R> for Transparent<S> {
+    type Output = <S as HAppend<R>>::Output;
+    fn append(self, right: R) -> Self::Output {
+        self.0.append(right)
+    }
+    fn unappend(combined: Self::Output) -> (Self, R) {
+        let (s, r) = S::unappend(combined);
+        (Transparent(s), r)
+    }
+}
+
+// ============================================================================
+// SinkFor<B> — maps (value type, backend) to HList sink type
+// Replaces DefaultSink. Only required by Map (not a bound on Distribution::Value).
+// ============================================================================
+
+pub trait SinkFor<B: Backend>: Sized {
+    type Sink: Sink<Self> + Default;
 }
 
 macro_rules! for_all_primitives {
@@ -41,9 +82,9 @@ macro_rules! for_all_primitives {
     };
 }
 
-macro_rules! impl_default_sink_scalar {
+macro_rules! impl_sink_for_scalar {
     ($($t:ty),*) => {
-        $(impl<B: Backend> DefaultSink<B> for $t {
+        $(impl<B: Backend> SinkFor<B> for $t {
             type Sink = HCons<B::Prim<$t>, HNil>;
         })*
     };
@@ -58,47 +99,45 @@ macro_rules! impl_value_hlist_scalar {
     };
 }
 
-for_all_primitives!(impl_default_sink_scalar);
+for_all_primitives!(impl_sink_for_scalar);
 for_all_primitives!(impl_value_hlist_scalar);
 
-impl<B: Backend, T> DefaultSink<B> for Vec<T> {
+impl<B: Backend, T> SinkFor<B> for Vec<T> {
     type Sink = HCons<B::List<T>, HNil>;
 }
 
-macro_rules! impl_default_sink_tuple {
-    // Terminal: emit the impl
-    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*]) => {
-        impl<B: Backend, $($all: DefaultSink<B>),+> DefaultSink<B> for ($($tuple),+)
-        where $($bounds)*
-        {
-            type Sink = $acc;
-        }
-    };
-    // Recursive: fold in next type's sink via HAppend
-    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*] $next:ident $(, $rest:ident)*) => {
-        impl_default_sink_tuple!(@accum
-            [$($all),+]
-            ($($tuple),+)
-            <$acc as HAppend<<$next as DefaultSink<B>>::Sink>>::Output;
-            [$($bounds)* $acc: HAppend<<$next as DefaultSink<B>>::Sink>,]
-            $($rest),*
-        );
-    };
-    // Entry: start accumulating from first type's sink
-    ($first:ident $(, $rest:ident)+) => {
-        impl_default_sink_tuple!(@accum
-            [$first $(, $rest)+]
-            ($first $(, $rest)+)
-            <$first as DefaultSink<B>>::Sink;
-            []
-            $($rest),+
-        );
-    };
+// SinkFor tuple impls — used by Map to resolve sink from output type
+
+impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>> SinkFor<B> for (A, C)
+where
+    A::Sink: HAppend<C::Sink>,
+    <A::Sink as HAppend<C::Sink>>::Output: Sink<(A, C)> + Default,
+{
+    type Sink = <A::Sink as HAppend<C::Sink>>::Output;
 }
 
-impl_default_sink_tuple!(T1, T2);
-impl_default_sink_tuple!(T1, T2, T3);
-impl_default_sink_tuple!(T1, T2, T3, T4);
+impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>, E: SinkFor<B>> SinkFor<B> for (A, C, E)
+where
+    A::Sink: HAppend<C::Sink>,
+    <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
+    <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output: Sink<(A, C, E)> + Default,
+{
+    type Sink = <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output;
+}
+
+impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>, E: SinkFor<B>, G: SinkFor<B>> SinkFor<B>
+    for (A, C, E, G)
+where
+    A::Sink: HAppend<C::Sink>,
+    <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
+    <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output: HAppend<G::Sink>,
+    <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<G::Sink>>::Output:
+        Sink<(A, C, E, G)> + Default,
+{
+    type Sink = <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<
+        G::Sink,
+    >>::Output;
+}
 
 // ============================================================================
 // SampleIter and Distribution
@@ -110,17 +149,13 @@ pub trait SampleIter {
 }
 
 pub trait Distribution<B: Backend> {
-    type Item: DefaultSink<B>;
-    type RowIter: SampleIter<Item = Self::Item>;
+    type Value;
+    type Sink;
+    type Iter: SampleIter<Item = Self::Value>;
 
-    fn row_iter(&mut self) -> Self::RowIter;
-
-    fn collect_into(
-        &mut self,
-        sink: <Self::Item as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <Self::Item as DefaultSink<B>>::Sink;
+    fn row_iter(&mut self) -> Self::Iter;
+    fn default_sink(&self) -> Self::Sink;
+    fn collect_into(&mut self, sink: Self::Sink, rng: &mut impl Rng, n: usize) -> Self::Sink;
 }
 
 // ============================================================================
@@ -226,8 +261,6 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 
 pub trait ListSink<T> {
     fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
-
-    // fn push_n_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
 }
 
 // HList ListSink — wrap a ListSink in a 1-element HList
@@ -331,27 +364,31 @@ impl<T> Sink<Vec<T>> for DequeListSink<T> {
 }
 
 // ============================================================================
-// DistributionExt — ergonomic methods (collect_flat, flatten)
+// DistributionExt — ergonomic methods (collect, collect_flat, collect_flat_into)
 // ============================================================================
 
 pub trait DistributionExt<B: Backend>: Distribution<B> {
-    fn collect_flat<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
-    where
-        T: IntoHList<HList = <Self::Item as DefaultSink<B>>::Sink>,
-        <Self::Item as DefaultSink<B>>::Sink: IntoTuple<Tuple = T>,
-    {
-        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
+    /// Collect using default_sink, return native Sink type (HList)
+    fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Self::Sink {
+        let sink = self.default_sink();
+        self.collect_into(sink, rng, n)
     }
 
-    fn flatten(self) -> Flatten<Self>
+    /// Collect using default_sink, return flat tuple
+    fn collect_flat(&mut self, rng: &mut impl Rng, n: usize) -> <Self::Sink as IntoTuple>::Tuple
     where
-        Self: Sized,
-        Self::Item: ValueHList,
-        <Self::Item as ValueHList>::HList: IntoTuple,
-        <<Self::Item as ValueHList>::HList as IntoTuple>::Tuple:
-            DefaultSink<B, Sink = <Self::Item as DefaultSink<B>>::Sink>,
+        Self::Sink: IntoTuple,
     {
-        Flatten(self)
+        self.collect(rng, n).into_tuple()
+    }
+
+    /// Collect with explicit sink tuple, return flat tuple
+    fn collect_flat_into<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
+    where
+        T: IntoHList<HList = Self::Sink>,
+        Self::Sink: IntoTuple<Tuple = T>,
+    {
+        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
     }
 }
 
@@ -364,53 +401,10 @@ impl<B: Backend, D: Distribution<B>> DistributionExt<B> for D {}
 pub trait DistributionScalar<B: Backend>: Distribution<B> {
     fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
     where
-        Self::Item: DefaultSink<B, Sink = HCons<S, HNil>>,
+        Self: Distribution<B, Sink = HCons<S, HNil>>,
     {
         self.collect_into(HCons(sink, HNil), rng, n).0
     }
 }
 
 impl<B: Backend, D: Distribution<B>> DistributionScalar<B> for D {}
-
-// ============================================================================
-// Flatten<D> — distribution wrapper that flattens nested Item types
-// ============================================================================
-
-pub struct Flatten<D>(pub D);
-
-pub struct FlattenIter<I>(pub I);
-
-impl<I: SampleIter> SampleIter for FlattenIter<I>
-where
-    I::Item: ValueHList,
-    <I::Item as ValueHList>::HList: IntoTuple,
-{
-    type Item = <<I::Item as ValueHList>::HList as IntoTuple>::Tuple;
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        self.0.next(rng).into_hlist().into_tuple()
-    }
-}
-
-impl<B: Backend, D: Distribution<B>> Distribution<B> for Flatten<D>
-where
-    D::Item: ValueHList,
-    <D::Item as ValueHList>::HList: IntoTuple,
-    <<D::Item as ValueHList>::HList as IntoTuple>::Tuple:
-        DefaultSink<B, Sink = <D::Item as DefaultSink<B>>::Sink>,
-{
-    type Item = <<D::Item as ValueHList>::HList as IntoTuple>::Tuple;
-    type RowIter = FlattenIter<D::RowIter>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        FlattenIter(self.0.row_iter())
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: <Self::Item as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <Self::Item as DefaultSink<B>>::Sink {
-        self.0.collect_into(sink, rng, n)
-    }
-}

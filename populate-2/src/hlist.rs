@@ -200,4 +200,20 @@ impl_value_hlist_tuple!(0 A, 1 B);
 impl_value_hlist_tuple!(0 A, 1 B, 2 C);
 impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D);
 
+// ============================================================================
+// Default for HList — needed by SinkFor + default_sink
+// ============================================================================
+
+impl Default for HNil {
+    fn default() -> Self {
+        HNil
+    }
+}
+
+impl<H: Default, T: Default> Default for HCons<H, T> {
+    fn default() -> Self {
+        HCons(H::default(), T::default())
+    }
+}
+
 // Scalar ValueHList impls — generated via for_all_primitives! in traits.rs

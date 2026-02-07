@@ -3,8 +3,7 @@
 // ========================================================================
 
 use crate::test::dist::{collect, make_3tuple, make_constant, make_mapped, make_range, make_tuple};
-use crate::traits::Distribution;
-use crate::traits::{SampleIter, VecBackend};
+use crate::traits::{Distribution, SampleIter, VecBackend};
 use rand::rng;
 
 #[test]

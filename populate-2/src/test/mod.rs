@@ -1,4 +1,4 @@
-use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
+use crate::traits::{Backend, Distribution, SampleIter, Sink};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -37,12 +37,13 @@ impl<I: SampleIter> SampleIter for TrackedIter<I> {
 
 impl<B: Backend, D: Distribution<B>> Distribution<B> for Tracked<D>
 where
-    <D::Item as DefaultSink<B>>::Sink: Sink<D::Item>,
+    D::Sink: Sink<D::Value>,
 {
-    type Item = D::Item;
-    type RowIter = TrackedIter<D::RowIter>;
+    type Value = D::Value;
+    type Sink = D::Sink;
+    type Iter = TrackedIter<D::Iter>;
 
-    fn row_iter(&mut self) -> Self::RowIter {
+    fn row_iter(&mut self) -> Self::Iter {
         TrackedIter {
             name: self.name,
             inner: self.inner.row_iter(),
@@ -50,12 +51,16 @@ where
         }
     }
 
+    fn default_sink(&self) -> Self::Sink {
+        self.inner.default_sink()
+    }
+
     fn collect_into(
         &mut self,
-        mut sink: <D::Item as DefaultSink<B>>::Sink,
+        mut sink: Self::Sink,
         rng: &mut impl rand::Rng,
         n: usize,
-    ) -> <D::Item as DefaultSink<B>>::Sink {
+    ) -> Self::Sink {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));

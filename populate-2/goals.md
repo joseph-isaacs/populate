@@ -124,14 +124,51 @@ Current generic functions need verbose bounds like `<T as DefaultSink<B>>::Sink:
 
 Leaf distributions construct their sinks from the Backend. Tuple distributions compose via `append`. Names flow through for backends that care (Arrow).
 
-### 6c. Scalar collection convenience
+### 6c. default_sink_with_capacity — pre-allocated sink construction
+
+**Goal:** `default_sink_with_capacity(&self, n: usize) -> Self::Sink` constructs a sink tree with all buffers pre-allocated for `n` rows.
+
+```rust
+fn default_sink_with_capacity(&self, n: usize) -> Self::Sink;
+```
+
+**How it flows down the tree:**
+
+| Distribution | Behaviour |
+|-------------|-----------|
+| Leaf (Constant, Range) | `Vec::with_capacity(n)` (or backend equivalent) |
+| Tuple (D1, D2) | `self.0.default_sink_with_capacity(n).append(self.1.default_sink_with_capacity(n))` |
+| Map | `Vec::with_capacity(n)` per output column via `SinkFor` |
+| List (depth 1) | Offsets: `with_capacity(n)`. Inner values: **cannot pre-size** without knowing lengths — leave at 0 or accept an estimate. Use `reserve_lists` after pre-generating lengths for exact sizing. |
+| List (depth 2+) | Same — each level's offsets get `n`, inner defers to `reserve_lists` |
+| Nested | Delegates to inner, wraps in Group |
+
+**Relationship to reserve:** `default_sink_with_capacity(n)` handles the simple case (scalar columns all get `n`). For list columns where inner buffer size depends on generated lengths, `reserve_lists` is still needed after length pre-generation. The two are complementary:
+
+```rust
+// Simple: scalar columns only
+let sink = dist.default_sink_with_capacity(1_000_000);
+let result = dist.collect_into(sink, &mut rng, 1_000_000);
+
+// List columns: capacity + reserve
+let mut sink = dist.default_sink_with_capacity(1_000_000);
+dist.pre_reserve(&mut sink, &mut rng, 1_000_000); // generates lengths, reserves inner buffers
+let result = dist.collect_into(sink, &mut rng, 1_000_000);
+```
+
+**Backend requirement:** `Backend::Prim<T>` needs a capacity constructor. Options:
+- Add `fn with_capacity(n: usize) -> Self` to a trait bound on `Prim<T>` (Vec and VecDeque both support this)
+- Add `Backend::new_prim_with_capacity<T>(name, n)` alongside `new_prim<T>(name)`
+- Add a `ReservableSink` trait with `fn with_capacity(n: usize) -> Self`
+
+### 6d. Scalar collection convenience
 
 `collect_col` unwraps the HCons for single-column distributions:
 
 **Before:** `dist.collect_into(HCons(Vec::new(), HNil), rng, n).0`
 **After:** `dist.collect_col(rng, n)` → `Vec<T>` directly
 
-### 6d. Flat tuple collection
+### 6e. Flat tuple collection
 
 `collect_flat` converts HList sink ↔ tuple via `IntoHList`/`IntoTuple`:
 

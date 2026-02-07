@@ -16,7 +16,8 @@ use std::rc::Rc;
 #[test]
 fn test_col_by_col_basic() {
     let mut dist = make_tuple::<VecBackend>();
-    let (col1, col2) = dist.collect_flat((Vec::<i32>::new(), Vec::<i64>::new()), &mut rng(), 4);
+    let (col1, col2) =
+        dist.collect_flat_into((Vec::<i32>::new(), Vec::<i64>::new()), &mut rng(), 4);
     assert_eq!(col1, vec![1, 1, 1, 1]);
     assert_eq!(col2, vec![0, 10, 20, 30]);
 }
@@ -25,7 +26,8 @@ fn test_col_by_col_basic() {
 fn test_col_by_col_order() {
     let log: Log = Log::default();
     let mut dist = make_tracked_2tuple(&log);
-    let (col1, col2) = dist.collect_flat((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
+    let (col1, col2) =
+        dist.collect_flat_into((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
 
     assert_eq!(col1, vec![0, 1, 2]);
     assert_eq!(col2, vec![100, 101, 102]);
@@ -43,7 +45,7 @@ fn test_col_by_col_order() {
 #[test]
 fn test_3tuple_col_by_col() {
     let mut dist = make_3tuple();
-    let (col1, col2, col3) = dist.collect_flat(
+    let (col1, col2, col3) = dist.collect_flat_into(
         (Vec::<i32>::new(), Vec::<i64>::new(), Vec::<bool>::new()),
         &mut rng(),
         3,
@@ -57,7 +59,7 @@ fn test_3tuple_col_by_col() {
 fn test_3tuple_col_by_col_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_3tuple(&log);
-    let (col1, col2, col3) = dist.collect_flat(
+    let (col1, col2, col3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i32>::new()),
         &mut rng(),
         2,
@@ -78,7 +80,7 @@ fn test_3tuple_col_by_col_order() {
 #[test]
 fn test_4tuple_col_by_col() {
     let mut dist = make_4tuple();
-    let (c1, c2, c3, c4) = dist.collect_flat(
+    let (c1, c2, c3, c4) = dist.collect_flat_into(
         (
             Vec::<i32>::new(),
             Vec::<i64>::new(),
@@ -98,7 +100,7 @@ fn test_4tuple_col_by_col() {
 fn test_4tuple_col_by_col_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_4tuple(&log);
-    let (c1, c2, c3, c4) = dist.collect_flat(
+    let (c1, c2, c3, c4) = dist.collect_flat_into(
         (
             Vec::<i64>::new(),
             Vec::<i64>::new(),
@@ -128,7 +130,7 @@ fn test_4tuple_col_by_col_order() {
 fn test_map_in_tuple_values() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_map_in_tuple(&log);
-    let (c1, c2, c3) = dist.collect_flat(
+    let (c1, c2, c3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
         &mut rng(),
         3,
@@ -143,7 +145,7 @@ fn test_map_in_tuple_values() {
 fn test_map_in_tuple_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_map_in_tuple(&log);
-    let (c1, c2, c3) = dist.collect_flat(
+    let (c1, c2, c3) = dist.collect_flat_into(
         (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
         &mut rng(),
         3,
@@ -172,7 +174,7 @@ fn test_map_tuple_auto_flatten() {
     let log = Log::default();
     let mut dist = gen_col4::<VecBackend>(&log);
 
-    let (c1, c2, c3, c4) = dist.collect_flat(
+    let (c1, c2, c3, c4) = dist.collect_flat_into(
         (
             Vec::<i16>::new(),
             Vec::<i64>::new(),
@@ -194,7 +196,7 @@ fn test_map_tuple_auto_flatten_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_flatten_order::<VecBackend>(&log);
 
-    let (_, _, _, _) = dist.collect_flat(
+    let (_, _, _, _) = dist.collect_flat_into(
         (
             Vec::<i32>::new(),
             Vec::<i32>::new(),
@@ -224,7 +226,7 @@ fn test_independent_tuple_auto_flatten() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_nested_tuple(&log);
 
-    let (c1, c2, c3, c4) = dist.collect_flat(
+    let (c1, c2, c3, c4) = dist.collect_flat_into(
         (
             Vec::<i32>::new(),
             Vec::<i32>::new(),

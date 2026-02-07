@@ -1,6 +1,6 @@
 use crate::traits::{
     Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
-    Nested, SampleIter, SinkFor, SinkOf, ValueHList,
+    Nested, SampleIter, SinkFor, SinkOf, StepMul, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -125,7 +125,7 @@ impl<T: Add<Output = T> + Copy> SampleIter for RangeIter<T> {
     }
 }
 
-impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Range<T> {
+impl<B: Backend, T: SinkFor<B> + Add<Output = T> + StepMul + Copy> Distribution<B> for Range<T> {
     type Value = T;
     type Iter = RangeIter<T>;
 
@@ -137,9 +137,7 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
     }
 
     fn skip(&mut self, n: usize) {
-        for _ in 0..n {
-            self.start = self.start + self.step;
-        }
+        self.start = self.start + self.step.step_mul(n);
     }
 }
 

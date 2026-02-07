@@ -196,6 +196,32 @@ macro_rules! for_all_primitives {
     };
 }
 
+// ============================================================================
+// StepMul — multiply a step value by a usize count (for O(1) skip)
+// ============================================================================
+
+pub trait StepMul {
+    fn step_mul(self, n: usize) -> Self;
+}
+
+macro_rules! impl_step_mul_int {
+    ($($t:ty),*) => {
+        $(impl StepMul for $t {
+            fn step_mul(self, n: usize) -> Self {
+                self * n as $t
+            }
+        })*
+    };
+}
+
+impl_step_mul_int!(i16, i32, i64, usize);
+
+impl StepMul for f64 {
+    fn step_mul(self, n: usize) -> Self {
+        self * n as f64
+    }
+}
+
 macro_rules! impl_sink_for_scalar {
     ($($t:ty),*) => {
         $(impl<B: Backend> SinkFor<B> for $t {

@@ -2,7 +2,7 @@
 // Skip tests — verify Distribution::skip for both row and col paths
 // ========================================================================
 
-use crate::dist::{constant, list, range};
+use crate::dist::{constant, list, map, range};
 use crate::test::dist::{make_constant, make_mapped, make_range, make_tuple};
 use crate::traits::{Backend, Distribution, DistributionExt, SampleIter, VecBackend};
 use rand::rng;
@@ -265,4 +265,69 @@ fn test_skip_row_col_equivalence() {
 
     assert_eq!(col_a, row_a);
     assert_eq!(col_b, row_b);
+}
+
+// ========================================================================
+// Benchmark: skip vs alloc-all-then-slice
+// ========================================================================
+
+/// Demonstrates skip is faster than generating everything and discarding.
+/// Uses a tuple of (Range, Uniform, Map) — mixes deterministic + random.
+#[test]
+fn test_skip_vs_alloc_all() {
+    use crate::dist::uniform;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let skip_n = 1_000_000usize;
+    let batch = 1_000usize;
+
+    // --- Path A: alloc all (skip_n + batch), take the tail ---
+    let t0 = Instant::now();
+    for _ in 0..10 {
+        let mut dist = (
+            range(0i64, 1),
+            uniform(0i32, 1000),
+            map(range(0i64, 1), |x| x * 3),
+        );
+        let (a, b, c): (Vec<i64>, Vec<i32>, Vec<i64>) =
+            DistributionExt::<VecBackend>::collect_flat(&mut dist, &mut rng(), skip_n + batch);
+        // Simulate keeping only the tail
+        black_box(&a[skip_n..]);
+        black_box(&b[skip_n..]);
+        black_box(&c[skip_n..]);
+    }
+    let alloc_all_time = t0.elapsed();
+
+    // --- Path B: skip, then collect only the batch ---
+    let t1 = Instant::now();
+    for _ in 0..10 {
+        let mut dist = (
+            range(0i64, 1),
+            uniform(0i32, 1000),
+            map(range(0i64, 1), |x| x * 3),
+        );
+        Distribution::<VecBackend>::skip(&mut dist, skip_n);
+        let (a, b, c): (Vec<i64>, Vec<i32>, Vec<i64>) =
+            DistributionExt::<VecBackend>::collect_flat(&mut dist, &mut rng(), batch);
+        black_box(&a);
+        black_box(&b);
+        black_box(&c);
+    }
+    let skip_time = t1.elapsed();
+
+    eprintln!(
+        "alloc-all: {:?}, skip: {:?}, speedup: {:.1}x",
+        alloc_all_time,
+        skip_time,
+        alloc_all_time.as_nanos() as f64 / skip_time.as_nanos() as f64
+    );
+
+    // skip should be substantially faster — at least 5x for 1M skip + 1K batch
+    assert!(
+        skip_time < alloc_all_time,
+        "skip ({:?}) should be faster than alloc-all ({:?})",
+        skip_time,
+        alloc_all_time
+    );
 }

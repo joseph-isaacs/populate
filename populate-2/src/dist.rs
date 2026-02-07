@@ -40,6 +40,64 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
 }
 
 // ============================================================================
+// Uniform — random values in [lo, hi)
+// ============================================================================
+
+pub struct Uniform<T> {
+    pub lo: T,
+    pub hi: T,
+}
+
+pub fn uniform<T>(lo: T, hi: T) -> Uniform<T> {
+    Uniform { lo, hi }
+}
+
+#[derive(Clone)]
+pub struct UniformIter<T> {
+    lo: T,
+    hi: T,
+}
+
+impl SampleIter for UniformIter<i64> {
+    type Item = i64;
+    fn next(&mut self, rng: &mut impl Rng) -> i64 {
+        rng.random_range(self.lo..self.hi)
+    }
+}
+
+impl SampleIter for UniformIter<i32> {
+    type Item = i32;
+    fn next(&mut self, rng: &mut impl Rng) -> i32 {
+        rng.random_range(self.lo..self.hi)
+    }
+}
+
+impl SampleIter for UniformIter<f64> {
+    type Item = f64;
+    fn next(&mut self, rng: &mut impl Rng) -> f64 {
+        rng.random_range(self.lo..self.hi)
+    }
+}
+
+macro_rules! impl_uniform_dist {
+    ($($t:ty),*) => {
+        $(impl<B: Backend> Distribution<B> for Uniform<$t>
+        where
+            $t: SinkFor<B>,
+        {
+            type Value = $t;
+            type Iter = UniformIter<$t>;
+
+            fn row_iter(&mut self) -> Self::Iter {
+                UniformIter { lo: self.lo, hi: self.hi }
+            }
+        })*
+    };
+}
+
+impl_uniform_dist!(i32, i64, f64);
+
+// ============================================================================
 // Range
 // ============================================================================
 

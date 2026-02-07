@@ -452,6 +452,12 @@ pub struct ColumnarList<Inner, Offsets> {
     pub offsets: Offsets,
 }
 
+impl<Inner: IntoTuple, Offsets> ColumnarList<Inner, Offsets> {
+    pub fn into_parts(self) -> (Inner::Tuple, Offsets) {
+        (self.inner.into_tuple(), self.offsets)
+    }
+}
+
 impl<Inner: Default, Offsets: Default + Sink<usize>> Default for ColumnarList<Inner, Offsets> {
     fn default() -> Self {
         let mut offsets = Offsets::default();

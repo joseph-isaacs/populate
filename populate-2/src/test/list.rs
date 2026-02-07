@@ -25,21 +25,22 @@ fn test_list_row_iter() {
 #[test]
 fn test_list_collect_col() {
     let mut dist = gen_list::<VecBackend>();
-    let result = dist.collect_col(&mut rng(), 3);
+    let ((values,), offsets) = dist.collect_col(&mut rng(), 3).into_parts();
     // 3 lists: [], [0], [0, 1]
-    assert_eq!(result.inner.0, vec![0, 0, 1]); // flat values
-    assert_eq!(result.offsets, vec![0, 0, 1, 3]); // offsets
+    assert_eq!(values, vec![0, 0, 1]);
+    assert_eq!(offsets, vec![0, 0, 1, 3]);
 }
 
 #[test]
 fn test_list_in_tuple() {
     let mut dist = make_list_in_tuple::<VecBackend>();
     let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
+    let ((values,), offsets) = lists.into_parts();
 
     assert_eq!(scalars, vec![42, 42, 42]);
     // 3 lists, each [0, 1]
-    assert_eq!(lists.inner.0, vec![0, 1, 0, 1, 0, 1]); // flat values
-    assert_eq!(lists.offsets, vec![0, 2, 4, 6]); // offsets
+    assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
+    assert_eq!(offsets, vec![0, 2, 4, 6]);
 }
 
 // ========================================================================
@@ -51,10 +52,11 @@ fn test_tracked_list_in_tuple() {
     let log: Log = Log::default();
     let mut dist = make_tracked_list_in_tuple::<VecBackend>(&log);
     let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
+    let ((values,), offsets) = lists.into_parts();
 
     assert_eq!(scalars, vec![42, 42, 42]);
-    assert_eq!(lists.inner.0, vec![0, 1, 0, 1, 0, 1]);
-    assert_eq!(lists.offsets, vec![0, 2, 4, 6]);
+    assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
+    assert_eq!(offsets, vec![0, 2, 4, 6]);
     // Col-by-col: COL1 x3, then LIST x3
     assert_eq!(
         *log.borrow(),
@@ -69,18 +71,13 @@ fn test_tracked_list_in_tuple() {
 #[test]
 fn test_list_of_struct_col_by_col() {
     // list<(u32, u64)> with 3 elements per list, 2 lists
-    // Elements: (0, 100), (1, 110), (2, 120), (0, 100), (1, 110), (2, 120)
     let mut dist = make_list_of_struct::<VecBackend>();
-    let result = dist.collect_col(&mut rng(), 2);
-
-    // Inner has two flat buffers — one per struct field — col-by-col!
-    let col1 = &result.inner.0;
-    let col2 = &result.inner.1.0;
+    let ((col1, col2), offsets) = dist.collect_col(&mut rng(), 2).into_parts();
 
     // Each list has 3 elements, 2 lists total = 6 elements per column
-    assert_eq!(col1, &vec![0, 1, 2, 0, 1, 2]); // u32 column: flat
-    assert_eq!(col2, &vec![100, 110, 120, 100, 110, 120]); // u64 column: flat
-    assert_eq!(result.offsets, vec![0, 3, 6]); // shared offsets
+    assert_eq!(col1, vec![0, 1, 2, 0, 1, 2]); // u32 column: flat
+    assert_eq!(col2, vec![100, 110, 120, 100, 110, 120]); // u64 column: flat
+    assert_eq!(offsets, vec![0, 3, 6]); // shared offsets
 }
 
 #[test]
@@ -88,15 +85,12 @@ fn test_list_of_struct_in_tuple() {
     // (i32, list<(u32, u64)>) — scalar column + struct-inside-list
     let mut dist = make_list_of_struct_in_tuple::<VecBackend>();
     let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
+    let ((col1, col2), offsets) = lists.into_parts();
 
     assert_eq!(scalars, vec![42, 42, 42]);
-
-    // 3 lists, each with 2 elements: (0, 100), (1, 110)
-    let col1 = &lists.inner.0;
-    let col2 = &lists.inner.1.0;
-    assert_eq!(col1, &vec![0, 1, 0, 1, 0, 1]); // u32 column
-    assert_eq!(col2, &vec![100, 110, 100, 110, 100, 110]); // u64 column
-    assert_eq!(lists.offsets, vec![0, 2, 4, 6]); // shared offsets
+    assert_eq!(col1, vec![0, 1, 0, 1, 0, 1]); // u32 column
+    assert_eq!(col2, vec![100, 110, 100, 110, 100, 110]); // u64 column
+    assert_eq!(offsets, vec![0, 2, 4, 6]); // shared offsets
 }
 
 #[test]
@@ -119,27 +113,22 @@ fn test_list_of_struct_row_iter() {
 #[test]
 fn test_tracked_list_of_struct_element_order() {
     // list<(u32, u64)> with 2 elements per list, 3 lists
-    // The List distribution generates elements via row_iter(), so within
-    // each list the elements are produced row-by-row: (u32, u64) pairs.
-    // The sink decomposes each pair into separate buffers.
     let log: Log = Log::default();
     let mut dist = make_tracked_list_of_struct::<VecBackend>(&log);
-    let result = dist.collect_col(&mut rng(), 3);
+    let ((col1, col2), offsets) = dist.collect_col(&mut rng(), 3).into_parts();
 
-    // Values are correct — decomposed into two flat columns
-    assert_eq!(result.inner.0, vec![0, 1, 0, 1, 0, 1]); // u32 column
-    assert_eq!(result.inner.1.0, vec![100, 110, 100, 110, 100, 110]); // u64 column
-    assert_eq!(result.offsets, vec![0, 2, 4, 6]); // offsets
+    assert_eq!(col1, vec![0, 1, 0, 1, 0, 1]); // u32 column
+    assert_eq!(col2, vec![100, 110, 100, 110, 100, 110]); // u64 column
+    assert_eq!(offsets, vec![0, 2, 4, 6]);
 
     // Element generation order: within each list, elements are generated
     // row-by-row (u32 then u64 for each element), across 3 lists of 2 elements
     assert_eq!(
         *log.borrow(),
         vec![
-            // List 0: 2 elements, each (u32, u64) pair
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // List 1: 2 elements
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // List 2: 2 elements
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64",
+            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 0
+            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 1
+            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 2
         ]
     );
 }
@@ -150,21 +139,19 @@ fn test_tracked_list_of_struct_in_tuple_order() {
     let log: Log = Log::default();
     let mut dist = make_tracked_list_of_struct_in_tuple::<VecBackend>(&log);
     let (scalars, lists) = dist.collect_flat(&mut rng(), 2);
+    let ((col1, col2), offsets) = lists.into_parts();
 
     assert_eq!(scalars, vec![42, 42]);
-    assert_eq!(lists.inner.0, vec![0, 1, 0, 1]); // u32 column
-    assert_eq!(lists.inner.1.0, vec![100, 110, 100, 110]); // u64 column
-    assert_eq!(lists.offsets, vec![0, 2, 4]); // offsets
+    assert_eq!(col1, vec![0, 1, 0, 1]); // u32 column
+    assert_eq!(col2, vec![100, 110, 100, 110]); // u64 column
+    assert_eq!(offsets, vec![0, 2, 4]);
 
     // Col-by-col at top level: SCALAR x2 first, then list elements
     assert_eq!(
         *log.borrow(),
         vec![
-            // Scalar column: col-by-col
-            "SCALAR", "SCALAR",
-            // List column: element generation (row-by-row within each list)
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", "ELEM_U32",
-            "ELEM_U64",
+            "SCALAR", "SCALAR", "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", "ELEM_U32",
+            "ELEM_U64", "ELEM_U32", "ELEM_U64",
         ]
     );
 }

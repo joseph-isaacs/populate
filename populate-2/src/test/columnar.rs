@@ -55,11 +55,11 @@ fn test_columnar_scalar() {
 #[test]
 fn test_columnar_list_scalar() {
     let mut dist = list_scalar();
-    let result = dist.collect_col(&mut rng(), 2);
+    let ((values,), offsets) = dist.collect_col(&mut rng(), 2).into_parts();
 
     // 2 lists of 3 elements each: [0,1,2], [0,1,2]
-    assert_eq!(result.inner.0, vec![0, 1, 2, 0, 1, 2]);
-    assert_eq!(result.offsets, vec![0, 3, 6]);
+    assert_eq!(values, vec![0, 1, 2, 0, 1, 2]);
+    assert_eq!(offsets, vec![0, 3, 6]);
 }
 
 // ========================================================================
@@ -69,28 +69,21 @@ fn test_columnar_list_scalar() {
 #[test]
 fn test_columnar_list_of_struct() {
     let mut dist = list_of_struct();
-    let result = dist.collect_col(&mut rng(), 3);
-
-    // Extract the three Arrow-like vectors:
-    let col1 = &result.inner.0;
-    let col2 = &result.inner.1.0;
-    let offsets = &result.offsets;
+    let ((col1, col2), offsets) = dist.collect_col(&mut rng(), 3).into_parts();
 
     // col1 (u32): all first-fields flattened across all lists
-    assert_eq!(col1, &vec![0, 1, 0, 1, 0, 1]);
+    assert_eq!(col1, vec![0, 1, 0, 1, 0, 1]);
     // col2 (u64): all second-fields flattened across all lists
-    assert_eq!(col2, &vec![100, 110, 100, 110, 100, 110]);
+    assert_eq!(col2, vec![100, 110, 100, 110, 100, 110]);
     // offsets: shared across both columns, list boundaries
-    assert_eq!(offsets, &vec![0, 2, 4, 6]);
+    assert_eq!(offsets, vec![0, 2, 4, 6]);
 
     // Reconstruct list[i] from the flat columns:
     for i in 0..3 {
         let start = offsets[i];
         let end = offsets[i + 1];
-        let list_col1 = &col1[start..end];
-        let list_col2 = &col2[start..end];
-        assert_eq!(list_col1, &[0, 1]); // each list has (0, 1)
-        assert_eq!(list_col2, &[100, 110]); // each list has (100, 110)
+        assert_eq!(&col1[start..end], &[0, 1]);
+        assert_eq!(&col2[start..end], &[100, 110]);
     }
 }
 
@@ -102,19 +95,12 @@ fn test_columnar_list_of_struct() {
 fn test_columnar_struct_in_list_in_tuple() {
     let mut dist = list_of_struct_in_tuple();
     let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
+    let ((col1, col2), offsets) = lists.into_parts();
 
-    // Scalar column
     assert_eq!(scalars, vec![42, 42, 42]);
-
-    // Arrow-like extraction
-    let col1 = &lists.inner.0;
-    let col2 = &lists.inner.1.0;
-    let offsets = &lists.offsets;
-
-    // 3 lists, 2 elements each
-    assert_eq!(col1, &vec![10, 11, 10, 11, 10, 11]);
-    assert_eq!(col2, &vec![200, 300, 200, 300, 200, 300]);
-    assert_eq!(offsets, &vec![0, 2, 4, 6]);
+    assert_eq!(col1, vec![10, 11, 10, 11, 10, 11]);
+    assert_eq!(col2, vec![200, 300, 200, 300, 200, 300]);
+    assert_eq!(offsets, vec![0, 2, 4, 6]);
 }
 
 // ========================================================================
@@ -125,9 +111,9 @@ fn test_columnar_struct_in_list_in_tuple() {
 fn test_columnar_variable_length_lists() {
     // Lists with lengths 0, 1, 2, 3
     let mut dist = variable_length_list();
-    let result = dist.collect_col(&mut rng(), 4);
+    let ((values,), offsets) = dist.collect_col(&mut rng(), 4).into_parts();
 
     // Lists: [], [0], [0,1], [0,1,2]
-    assert_eq!(result.inner.0, vec![0, 0, 1, 0, 1, 2]);
-    assert_eq!(result.offsets, vec![0, 0, 1, 3, 6]);
+    assert_eq!(values, vec![0, 0, 1, 0, 1, 2]);
+    assert_eq!(offsets, vec![0, 0, 1, 3, 6]);
 }

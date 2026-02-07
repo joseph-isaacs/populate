@@ -1,4 +1,6 @@
-use crate::traits::{Backend, DefaultSink, Distribution, HAppend, ListSink, SampleIter, Sink};
+use crate::traits::{
+    Backend, DefaultSink, Distribution, Flatten, HAppend, ListSink, SampleIter, Sink,
+};
 use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
@@ -397,4 +399,12 @@ where
         }
         sink
     }
+}
+
+// ============================================================================
+// Flatten — free function wrapper (avoids UFCS for generic-B contexts)
+// ============================================================================
+
+pub fn flatten<D>(d: D) -> Flatten<D> {
+    Flatten(d)
 }

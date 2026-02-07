@@ -3,7 +3,7 @@ pub mod traits;
 
 #[cfg(test)]
 mod tests {
-    use crate::dist::{constant, list, map, range};
+    use crate::dist::{constant, flatten, list, map, range};
     use crate::traits::{
         Backend, DefaultSink, Distribution, DistributionExt, HAppend, HCons, HNil, IntoTuple,
         SampleIter, Sink, VecBackend, VecListSink,
@@ -250,10 +250,8 @@ mod tests {
         )
     }
 
-    // UFCS needed: .flatten() can't infer B — method resolution doesn't
-    // propagate the return type backwards through the trait parameter.
     fn gen_col4<B: Backend>(log: &Log) -> impl Distribution<B, Item = (i16, i64, i64, i32)> {
-        DistributionExt::<B>::flatten((
+        flatten((
             tracked("COL1", range(0i16, 1), log),
             map(
                 (
@@ -269,7 +267,7 @@ mod tests {
     fn make_flatten_order<B: Backend>(
         log: &Log,
     ) -> impl Distribution<B, Item = (i32, i32, i32, i32)> {
-        DistributionExt::<B>::flatten((
+        flatten((
             tracked("COL1", range(0i32, 1), log),
             map(
                 (

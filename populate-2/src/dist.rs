@@ -562,20 +562,6 @@ where
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
-        // Replay the rng draws that collect_into would make for n rows:
-        // draw n lengths (burns rng for random lengths), then for each
-        // row burn `len` element draws from rng.
-        let mut len_iter = self.lengths.row_iter();
-        let elem_base = self.elements.row_iter();
-        for _ in 0..n {
-            let len = len_iter.next(rng);
-            let mut elems = elem_base.clone();
-            for _ in 0..len {
-                elems.next(rng);
-            }
-        }
-        // Advance lengths distribution state (e.g. Range.start).
-        // For Range this is O(1) and ignores rng.
         self.lengths.skip(rng, n);
     }
 

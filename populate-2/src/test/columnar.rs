@@ -7,9 +7,7 @@
 // ========================================================================
 
 use crate::dist::{constant, list, range};
-use crate::traits::{
-    ColumnarVecBackend, Distribution, DistributionExt, DistributionScalar, ListCol,
-};
+use crate::traits::{ColumnarVecBackend, Distribution, DistributionExt, DistributionScalar};
 use rand::rng;
 
 // Helper: construct distributions with explicit ColumnarVecBackend
@@ -45,7 +43,7 @@ fn variable_length_list() -> impl Distribution<ColumnarVecBackend, Value = Vec<u
 #[test]
 fn test_columnar_scalar() {
     let mut dist = scalar_tuple();
-    let (c1, c2): (Vec<i32>, Vec<i64>) = dist.collect_flat(&mut rng(), 3);
+    let (c1, c2) = dist.collect_flat(&mut rng(), 3);
     assert_eq!(c1, vec![1, 1, 1]);
     assert_eq!(c2, vec![0, 10, 20]);
 }
@@ -57,8 +55,7 @@ fn test_columnar_scalar() {
 #[test]
 fn test_columnar_list_scalar() {
     let mut dist = list_scalar();
-    let result: ListCol<ColumnarVecBackend, i64> =
-        dist.collect_col(Default::default(), &mut rng(), 2);
+    let result = dist.collect_col(&mut rng(), 2);
 
     // 2 lists of 3 elements each: [0,1,2], [0,1,2]
     assert_eq!(result.inner.0, vec![0, 1, 2, 0, 1, 2]);
@@ -72,8 +69,7 @@ fn test_columnar_list_scalar() {
 #[test]
 fn test_columnar_list_of_struct() {
     let mut dist = list_of_struct();
-    let result: ListCol<ColumnarVecBackend, (u32, u64)> =
-        dist.collect_col(Default::default(), &mut rng(), 3);
+    let result = dist.collect_col(&mut rng(), 3);
 
     // Extract the three Arrow-like vectors:
     let col1 = &result.inner.0;
@@ -105,8 +101,7 @@ fn test_columnar_list_of_struct() {
 #[test]
 fn test_columnar_struct_in_list_in_tuple() {
     let mut dist = list_of_struct_in_tuple();
-    let (scalars, lists): (Vec<i32>, ListCol<ColumnarVecBackend, (u32, u64)>) =
-        dist.collect_flat(&mut rng(), 3);
+    let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
 
     // Scalar column
     assert_eq!(scalars, vec![42, 42, 42]);
@@ -130,8 +125,7 @@ fn test_columnar_struct_in_list_in_tuple() {
 fn test_columnar_variable_length_lists() {
     // Lists with lengths 0, 1, 2, 3
     let mut dist = variable_length_list();
-    let result: ListCol<ColumnarVecBackend, u32> =
-        dist.collect_col(Default::default(), &mut rng(), 4);
+    let result = dist.collect_col(&mut rng(), 4);
 
     // Lists: [], [0], [0,1], [0,1,2]
     assert_eq!(result.inner.0, vec![0, 0, 1, 0, 1, 2]);

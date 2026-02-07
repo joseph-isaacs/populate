@@ -7,9 +7,7 @@ use crate::test::dist::{
     gen_list, make_list_in_tuple, make_list_of_struct, make_list_of_struct_in_tuple,
     make_tracked_list_in_tuple, make_tracked_list_of_struct, make_tracked_list_of_struct_in_tuple,
 };
-use crate::traits::{
-    Distribution, DistributionExt, DistributionScalar, ListCol, SampleIter, VecBackend,
-};
+use crate::traits::{Distribution, DistributionExt, DistributionScalar, SampleIter, VecBackend};
 use rand::rng;
 
 #[test]
@@ -27,7 +25,7 @@ fn test_list_row_iter() {
 #[test]
 fn test_list_collect_col() {
     let mut dist = gen_list::<VecBackend>();
-    let result: ListCol<VecBackend, i64> = dist.collect_col(Default::default(), &mut rng(), 3);
+    let result = dist.collect_col(&mut rng(), 3);
     // 3 lists: [], [0], [0, 1]
     assert_eq!(result.inner.0, vec![0, 0, 1]); // flat values
     assert_eq!(result.offsets, vec![0, 0, 1, 3]); // offsets
@@ -36,7 +34,7 @@ fn test_list_collect_col() {
 #[test]
 fn test_list_in_tuple() {
     let mut dist = make_list_in_tuple::<VecBackend>();
-    let (scalars, lists): (Vec<i32>, ListCol<VecBackend, i64>) = dist.collect_flat(&mut rng(), 3);
+    let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
 
     assert_eq!(scalars, vec![42, 42, 42]);
     // 3 lists, each [0, 1]
@@ -52,7 +50,7 @@ fn test_list_in_tuple() {
 fn test_tracked_list_in_tuple() {
     let log: Log = Log::default();
     let mut dist = make_tracked_list_in_tuple::<VecBackend>(&log);
-    let (scalars, lists): (Vec<i32>, ListCol<VecBackend, i64>) = dist.collect_flat(&mut rng(), 3);
+    let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
 
     assert_eq!(scalars, vec![42, 42, 42]);
     assert_eq!(lists.inner.0, vec![0, 1, 0, 1, 0, 1]);
@@ -73,8 +71,7 @@ fn test_list_of_struct_col_by_col() {
     // list<(u32, u64)> with 3 elements per list, 2 lists
     // Elements: (0, 100), (1, 110), (2, 120), (0, 100), (1, 110), (2, 120)
     let mut dist = make_list_of_struct::<VecBackend>();
-    let result: ListCol<VecBackend, (u32, u64)> =
-        dist.collect_col(Default::default(), &mut rng(), 2);
+    let result = dist.collect_col(&mut rng(), 2);
 
     // Inner has two flat buffers — one per struct field — col-by-col!
     let col1 = &result.inner.0;
@@ -90,8 +87,7 @@ fn test_list_of_struct_col_by_col() {
 fn test_list_of_struct_in_tuple() {
     // (i32, list<(u32, u64)>) — scalar column + struct-inside-list
     let mut dist = make_list_of_struct_in_tuple::<VecBackend>();
-    let (scalars, lists): (Vec<i32>, ListCol<VecBackend, (u32, u64)>) =
-        dist.collect_flat(&mut rng(), 3);
+    let (scalars, lists) = dist.collect_flat(&mut rng(), 3);
 
     assert_eq!(scalars, vec![42, 42, 42]);
 
@@ -128,8 +124,7 @@ fn test_tracked_list_of_struct_element_order() {
     // The sink decomposes each pair into separate buffers.
     let log: Log = Log::default();
     let mut dist = make_tracked_list_of_struct::<VecBackend>(&log);
-    let result: ListCol<VecBackend, (u32, u64)> =
-        dist.collect_col(Default::default(), &mut rng(), 3);
+    let result = dist.collect_col(&mut rng(), 3);
 
     // Values are correct — decomposed into two flat columns
     assert_eq!(result.inner.0, vec![0, 1, 0, 1, 0, 1]); // u32 column
@@ -154,8 +149,7 @@ fn test_tracked_list_of_struct_in_tuple_order() {
     // (i32, list<(u32, u64)>) — scalar is col-by-col, then list elements
     let log: Log = Log::default();
     let mut dist = make_tracked_list_of_struct_in_tuple::<VecBackend>(&log);
-    let (scalars, lists): (Vec<i32>, ListCol<VecBackend, (u32, u64)>) =
-        dist.collect_flat(&mut rng(), 2);
+    let (scalars, lists) = dist.collect_flat(&mut rng(), 2);
 
     assert_eq!(scalars, vec![42, 42]);
     assert_eq!(lists.inner.0, vec![0, 1, 0, 1]); // u32 column

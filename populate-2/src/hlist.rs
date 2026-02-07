@@ -9,6 +9,22 @@ pub struct HNil;
 pub struct HCons<H, T>(pub H, pub T);
 
 // ============================================================================
+// HHead — extract the first element from HCons<H, HNil>
+// ============================================================================
+
+pub trait HHead {
+    type Head;
+    fn head(self) -> Self::Head;
+}
+
+impl<H> HHead for HCons<H, HNil> {
+    type Head = H;
+    fn head(self) -> H {
+        self.0
+    }
+}
+
+// ============================================================================
 // HAppend — concatenate two HLists, and split them back apart
 // ============================================================================
 

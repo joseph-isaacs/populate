@@ -2,7 +2,7 @@ use rand::Rng;
 use std::collections::VecDeque;
 
 // Re-export HList types so existing `use crate::traits::{HCons, ...}` keeps working
-pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
+pub use crate::hlist::{HAppend, HCons, HHead, HNil, IntoHList, IntoTuple, ValueHList};
 
 // ============================================================================
 // Backend — selects concrete sink types for each column kind
@@ -271,7 +271,6 @@ where
 // ============================================================================
 
 pub type SinkOf<B, V> = <V as SinkFor<B>>::Sink;
-pub type ListCol<B, T> = ColumnarList<<T as SinkFor<B>>::Sink, <B as Backend>::Prim<usize>>;
 
 pub trait SampleIter {
     type Item;
@@ -623,8 +622,19 @@ impl<B: Backend, D: Distribution<B>> DistributionExt<B> for D {}
 // DistributionScalar — convenience for single-column distributions
 // ============================================================================
 
-pub trait DistributionScalar<B: Backend>: Distribution<B> {
-    fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
+pub trait DistributionScalar<B: Backend>: Distribution<B> + DistributionExt<B> {
+    fn collect_col(
+        &mut self,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <SinkOf<B, Self::Value> as HHead>::Head
+    where
+        SinkOf<B, Self::Value>: HHead,
+    {
+        self.collect(rng, n).head()
+    }
+
+    fn collect_col_into<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
     where
         Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
     {

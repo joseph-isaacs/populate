@@ -9,7 +9,7 @@ use rand::rng;
 #[test]
 fn test_scalar_constant() {
     let mut dist = make_constant::<VecBackend>();
-    let col = dist.collect_col(Vec::<i32>::new(), &mut rng(), 4);
+    let col = dist.collect_col(&mut rng(), 4);
     assert_eq!(col, vec![42, 42, 42, 42]);
 }
 
@@ -23,13 +23,13 @@ fn test_single_col_constant() {
 #[test]
 fn test_scalar_range() {
     let mut dist = make_range::<VecBackend>();
-    let col = dist.collect_col(Vec::<i64>::new(), &mut rng(), 5);
+    let col = dist.collect_col(&mut rng(), 5);
     assert_eq!(col, vec![0, 1, 2, 3, 4]);
 }
 
 #[test]
 fn test_scalar_mapped() {
     let mut dist = make_mapped::<VecBackend>();
-    let col = dist.collect_col(Vec::<i64>::new(), &mut rng(), 4);
+    let col = dist.collect_col(&mut rng(), 4);
     assert_eq!(col, vec![0, 2, 4, 6]);
 }

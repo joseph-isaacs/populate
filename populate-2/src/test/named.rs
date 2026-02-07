@@ -13,7 +13,7 @@ use rand::rng;
 #[test]
 fn test_named_scalar_collect_col() {
     let mut dist = make_named_scalar::<NamedVecBackend>();
-    let col = dist.collect_col(NamedCol::default(), &mut rng(), 4);
+    let col = dist.collect_col_into(NamedCol::default(), &mut rng(), 4);
     assert_eq!(col.inner, vec![0, 1, 2, 3]);
 }
 

@@ -351,6 +351,21 @@ pub trait DistributionExt<B: Backend>: Distribution<B> {
 impl<B: Backend, D: Distribution<B>> DistributionExt<B> for D {}
 
 // ============================================================================
+// DistributionScalar — convenience for single-column distributions
+// ============================================================================
+
+pub trait DistributionScalar<B: Backend>: Distribution<B> {
+    fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
+    where
+        Self::Item: DefaultSink<B, Sink = HCons<S, HNil>>,
+    {
+        self.collect_into(HCons(sink, HNil), rng, n).0
+    }
+}
+
+impl<B: Backend, D: Distribution<B>> DistributionScalar<B> for D {}
+
+// ============================================================================
 // Flatten<D> — distribution wrapper that flattens nested Item types
 // ============================================================================
 

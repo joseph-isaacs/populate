@@ -143,10 +143,6 @@ pub(crate) fn make_nested_tuple(
     ))
 }
 
-pub(crate) fn make_list_row_iter() -> impl Distribution<VecBackend, Item = Vec<i32>> {
-    list(constant(3usize), constant(7i32))
-}
-
 pub(crate) fn gen_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
     list(range(0usize, 1), range(0, 1))
 }

@@ -7,6 +7,7 @@ mod deque;
 mod dist;
 mod list;
 mod row;
+mod scalar;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 

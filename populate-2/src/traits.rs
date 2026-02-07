@@ -307,11 +307,19 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    /// Advance the distribution's state by `n` positions, so subsequent
-    /// `row_iter` and `collect_into` calls start from the skipped offset.
-    /// Enables parallel generation: each worker skips to its partition start.
-    /// Random distributions consume `n` draws from `rng` to keep state consistent.
-    fn skip(&mut self, _rng: &mut impl Rng, _n: usize) {}
+    /// Advance internal state by `n` positions without touching rng.
+    /// For Range this moves `start`; for stateless distributions (Uniform,
+    /// Constant) this is a no-op.  Used by composite distributions (List)
+    /// that need to separate state advancement from rng burn.
+    fn advance(&mut self, _n: usize) {}
+
+    /// Advance the distribution by `n` positions — both internal state and
+    /// rng.  After `skip(rng, n)`, the next `row_iter` / `collect_into`
+    /// produces output starting from position `n`, and `rng` is in the
+    /// same state as if `n` rows had been generated and discarded.
+    fn skip(&mut self, _rng: &mut impl Rng, n: usize) {
+        self.advance(n);
+    }
 
     fn collect_into(
         &mut self,

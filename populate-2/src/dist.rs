@@ -79,6 +79,13 @@ impl SampleIter for UniformIter<f64> {
     }
 }
 
+impl SampleIter for UniformIter<usize> {
+    type Item = usize;
+    fn next(&mut self, rng: &mut impl Rng) -> usize {
+        rng.random_range(self.lo..self.hi)
+    }
+}
+
 macro_rules! impl_uniform_dist {
     ($($t:ty),*) => {
         $(impl<B: Backend> Distribution<B> for Uniform<$t>
@@ -101,7 +108,7 @@ macro_rules! impl_uniform_dist {
     };
 }
 
-impl_uniform_dist!(i32, i64, f64);
+impl_uniform_dist!(i32, i64, f64, usize);
 
 // ============================================================================
 // Range
@@ -142,7 +149,7 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + StepMul + Copy> Distribution<
         }
     }
 
-    fn skip(&mut self, _rng: &mut impl Rng, n: usize) {
+    fn advance(&mut self, n: usize) {
         self.start = self.start + self.step.step_mul(n);
     }
 }
@@ -195,6 +202,11 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         self.0.default_sink().append(self.1.default_sink())
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.0.advance(n);
+        self.1.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -285,6 +297,12 @@ where
             .default_sink()
             .append(self.1.default_sink())
             .append(self.2.default_sink())
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.0.advance(n);
+        self.1.advance(n);
+        self.2.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -414,6 +432,13 @@ where
             .append(self.3.default_sink())
     }
 
+    fn advance(&mut self, n: usize) {
+        self.0.advance(n);
+        self.1.advance(n);
+        self.2.advance(n);
+        self.3.advance(n);
+    }
+
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
         self.0.skip(rng, n);
         self.1.skip(rng, n);
@@ -499,6 +524,10 @@ where
         }
     }
 
+    fn advance(&mut self, n: usize) {
+        self.source.advance(n);
+    }
+
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
         self.source.skip(rng, n);
     }
@@ -554,8 +583,26 @@ where
         }
     }
 
+    fn advance(&mut self, n: usize) {
+        self.lengths.advance(n);
+    }
+
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
-        self.lengths.skip(rng, n);
+        // Reproduce exactly the rng draws that collect_into would make for
+        // n rows: draw n lengths (burns rng for random lengths), then for
+        // each row burn `len` element draws from rng.
+        let mut len_iter = self.lengths.row_iter();
+        let elem_base = self.elements.row_iter();
+        for _ in 0..n {
+            let len = len_iter.next(rng);
+            let mut elems = elem_base.clone();
+            for _ in 0..len {
+                elems.next(rng);
+            }
+        }
+        // Advance lengths internal state (e.g. Range.start) without
+        // touching rng — the rng draws for lengths already happened above.
+        self.lengths.advance(n);
     }
 
     fn collect_into(
@@ -603,6 +650,10 @@ where
         let mut sink = self.inner.default_sink();
         sink.set_name(self.name);
         sink
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.inner.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -653,6 +704,10 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.inner.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {

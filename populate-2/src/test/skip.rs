@@ -301,6 +301,68 @@ fn test_skip_uniform_determinism() {
     assert_eq!(got, expected);
 }
 
+/// After skip(n), a List with random elements produces the same values as
+/// generating n+batch and taking the tail — verifies interleaved rng burns.
+#[test]
+fn test_skip_list_random_determinism() {
+    use crate::dist::uniform;
+    use rand::SeedableRng;
+
+    let seed = 99u64;
+    let skip_n = 50;
+    let batch = 10;
+
+    // List with uniform lengths [1..5) and uniform elements [0..1000)
+    let make_dist = || list(uniform(1usize, 5), uniform(0i64, 1000));
+
+    // Path A: generate all (skip_n + batch), take the tail
+    let mut rng_a = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut dist_a = make_dist();
+    let (all,): (Vec<Vec<i64>>,) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist_a, &mut rng_a, skip_n + batch);
+    let expected = &all[skip_n..];
+
+    // Path B: skip(n) then generate batch — same seed, same RNG
+    let mut rng_b = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut dist_b = make_dist();
+    Distribution::<VecBackend>::skip(&mut dist_b, &mut rng_b, skip_n);
+    let (got,): (Vec<Vec<i64>>,) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist_b, &mut rng_b, batch);
+
+    assert_eq!(got, expected);
+}
+
+/// Same test with deterministic lengths (Range) + random elements — verifies
+/// that advance correctly moves Range.start without double-burning rng.
+#[test]
+fn test_skip_list_range_lengths_random_elems() {
+    use crate::dist::uniform;
+    use rand::SeedableRng;
+
+    let seed = 42u64;
+    let skip_n = 30;
+    let batch = 10;
+
+    // Lengths: 1, 2, 3, ... (deterministic), elements: uniform random
+    let make_dist = || list(range(1usize, 1), uniform(0i64, 1000));
+
+    // Path A: generate all, take the tail
+    let mut rng_a = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut dist_a = make_dist();
+    let (all,): (Vec<Vec<i64>>,) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist_a, &mut rng_a, skip_n + batch);
+    let expected = &all[skip_n..];
+
+    // Path B: skip then generate
+    let mut rng_b = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut dist_b = make_dist();
+    Distribution::<VecBackend>::skip(&mut dist_b, &mut rng_b, skip_n);
+    let (got,): (Vec<Vec<i64>>,) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist_b, &mut rng_b, batch);
+
+    assert_eq!(got, expected);
+}
+
 // ========================================================================
 // Benchmark: skip vs alloc-all-then-slice
 // ========================================================================

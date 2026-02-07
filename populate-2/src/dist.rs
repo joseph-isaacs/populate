@@ -1,6 +1,6 @@
 use crate::traits::{
-    Backend, Distribution, HAppend, IntoTuple, ListSink, NamedDefault, SampleIter, Sink, SinkFor,
-    SinkOf, ValueHList,
+    Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
+    Nested, SampleIter, Sink, SinkFor, SinkOf, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -545,7 +545,9 @@ where
     }
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
-        SinkOf::<B, Self::Value>::named_default(self.name)
+        let mut sink = self.inner.default_sink();
+        sink.set_name(self.name);
+        sink
     }
 
     fn collect_into(
@@ -555,5 +557,53 @@ where
         n: usize,
     ) -> SinkOf<B, Self::Value> {
         self.inner.collect_into(sink, rng, n)
+    }
+}
+
+// ============================================================================
+// NestedDist — struct column: wraps sub-distribution in Column<S>
+// ============================================================================
+
+pub struct NestedDist<D> {
+    pub inner: D,
+}
+
+pub fn nested<D>(inner: D) -> NestedDist<D> {
+    NestedDist { inner }
+}
+
+pub struct NestedIter<I>(pub I);
+
+impl<I: SampleIter> SampleIter for NestedIter<I> {
+    type Item = Nested<I::Item>;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        Nested(self.0.next(rng))
+    }
+}
+
+impl<B: Backend, D: Distribution<B>> Distribution<B> for NestedDist<D>
+where
+    Nested<D::Value>: SinkFor<B, Sink = HCons<B::Column<SinkOf<B, D::Value>>, HNil>>,
+{
+    type Value = Nested<D::Value>;
+    type Iter = NestedIter<D::Iter>;
+
+    fn row_iter(&mut self) -> Self::Iter {
+        NestedIter(self.inner.row_iter())
+    }
+
+    fn default_sink(&self) -> SinkOf<B, Self::Value> {
+        HCons(GroupSink::new("", self.inner.default_sink()), HNil)
+    }
+
+    fn collect_into(
+        &mut self,
+        sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
+        let column = sink.0;
+        let filled = column.map_inner(|inner| self.inner.collect_into(inner, rng, n));
+        HCons(filled, HNil)
     }
 }

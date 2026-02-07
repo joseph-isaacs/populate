@@ -3,9 +3,9 @@
 // Sink type is derived from Value via SinkFor, so return types are clean.
 // ========================================================================
 
-use crate::dist::{constant, list, map, named, range};
+use crate::dist::{constant, list, map, named, nested, range};
 use crate::test::{Log, tracked};
-use crate::traits::{Backend, Distribution, NamedDefault, SampleIter, Sink, SinkOf};
+use crate::traits::{Backend, Distribution, NamedDefault, Nested, SampleIter, Sink, SinkOf};
 
 // -- Scalar helpers --
 
@@ -221,5 +221,31 @@ where
     (
         named("id", tracked("COL1", range(0i64, 1), log)),
         named("val", tracked("COL2", range(100i64, 1), log)),
+    )
+}
+
+// -- Nested column helpers --
+
+pub(crate) fn make_named_nested<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (i64, Nested<(i32, i32)>, i32)>
+where
+    SinkOf<B, i64>: NamedDefault,
+    SinkOf<B, i32>: NamedDefault,
+    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default,
+    Nested<(i32, i32)>:
+        crate::traits::SinkFor<B, Sink = crate::traits::HCons<B::Column<SinkOf<B, (i32, i32)>>, crate::traits::HNil>>,
+    crate::traits::HCons<B::Column<SinkOf<B, (i32, i32)>>, crate::traits::HNil>: NamedDefault,
+{
+    (
+        named("id", tracked("COL_ID", range(0i64, 1), log)),
+        named(
+            "address",
+            nested((
+                named("street", tracked("COL_STREET", range(100i32, 1), log)),
+                named("city", tracked("COL_CITY", range(1000i32, 1), log)),
+            )),
+        ),
+        named("age", tracked("COL_AGE", constant(25i32), log)),
     )
 }

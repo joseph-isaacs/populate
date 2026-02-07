@@ -59,14 +59,30 @@ pub trait ListSink<T>: Sink<Vec<T>> {
 
 `reserve_lists` takes per-list sizes. Each implementation decides how to use them.
 
-## ColumnarList\<Inner\> (flat representation)
+## ColumnarList\<Inner, Offsets\> (flat representation)
 
 Replaces `VecListSink<T>` and `DequeListSink<T>`.
 
 ```rust
-pub struct ColumnarList<Inner> {
-    pub offsets: Vec<usize>,
+pub struct ColumnarList<Inner, Offsets> {
     pub inner: Inner,
+    pub offsets: Offsets,
+}
+```
+
+Offsets can't be hardcoded to `Vec<usize>` — DequeBackend needs `VecDeque<usize>`, array backends need something else. The offset type comes from `B::Prim<usize>`.
+
+### Default impl
+
+`ColumnarList` needs a custom `Default` impl that initializes offsets to `[0]`:
+
+```rust
+impl<Inner: Default, Offsets: Default + Sink<usize>> Default for ColumnarList<Inner, Offsets> {
+    fn default() -> Self {
+        let mut offsets = Offsets::default();
+        offsets.push(0);
+        Self { inner: Inner::default(), offsets }
+    }
 }
 ```
 
@@ -79,15 +95,22 @@ pub trait SinkLen {
     fn sink_len(&self) -> usize;
 }
 
-impl<T> SinkLen for Vec<T>          { fn sink_len(&self) -> usize { self.len() } }
-impl<T> SinkLen for VecDeque<T>     { fn sink_len(&self) -> usize { self.len() } }
-impl<I> SinkLen for ColumnarList<I> { fn sink_len(&self) -> usize { self.offsets.len() - 1 } }
+impl<T> SinkLen for Vec<T>                         { fn sink_len(&self) -> usize { self.len() } }
+impl<T> SinkLen for VecDeque<T>                    { fn sink_len(&self) -> usize { self.len() } }
+impl<Inner, Offsets: SinkLen> SinkLen for ColumnarList<Inner, Offsets> {
+    fn sink_len(&self) -> usize { self.offsets.sink_len() - 1 }
+}
+impl<S: SinkLen, Tail> SinkLen for HCons<S, Tail>  { fn sink_len(&self) -> usize { self.0.sink_len() } }
 ```
+
+The HCons impl enables `ColumnarList` to use an HList of Vecs as its inner storage — all columns have the same count, so delegating to the head is correct.
 
 ### ListSink impl
 
 ```rust
-impl<T, Inner: Sink<T> + SinkLen> ListSink<T> for ColumnarList<Inner> {
+impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> ListSink<T>
+    for ColumnarList<Inner, Offsets>
+{
     type Inner = Inner;
 
     fn inner(&mut self) -> &mut Inner { &mut self.inner }
@@ -107,10 +130,15 @@ impl<T, Inner: Sink<T> + SinkLen> ListSink<T> for ColumnarList<Inner> {
 
 ### Sink\<Vec\<T\>\> bridge
 
+The `Sink<Vec<T>>` impl must inline the end_list logic (can't call `self.push_list()` because that requires `Self: ListSink<T>` which isn't in the Sink impl's bounds):
+
 ```rust
-impl<T, Inner: Sink<T> + SinkLen> Sink<Vec<T>> for ColumnarList<Inner> {
+impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> Sink<Vec<T>>
+    for ColumnarList<Inner, Offsets>
+{
     fn push(&mut self, value: Vec<T>) {
-        self.push_list(value.len(), value.into_iter());
+        self.inner.push_n(value.into_iter());
+        self.offsets.push(self.inner.sink_len());
     }
 
     fn reserve(&mut self, n: usize) {
@@ -121,63 +149,11 @@ impl<T, Inner: Sink<T> + SinkLen> Sink<Vec<T>> for ColumnarList<Inner> {
 
 ## Non-flat representation (Vec\<Vec\<T\>\>)
 
-For the default Backend, `List<T> = ColumnarList<Vec<T>>` and depth-2 gives `ColumnarList<Vec<Vec<T>>>`. The inner `Vec<Vec<T>>` stores heap-allocated Vecs.
+With the Distribution redesign (dist-redesign.md), the default representation is always `ColumnarList` — `List`'s Distribution impl uses `ColumnarList<E::Sink, B::Prim<usize>>` where `E::Sink` is the element distribution's sink type. Non-flat `Vec<Vec<T>>` is no longer a default option.
 
-### The problem
+If non-flat storage is ever needed, `Vec<Vec<T>>` can be used via `collect_into` with a manually constructed sink. The inner `Vec<T>` allocates separately per list element — no reserve optimization possible without extra state.
 
-`reserve_lists(&[usize])` on `ColumnarList<Vec<Vec<T>>>` calls `self.inner.reserve(sum)` which reserves `sum` Vec object slots in `Vec<Vec<T>>`. But each inner `Vec<T>` still allocates separately when created.
-
-### Solution: store upcoming sizes
-
-We can make `Vec<Vec<T>>`'s Sink impl size-aware by wrapping it:
-
-```rust
-pub struct SizedVecSink<T> {
-    data: Vec<Vec<T>>,
-    upcoming_sizes: VecDeque<usize>,
-}
-
-impl<T> Sink<Vec<T>> for SizedVecSink<T> {
-    fn push(&mut self, value: Vec<T>) {
-        self.data.push(value);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.data.reserve(n);
-    }
-}
-```
-
-But this only helps if the caller creates Vecs using the stored sizes. The actual benefit comes from `push_list`:
-
-```rust
-impl<T> ListSink<T> for ColumnarList<SizedVecSink<T>> {
-    fn reserve_lists(&mut self, lengths: &[usize]) {
-        self.offsets.reserve(lengths.len());
-        self.inner.data.reserve(lengths.len());
-        self.inner.upcoming_sizes.extend(lengths);
-    }
-
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
-        // Use stored size if available, otherwise use len
-        let cap = self.inner.upcoming_sizes.pop_front().unwrap_or(len);
-        let mut v = Vec::with_capacity(cap);
-        v.extend(elems);
-        self.inner.data.push(v);
-        self.end_list();
-    }
-}
-```
-
-Each `push_list` pops the next pre-stored size and creates a `Vec::with_capacity`. No reallocation inside the inner Vec during extend (assuming size was correct).
-
-**Trade-off**: This avoids per-list *reallocation* but not per-list *allocation*. Each inner Vec is still a separate heap allocation. To avoid that entirely, use the flat `ColumnarList<ColumnarList<Vec<T>>>`.
-
-### Is SizedVecSink worth it?
-
-Probably not for most cases. `.collect()` with a `(0..len).map(...)` iterator already uses size hints to allocate correctly. The main win of `SizedVecSink` is when you call `push_list` with an iterator whose `size_hint` is imprecise.
-
-**Recommendation**: Start with flat `ColumnarList` only. Add `SizedVecSink` later if profiling shows non-flat inner-list allocation is a bottleneck.
+**Recommendation**: Use `ColumnarList` (flat) for all cases. Non-flat is strictly worse for performance.
 
 ## Pre-generating lengths (the "other state")
 
@@ -242,7 +218,7 @@ pub trait Distribution<B: Backend> {
     /// Called before collect_into. Default: reserve sink for n items.
     fn pre_reserve(
         &mut self,
-        sink: &mut <Self::Item as DefaultSink<B>>::Sink,
+        sink: &mut Self::Sink,
         rng: &mut impl Rng,
         n: usize,
     ) -> PreReserveState;
@@ -317,167 +293,137 @@ Row-by-row via `Sink<D::Item>::push`. Doesn't interact with reserve.
 
 ## Backend
 
+With the Distribution redesign (dist-redesign.md), `Backend::List<T>` is removed. The list sink type is determined by `ColumnarList<E::Sink, B::Prim<usize>>` in the `List` Distribution impl. Backend keeps `Column<S>` for named columns:
+
 ```rust
-pub trait Backend {
-    type Prim<T>: Sink<T>;
-    type List<T>: ListSink<T>;
+pub trait Backend: Sized {
+    type Prim<T>: Sink<T> + SinkLen + Default;
+    type Column<S>: GroupSink<Inner = S>;
 }
 
 impl Backend for VecBackend {
     type Prim<T> = Vec<T>;
-    type List<T> = ColumnarList<Vec<T>>;
+    type Column<S> = Transparent<S>;
+}
+
+impl Backend for DequeBackend {
+    type Prim<T> = VecDeque<T>;
+    type Column<S> = Transparent<S>;
 }
 ```
 
-DefaultSink for Vec<T> unchanged: `HCons<B::List<T>, HNil>`.
-
-For flat depth-2+, manually construct `ColumnarList<ColumnarList<Vec<T>>>` and pass to `collect_into` directly. Future: `FlatVecBackend` that recursively nests ColumnarList.
+Flat depth-2+ comes for free — `ColumnarList<E::Sink, B::Prim<usize>>` recurses through `E::Sink` when E is itself a List distribution.
 
 ## Columnar struct-inside-list
 
 ### Problem
 
-`list((i32, u32))` currently stores inner values as `Vec<(i32, u32)>` — one interleaved buffer. We want two contiguous buffers (`Vec<i32>` + `Vec<u32>`) with shared offsets.
+`list((i32, u32))` stores inner values as a single interleaved buffer. We want two contiguous buffers (`Vec<i32>` + `Vec<u32>`) with shared offsets.
 
-Root cause: `DefaultSink<B> for Vec<T>` uses `B::List<T>` which treats `T` as opaque. It can't decompose `(i32, u32)` into separate columns.
+Root cause: if `Backend::List<T>` treats `T` as opaque, it can't decompose `(i32, u32)` into separate columns.
 
-### Solution: recursive DefaultSink + SinkLen for HList
+### Solution: use E::Sink as the inner type
 
-Two changes that work together:
-
-**1. SinkLen for HCons** — All columns in an HList sink have the same count (each `push` adds one element to every column), so delegate to the head:
+With the Distribution redesign (dist-redesign.md), the `List` Distribution impl has direct access to `E::Sink` — the element distribution's sink type. By using `E::Sink` as `ColumnarList`'s inner storage, struct decomposition comes for free:
 
 ```rust
-impl<S: SinkLen, Tail> SinkLen for HCons<S, Tail> {
-    fn sink_len(&self) -> usize { self.0.sink_len() }
-}
-```
-
-This lets `ColumnarList` use an HList of Vecs as its inner storage.
-
-**2. DefaultSink for Vec\<T\> recurses into T** — The inner storage of a list sink becomes the DefaultSink of the element type itself:
-
-```rust
-impl<B: Backend, T: DefaultSink<B>> DefaultSink<B> for Vec<T>
+impl<B: Backend, L: Distribution<B, Value = usize>, E: Distribution<B>> Distribution<B>
+    for List<L, E>
 where
-    <T as DefaultSink<B>>::Sink: SinkLen,
+    E::Iter: Clone,
+    ColumnarList<E::Sink, B::Prim<usize>>: ListSink<E::Value>,
 {
-    type Sink = HCons<ColumnarList<<T as DefaultSink<B>>::Sink, B::Prim<usize>>, HNil>;
+    type Value = Vec<E::Value>;
+    type Sink = HCons<ColumnarList<E::Sink, B::Prim<usize>>, HNil>;
+    // ...
 }
 ```
 
-### ColumnarList gains an Offsets parameter
+The inner type `E::Sink` is whatever the element distribution already decomposes into. For tuples, that's an HList of column sinks. No recursion or type-level tricks needed — `Distribution::Sink` is explicit.
 
-Offsets can't be hardcoded to `Vec<usize>` — DequeBackend needs `VecDeque<usize>`, array backends need something else. The offset type comes from `B::Prim<usize>`:
-
-```rust
-pub struct ColumnarList<Inner, Offsets> {
-    pub inner: Inner,
-    pub offsets: Offsets,
-}
-```
-
-### Backend simplifies
-
-`Backend::List<T>` is removed — the list sink type is now fully determined by `ColumnarList` + recursive `DefaultSink`:
+`SinkFor` for `Vec<T>` follows the same pattern (used by Map producing `Vec<T>`):
 
 ```rust
-pub trait Backend {
-    type Prim<T>: Sink<T> + SinkLen + Default;
-}
-
-impl Backend for VecBackend {
-    type Prim<T> = Vec<T>;
-}
-
-impl Backend for DequeBackend {
-    type Prim<T> = VecDeque<T>;
+impl<B: Backend, T: SinkFor<B>> SinkFor<B> for Vec<T>
+where
+    ColumnarList<<T as SinkFor<B>>::Sink, B::Prim<usize>>: Sink<Vec<T>>,
+{
+    type Sink = HCons<ColumnarList<<T as SinkFor<B>>::Sink, B::Prim<usize>>, HNil>;
 }
 ```
 
 ### Type resolution examples
 
-**`list(i64)` on VecBackend:**
+**`list(range(0i64, 1))` on VecBackend:**
 ```
-T = i64
-<i64 as DefaultSink>::Sink = HCons<Vec<i64>, HNil>
+E = Range<i64>,  E::Sink = HCons<Vec<i64>, HNil>
 → HCons<ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>>, HNil>
 ```
 Layout: offsets + one Vec\<i64\> (wrapped in HCons, zero-cost since HNil is ZST).
 
-**`list((i32, u32))` on VecBackend:**
+**`list((range(0i32, 1), range(0u32, 1)))` on VecBackend:**
 ```
-T = (i32, u32)
-<(i32, u32) as DefaultSink>::Sink = HCons<Vec<i32>, HCons<Vec<u32>, HNil>>
+E = (Range<i32>, Range<u32>),  E::Sink = HCons<Vec<i32>, HCons<Vec<u32>, HNil>>
 → HCons<ColumnarList<HCons<Vec<i32>, HCons<Vec<u32>, HNil>>, Vec<usize>>, HNil>
 ```
 Layout: one shared offsets + Vec\<i32\> + Vec\<u32\>. Columnar struct-inside-list.
 
-**`list(list(i64))` on VecBackend:**
+**`list(list(range(0i64, 1)))` on VecBackend:**
 ```
-T = Vec<i64>
-<Vec<i64> as DefaultSink>::Sink = HCons<ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>>, HNil>
+Inner E::Sink = HCons<Vec<i64>, HNil>
+Inner List::Sink = HCons<ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>>, HNil>
+
+Outer E::Sink = HCons<ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>>, HNil>
 → HCons<ColumnarList<HCons<ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>>, HNil>, Vec<usize>>, HNil>
 ```
 Layout: outer offsets + inner offsets + Vec\<i64\>. Flat depth-2 comes for free.
 
-**`list(list((i32, u32)))` on VecBackend:**
+**`list(list((range(0i32, 1), range(0u32, 1))))` on VecBackend:**
 ```
 → outer offsets + inner offsets + Vec<i32> + Vec<u32>
 ```
 Fully columnar at every level, zero heap allocation per element.
 
-### Verified: existing code is unaffected
+### Verified: works with Distribution redesign
 
-- **List::collect\_into** — `sink.push_list(len, iter)` compiles; the `ListSink<E::Item>` bound carries all needed information
+- **List::collect\_into** — `sink.push_list(len, iter)` goes through HCons ListSink delegator to ColumnarList. The `ColumnarList<E::Sink, B::Prim<usize>>: ListSink<E::Value>` bound carries all needed information
 - **Tuple distributions with lists** — `(constant(42i32), list(...))` splits via `HAppend::unappend`, each sub-distribution gets its own sink slice. ColumnarList ends up in the right HList position
-- **Flatten with lists** — HAppend associativity still holds; nested and flat tuple sinks resolve to the same type, including when ColumnarList appears in the HList
+- **Auto-flatten in tuple impls** — ValueHList + HAppend composition works with ColumnarList in the HList. HAppend is associative regardless of what types are in the HList
 - **collect\_flat / collect\_col** — `IntoHList`/`IntoTuple` for 1-tuples works for any type, including ColumnarList
 - **Map producing Vec\<T\>** — uses `Sink<Vec<T>>::push` on the HList wrapper, which delegates to `ColumnarList::push`
 - **ValueHList for Vec\<T\>** — unchanged, still `HCons<Vec<T>, HNil>`. Value side, not sink side
 
 ### Known issues
 
-**1. Missing Default for HCons/HNil** — `ColumnarList::new()` needs `Inner: Default`. When Inner is an HList like `HCons<Vec<i32>, HCons<Vec<u32>, HNil>>`, there's no Default impl. Need to add:
+**1. Default for HCons/HNil** — `ColumnarList`'s custom Default needs `Inner: Default`. When Inner is an HList like `HCons<Vec<i32>, HCons<Vec<u32>, HNil>>`, Default impls for HCons/HNil are required:
 ```rust
 impl Default for HNil { fn default() -> Self { HNil } }
 impl<H: Default, T: Default> Default for HCons<H, T> {
     fn default() -> Self { HCons(H::default(), T::default()) }
 }
 ```
+Also needed by the Distribution redesign's `SinkFor` tuple impls and `default_sink()`.
 
-**2. Sink\<Vec\<T\>\>::push can't call push\_list** — The `Sink<Vec<T>>` impl for ColumnarList can't call `self.push_list()` because that requires `Self: ListSink<T>` which isn't in the Sink impl's bounds. Must inline the logic:
-```rust
-impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> Sink<Vec<T>>
-    for ColumnarList<Inner, Offsets>
-{
-    fn push(&mut self, value: Vec<T>) {
-        self.inner.push_n(value.into_iter());
-        self.offsets.push(self.inner.sink_len());
-    }
-}
-```
+**2. No extend optimization for struct-inside-list** — `ColumnarList<HCons<Vec<i32>, HCons<Vec<u32>, HNil>>>`: the default `push_list` calls `push` per element to destructure each `(i32, u32)` into columns. No way to `extend` two Vecs simultaneously from one iterator of tuples. Inherent cost of columnar layout — trade batch writes for better memory layout. For scalar lists (`list(i64)`), override `push_n` on `HCons<S, HNil>` to delegate to `S::push_n`, preserving the `Vec::extend` path.
 
-**3. No extend optimization for struct-inside-list** — Current `VecListSink<T>::push_list` calls `self.values.extend(elems)` — one extend call. New `ColumnarList<HCons<Vec<i32>, HCons<Vec<u32>, HNil>>>`: the default `push_list` calls `push` per element to destructure each `(i32, u32)` into columns. No way to `extend` two Vecs simultaneously from one iterator of tuples. Inherent cost of columnar layout — trade batch writes for better memory layout. For scalar lists (`list(i64)`), override `push_n` on `HCons<S, HNil>` to delegate to `S::push_n`, preserving the `Vec::extend` path.
+**3. `SinkFor for Vec\<T\>` becomes narrower** — Old: `impl<B, T> SinkFor<B> for Vec<T>` (any T). New: requires `T: SinkFor<B>`. No practical breakage — list elements are always types that already have `SinkFor`.
 
-**4. DefaultSink for Vec\<T\> becomes narrower** — Old: `impl<B, T> DefaultSink<B> for Vec<T>` (any T). New: requires `T: DefaultSink<B>`. No practical breakage — list elements are always types that already have DefaultSink.
-
-**5. Backend::Prim\<T\> gains bounds** — `Sink<T> + SinkLen + Default` instead of just `Sink<T>`. Both Vec and VecDeque satisfy these. Reasonable constraint for any columnar storage.
+**4. Backend::Prim\<T\> gains bounds** — `Sink<T> + SinkLen + Default` instead of just `Sink<T> + Default`. Both Vec and VecDeque satisfy these. Reasonable constraint for any columnar storage.
 
 ## Summary
 
 | What | Addition | Purpose |
 |------|----------|---------|
 | `Sink<T>` | `reserve(&mut self, n: usize)` | Pre-allocate capacity |
-| `ListSink<T>` | `inner(&mut self) -> &mut Inner` | Access inner storage |
-| `ListSink<T>` | `end_list(&mut self)` | Record list boundary |
+| `ListSink<T>` | `type Inner`, `inner()`, `end_list()` | Access inner storage, record boundary |
 | `ListSink<T>` | `reserve_lists(&mut self, &[usize])` | Reserve with per-list sizes |
 | `ListSink<T>` | `push_list` becomes default | Built on inner + end_list |
 | `SinkLen` | `sink_len(&self) -> usize` | Inner position for end_list |
 | `SinkLen` | impl for `HCons<S, Tail>` | Enables HList inner in ColumnarList |
 | `ColumnarList<Inner, Offsets>` | New type | Flat list storage, nests to any depth |
-| `DefaultSink for Vec<T>` | Recurses into T's DefaultSink | Columnar struct-inside-list |
-| `Backend` | Remove `List<T>`, add bounds on `Prim<T>` | Offsets via `B::Prim<usize>` |
+| `List` Distribution impl | `Sink = HCons<ColumnarList<E::Sink, B::Prim<usize>>, HNil>` | Columnar struct-inside-list |
+| `SinkFor for Vec<T>` | Uses `ColumnarList<T::Sink, B::Prim<usize>>` | Same for Map producing Vec |
+| `Backend` | Remove `List<T>`, add `SinkLen` to `Prim<T>` | Offsets via `B::Prim<usize>` |
 | `HCons`/`HNil` | `Default` impls | Construct empty HList sinks |
 
 State needed for reserve:

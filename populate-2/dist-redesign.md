@@ -46,15 +46,18 @@ Differences from current:
 
 ```rust
 pub trait Backend: Sized {
-    type Prim<T>: Sink<T> + Default;
-    type List<T>: ListSink<T> + Default;
+    type Prim<T>: Sink<T> + SinkLen + Default;
     type Column<S>: GroupSink<Inner = S>;
 }
 ```
 
-`Default` on Prim/List enables `default_sink()` to construct sinks.
-`Column<S>` is the third column kind — wraps an inner sink HList for named/nested columns.
+`Default` on Prim enables `default_sink()` to construct sinks.
+`SinkLen` on Prim enables `ColumnarList` to query offset count (via `B::Prim<usize>`).
+`Column<S>` wraps an inner sink HList for named/nested columns.
 Distributions that don't use named columns never reference `B::Column`.
+
+`Backend::List<T>` is removed — the list sink type is determined by
+`ColumnarList<E::Sink, B::Prim<usize>>` in the List Distribution impl (see list-sink-redesign.md).
 
 ### GroupSink — wrap/unwrap for column groups
 
@@ -94,13 +97,11 @@ Transparent delegates HAppend to the inner HList, so column sinks flatten just l
 ```rust
 impl Backend for VecBackend {
     type Prim<T> = Vec<T>;
-    type List<T> = Vec<Vec<T>>;
     type Column<S> = Transparent<S>;    // names ignored, flattens
 }
 
 impl Backend for DequeBackend {
     type Prim<T> = VecDeque<T>;
-    type List<T> = DequeListSink<T>;
     type Column<S> = Transparent<S>;
 }
 ```
@@ -110,10 +111,12 @@ Arrow (future):
 ```rust
 impl Backend for ArrowBackend {
     type Prim<T> = ArrowBuilder<T>;
-    type List<T> = ArrowListBuilder<T>;
     type Column<S> = HCons<ArrowNamed<S>, HNil>;  // 1-element HList, preserves nesting
 }
 ```
+
+Arrow list sinks use `ColumnarList<E::Sink, ArrowBuilder<usize>>` — same pattern, different
+offset storage.
 
 ---
 
@@ -149,13 +152,16 @@ Scalar sinks remain HCons-wrapped — required for `HAppend` composition in tupl
 ### Vec
 
 ```rust
-impl<B: Backend, T> SinkFor<B> for Vec<T>
+impl<B: Backend, T: SinkFor<B>> SinkFor<B> for Vec<T>
 where
-    B::List<T>: Sink<Vec<T>>,
+    ColumnarList<<T as SinkFor<B>>::Sink, B::Prim<usize>>: Sink<Vec<T>>,
 {
-    type Sink = HCons<B::List<T>, HNil>;
+    type Sink = HCons<ColumnarList<<T as SinkFor<B>>::Sink, B::Prim<usize>>, HNil>;
 }
 ```
+
+The inner type of `ColumnarList` is `T`'s own SinkFor sink — so `Vec<(i32, u32)>` gets columnar
+inner storage `HCons<Vec<i32>, HCons<Vec<u32>, HNil>>`. See list-sink-redesign.md for details.
 
 ### Tuples (for Map output)
 
@@ -306,10 +312,10 @@ impl<B: Backend, L: Distribution<B, Value = usize>, E: Distribution<B>> Distribu
     for List<L, E>
 where
     E::Iter: Clone,
-    B::List<E::Value>: ListSink<E::Value>,
+    ColumnarList<E::Sink, B::Prim<usize>>: ListSink<E::Value>,
 {
     type Value = Vec<E::Value>;
-    type Sink = HCons<B::List<E::Value>, HNil>;
+    type Sink = HCons<ColumnarList<E::Sink, B::Prim<usize>>, HNil>;
     type Iter = ListIter<L::Iter, E::Iter>;
 
     fn default_sink(&self) -> Self::Sink { Default::default() }
@@ -328,7 +334,8 @@ where
 ```
 
 List sink is HCons-wrapped (like scalars) so it composes via HAppend in tuple impls.
-`push_list` optimization preserved.
+The inner type `E::Sink` gives columnar storage for struct elements — see list-sink-redesign.md.
+`push_list` goes through the HCons ListSink delegator to ColumnarList.
 
 ---
 
@@ -491,6 +498,8 @@ HList-based Columns type.
 | `Flatten<D>` / `FlattenIter<I>` | Flattening built into tuple Distribution impls |
 | `flatten()` combinator in dist.rs | Not needed |
 | `type Item: DefaultSink<B>` bound | `type Value` has no bound |
+| `VecListSink<T>` / `DequeListSink<T>` | Replaced by `ColumnarList<Inner, Offsets>` |
+| `Backend::List<T>` | List sink = `ColumnarList<E::Sink, B::Prim<usize>>` in List impl |
 
 ## What Stays
 
@@ -501,12 +510,11 @@ HList-based Columns type.
 | `ValueHList` | Value flattening in tuple row_iter |
 | `IntoHList` / `IntoTuple` | Tuple ↔ HList conversion for ergonomic API |
 | `Sink<T>` | Core push trait, unchanged |
-| `ListSink<T>` | `push_list` optimization |
+| `ListSink<T>` | Expanded: `inner()`, `end_list()`, `reserve_lists()` (see list-sink-redesign.md) |
 | `Sink<(A,B)> for HCons<..>` | Row-by-row push into HList sinks (used by Map) |
 | `Sink<(A,B)> for (S1, S2)` | Row-by-row push into tuple sinks (used in tests) |
-| `Backend` | Parameterizes sink types |
+| `Backend` | Parameterizes sink types (minus `List<T>`, plus `SinkLen` on Prim) |
 | `SampleIter` | Row iteration, unchanged |
-| `VecListSink<T>` / `DequeListSink<T>` | Alternative list sinks |
 | `DistributionScalar` | Unwraps HCons for scalar collect |
 
 ## What's New
@@ -517,10 +525,13 @@ HList-based Columns type.
 | `Distribution::default_sink(&self)` | Distribution constructs its own sink |
 | `DistributionExt::collect` | Convenience: default_sink + collect_into |
 | `DistributionExt::collect_flat` | Convenience: collect + IntoTuple |
-| `Backend::Column<S>` | Third column kind: wraps inner sinks for named groups |
+| `Backend::Column<S>` | Wraps inner sinks for named groups |
 | `GroupSink` | Wrap/unwrap trait for Column sinks |
 | `Transparent<S>` | Vec's Column impl — delegates, ignores names |
 | `Column<T>` | Value wrapper preventing auto-flatten through struct boundaries |
+| `ColumnarList<Inner, Offsets>` | Flat list storage, replaces VecListSink/DequeListSink |
+| `SinkLen` | Query inner position for end_list (see list-sink-redesign.md) |
+| `Default` for `HCons`/`HNil` | Construct empty HList sinks for default_sink |
 
 ---
 
@@ -595,6 +606,58 @@ TupleIter3.next(rng):
 ```
 
 No `flatten()` wrapper needed — `Value = (i16, i64, i64, i32)` directly from the tuple impl.
+
+---
+
+## Worked Example: List in Tuple
+
+`(constant(42i32), list(constant(2usize), (range(0i32, 1), range(0u32, 1))))` on VecBackend:
+
+### Value type
+
+```
+D1 = Constant<i32>               → Value = i32
+D2 = List<.., (Range<i32>, Range<u32>)>
+  E = (Range<i32>, Range<u32>)   → E::Value = (i32, u32)
+                                  → Value = Vec<(i32, u32)>
+
+ValueHList:
+  i32          → HCons<i32, HNil>
+  Vec<(i32,u32)> → HCons<Vec<(i32,u32)>, HNil>
+
+Appended: HCons<i32, HCons<Vec<(i32,u32)>, HNil>>
+IntoTuple: (i32, Vec<(i32, u32)>)
+```
+
+### Sink type
+
+```
+D1::Sink = HCons<Vec<i32>, HNil>
+D2::Sink:
+  E::Sink = HCons<Vec<i32>, HCons<Vec<u32>, HNil>>   (from tuple impl)
+  List::Sink = HCons<ColumnarList<HCons<Vec<i32>, HCons<Vec<u32>, HNil>>, Vec<usize>>, HNil>
+
+Tuple Sink = D1::Sink.append(D2::Sink)
+  = HCons<Vec<i32>, HCons<ColumnarList<HCons<Vec<i32>, HCons<Vec<u32>, HNil>>, Vec<usize>>, HNil>>
+```
+
+Physical layout: `Vec<i32>` (scalar col) + offsets `Vec<usize>` + `Vec<i32>` (list inner col 0) + `Vec<u32>` (list inner col 1). Four contiguous buffers.
+
+### collect_into trace
+
+```
+outer 2-tuple collect_into(sink, rng, 3):
+  (s1, s2) = S1::unappend(sink)
+  s1: HCons<Vec<i32>, HNil>
+  s2: HCons<ColumnarList<.., ..>, HNil>
+
+  s1 = Constant<i32>.collect_into(s1, rng, 3)   // pushes 42, 42, 42
+  s2 = List.collect_into(s2, rng, 3)            // push_list for each row
+    // push_list(2, iter) → inner.push_n([(0,0), (1,1)]) → destructures to columns
+    //                     → end_list() records offset
+
+  s1.append(s2)
+```
 
 ---
 

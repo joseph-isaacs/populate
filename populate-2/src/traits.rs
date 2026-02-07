@@ -9,33 +9,68 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 // ============================================================================
 
 pub trait Backend: Sized {
-    type Prim<T>: Sink<T> + Default;
-    type List<T>: ListSink<T> + Sink<Vec<T>> + Default;
+    type Col<T>: Sink<T> + Default;
+    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default;
     type Column<S>: GroupSink<Inner = S>;
 }
 
 pub struct VecBackend;
 
 impl Backend for VecBackend {
-    type Prim<T> = Vec<T>;
-    type List<T> = Vec<Vec<T>>;
+    type Col<T> = Vec<T>;
+    type ListCol<T> = Vec<Vec<T>>;
     type Column<S> = Transparent<S>;
 }
 
 pub struct DequeBackend;
 
 impl Backend for DequeBackend {
-    type Prim<T> = VecDeque<T>;
-    type List<T> = DequeListSink<T>;
+    type Col<T> = VecDeque<T>;
+    type ListCol<T> = DequeListSink<T>;
     type Column<S> = Transparent<S>;
 }
 
 pub struct NamedVecBackend;
 
 impl Backend for NamedVecBackend {
-    type Prim<T> = NamedCol<Vec<T>>;
-    type List<T> = NamedCol<Vec<Vec<T>>>;
-    type Column<S> = Transparent<S>;
+    type Col<T> = NamedCol<Vec<T>>;
+    type ListCol<T> = NamedCol<Vec<Vec<T>>>;
+    type Column<S> = StructCol<S>;
+}
+
+// ============================================================================
+// StructCol<S> — nested/struct column wrapper (like Arrow StructArray)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructCol<S> {
+    pub name: &'static str,
+    pub inner: S,
+}
+
+impl<S: Default> Default for StructCol<S> {
+    fn default() -> Self {
+        StructCol {
+            name: "",
+            inner: S::default(),
+        }
+    }
+}
+
+impl<S> GroupSink for StructCol<S> {
+    type Inner = S;
+    fn new(name: &'static str, inner: S) -> Self {
+        StructCol { name, inner }
+    }
+    fn into_inner(self) -> S {
+        self.inner
+    }
+    fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
+        StructCol {
+            name: self.name,
+            inner: f(self.inner),
+        }
+    }
 }
 
 // ============================================================================
@@ -58,20 +93,27 @@ impl<S: Default> Default for NamedCol<S> {
 }
 
 // ============================================================================
-// GroupSink — wrap/unwrap for column groups (used by Named columns)
+// GroupSink — wrap/unwrap for nested column groups (used by Column<S>)
 // ============================================================================
 
 pub trait GroupSink: Sized {
     type Inner;
     fn new(name: &'static str, inner: Self::Inner) -> Self;
     fn into_inner(self) -> Self::Inner;
+    fn map_inner(self, f: impl FnOnce(Self::Inner) -> Self::Inner) -> Self;
 }
 
 // ============================================================================
-// Transparent — Vec/Deque ignore column names, delegate HAppend to inner
+// Transparent — identity column wrapper (VecBackend / DequeBackend)
 // ============================================================================
 
 pub struct Transparent<S>(pub S);
+
+impl<S: Default> Default for Transparent<S> {
+    fn default() -> Self {
+        Transparent(S::default())
+    }
+}
 
 impl<S> GroupSink for Transparent<S> {
     type Inner = S;
@@ -80,6 +122,9 @@ impl<S> GroupSink for Transparent<S> {
     }
     fn into_inner(self) -> S {
         self.0
+    }
+    fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
+        Transparent(f(self.0))
     }
 }
 
@@ -91,6 +136,48 @@ impl<S: HAppend<R>, R> HAppend<R> for Transparent<S> {
     fn unappend(combined: Self::Output) -> (Self, R) {
         let (s, r) = S::unappend(combined);
         (Transparent(s), r)
+    }
+}
+
+impl<S> GroupSink for NamedCol<S> {
+    type Inner = S;
+    fn new(name: &'static str, inner: S) -> Self {
+        NamedCol { name, inner }
+    }
+    fn into_inner(self) -> S {
+        self.inner
+    }
+    fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
+        NamedCol {
+            name: self.name,
+            inner: f(self.inner),
+        }
+    }
+}
+
+// ============================================================================
+// Nested<V> — struct column value wrapper, prevents auto-flattening
+// ============================================================================
+
+pub struct Nested<V>(pub V);
+
+impl<V> ValueHList for Nested<V> {
+    type HList = HCons<Nested<V>, HNil>;
+    fn into_hlist(self) -> Self::HList {
+        HCons(self, HNil)
+    }
+}
+
+// Sink<Nested<V>> for Column wrappers — unwrap Nested, delegate to inner Sink<V>
+impl<V, S: Sink<V>> Sink<Nested<V>> for Transparent<S> {
+    fn push(&mut self, Nested(v): Nested<V>) {
+        self.0.push(v);
+    }
+}
+
+impl<V, S: Sink<V>> Sink<Nested<V>> for StructCol<S> {
+    fn push(&mut self, Nested(v): Nested<V>) {
+        self.inner.push(v);
     }
 }
 
@@ -112,7 +199,7 @@ macro_rules! for_all_primitives {
 macro_rules! impl_sink_for_scalar {
     ($($t:ty),*) => {
         $(impl<B: Backend> SinkFor<B> for $t {
-            type Sink = HCons<B::Prim<$t>, HNil>;
+            type Sink = HCons<B::Col<$t>, HNil>;
         })*
     };
 }
@@ -130,7 +217,14 @@ for_all_primitives!(impl_sink_for_scalar);
 for_all_primitives!(impl_value_hlist_scalar);
 
 impl<B: Backend, T> SinkFor<B> for Vec<T> {
-    type Sink = HCons<B::List<T>, HNil>;
+    type Sink = HCons<B::ListCol<T>, HNil>;
+}
+
+impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V>
+where
+    B::Column<V::Sink>: Sink<Nested<V>> + Default,
+{
+    type Sink = HCons<B::Column<V::Sink>, HNil>;
 }
 
 // SinkFor tuple impls — used by Map to resolve sink from output type
@@ -424,6 +518,7 @@ impl<T> Sink<Vec<T>> for DequeListSink<T> {
 
 pub trait NamedDefault {
     fn named_default(name: &'static str) -> Self;
+    fn set_name(&mut self, name: &'static str);
 }
 
 impl<S: Default> NamedDefault for HCons<NamedCol<S>, HNil> {
@@ -435,6 +530,24 @@ impl<S: Default> NamedDefault for HCons<NamedCol<S>, HNil> {
             },
             HNil,
         )
+    }
+    fn set_name(&mut self, name: &'static str) {
+        self.0.name = name;
+    }
+}
+
+impl<S: Default> NamedDefault for HCons<StructCol<S>, HNil> {
+    fn named_default(name: &'static str) -> Self {
+        HCons(
+            StructCol {
+                name,
+                inner: S::default(),
+            },
+            HNil,
+        )
+    }
+    fn set_name(&mut self, name: &'static str) {
+        self.0.name = name;
     }
 }
 

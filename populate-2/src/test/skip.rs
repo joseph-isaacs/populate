@@ -1,0 +1,268 @@
+// ========================================================================
+// Skip tests — verify Distribution::skip for both row and col paths
+// ========================================================================
+
+use crate::dist::{constant, list, range};
+use crate::test::dist::{make_constant, make_mapped, make_range, make_tuple};
+use crate::traits::{Backend, Distribution, DistributionExt, SampleIter, VecBackend};
+use rand::rng;
+
+// Helper: returns a Distribution<B> so the backend is resolved by the caller.
+fn make_range_step<B: Backend>(start: i64, step: i64) -> impl Distribution<B, Value = i64> {
+    range(start, step)
+}
+
+fn make_list_const<B: Backend>() -> impl Distribution<B, Value = Vec<i64>> {
+    list(range(0usize, 1), constant(99i64))
+}
+
+// ========================================================================
+// Distribution::skip + row_iter — skip then iterate
+// ========================================================================
+
+#[test]
+fn test_skip_constant() {
+    let mut dist = make_constant::<VecBackend>();
+    dist.skip(100);
+    let mut iter = dist.row_iter();
+    assert_eq!(iter.next(&mut rng()), 42);
+}
+
+#[test]
+fn test_skip_range() {
+    let mut dist = make_range::<VecBackend>();
+    dist.skip(5);
+    let mut iter = dist.row_iter();
+    assert_eq!(iter.next(&mut rng()), 5);
+    assert_eq!(iter.next(&mut rng()), 6);
+}
+
+#[test]
+fn test_skip_range_with_step() {
+    let mut dist = make_range_step::<VecBackend>(0, 10);
+    dist.skip(3);
+    let mut iter = dist.row_iter();
+    assert_eq!(iter.next(&mut rng()), 30);
+    assert_eq!(iter.next(&mut rng()), 40);
+}
+
+#[test]
+fn test_skip_zero() {
+    let mut dist = make_range::<VecBackend>();
+    dist.skip(0);
+    let mut iter = dist.row_iter();
+    assert_eq!(iter.next(&mut rng()), 0);
+}
+
+#[test]
+fn test_skip_map() {
+    let mut dist = make_mapped::<VecBackend>();
+    dist.skip(5);
+    let mut iter = dist.row_iter();
+    assert_eq!(iter.next(&mut rng()), 10);
+    assert_eq!(iter.next(&mut rng()), 12);
+}
+
+#[test]
+fn test_skip_tuple2() {
+    let mut dist = make_tuple::<VecBackend>();
+    dist.skip(3);
+    let mut iter = dist.row_iter();
+    let (a, b) = iter.next(&mut rng());
+    assert_eq!(a, 1);
+    assert_eq!(b, 30);
+}
+
+#[test]
+fn test_skip_tuple3() {
+    let mut dist = (constant(1i32), range(0i64, 10i64), range(100i32, 1));
+    Distribution::<VecBackend>::skip(&mut dist, 5);
+    let mut iter = Distribution::<VecBackend>::row_iter(&mut dist);
+    let (a, b, c) = iter.next(&mut rng());
+    assert_eq!(a, 1);
+    assert_eq!(b, 50);
+    assert_eq!(c, 105);
+}
+
+#[test]
+fn test_skip_tuple4() {
+    let mut dist = (
+        constant(1i32),
+        range(0i64, 10i64),
+        range(100i32, 1),
+        constant(true),
+    );
+    Distribution::<VecBackend>::skip(&mut dist, 5);
+    let mut iter = Distribution::<VecBackend>::row_iter(&mut dist);
+    let (a, b, c, d) = iter.next(&mut rng());
+    assert_eq!(a, 1);
+    assert_eq!(b, 50);
+    assert_eq!(c, 105);
+    assert_eq!(d, true);
+}
+
+#[test]
+fn test_skip_list_lengths() {
+    // List with deterministic lengths: 0, 1, 2, 3, ...
+    // After skip(3), first length should be 3
+    let mut dist = make_list_const::<VecBackend>();
+    dist.skip(3);
+    let mut iter = dist.row_iter();
+    let row = iter.next(&mut rng());
+    assert_eq!(row.len(), 3);
+    assert_eq!(row, vec![99, 99, 99]);
+}
+
+// ========================================================================
+// Distribution::skip + collect_flat — col-by-col collection
+// ========================================================================
+
+#[test]
+fn test_dist_skip_scalar_collect() {
+    let mut rng = rng();
+    let mut dist = make_range::<VecBackend>();
+    dist.skip(5);
+    let (col,): (Vec<i64>,) = dist.collect_flat(&mut rng, 4);
+    assert_eq!(col, vec![5, 6, 7, 8]);
+}
+
+#[test]
+fn test_dist_skip_tuple_collect() {
+    let mut rng = rng();
+    let mut dist = make_tuple::<VecBackend>();
+    dist.skip(3);
+    let (a, b): (Vec<i32>, Vec<i64>) = dist.collect_flat(&mut rng, 4);
+    assert_eq!(a, vec![1, 1, 1, 1]);
+    assert_eq!(b, vec![30, 40, 50, 60]);
+}
+
+#[test]
+fn test_dist_skip_3tuple_collect() {
+    let mut rng = rng();
+    let mut dist = (constant(1i32), range(0i64, 10i64), range(100i32, 1));
+    Distribution::<VecBackend>::skip(&mut dist, 5);
+    let (a, b, c): (Vec<i32>, Vec<i64>, Vec<i32>) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist, &mut rng, 3);
+    assert_eq!(a, vec![1, 1, 1]);
+    assert_eq!(b, vec![50, 60, 70]);
+    assert_eq!(c, vec![105, 106, 107]);
+}
+
+#[test]
+fn test_dist_skip_4tuple_collect() {
+    let mut rng = rng();
+    let mut dist = (
+        range(0i32, 1),
+        range(100i64, 10i64),
+        constant(true),
+        range(0f64, 0.5),
+    );
+    Distribution::<VecBackend>::skip(&mut dist, 4);
+    let (a, b, c, d): (Vec<i32>, Vec<i64>, Vec<bool>, Vec<f64>) =
+        DistributionExt::<VecBackend>::collect_flat(&mut dist, &mut rng, 3);
+    assert_eq!(a, vec![4, 5, 6]);
+    assert_eq!(b, vec![140, 150, 160]);
+    assert_eq!(c, vec![true, true, true]);
+    assert_eq!(d, vec![2.0, 2.5, 3.0]);
+}
+
+#[test]
+fn test_dist_skip_map_collect() {
+    let mut rng = rng();
+    let mut dist = make_mapped::<VecBackend>();
+    dist.skip(5);
+    let (col,): (Vec<i64>,) = dist.collect_flat(&mut rng, 4);
+    assert_eq!(col, vec![10, 12, 14, 16]);
+}
+
+#[test]
+fn test_dist_skip_list_collect() {
+    let mut rng = rng();
+    // Lengths: 0, 1, 2, 3, ... — skip 2 means first length is 2
+    let mut dist = make_list_const::<VecBackend>();
+    dist.skip(2);
+    let (col,): (Vec<Vec<i64>>,) = dist.collect_flat(&mut rng, 3);
+    assert_eq!(
+        col,
+        vec![vec![99, 99], vec![99, 99, 99], vec![99, 99, 99, 99]]
+    );
+}
+
+// ========================================================================
+// Parallel generation equivalence tests
+// ========================================================================
+
+/// Verify skip + row_iter produces the same as sequential.
+#[test]
+fn test_skip_parallel_equivalence_row_iter() {
+    let mut rng = rng();
+
+    // Sequential: generate 10 rows
+    let mut dist = make_range::<VecBackend>();
+    let all: (Vec<i64>,) = dist.collect_flat(&mut rng, 10);
+
+    // Worker 0: first 5
+    let mut dist0 = make_range::<VecBackend>();
+    let w0: (Vec<i64>,) = dist0.collect_flat(&mut rng, 5);
+
+    // Worker 1: skip 5, then row_iter
+    let mut dist1 = make_range::<VecBackend>();
+    dist1.skip(5);
+    let mut iter1 = dist1.row_iter();
+    let w1: Vec<i64> = (0..5).map(|_| iter1.next(&mut rng)).collect();
+
+    let mut combined = w0.0;
+    combined.extend(w1);
+    assert_eq!(combined, all.0);
+}
+
+/// Verify skip + collect_flat produces the same as sequential — col path.
+#[test]
+fn test_skip_parallel_equivalence_col_iter() {
+    let mut rng = rng();
+
+    // Sequential: generate 10 rows
+    let mut dist = make_tuple::<VecBackend>();
+    let (all_a, all_b): (Vec<i32>, Vec<i64>) = dist.collect_flat(&mut rng, 10);
+
+    // Worker 0: first 5 via collect_flat
+    let mut d0 = make_tuple::<VecBackend>();
+    let (w0_a, w0_b): (Vec<i32>, Vec<i64>) = d0.collect_flat(&mut rng, 5);
+
+    // Worker 1: skip(5) then collect_flat 5
+    let mut d1 = make_tuple::<VecBackend>();
+    d1.skip(5);
+    let (w1_a, w1_b): (Vec<i32>, Vec<i64>) = d1.collect_flat(&mut rng, 5);
+
+    let mut combined_a = w0_a;
+    combined_a.extend(w1_a);
+    let mut combined_b = w0_b;
+    combined_b.extend(w1_b);
+    assert_eq!(combined_a, all_a);
+    assert_eq!(combined_b, all_b);
+}
+
+/// Row and col paths produce identical results after skip.
+#[test]
+fn test_skip_row_col_equivalence() {
+    let mut rng = rng();
+
+    // Col path: skip + collect_flat
+    let mut dist_col = make_tuple::<VecBackend>();
+    dist_col.skip(10);
+    let (col_a, col_b): (Vec<i32>, Vec<i64>) = dist_col.collect_flat(&mut rng, 5);
+
+    // Row path: skip + row_iter + manual collect
+    let mut dist_row = make_tuple::<VecBackend>();
+    dist_row.skip(10);
+    let mut iter = dist_row.row_iter();
+    let (mut row_a, mut row_b) = (Vec::new(), Vec::new());
+    for _ in 0..5 {
+        let (a, b) = iter.next(&mut rng);
+        row_a.push(a);
+        row_b.push(b);
+    }
+
+    assert_eq!(col_a, row_a);
+    assert_eq!(col_b, row_b);
+}

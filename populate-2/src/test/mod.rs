@@ -9,6 +9,7 @@ mod list;
 mod named;
 mod row;
 mod scalar;
+mod skip;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 
@@ -55,17 +56,8 @@ where
         self.inner.default_sink()
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl rand::Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+    fn skip(&mut self, n: usize) {
+        self.inner.skip(n);
     }
 }
 

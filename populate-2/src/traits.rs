@@ -281,12 +281,23 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
+    /// Advance the distribution's state by `n` positions, so subsequent
+    /// `row_iter` and `collect_into` calls start from the skipped offset.
+    /// Enables parallel generation: each worker skips to its partition start.
+    fn skip(&mut self, _n: usize) {}
+
     fn collect_into(
         &mut self,
-        sink: SinkOf<B, Self::Value>,
+        mut sink: SinkOf<B, Self::Value>,
         rng: &mut impl Rng,
         n: usize,
-    ) -> SinkOf<B, Self::Value>;
+    ) -> SinkOf<B, Self::Value> {
+        let mut iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(iter.next(rng));
+        }
+        sink
+    }
 }
 
 // ============================================================================

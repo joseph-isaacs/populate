@@ -1,6 +1,6 @@
 use crate::traits::{
     Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
-    Nested, SampleIter, Sink, SinkFor, SinkOf, ValueHList,
+    Nested, SampleIter, SinkFor, SinkOf, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -36,19 +36,6 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
 
     fn row_iter(&mut self) -> Self::Iter {
         ConstantIter { value: self.value }
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
     }
 }
 
@@ -91,17 +78,10 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
         }
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
+    fn skip(&mut self, n: usize) {
         for _ in 0..n {
-            sink.push(iter.next(rng));
+            self.start = self.start + self.step;
         }
-        sink
     }
 }
 
@@ -153,6 +133,11 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         self.0.default_sink().append(self.1.default_sink())
+    }
+
+    fn skip(&mut self, n: usize) {
+        self.0.skip(n);
+        self.1.skip(n);
     }
 
     fn collect_into(
@@ -238,6 +223,12 @@ where
             .default_sink()
             .append(self.1.default_sink())
             .append(self.2.default_sink())
+    }
+
+    fn skip(&mut self, n: usize) {
+        self.0.skip(n);
+        self.1.skip(n);
+        self.2.skip(n);
     }
 
     fn collect_into(
@@ -361,6 +352,13 @@ where
             .append(self.3.default_sink())
     }
 
+    fn skip(&mut self, n: usize) {
+        self.0.skip(n);
+        self.1.skip(n);
+        self.2.skip(n);
+        self.3.skip(n);
+    }
+
     fn collect_into(
         &mut self,
         sink: SinkOf<B, Self::Value>,
@@ -439,17 +437,8 @@ where
         }
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+    fn skip(&mut self, n: usize) {
+        self.source.skip(n);
     }
 }
 
@@ -503,6 +492,10 @@ where
         }
     }
 
+    fn skip(&mut self, n: usize) {
+        self.lengths.skip(n);
+    }
+
     fn collect_into(
         &mut self,
         mut sink: SinkOf<B, Self::Value>,
@@ -550,6 +543,10 @@ where
         sink
     }
 
+    fn skip(&mut self, n: usize) {
+        self.inner.skip(n);
+    }
+
     fn collect_into(
         &mut self,
         sink: SinkOf<B, Self::Value>,
@@ -594,6 +591,10 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
+    }
+
+    fn skip(&mut self, n: usize) {
+        self.inner.skip(n);
     }
 
     fn collect_into(

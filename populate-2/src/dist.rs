@@ -494,7 +494,8 @@ where
     E: Distribution<B>,
     E::Iter: Clone,
     Vec<E::Value>: SinkFor<B>,
-    SinkOf<B, Vec<E::Value>>: ListSink<E::Value>,
+    SinkOf<B, Vec<E::Value>>: ListSink<E::Value, Inner = SinkOf<B, E::Value>>,
+    SinkOf<B, E::Value>: Default,
 {
     type Value = Vec<E::Value>;
     type Iter = ListIter<L::Iter, E::Iter>;
@@ -513,11 +514,11 @@ where
         n: usize,
     ) -> SinkOf<B, Self::Value> {
         let mut len_iter = self.lengths.row_iter();
-        let elem_base = self.elements.row_iter();
         for _ in 0..n {
             let len = len_iter.next(rng);
-            let mut elems = elem_base.clone();
-            sink.push_list(len, (0..len).map(|_| elems.next(rng)));
+            let inner = std::mem::take(sink.inner());
+            *sink.inner() = self.elements.collect_into(inner, rng, len);
+            sink.end_list();
         }
         sink
     }

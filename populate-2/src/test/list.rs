@@ -122,13 +122,13 @@ fn test_tracked_list_of_struct_element_order() {
     assert_eq!(offsets, vec![0, 2, 4, 6]);
 
     // Element generation order: within each list, elements are generated
-    // row-by-row (u32 then u64 for each element), across 3 lists of 2 elements
+    // col-by-col (all u32 first, then all u64), across 3 lists of 2 elements
     assert_eq!(
         *log.borrow(),
         vec![
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 0
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 1
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 2
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 0: col-by-col
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 1
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 2
         ]
     );
 }
@@ -146,12 +146,13 @@ fn test_tracked_list_of_struct_in_tuple_order() {
     assert_eq!(col2, vec![100, 110, 100, 110]); // u64 column
     assert_eq!(offsets, vec![0, 2, 4]);
 
-    // Col-by-col at top level: SCALAR x2 first, then list elements
+    // Col-by-col at top level: SCALAR x2, then list elements col-by-col per list
     assert_eq!(
         *log.borrow(),
         vec![
-            "SCALAR", "SCALAR", "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", "ELEM_U32",
-            "ELEM_U64", "ELEM_U32", "ELEM_U64",
+            "SCALAR", "SCALAR", "ELEM_U32", "ELEM_U32", "ELEM_U64",
+            "ELEM_U64", // list 0: col-by-col
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 1: col-by-col
         ]
     );
 }

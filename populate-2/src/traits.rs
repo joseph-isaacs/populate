@@ -307,19 +307,11 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    /// Advance internal state by `n` positions without touching rng.
-    /// For Range this moves `start`; for stateless distributions (Uniform,
-    /// Constant) this is a no-op.  Used by composite distributions (List)
-    /// that need to separate state advancement from rng burn.
-    fn advance(&mut self, _n: usize) {}
-
     /// Advance the distribution by `n` positions — both internal state and
     /// rng.  After `skip(rng, n)`, the next `row_iter` / `collect_into`
     /// produces output starting from position `n`, and `rng` is in the
     /// same state as if `n` rows had been generated and discarded.
-    fn skip(&mut self, _rng: &mut impl Rng, n: usize) {
-        self.advance(n);
-    }
+    fn skip(&mut self, _rng: &mut impl Rng, _n: usize) {}
 
     fn collect_into(
         &mut self,

@@ -149,7 +149,7 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + StepMul + Copy> Distribution<
         }
     }
 
-    fn advance(&mut self, n: usize) {
+    fn skip(&mut self, _rng: &mut impl Rng, n: usize) {
         self.start = self.start + self.step.step_mul(n);
     }
 }
@@ -202,11 +202,6 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         self.0.default_sink().append(self.1.default_sink())
-    }
-
-    fn advance(&mut self, n: usize) {
-        self.0.advance(n);
-        self.1.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -297,12 +292,6 @@ where
             .default_sink()
             .append(self.1.default_sink())
             .append(self.2.default_sink())
-    }
-
-    fn advance(&mut self, n: usize) {
-        self.0.advance(n);
-        self.1.advance(n);
-        self.2.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -432,13 +421,6 @@ where
             .append(self.3.default_sink())
     }
 
-    fn advance(&mut self, n: usize) {
-        self.0.advance(n);
-        self.1.advance(n);
-        self.2.advance(n);
-        self.3.advance(n);
-    }
-
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
         self.0.skip(rng, n);
         self.1.skip(rng, n);
@@ -524,10 +506,6 @@ where
         }
     }
 
-    fn advance(&mut self, n: usize) {
-        self.source.advance(n);
-    }
-
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
         self.source.skip(rng, n);
     }
@@ -583,14 +561,10 @@ where
         }
     }
 
-    fn advance(&mut self, n: usize) {
-        self.lengths.advance(n);
-    }
-
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
-        // Reproduce exactly the rng draws that collect_into would make for
-        // n rows: draw n lengths (burns rng for random lengths), then for
-        // each row burn `len` element draws from rng.
+        // Replay the rng draws that collect_into would make for n rows:
+        // draw n lengths (burns rng for random lengths), then for each
+        // row burn `len` element draws from rng.
         let mut len_iter = self.lengths.row_iter();
         let elem_base = self.elements.row_iter();
         for _ in 0..n {
@@ -600,9 +574,9 @@ where
                 elems.next(rng);
             }
         }
-        // Advance lengths internal state (e.g. Range.start) without
-        // touching rng — the rng draws for lengths already happened above.
-        self.lengths.advance(n);
+        // Advance lengths distribution state (e.g. Range.start).
+        // For Range this is O(1) and ignores rng.
+        self.lengths.skip(rng, n);
     }
 
     fn collect_into(
@@ -650,10 +624,6 @@ where
         let mut sink = self.inner.default_sink();
         sink.set_name(self.name);
         sink
-    }
-
-    fn advance(&mut self, n: usize) {
-        self.inner.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
@@ -704,10 +674,6 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
-    }
-
-    fn advance(&mut self, n: usize) {
-        self.inner.advance(n);
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {

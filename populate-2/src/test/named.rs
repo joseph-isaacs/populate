@@ -76,8 +76,10 @@ fn test_named_list_in_tuple() {
     let (c1, c2) = dist.collect_flat(&mut rng(), 3);
     assert_eq!(c1.name, "id");
     assert_eq!(c1.inner, vec![1, 1, 1]);
+    // List column is now a ColumnarList with inner NamedCol columns + NamedCol offsets
     assert_eq!(c2.name, "items");
-    assert_eq!(c2.inner, vec![vec![0, 1], vec![0, 1], vec![0, 1]]);
+    assert_eq!(c2.inner.0.inner, vec![0, 1, 0, 1, 0, 1]); // flat values
+    assert_eq!(c2.offsets.inner, vec![0, 2, 4, 6]); // offsets
 }
 
 #[test]

@@ -173,6 +173,47 @@ pub(crate) fn make_tracked_list_in_tuple<B: Backend>(
     )
 }
 
+// -- List of struct helpers --
+
+pub(crate) fn make_list_of_struct<B: Backend>() -> impl Distribution<B, Value = Vec<(u32, u64)>> {
+    list(constant(3usize), (range(0u32, 1), range(100u64, 10)))
+}
+
+pub(crate) fn make_list_of_struct_in_tuple<B: Backend>()
+-> impl Distribution<B, Value = (i32, Vec<(u32, u64)>)> {
+    (
+        constant(42i32),
+        list(constant(2usize), (range(0u32, 1), range(100u64, 10))),
+    )
+}
+
+pub(crate) fn make_tracked_list_of_struct<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = Vec<(u32, u64)>> {
+    list(
+        constant(2usize),
+        (
+            tracked("ELEM_U32", range(0u32, 1), log),
+            tracked("ELEM_U64", range(100u64, 10), log),
+        ),
+    )
+}
+
+pub(crate) fn make_tracked_list_of_struct_in_tuple<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (i32, Vec<(u32, u64)>)> {
+    (
+        tracked("SCALAR", constant(42i32), log),
+        list(
+            constant(2usize),
+            (
+                tracked("ELEM_U32", range(0u32, 1), log),
+                tracked("ELEM_U64", range(100u64, 10), log),
+            ),
+        ),
+    )
+}
+
 // -- Named helpers --
 
 pub(crate) fn make_named_scalar<B: Backend>() -> impl Distribution<B, Value = i64>

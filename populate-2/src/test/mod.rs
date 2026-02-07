@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 mod col;
+mod columnar;
 mod deque;
 mod dist;
 mod list;
@@ -22,6 +23,7 @@ struct Tracked<D> {
     log: Log,
 }
 
+#[derive(Clone)]
 struct TrackedIter<I> {
     name: &'static str,
     inner: I,

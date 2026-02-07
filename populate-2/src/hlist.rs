@@ -2,7 +2,10 @@
 // HList — type-level linked list
 // ============================================================================
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HNil;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HCons<H, T>(pub H, pub T);
 
 // ============================================================================

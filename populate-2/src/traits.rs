@@ -9,32 +9,35 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 // ============================================================================
 
 pub trait Backend: Sized {
-    type Col<T>: Sink<T> + Default;
-    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default;
+    type Prim<T>: Sink<T> + SinkLen + Default;
     type Column<S>: GroupSink<Inner = S>;
 }
 
 pub struct VecBackend;
 
 impl Backend for VecBackend {
-    type Col<T> = Vec<T>;
-    type ListCol<T> = Vec<Vec<T>>;
+    type Prim<T> = Vec<T>;
     type Column<S> = Transparent<S>;
 }
 
 pub struct DequeBackend;
 
 impl Backend for DequeBackend {
-    type Col<T> = VecDeque<T>;
-    type ListCol<T> = DequeListSink<T>;
+    type Prim<T> = VecDeque<T>;
+    type Column<S> = Transparent<S>;
+}
+
+pub struct ColumnarVecBackend;
+
+impl Backend for ColumnarVecBackend {
+    type Prim<T> = Vec<T>;
     type Column<S> = Transparent<S>;
 }
 
 pub struct NamedVecBackend;
 
 impl Backend for NamedVecBackend {
-    type Col<T> = NamedCol<Vec<T>>;
-    type ListCol<T> = NamedCol<Vec<Vec<T>>>;
+    type Prim<T> = NamedCol<Vec<T>>;
     type Column<S> = StructCol<S>;
 }
 
@@ -192,14 +195,14 @@ pub trait SinkFor<B: Backend>: Sized {
 
 macro_rules! for_all_primitives {
     ($macro:ident) => {
-        $macro!(i16, i32, i64, f64, bool, usize);
+        $macro!(i16, i32, i64, u32, u64, f64, bool, usize);
     };
 }
 
 macro_rules! impl_sink_for_scalar {
     ($($t:ty),*) => {
         $(impl<B: Backend> SinkFor<B> for $t {
-            type Sink = HCons<B::Col<$t>, HNil>;
+            type Sink = HCons<B::Prim<$t>, HNil>;
         })*
     };
 }
@@ -216,8 +219,11 @@ macro_rules! impl_value_hlist_scalar {
 for_all_primitives!(impl_sink_for_scalar);
 for_all_primitives!(impl_value_hlist_scalar);
 
-impl<B: Backend, T> SinkFor<B> for Vec<T> {
-    type Sink = HCons<B::ListCol<T>, HNil>;
+impl<B: Backend, T: SinkFor<B>> SinkFor<B> for Vec<T>
+where
+    ColumnarList<T::Sink, B::Prim<usize>>: Sink<Vec<T>> + ListSink<T> + Default,
+{
+    type Sink = HCons<ColumnarList<T::Sink, B::Prim<usize>>, HNil>;
 }
 
 impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V>
@@ -398,117 +404,126 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 }
 
 // ============================================================================
+// SinkLen — report number of elements in a sink
+// ============================================================================
+
+pub trait SinkLen {
+    fn sink_len(&self) -> usize;
+}
+
+impl<T> SinkLen for Vec<T> {
+    fn sink_len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> SinkLen for VecDeque<T> {
+    fn sink_len(&self) -> usize {
+        self.len()
+    }
+}
+
+impl SinkLen for HNil {
+    fn sink_len(&self) -> usize {
+        0
+    }
+}
+
+impl<S: SinkLen, Tail> SinkLen for HCons<S, Tail> {
+    fn sink_len(&self) -> usize {
+        self.0.sink_len()
+    }
+}
+
+impl<S: SinkLen> SinkLen for NamedCol<S> {
+    fn sink_len(&self) -> usize {
+        self.inner.sink_len()
+    }
+}
+
+// ============================================================================
+// ColumnarList<Inner, Offsets> — columnar list with decomposed inner storage
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnarList<Inner, Offsets> {
+    pub name: &'static str,
+    pub inner: Inner,
+    pub offsets: Offsets,
+}
+
+impl<Inner: Default, Offsets: Default + Sink<usize>> Default for ColumnarList<Inner, Offsets> {
+    fn default() -> Self {
+        let mut offsets = Offsets::default();
+        offsets.push(0);
+        ColumnarList {
+            name: "",
+            inner: Inner::default(),
+            offsets,
+        }
+    }
+}
+
+impl<Inner, Offsets: SinkLen> SinkLen for ColumnarList<Inner, Offsets> {
+    fn sink_len(&self) -> usize {
+        self.offsets.sink_len() - 1
+    }
+}
+
+impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> Sink<Vec<T>>
+    for ColumnarList<Inner, Offsets>
+{
+    fn push(&mut self, value: Vec<T>) {
+        self.inner.push_n(value.into_iter());
+        self.offsets.push(self.inner.sink_len());
+    }
+}
+
+// ============================================================================
 // ListSink<T> — sink trait for list/array columns
 // ============================================================================
 
 pub trait ListSink<T> {
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
+    type Inner: Sink<T>;
+    fn inner(&mut self) -> &mut Self::Inner;
+    fn end_list(&mut self);
+    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.inner().push_n(elems);
+        self.end_list();
+    }
+}
+
+impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> ListSink<T>
+    for ColumnarList<Inner, Offsets>
+{
+    type Inner = Inner;
+    fn inner(&mut self) -> &mut Inner {
+        &mut self.inner
+    }
+    fn end_list(&mut self) {
+        self.offsets.push(self.inner.sink_len());
+    }
 }
 
 // HList ListSink — wrap a ListSink in a 1-element HList
 impl<T, S: ListSink<T>> ListSink<T> for HCons<S, HNil> {
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
-        self.0.push_list(len, elems);
+    type Inner = S::Inner;
+    fn inner(&mut self) -> &mut Self::Inner {
+        self.0.inner()
     }
-}
-
-// ============================================================================
-// VecListSink<T> — columnar sink for list/array columns
-// ============================================================================
-
-pub struct VecListSink<T> {
-    pub values: Vec<T>,
-    pub offsets: Vec<usize>,
-}
-
-impl<T> VecListSink<T> {
-    pub fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            offsets: vec![0],
-        }
-    }
-
-    pub fn into_parts(self) -> (Vec<T>, Vec<usize>) {
-        (self.values, self.offsets)
-    }
-}
-
-impl<T> Default for VecListSink<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> ListSink<T> for VecListSink<T> {
-    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
-        self.values.extend(elems);
-        self.offsets.push(self.values.len());
-    }
-}
-
-impl<T> Sink<Vec<T>> for VecListSink<T> {
-    fn push(&mut self, value: Vec<T>) {
-        let len = value.len();
-        self.push_list(len, value.into_iter());
-    }
-}
-
-// Vec<Vec<T>> as a list sink — the natural representation for VecBackend
-impl<T> ListSink<T> for Vec<Vec<T>> {
-    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
-        self.push(elems.collect());
+    fn end_list(&mut self) {
+        self.0.end_list();
     }
 }
 
 // NamedCol<S> delegates ListSink to inner S
 impl<T, S: ListSink<T>> ListSink<T> for NamedCol<S> {
-    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
-        self.inner.push_list(len, elems);
+    type Inner = S::Inner;
+    fn inner(&mut self) -> &mut S::Inner {
+        self.inner.inner()
     }
-}
-
-// ============================================================================
-// DequeListSink<T> — columnar sink for list/array columns using VecDeque
-// ============================================================================
-
-pub struct DequeListSink<T> {
-    pub values: VecDeque<T>,
-    pub offsets: VecDeque<usize>,
-}
-
-impl<T> DequeListSink<T> {
-    pub fn new() -> Self {
-        let mut offsets = VecDeque::new();
-        offsets.push_back(0);
-        Self {
-            values: VecDeque::new(),
-            offsets,
-        }
-    }
-
-    pub fn into_parts(self) -> (VecDeque<T>, VecDeque<usize>) {
-        (self.values, self.offsets)
-    }
-}
-
-impl<T> Default for DequeListSink<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> ListSink<T> for DequeListSink<T> {
-    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
-        self.values.extend(elems);
-        self.offsets.push_back(self.values.len());
-    }
-}
-
-impl<T> Sink<Vec<T>> for DequeListSink<T> {
-    fn push(&mut self, value: Vec<T>) {
-        let len = value.len();
-        self.push_list(len, value.into_iter());
+    fn end_list(&mut self) {
+        self.inner.end_list();
     }
 }
 
@@ -542,6 +557,23 @@ impl<S: Default> NamedDefault for HCons<StructCol<S>, HNil> {
             StructCol {
                 name,
                 inner: S::default(),
+            },
+            HNil,
+        )
+    }
+    fn set_name(&mut self, name: &'static str) {
+        self.0.name = name;
+    }
+}
+
+impl<Inner: Default, Offsets: Default + Sink<usize>> NamedDefault
+    for HCons<ColumnarList<Inner, Offsets>, HNil>
+{
+    fn named_default(name: &'static str) -> Self {
+        HCons(
+            ColumnarList {
+                name,
+                ..Default::default()
             },
             HNil,
         )

@@ -109,6 +109,7 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
 // Tuple (D1, D2) — col-by-col with auto-flatten
 // ============================================================================
 
+#[derive(Clone)]
 pub struct TupleIter2<I1, I2>(pub I1, pub I2);
 
 impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2>
@@ -173,6 +174,7 @@ where
 // Tuple (D1, D2, D3) — col-by-col with auto-flatten
 // ============================================================================
 
+#[derive(Clone)]
 pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3>
@@ -264,6 +266,7 @@ where
 // Tuple (D1, D2, D3, D4) — col-by-col with auto-flatten
 // ============================================================================
 
+#[derive(Clone)]
 pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
 
 impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter

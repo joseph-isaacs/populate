@@ -5,7 +5,9 @@
 
 use crate::dist::{constant, list, map, named, nested, range};
 use crate::test::{Log, tracked};
-use crate::traits::{Backend, Distribution, NamedDefault, Nested, SampleIter, Sink, SinkOf};
+use crate::traits::{
+    Backend, Distribution, HCons, HNil, NamedDefault, Nested, SampleIter, Sink, SinkFor, SinkOf,
+};
 
 // -- Scalar helpers --
 
@@ -233,9 +235,8 @@ where
     SinkOf<B, i64>: NamedDefault,
     SinkOf<B, i32>: NamedDefault,
     B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default,
-    Nested<(i32, i32)>:
-        crate::traits::SinkFor<B, Sink = crate::traits::HCons<B::Column<SinkOf<B, (i32, i32)>>, crate::traits::HNil>>,
-    crate::traits::HCons<B::Column<SinkOf<B, (i32, i32)>>, crate::traits::HNil>: NamedDefault,
+    Nested<(i32, i32)>: SinkFor<B, Sink = HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>>,
+    HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>: NamedDefault,
 {
     (
         named("id", tracked("COL_ID", range(0i64, 1), log)),

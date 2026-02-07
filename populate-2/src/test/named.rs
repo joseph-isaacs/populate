@@ -127,10 +127,18 @@ fn test_named_nested_column() {
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL_ID", "COL_ID", "COL_ID",
-            "COL_STREET", "COL_STREET", "COL_STREET",
-            "COL_CITY", "COL_CITY", "COL_CITY",
-            "COL_AGE", "COL_AGE", "COL_AGE",
+            "COL_ID",
+            "COL_ID",
+            "COL_ID",
+            "COL_STREET",
+            "COL_STREET",
+            "COL_STREET",
+            "COL_CITY",
+            "COL_CITY",
+            "COL_CITY",
+            "COL_AGE",
+            "COL_AGE",
+            "COL_AGE",
         ]
     );
 }

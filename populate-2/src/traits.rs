@@ -310,7 +310,8 @@ pub trait Distribution<B: Backend> {
     /// Advance the distribution's state by `n` positions, so subsequent
     /// `row_iter` and `collect_into` calls start from the skipped offset.
     /// Enables parallel generation: each worker skips to its partition start.
-    fn skip(&mut self, _n: usize) {}
+    /// Random distributions consume `n` draws from `rng` to keep state consistent.
+    fn skip(&mut self, _rng: &mut impl Rng, _n: usize) {}
 
     fn collect_into(
         &mut self,

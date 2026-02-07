@@ -56,8 +56,8 @@ where
         self.inner.default_sink()
     }
 
-    fn skip(&mut self, n: usize) {
-        self.inner.skip(n);
+    fn skip(&mut self, rng: &mut impl rand::Rng, n: usize) {
+        self.inner.skip(rng, n);
     }
 }
 

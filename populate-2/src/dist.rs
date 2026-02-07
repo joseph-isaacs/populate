@@ -91,6 +91,12 @@ macro_rules! impl_uniform_dist {
             fn row_iter(&mut self) -> Self::Iter {
                 UniformIter { lo: self.lo, hi: self.hi }
             }
+
+            fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+                for _ in 0..n {
+                    rng.random_range(self.lo..self.hi);
+                }
+            }
         })*
     };
 }
@@ -136,7 +142,7 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + StepMul + Copy> Distribution<
         }
     }
 
-    fn skip(&mut self, n: usize) {
+    fn skip(&mut self, _rng: &mut impl Rng, n: usize) {
         self.start = self.start + self.step.step_mul(n);
     }
 }
@@ -191,9 +197,9 @@ where
         self.0.default_sink().append(self.1.default_sink())
     }
 
-    fn skip(&mut self, n: usize) {
-        self.0.skip(n);
-        self.1.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.0.skip(rng, n);
+        self.1.skip(rng, n);
     }
 
     fn collect_into(
@@ -281,10 +287,10 @@ where
             .append(self.2.default_sink())
     }
 
-    fn skip(&mut self, n: usize) {
-        self.0.skip(n);
-        self.1.skip(n);
-        self.2.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.0.skip(rng, n);
+        self.1.skip(rng, n);
+        self.2.skip(rng, n);
     }
 
     fn collect_into(
@@ -408,11 +414,11 @@ where
             .append(self.3.default_sink())
     }
 
-    fn skip(&mut self, n: usize) {
-        self.0.skip(n);
-        self.1.skip(n);
-        self.2.skip(n);
-        self.3.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.0.skip(rng, n);
+        self.1.skip(rng, n);
+        self.2.skip(rng, n);
+        self.3.skip(rng, n);
     }
 
     fn collect_into(
@@ -493,8 +499,8 @@ where
         }
     }
 
-    fn skip(&mut self, n: usize) {
-        self.source.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.source.skip(rng, n);
     }
 }
 
@@ -548,8 +554,8 @@ where
         }
     }
 
-    fn skip(&mut self, n: usize) {
-        self.lengths.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.lengths.skip(rng, n);
     }
 
     fn collect_into(
@@ -599,8 +605,8 @@ where
         sink
     }
 
-    fn skip(&mut self, n: usize) {
-        self.inner.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.inner.skip(rng, n);
     }
 
     fn collect_into(
@@ -649,8 +655,8 @@ where
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
     }
 
-    fn skip(&mut self, n: usize) {
-        self.inner.skip(n);
+    fn skip(&mut self, rng: &mut impl Rng, n: usize) {
+        self.inner.skip(rng, n);
     }
 
     fn collect_into(

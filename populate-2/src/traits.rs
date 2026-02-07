@@ -192,7 +192,7 @@ pub trait SinkFor<B: Backend>: Sized {
 
 macro_rules! for_all_primitives {
     ($macro:ident) => {
-        $macro!(i16, i32, i64, f64, bool, usize);
+        $macro!(i16, i32, i64, u16, u32, f64, bool, usize);
     };
 }
 

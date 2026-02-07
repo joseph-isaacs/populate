@@ -173,6 +173,37 @@ pub(crate) fn make_tracked_list_in_tuple<B: Backend>(
     )
 }
 
+pub(crate) fn gen_struct_list<B: Backend>() -> impl Distribution<B, Value = Vec<(u32, u16)>> {
+    list(range(0usize, 1), (range(0u32, 1), range(0u16, 1)))
+}
+
+pub(crate) fn make_struct_list_in_tuple<B: Backend>()
+-> impl Distribution<B, Value = (i32, Vec<(u32, u16)>)> {
+    (
+        constant(42i32),
+        list(constant(3usize), (range(0u32, 10), range(0u16, 1))),
+    )
+}
+
+pub(crate) fn make_two_tracked_lists<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (Vec<i64>, Vec<i64>)> {
+    (
+        tracked("LIST_A", list(constant(1usize), range(0i64, 1)), log),
+        tracked("LIST_B", list(constant(2usize), range(100i64, 1)), log),
+    )
+}
+
+pub(crate) fn make_scalar_list_scalar<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (i32, Vec<i64>, i32)> {
+    (
+        tracked("SCALAR_A", constant(1i32), log),
+        tracked("LIST", list(constant(2usize), range(0i64, 1)), log),
+        tracked("SCALAR_B", range(0i32, 1), log),
+    )
+}
+
 // -- Named helpers --
 
 pub(crate) fn make_named_scalar<B: Backend>() -> impl Distribution<B, Value = i64>

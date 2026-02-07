@@ -76,57 +76,70 @@ pub trait DefaultSink<B: Backend> {
     type Sink;
 }
 
-impl<B: Backend> DefaultSink<B> for i16 {
-    type Sink = HCons<B::Prim<i16>, HNil>;
+macro_rules! for_all_primitives {
+    ($macro:ident) => {
+        $macro!(i16, i32, i64, f64, bool, usize);
+    };
 }
-impl<B: Backend> DefaultSink<B> for i32 {
-    type Sink = HCons<B::Prim<i32>, HNil>;
+
+macro_rules! impl_default_sink_scalar {
+    ($($t:ty),*) => {
+        $(impl<B: Backend> DefaultSink<B> for $t {
+            type Sink = HCons<B::Prim<$t>, HNil>;
+        })*
+    };
 }
-impl<B: Backend> DefaultSink<B> for i64 {
-    type Sink = HCons<B::Prim<i64>, HNil>;
+
+macro_rules! impl_value_hlist_scalar {
+    ($($t:ty),*) => {
+        $(impl ValueHList for $t {
+            type HList = HCons<$t, HNil>;
+            fn into_hlist(self) -> Self::HList { HCons(self, HNil) }
+        })*
+    };
 }
-impl<B: Backend> DefaultSink<B> for f64 {
-    type Sink = HCons<B::Prim<f64>, HNil>;
-}
-impl<B: Backend> DefaultSink<B> for bool {
-    type Sink = HCons<B::Prim<bool>, HNil>;
-}
-impl<B: Backend> DefaultSink<B> for usize {
-    type Sink = HCons<B::Prim<usize>, HNil>;
-}
+
+for_all_primitives!(impl_default_sink_scalar);
+for_all_primitives!(impl_value_hlist_scalar);
 
 impl<B: Backend, T> DefaultSink<B> for Vec<T> {
     type Sink = HCons<B::List<T>, HNil>;
 }
 
-impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>> DefaultSink<B> for (T1, T2)
-where
-    T1::Sink: HAppend<T2::Sink>,
-{
-    type Sink = <T1::Sink as HAppend<T2::Sink>>::Output;
+macro_rules! impl_default_sink_tuple {
+    // Terminal: emit the impl
+    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*]) => {
+        impl<B: Backend, $($all: DefaultSink<B>),+> DefaultSink<B> for ($($tuple),+)
+        where $($bounds)*
+        {
+            type Sink = $acc;
+        }
+    };
+    // Recursive: fold in next type's sink via HAppend
+    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*] $next:ident $(, $rest:ident)*) => {
+        impl_default_sink_tuple!(@accum
+            [$($all),+]
+            ($($tuple),+)
+            <$acc as HAppend<<$next as DefaultSink<B>>::Sink>>::Output;
+            [$($bounds)* $acc: HAppend<<$next as DefaultSink<B>>::Sink>,]
+            $($rest),*
+        );
+    };
+    // Entry: start accumulating from first type's sink
+    ($first:ident $(, $rest:ident)+) => {
+        impl_default_sink_tuple!(@accum
+            [$first $(, $rest)+]
+            ($first $(, $rest)+)
+            <$first as DefaultSink<B>>::Sink;
+            []
+            $($rest),+
+        );
+    };
 }
 
-impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>, T3: DefaultSink<B>> DefaultSink<B>
-    for (T1, T2, T3)
-where
-    T1::Sink: HAppend<T2::Sink>,
-    <T1::Sink as HAppend<T2::Sink>>::Output: HAppend<T3::Sink>,
-{
-    type Sink = <<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output;
-}
-
-impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>, T3: DefaultSink<B>, T4: DefaultSink<B>>
-    DefaultSink<B> for (T1, T2, T3, T4)
-where
-    T1::Sink: HAppend<T2::Sink>,
-    <T1::Sink as HAppend<T2::Sink>>::Output: HAppend<T3::Sink>,
-    <<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output: HAppend<T4::Sink>,
-{
-    type Sink =
-        <<<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output as HAppend<
-            T4::Sink,
-        >>::Output;
-}
+impl_default_sink_tuple!(T1, T2);
+impl_default_sink_tuple!(T1, T2, T3);
+impl_default_sink_tuple!(T1, T2, T3, T4);
 
 // ============================================================================
 // SampleIter and Distribution
@@ -157,12 +170,20 @@ pub trait Distribution<B: Backend> {
 
 pub trait Sink<T> {
     fn push(&mut self, value: T);
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        value.for_each(|v| self.push(v));
+    }
 }
 
 // Vec<T> is a primitive sink
 impl<T> Sink<T> for Vec<T> {
     fn push(&mut self, value: T) {
         Vec::push(self, value);
+    }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        Vec::extend(self, value)
     }
 }
 
@@ -246,6 +267,8 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 
 pub trait ListSink<T> {
     fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
+
+    // fn push_n_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
 }
 
 // HList ListSink — wrap a ListSink in a 1-element HList
@@ -452,17 +475,6 @@ pub trait ValueHList {
     fn into_hlist(self) -> Self::HList;
 }
 
-macro_rules! impl_value_hlist_scalar {
-    ($($t:ty),*) => {
-        $(impl ValueHList for $t {
-            type HList = HCons<$t, HNil>;
-            fn into_hlist(self) -> Self::HList { HCons(self, HNil) }
-        })*
-    }
-}
-
-impl_value_hlist_scalar!(i16, i32, i64, f64, bool, usize);
-
 impl<T> ValueHList for Vec<T> {
     type HList = HCons<Vec<T>, HNil>;
     fn into_hlist(self) -> Self::HList {
@@ -470,48 +482,45 @@ impl<T> ValueHList for Vec<T> {
     }
 }
 
-impl<A: ValueHList, B: ValueHList> ValueHList for (A, B)
-where
-    A::HList: HAppend<B::HList>,
-{
-    type HList = <A::HList as HAppend<B::HList>>::Output;
-    fn into_hlist(self) -> Self::HList {
-        self.0.into_hlist().append(self.1.into_hlist())
-    }
+macro_rules! impl_value_hlist_tuple {
+    // Terminal: emit the impl; generate body from accumulated indices
+    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*] [$first_idx:tt $(, $rest_idx:tt)*]) => {
+        impl<$($all: ValueHList),+> ValueHList for ($($tuple),+)
+        where $($bounds)*
+        {
+            type HList = $acc;
+            fn into_hlist(self) -> Self::HList {
+                self.$first_idx.into_hlist() $(.append(self.$rest_idx.into_hlist()))*
+            }
+        }
+    };
+    // Recursive: fold in next type's HList via HAppend, collect index
+    (@accum [$($all:ident),+] ($($tuple:ident),+) $acc:ty; [$($bounds:tt)*] [$($indices:tt)*] $idx:tt $next:ident $(, $rest_idx:tt $rest:ident)*) => {
+        impl_value_hlist_tuple!(@accum
+            [$($all),+]
+            ($($tuple),+)
+            <$acc as HAppend<<$next as ValueHList>::HList>>::Output;
+            [$($bounds)* $acc: HAppend<<$next as ValueHList>::HList>,]
+            [$($indices)*, $idx]
+            $($rest_idx $rest),*
+        );
+    };
+    // Entry: start accumulating from first type
+    ($first_idx:tt $first:ident $(, $rest_idx:tt $rest:ident)+) => {
+        impl_value_hlist_tuple!(@accum
+            [$first $(, $rest)+]
+            ($first $(, $rest)+)
+            <$first as ValueHList>::HList;
+            []
+            [$first_idx]
+            $($rest_idx $rest),+
+        );
+    };
 }
 
-impl<A: ValueHList, B: ValueHList, C: ValueHList> ValueHList for (A, B, C)
-where
-    A::HList: HAppend<B::HList>,
-    <A::HList as HAppend<B::HList>>::Output: HAppend<C::HList>,
-{
-    type HList = <<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output;
-    fn into_hlist(self) -> Self::HList {
-        self.0
-            .into_hlist()
-            .append(self.1.into_hlist())
-            .append(self.2.into_hlist())
-    }
-}
-
-impl<A: ValueHList, B: ValueHList, C: ValueHList, D: ValueHList> ValueHList for (A, B, C, D)
-where
-    A::HList: HAppend<B::HList>,
-    <A::HList as HAppend<B::HList>>::Output: HAppend<C::HList>,
-    <<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output: HAppend<D::HList>,
-{
-    type HList =
-        <<<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output as HAppend<
-            D::HList,
-        >>::Output;
-    fn into_hlist(self) -> Self::HList {
-        self.0
-            .into_hlist()
-            .append(self.1.into_hlist())
-            .append(self.2.into_hlist())
-            .append(self.3.into_hlist())
-    }
-}
+impl_value_hlist_tuple!(0 A, 1 B);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D);
 
 // ============================================================================
 // DistributionExt — ergonomic methods (collect_flat, flatten)

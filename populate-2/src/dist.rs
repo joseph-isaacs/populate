@@ -1,4 +1,4 @@
-use crate::traits::{DefaultSink, Distribution, HAppend, HCons, HNil, SampleIter, Sink};
+use crate::traits::{Backend, DefaultSink, Distribution, HAppend, ListSink, SampleIter, Sink};
 use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
@@ -26,9 +26,9 @@ impl<T: Copy> SampleIter for ConstantIter<T> {
     }
 }
 
-impl<T: Copy + DefaultSink> Distribution for Constant<T>
+impl<B: Backend, T: Copy + DefaultSink<B>> Distribution<B> for Constant<T>
 where
-    T::Sink: Sink<T>,
+    <T as DefaultSink<B>>::Sink: Sink<T>,
 {
     type Item = T;
     type RowIter = ConstantIter<T>;
@@ -39,10 +39,10 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <T as DefaultSink>::Sink,
+        mut sink: <T as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <T as DefaultSink>::Sink {
+    ) -> <T as DefaultSink<B>>::Sink {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -79,9 +79,9 @@ impl<T: Add<Output = T> + Copy> SampleIter for RangeIter<T> {
     }
 }
 
-impl<T: DefaultSink + Add<Output = T> + Copy> Distribution for Range<T>
+impl<B: Backend, T: DefaultSink<B> + Add<Output = T> + Copy> Distribution<B> for Range<T>
 where
-    T::Sink: Sink<T>,
+    <T as DefaultSink<B>>::Sink: Sink<T>,
 {
     type Item = T;
     type RowIter = RangeIter<T>;
@@ -95,10 +95,10 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <T as DefaultSink>::Sink,
+        mut sink: <T as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <T as DefaultSink>::Sink {
+    ) -> <T as DefaultSink<B>>::Sink {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -106,32 +106,6 @@ where
         sink
     }
 }
-
-//
-// impl Distribution for Range {
-//     type Item = i64;
-//     type RowIter = RangeIter;
-//
-//     fn row_iter(&mut self) -> Self::RowIter {
-//         RangeIter {
-//             current: self.start,
-//             step: self.step,
-//         }
-//     }
-//
-//     fn collect_into(
-//         &mut self,
-//         mut sink: HCons<Vec<i64>, HNil>,
-//         rng: &mut impl Rng,
-//         n: usize,
-//     ) -> HCons<Vec<i64>, HNil> {
-//         let mut iter = self.row_iter();
-//         for _ in 0..n {
-//             sink.push(iter.next(rng));
-//         }
-//         sink
-//     }
-// }
 
 // ============================================================================
 // Tuple (D1, D2) — col-by-col using HAppend
@@ -147,9 +121,9 @@ impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     }
 }
 
-impl<D1: Distribution, D2: Distribution> Distribution for (D1, D2)
+impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>> Distribution<B> for (D1, D2)
 where
-    <D1::Item as DefaultSink>::Sink: HAppend<<D2::Item as DefaultSink>::Sink>,
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
 {
     type Item = (D1::Item, D2::Item);
     type RowIter = TupleIter2<D1::RowIter, D2::RowIter>;
@@ -160,13 +134,13 @@ where
 
     fn collect_into(
         &mut self,
-        sink: <(D1::Item, D2::Item) as DefaultSink>::Sink,
+        sink: <(D1::Item, D2::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <(D1::Item, D2::Item) as DefaultSink>::Sink {
-        type S1<D1> = <<D1 as Distribution>::Item as DefaultSink>::Sink;
-        type S2<D2> = <<D2 as Distribution>::Item as DefaultSink>::Sink;
-        let (s1, s2) = <S1<D1> as HAppend<S2<D2>>>::unappend(sink);
+    ) -> <(D1::Item, D2::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(sink);
         let s1 = self.0.collect_into(s1, rng, n);
         let s2 = self.1.collect_into(s2, rng, n);
         s1.append(s2)
@@ -187,11 +161,12 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I
     }
 }
 
-impl<D1: Distribution, D2: Distribution, D3: Distribution> Distribution for (D1, D2, D3)
+impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>, D3: Distribution<B>> Distribution<B>
+    for (D1, D2, D3)
 where
-    <D1::Item as DefaultSink>::Sink: HAppend<<D2::Item as DefaultSink>::Sink>,
-    <<D1::Item as DefaultSink>::Sink as HAppend<<D2::Item as DefaultSink>::Sink>>::Output:
-        HAppend<<D3::Item as DefaultSink>::Sink>,
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
 {
     type Item = (D1::Item, D2::Item, D3::Item);
     type RowIter = TupleIter3<D1::RowIter, D2::RowIter, D3::RowIter>;
@@ -202,16 +177,16 @@ where
 
     fn collect_into(
         &mut self,
-        sink: <(D1::Item, D2::Item, D3::Item) as DefaultSink>::Sink,
+        sink: <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <(D1::Item, D2::Item, D3::Item) as DefaultSink>::Sink {
-        type S1<D1> = <<D1 as Distribution>::Item as DefaultSink>::Sink;
-        type S2<D2> = <<D2 as Distribution>::Item as DefaultSink>::Sink;
-        type S3<D3> = <<D3 as Distribution>::Item as DefaultSink>::Sink;
-        type S12<D1, D2> = <S1<D1> as HAppend<S2<D2>>>::Output;
-        let (s12, s3) = <S12<D1, D2> as HAppend<S3<D3>>>::unappend(sink);
-        let (s1, s2) = <S1<D1> as HAppend<S2<D2>>>::unappend(s12);
+    ) -> <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
+        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(sink);
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
         let s1 = self.0.collect_into(s1, rng, n);
         let s2 = self.1.collect_into(s2, rng, n);
         let s3 = self.2.collect_into(s3, rng, n);
@@ -240,15 +215,20 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
     }
 }
 
-impl<D1: Distribution, D2: Distribution, D3: Distribution, D4: Distribution> Distribution
-    for (D1, D2, D3, D4)
+impl<
+        B: Backend,
+        D1: Distribution<B>,
+        D2: Distribution<B>,
+        D3: Distribution<B>,
+        D4: Distribution<B>,
+    > Distribution<B> for (D1, D2, D3, D4)
 where
-    <D1::Item as DefaultSink>::Sink: HAppend<<D2::Item as DefaultSink>::Sink>,
-    <<D1::Item as DefaultSink>::Sink as HAppend<<D2::Item as DefaultSink>::Sink>>::Output:
-        HAppend<<D3::Item as DefaultSink>::Sink>,
-    <<<D1::Item as DefaultSink>::Sink as HAppend<<D2::Item as DefaultSink>::Sink>>::Output
-        as HAppend<<D3::Item as DefaultSink>::Sink>>::Output:
-        HAppend<<D4::Item as DefaultSink>::Sink>,
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
+    <<<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output
+        as HAppend<<D3::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D4::Item as DefaultSink<B>>::Sink>,
 {
     type Item = (D1::Item, D2::Item, D3::Item, D4::Item);
     type RowIter = TupleIter4<D1::RowIter, D2::RowIter, D3::RowIter, D4::RowIter>;
@@ -264,19 +244,19 @@ where
 
     fn collect_into(
         &mut self,
-        sink: <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink>::Sink,
+        sink: <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink>::Sink {
-        type S1<D1> = <<D1 as Distribution>::Item as DefaultSink>::Sink;
-        type S2<D2> = <<D2 as Distribution>::Item as DefaultSink>::Sink;
-        type S3<D3> = <<D3 as Distribution>::Item as DefaultSink>::Sink;
-        type S4<D4> = <<D4 as Distribution>::Item as DefaultSink>::Sink;
-        type S12<D1, D2> = <S1<D1> as HAppend<S2<D2>>>::Output;
-        type S123<D1, D2, D3> = <S12<D1, D2> as HAppend<S3<D3>>>::Output;
-        let (s123, s4) = <S123<D1, D2, D3> as HAppend<S4<D4>>>::unappend(sink);
-        let (s12, s3) = <S12<D1, D2> as HAppend<S3<D3>>>::unappend(s123);
-        let (s1, s2) = <S1<D1> as HAppend<S2<D2>>>::unappend(s12);
+    ) -> <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S4<B, D4> = <<D4 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
+        type S123<B, D1, D2, D3> = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::Output;
+        let (s123, s4) = <S123<B, D1, D2, D3> as HAppend<S4<B, D4>>>::unappend(sink);
+        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(s123);
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
         let s1 = self.0.collect_into(s1, rng, n);
         let s2 = self.1.collect_into(s2, rng, n);
         let s3 = self.2.collect_into(s3, rng, n);
@@ -323,11 +303,11 @@ where
     }
 }
 
-impl<D, F, In, Out: DefaultSink> Distribution for Map<D, F, In, Out>
+impl<B: Backend, D, F, In, Out: DefaultSink<B>> Distribution<B> for Map<D, F, In, Out>
 where
-    D: Distribution<Item = In>,
+    D: Distribution<B, Item = In>,
     F: Fn(In) -> Out + Clone,
-    Out::Sink: Sink<Out>,
+    <Out as DefaultSink<B>>::Sink: Sink<Out>,
 {
     type Item = Out;
     type RowIter = MapIter<D::RowIter, F>;
@@ -341,10 +321,10 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <Out as DefaultSink>::Sink,
+        mut sink: <Out as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <Out as DefaultSink>::Sink {
+    ) -> <Out as DefaultSink<B>>::Sink {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -385,11 +365,12 @@ where
     }
 }
 
-impl<L, E> Distribution for List<L, E>
+impl<B: Backend, L, E> Distribution<B> for List<L, E>
 where
-    L: Distribution<Item = usize>,
-    E: Distribution,
+    L: Distribution<B, Item = usize>,
+    E: Distribution<B>,
     E::RowIter: Clone,
+    <Vec<E::Item> as DefaultSink<B>>::Sink: ListSink<E::Item>,
 {
     type Item = Vec<E::Item>;
     type RowIter = ListIter<L::RowIter, E::RowIter>;
@@ -403,16 +384,16 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: HCons<crate::traits::VecListSink<E::Item>, HNil>,
+        mut sink: <Vec<E::Item> as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> HCons<crate::traits::VecListSink<E::Item>, HNil> {
+    ) -> <Vec<E::Item> as DefaultSink<B>>::Sink {
         let mut len_iter = self.lengths.row_iter();
         let elem_base = self.elements.row_iter();
         for _ in 0..n {
             let len = len_iter.next(rng);
             let mut elems = elem_base.clone();
-            sink.0.push_list(len, (0..len).map(|_| elems.next(rng)));
+            sink.push_list(len, (0..len).map(|_| elems.next(rng)));
         }
         sink
     }

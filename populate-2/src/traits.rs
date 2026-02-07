@@ -1,4 +1,5 @@
 use rand::Rng;
+use std::collections::VecDeque;
 
 // ============================================================================
 // HList
@@ -45,61 +46,86 @@ impl<H, T: HAppend<R>, R> HAppend<R> for HCons<H, T> {
 }
 
 // ============================================================================
-// DefaultSink — maps a value type to its HList-of-Vecs sink type
+// Backend — selects concrete sink types for each column kind
 // ============================================================================
 
-pub trait DefaultSink {
+pub trait Backend {
+    type Prim<T>: Sink<T>;
+    type List<T>: ListSink<T>;
+}
+
+pub struct VecBackend;
+
+impl Backend for VecBackend {
+    type Prim<T> = Vec<T>;
+    type List<T> = VecListSink<T>;
+}
+
+pub struct DequeBackend;
+
+impl Backend for DequeBackend {
+    type Prim<T> = VecDeque<T>;
+    type List<T> = DequeListSink<T>;
+}
+
+// ============================================================================
+// DefaultSink<B> — maps (value type, backend) to HList sink type
+// ============================================================================
+
+pub trait DefaultSink<B: Backend> {
     type Sink;
 }
 
-impl DefaultSink for i16 {
-    type Sink = HCons<Vec<i16>, HNil>;
+impl<B: Backend> DefaultSink<B> for i16 {
+    type Sink = HCons<B::Prim<i16>, HNil>;
+}
+impl<B: Backend> DefaultSink<B> for i32 {
+    type Sink = HCons<B::Prim<i32>, HNil>;
+}
+impl<B: Backend> DefaultSink<B> for i64 {
+    type Sink = HCons<B::Prim<i64>, HNil>;
+}
+impl<B: Backend> DefaultSink<B> for f64 {
+    type Sink = HCons<B::Prim<f64>, HNil>;
+}
+impl<B: Backend> DefaultSink<B> for bool {
+    type Sink = HCons<B::Prim<bool>, HNil>;
+}
+impl<B: Backend> DefaultSink<B> for usize {
+    type Sink = HCons<B::Prim<usize>, HNil>;
 }
 
-impl DefaultSink for i32 {
-    type Sink = HCons<Vec<i32>, HNil>;
-}
-impl DefaultSink for i64 {
-    type Sink = HCons<Vec<i64>, HNil>;
-}
-impl DefaultSink for f64 {
-    type Sink = HCons<Vec<f64>, HNil>;
-}
-impl DefaultSink for bool {
-    type Sink = HCons<Vec<bool>, HNil>;
-}
-impl DefaultSink for usize {
-    type Sink = HCons<Vec<usize>, HNil>;
+impl<B: Backend, T> DefaultSink<B> for Vec<T> {
+    type Sink = HCons<B::List<T>, HNil>;
 }
 
-impl<T> DefaultSink for Vec<T> {
-    type Sink = HCons<VecListSink<T>, HNil>;
-}
-
-impl<A: DefaultSink, B: DefaultSink> DefaultSink for (A, B)
+impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>> DefaultSink<B> for (T1, T2)
 where
-    A::Sink: HAppend<B::Sink>,
+    T1::Sink: HAppend<T2::Sink>,
 {
-    type Sink = <A::Sink as HAppend<B::Sink>>::Output;
+    type Sink = <T1::Sink as HAppend<T2::Sink>>::Output;
 }
 
-impl<A: DefaultSink, B: DefaultSink, C: DefaultSink> DefaultSink for (A, B, C)
+impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>, T3: DefaultSink<B>> DefaultSink<B>
+    for (T1, T2, T3)
 where
-    A::Sink: HAppend<B::Sink>,
-    <A::Sink as HAppend<B::Sink>>::Output: HAppend<C::Sink>,
+    T1::Sink: HAppend<T2::Sink>,
+    <T1::Sink as HAppend<T2::Sink>>::Output: HAppend<T3::Sink>,
 {
-    type Sink = <<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output;
+    type Sink = <<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output;
 }
 
-impl<A: DefaultSink, B: DefaultSink, C: DefaultSink, D: DefaultSink> DefaultSink for (A, B, C, D)
+impl<B: Backend, T1: DefaultSink<B>, T2: DefaultSink<B>, T3: DefaultSink<B>, T4: DefaultSink<B>>
+    DefaultSink<B> for (T1, T2, T3, T4)
 where
-    A::Sink: HAppend<B::Sink>,
-    <A::Sink as HAppend<B::Sink>>::Output: HAppend<C::Sink>,
-    <<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output: HAppend<D::Sink>,
+    T1::Sink: HAppend<T2::Sink>,
+    <T1::Sink as HAppend<T2::Sink>>::Output: HAppend<T3::Sink>,
+    <<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output: HAppend<T4::Sink>,
 {
-    type Sink = <<<A::Sink as HAppend<B::Sink>>::Output as HAppend<C::Sink>>::Output as HAppend<
-        D::Sink,
-    >>::Output;
+    type Sink =
+        <<<T1::Sink as HAppend<T2::Sink>>::Output as HAppend<T3::Sink>>::Output as HAppend<
+            T4::Sink,
+        >>::Output;
 }
 
 // ============================================================================
@@ -111,22 +137,18 @@ pub trait SampleIter {
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
-/// Sink type is always `<Self::Item as DefaultSink>::Sink` — no separate
-/// associated type needed. Users write `impl Distribution<Item = (i32, i64)>`
-/// and the sink shape is fully determined by the Item.
-pub trait Distribution {
-    type Item: DefaultSink;
+pub trait Distribution<B: Backend> {
+    type Item: DefaultSink<B>;
     type RowIter: SampleIter<Item = Self::Item>;
 
     fn row_iter(&mut self) -> Self::RowIter;
 
     fn collect_into(
         &mut self,
-        sink: <Self::Item as DefaultSink>::Sink,
+        sink: <Self::Item as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <Self::Item as DefaultSink>::Sink;
-
+    ) -> <Self::Item as DefaultSink<B>>::Sink;
 }
 
 // ============================================================================
@@ -141,6 +163,13 @@ pub trait Sink<T> {
 impl<T> Sink<T> for Vec<T> {
     fn push(&mut self, value: T) {
         Vec::push(self, value);
+    }
+}
+
+// VecDeque<T> is a primitive sink
+impl<T> Sink<T> for VecDeque<T> {
+    fn push(&mut self, value: T) {
+        self.push_back(value);
     }
 }
 
@@ -212,6 +241,21 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 }
 
 // ============================================================================
+// ListSink<T> — sink trait for list/array columns
+// ============================================================================
+
+pub trait ListSink<T> {
+    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>);
+}
+
+// HList ListSink — wrap a ListSink in a 1-element HList
+impl<T, S: ListSink<T>> ListSink<T> for HCons<S, HNil> {
+    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
+        self.0.push_list(len, elems);
+    }
+}
+
+// ============================================================================
 // VecListSink<T> — columnar sink for list/array columns
 // ============================================================================
 
@@ -231,11 +275,6 @@ impl<T> VecListSink<T> {
     pub fn into_parts(self) -> (Vec<T>, Vec<usize>) {
         (self.values, self.offsets)
     }
-
-    pub fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
-        self.values.extend(elems);
-        self.offsets.push(self.values.len());
-    }
 }
 
 impl<T> Default for VecListSink<T> {
@@ -244,7 +283,58 @@ impl<T> Default for VecListSink<T> {
     }
 }
 
+impl<T> ListSink<T> for VecListSink<T> {
+    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.values.extend(elems);
+        self.offsets.push(self.values.len());
+    }
+}
+
 impl<T> Sink<Vec<T>> for VecListSink<T> {
+    fn push(&mut self, value: Vec<T>) {
+        let len = value.len();
+        self.push_list(len, value.into_iter());
+    }
+}
+
+// ============================================================================
+// DequeListSink<T> — columnar sink for list/array columns using VecDeque
+// ============================================================================
+
+pub struct DequeListSink<T> {
+    pub values: VecDeque<T>,
+    pub offsets: VecDeque<usize>,
+}
+
+impl<T> DequeListSink<T> {
+    pub fn new() -> Self {
+        let mut offsets = VecDeque::new();
+        offsets.push_back(0);
+        Self {
+            values: VecDeque::new(),
+            offsets,
+        }
+    }
+
+    pub fn into_parts(self) -> (VecDeque<T>, VecDeque<usize>) {
+        (self.values, self.offsets)
+    }
+}
+
+impl<T> Default for DequeListSink<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> ListSink<T> for DequeListSink<T> {
+    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.values.extend(elems);
+        self.offsets.push_back(self.values.len());
+    }
+}
+
+impl<T> Sink<Vec<T>> for DequeListSink<T> {
     fn push(&mut self, value: Vec<T>) {
         let len = value.len();
         self.push_list(len, value.into_iter());
@@ -410,9 +500,10 @@ where
     <A::HList as HAppend<B::HList>>::Output: HAppend<C::HList>,
     <<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output: HAppend<D::HList>,
 {
-    type HList = <<<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output as HAppend<
-        D::HList,
-    >>::Output;
+    type HList =
+        <<<A::HList as HAppend<B::HList>>::Output as HAppend<C::HList>>::Output as HAppend<
+            D::HList,
+        >>::Output;
     fn into_hlist(self) -> Self::HList {
         self.0
             .into_hlist()
@@ -423,14 +514,14 @@ where
 }
 
 // ============================================================================
-// Flatten<D> — distribution wrapper that flattens nested Item types
+// DistributionExt — ergonomic methods (collect_flat, flatten)
 // ============================================================================
 
-pub trait DistributionExt: Distribution {
+pub trait DistributionExt<B: Backend>: Distribution<B> {
     fn collect_flat<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
     where
-        T: IntoHList<HList = <Self::Item as DefaultSink>::Sink>,
-        <Self::Item as DefaultSink>::Sink: IntoTuple<Tuple = T>,
+        T: IntoHList<HList = <Self::Item as DefaultSink<B>>::Sink>,
+        <Self::Item as DefaultSink<B>>::Sink: IntoTuple<Tuple = T>,
     {
         self.collect_into(sink.into_hlist(), rng, n).into_tuple()
     }
@@ -441,13 +532,17 @@ pub trait DistributionExt: Distribution {
         Self::Item: ValueHList,
         <Self::Item as ValueHList>::HList: IntoTuple,
         <<Self::Item as ValueHList>::HList as IntoTuple>::Tuple:
-            DefaultSink<Sink = <Self::Item as DefaultSink>::Sink>,
+            DefaultSink<B, Sink = <Self::Item as DefaultSink<B>>::Sink>,
     {
         Flatten(self)
     }
 }
 
-impl<D: Distribution> DistributionExt for D {}
+impl<B: Backend, D: Distribution<B>> DistributionExt<B> for D {}
+
+// ============================================================================
+// Flatten<D> — distribution wrapper that flattens nested Item types
+// ============================================================================
 
 pub struct Flatten<D>(pub D);
 
@@ -464,12 +559,12 @@ where
     }
 }
 
-impl<D: Distribution> Distribution for Flatten<D>
+impl<B: Backend, D: Distribution<B>> Distribution<B> for Flatten<D>
 where
     D::Item: ValueHList,
     <D::Item as ValueHList>::HList: IntoTuple,
     <<D::Item as ValueHList>::HList as IntoTuple>::Tuple:
-        DefaultSink<Sink = <D::Item as DefaultSink>::Sink>,
+        DefaultSink<B, Sink = <D::Item as DefaultSink<B>>::Sink>,
 {
     type Item = <<D::Item as ValueHList>::HList as IntoTuple>::Tuple;
     type RowIter = FlattenIter<D::RowIter>;
@@ -480,10 +575,10 @@ where
 
     fn collect_into(
         &mut self,
-        sink: <Self::Item as DefaultSink>::Sink,
+        sink: <Self::Item as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
-    ) -> <Self::Item as DefaultSink>::Sink {
+    ) -> <Self::Item as DefaultSink<B>>::Sink {
         self.0.collect_into(sink, rng, n)
     }
 }

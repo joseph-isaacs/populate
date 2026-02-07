@@ -5,8 +5,8 @@ pub mod traits;
 mod tests {
     use crate::dist::{constant, list, map, range};
     use crate::traits::{
-        DefaultSink, Distribution, DistributionExt, HCons, HNil, IntoTuple, SampleIter, Sink,
-        VecListSink,
+        Backend, DefaultSink, Distribution, DistributionExt, HAppend, HCons, HNil, IntoTuple,
+        SampleIter, Sink, VecBackend, VecListSink,
     };
     use rand::rng;
     use std::cell::RefCell;
@@ -18,31 +18,42 @@ mod tests {
     // Helper functions returning impl Distribution — NO extra bounds needed!
     // ========================================================================
 
-    fn make_constant() -> impl Distribution<Item = i32> {
+    fn make_constant<B: Backend>() -> impl Distribution<B, Item = i32>
+    where
+        <i32 as DefaultSink<B>>::Sink: Sink<i32>,
+    {
         constant(42)
     }
 
-    fn make_range() -> impl Distribution<Item = i64> {
+    fn make_range<B: Backend>() -> impl Distribution<B, Item = i64>
+    where
+        <i64 as DefaultSink<B>>::Sink: Sink<i64>,
+    {
         range(0, 1)
     }
 
-    fn make_tuple() -> impl Distribution<Item = (i32, i64)> {
+    fn make_tuple<B: Backend>() -> impl Distribution<B, Item = (i32, i64)>
+    where
+        <i32 as DefaultSink<B>>::Sink: Sink<i32>,
+        <i64 as DefaultSink<B>>::Sink: Sink<i64>,
+        <i32 as DefaultSink<B>>::Sink: HAppend<<i64 as DefaultSink<B>>::Sink>,
+    {
         (constant(1), range(0, 10))
     }
 
-    fn make_mapped() -> impl Distribution<Item = i64> {
+    fn make_mapped() -> impl Distribution<VecBackend, Item = i64> {
         map(range(0, 1), |x| x * 2i64)
     }
 
-    fn make_3tuple() -> impl Distribution<Item = (i32, i64, bool)> {
+    fn make_3tuple() -> impl Distribution<VecBackend, Item = (i32, i64, bool)> {
         (constant(1i32), range(0, 10), constant(true))
     }
 
     // ========================================================================
-    // Generic collect using row_iter + Sink (row-by-row, unchanged)
+    // Generic collect using row_iter + Sink (row-by-row)
     // ========================================================================
 
-    fn collect<D: Distribution, S: Sink<D::Item>>(
+    fn collect<B: Backend, D: Distribution<B>, S: Sink<D::Item>>(
         dist: &mut D,
         sink: &mut S,
         n: usize,
@@ -55,12 +66,12 @@ mod tests {
     }
 
     // ========================================================================
-    // Tests using row_iter (unchanged)
+    // Tests using row_iter
     // ========================================================================
 
     #[test]
     fn test_constant_row_iter() {
-        let mut dist = make_constant();
+        let mut dist = make_constant::<VecBackend>();
         let mut iter = dist.row_iter();
         let mut rng = rng();
         let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();
@@ -69,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_range_row_iter() {
-        let mut dist = make_range();
+        let mut dist = make_range::<VecBackend>();
         let mut iter = dist.row_iter();
         let mut rng = rng();
         let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();
@@ -78,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_tuple_row_iter() {
-        let mut dist = make_tuple();
+        let mut dist = make_tuple::<VecBackend>();
         let mut iter = dist.row_iter();
         let mut rng = rng();
         let results: Vec<_> = (0..4).map(|_| iter.next(&mut rng)).collect();
@@ -100,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_constant_collect() {
-        let mut dist = make_constant();
+        let mut dist = make_constant::<VecBackend>();
         let mut sink = Vec::new();
         collect(&mut dist, &mut sink, 5, &mut rng());
         assert_eq!(sink, vec![42, 42, 42, 42, 42]);
@@ -108,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_range_collect() {
-        let mut dist = make_range();
+        let mut dist = make_range::<VecBackend>();
         let mut sink = Vec::new();
         collect(&mut dist, &mut sink, 5, &mut rng());
         assert_eq!(sink, vec![0, 1, 2, 3, 4]);
@@ -116,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_tuple_collect() {
-        let mut dist = make_tuple();
+        let mut dist = make_tuple::<VecBackend>();
         let mut sink = (Vec::new(), Vec::new());
         collect(&mut dist, &mut sink, 4, &mut rng());
         assert_eq!(sink.0, vec![1, 1, 1, 1]);
@@ -155,9 +166,9 @@ mod tests {
         }
     }
 
-    impl<D: Distribution> Distribution for Tracked<D>
+    impl<B: Backend, D: Distribution<B>> Distribution<B> for Tracked<D>
     where
-        <D::Item as DefaultSink>::Sink: Sink<D::Item>,
+        <D::Item as DefaultSink<B>>::Sink: Sink<D::Item>,
     {
         type Item = D::Item;
         type RowIter = TrackedIter<D::RowIter>;
@@ -172,10 +183,10 @@ mod tests {
 
         fn collect_into(
             &mut self,
-            mut sink: <D::Item as DefaultSink>::Sink,
+            mut sink: <D::Item as DefaultSink<B>>::Sink,
             rng: &mut impl rand::Rng,
             n: usize,
-        ) -> <D::Item as DefaultSink>::Sink {
+        ) -> <D::Item as DefaultSink<B>>::Sink {
             let mut iter = self.row_iter();
             for _ in 0..n {
                 sink.push(iter.next(rng));
@@ -184,7 +195,7 @@ mod tests {
         }
     }
 
-    fn tracked<D: Distribution>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
+    fn tracked<D>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
         Tracked {
             name,
             inner,
@@ -193,12 +204,132 @@ mod tests {
     }
 
     // ========================================================================
+    // Tracked helpers returning impl Distribution<VecBackend>
+    // ========================================================================
+
+    fn make_tracked_2tuple(log: &Log) -> impl Distribution<VecBackend, Item = (i64, i64)> {
+        (
+            tracked("COL1", range(0i64, 1), log),
+            tracked("COL2", range(100i64, 1), log),
+        )
+    }
+
+    fn make_tracked_3tuple(log: &Log) -> impl Distribution<VecBackend, Item = (i64, i64, i32)> {
+        (
+            tracked("COL1", range(0i64, 1), log),
+            tracked("COL2", range(100i64, 1), log),
+            tracked("COL3", range(1000i32, 1), log),
+        )
+    }
+
+    fn make_4tuple() -> impl Distribution<VecBackend, Item = (i32, i64, bool, f64)> {
+        (
+            constant(1i32),
+            range(0i64, 10),
+            constant(true),
+            constant(2.5f64),
+        )
+    }
+
+    fn make_tracked_4tuple(
+        log: &Log,
+    ) -> impl Distribution<VecBackend, Item = (i64, i64, i64, i64)> {
+        (
+            tracked("COL1", range(0i64, 1), log),
+            tracked("COL2", range(100i64, 1), log),
+            tracked("COL3", range(1000i64, 1), log),
+            tracked("COL4", range(10000i64, 1), log),
+        )
+    }
+
+    fn make_map_in_tuple(log: &Log) -> impl Distribution<VecBackend, Item = (i64, i64, i64)> {
+        (
+            tracked("COL1", range(0i64, 1), log),
+            map(tracked("MAP_SRC", range(100i64, 1), log), |x| x * 2),
+            tracked("COL3", range(1000i64, 1), log),
+        )
+    }
+
+    // UFCS needed: .flatten() can't infer B — method resolution doesn't
+    // propagate the return type backwards through the trait parameter.
+    fn gen_col4<B: Backend>(log: &Log) -> impl Distribution<B, Item = (i16, i64, i64, i32)> {
+        DistributionExt::<B>::flatten((
+            tracked("COL1", range(0i16, 1), log),
+            map(
+                (
+                    tracked("MAP_A", range(100i64, 1), log),
+                    tracked("MAP_B", range(1000, 1), log),
+                ),
+                |(a, b)| (a + b, a * b),
+            ),
+            tracked("COL4", range(0i32, 5), log),
+        ))
+    }
+
+    fn make_flatten_order<B: Backend>(
+        log: &Log,
+    ) -> impl Distribution<B, Item = (i32, i32, i32, i32)> {
+        DistributionExt::<B>::flatten((
+            tracked("COL1", range(0i32, 1), log),
+            map(
+                (
+                    tracked("MAP_A", range(100i32, 1), log),
+                    tracked("MAP_B", range(1000i32, 1), log),
+                ),
+                |(a, b)| (a + b, a * b),
+            ),
+            tracked("COL4", range(0i32, 5), log),
+        ))
+    }
+
+    fn make_nested_tuple(
+        log: &Log,
+    ) -> impl Distribution<VecBackend, Item = (i32, (i32, i32), i32)> {
+        (
+            tracked("COL1", range(0i32, 1), log),
+            (
+                tracked("COL2", range(100i32, 1), log),
+                tracked("COL3", range(1000i32, 1), log),
+            ),
+            tracked("COL4", range(0i32, 5), log),
+        )
+    }
+
+    fn make_list_row_iter() -> impl Distribution<VecBackend, Item = Vec<i32>> {
+        list(constant(3usize), constant(7i32))
+    }
+
+    fn gen_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
+        list(range(0usize, 1), range(0, 1))
+    }
+
+    fn make_list_in_tuple() -> impl Distribution<VecBackend, Item = (i32, Vec<i64>)> {
+        (constant(42i32), list(constant(2usize), range(0, 1)))
+    }
+
+    fn make_tracked_list_in_tuple(
+        log: &Log,
+    ) -> impl Distribution<VecBackend, Item = (i32, Vec<i64>)> {
+        (
+            tracked("COL1", constant(42i32), log),
+            tracked("LIST", list(constant(2usize), range(0, 1)), log),
+        )
+    }
+
+    fn make_row_order(log: &Log) -> impl Distribution<VecBackend, Item = (i64, i64)> {
+        (
+            tracked("COL1", range(0i64, 1), log),
+            tracked("COL2", range(100i64, 1), log),
+        )
+    }
+
+    // ========================================================================
     // Col-by-col collection tests (via collect_flat — no HCons visible!)
     // ========================================================================
 
     #[test]
     fn test_col_by_col_basic() {
-        let mut dist = make_tuple();
+        let mut dist = make_tuple::<VecBackend>();
         let (col1, col2) = dist.collect_flat((Vec::<i32>::new(), Vec::<i64>::new()), &mut rng(), 4);
         assert_eq!(col1, vec![1, 1, 1, 1]);
         assert_eq!(col2, vec![0, 10, 20, 30]);
@@ -207,10 +338,7 @@ mod tests {
     #[test]
     fn test_col_by_col_order() {
         let log: Log = Log::default();
-        let mut dist = (
-            tracked("COL1", range(0i64, 1), &log),
-            tracked("COL2", range(100i64, 1), &log),
-        );
+        let mut dist = make_tracked_2tuple(&log);
         let (col1, col2) = dist.collect_flat((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
 
         assert_eq!(col1, vec![0, 1, 2]);
@@ -251,11 +379,7 @@ mod tests {
     #[test]
     fn test_3tuple_col_by_col_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0i64, 1), &log),
-            tracked("COL2", range(100i64, 1), &log),
-            tracked("COL3", range(1000i32, 1), &log),
-        );
+        let mut dist = make_tracked_3tuple(&log);
         let (col1, col2, col3) = dist.collect_flat(
             (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i32>::new()),
             &mut rng(),
@@ -276,12 +400,7 @@ mod tests {
 
     #[test]
     fn test_4tuple_col_by_col() {
-        let mut dist = (
-            constant(1i32),
-            range(0i64, 10),
-            constant(true),
-            constant(2.5f64),
-        );
+        let mut dist = make_4tuple();
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
                 Vec::<i32>::new(),
@@ -301,12 +420,7 @@ mod tests {
     #[test]
     fn test_4tuple_col_by_col_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0i64, 1), &log),
-            tracked("COL2", range(100i64, 1), &log),
-            tracked("COL3", range(1000i64, 1), &log),
-            tracked("COL4", range(10000i64, 1), &log),
-        );
+        let mut dist = make_tracked_4tuple(&log);
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
                 Vec::<i64>::new(),
@@ -336,11 +450,7 @@ mod tests {
     #[test]
     fn test_map_in_tuple_values() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0i64, 1), &log),
-            map(tracked("MAP_SRC", range(100i64, 1), &log), |x| x * 2),
-            tracked("COL3", range(1000i64, 1), &log),
-        );
+        let mut dist = make_map_in_tuple(&log);
         let (c1, c2, c3) = dist.collect_flat(
             (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
             &mut rng(),
@@ -355,11 +465,7 @@ mod tests {
     #[test]
     fn test_map_in_tuple_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0i64, 1), &log),
-            map(tracked("MAP_SRC", range(100i64, 1), &log), |x| x * 2),
-            tracked("COL3", range(1000i64, 1), &log),
-        );
+        let mut dist = make_map_in_tuple(&log);
         let (c1, c2, c3) = dist.collect_flat(
             (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
             &mut rng(),
@@ -384,29 +490,11 @@ mod tests {
     // AUTO-FLATTENING: Map producing tuple → flat columns, no Unnest needed!
     // ========================================================================
 
-    fn gen_col4(log: &Log) -> impl Distribution<Item = (i16, i64, i64, i32)> {
-        (
-            tracked("COL1", range(0i16, 1), &log),
-            map(
-                (
-                    tracked("MAP_A", range(100i64, 1), &log),
-                    tracked("MAP_B", range(1000, 1), &log),
-                ),
-                |(a, b)| (a + b, a * b),
-            ),
-            tracked("COL4", range(0i32, 5), &log),
-        )
-            .flatten()
-    }
-
     #[test]
     fn test_map_tuple_auto_flatten() {
-        // Map produces (i64, i64) → Sink = HCons<Vec<i64>, HCons<Vec<i64>, HNil>>
-        // (d1, map(src, f), d3) with map returning (A, B) → 4 flat columns!
         let log = Log::default();
-        let mut dist = gen_col4(&log);
+        let mut dist = gen_col4::<VecBackend>(&log);
 
-        // 4 flat columns — no nesting, no Unnest!
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
                 Vec::<i16>::new(),
@@ -427,17 +515,7 @@ mod tests {
     #[test]
     fn test_map_tuple_auto_flatten_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            map(
-                (
-                    tracked("MAP_A", range(100, 1), &log),
-                    tracked("MAP_B", range(1000, 1), &log),
-                ),
-                |(a, b)| (a + b, a * b),
-            ),
-            tracked("COL4", range(0, 5), &log),
-        );
+        let mut dist = make_flatten_order::<VecBackend>(&log);
 
         let (_, _, _, _) = dist.collect_flat(
             (
@@ -466,17 +544,8 @@ mod tests {
 
     #[test]
     fn test_independent_tuple_auto_flatten() {
-        // Inner tuple (D2, D3) has 2 sink slots → takes 2 slots in outer tuple
-        // No Unnest needed — HAppend handles it automatically!
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            (
-                tracked("COL2", range(100, 1), &log),
-                tracked("COL3", range(1000, 1), &log),
-            ),
-            tracked("COL4", range(0, 5), &log),
-        );
+        let mut dist = make_nested_tuple(&log);
 
         let (c1, c2, c3, c4) = dist.collect_flat(
             (
@@ -510,15 +579,11 @@ mod tests {
 
     #[test]
     fn test_list_row_iter() {
-        let mut dist = list(constant(3usize), constant(7i32));
+        let mut dist = make_list_row_iter();
         let mut iter = dist.row_iter();
         let mut rng = rng();
         let result = iter.next(&mut rng);
         assert_eq!(result, vec![7, 7, 7]);
-    }
-
-    fn gen_list() -> impl Distribution<Item = Vec<i64>> {
-        list(range(0usize, 1), range(0, 1))
     }
 
     #[test]
@@ -533,8 +598,7 @@ mod tests {
 
     #[test]
     fn test_list_in_tuple() {
-        // (scalar, list) — scalar takes 1 slot, list takes 1 slot
-        let mut dist = (constant(42i32), list(constant(2usize), range(0, 1)));
+        let mut dist = make_list_in_tuple();
         let (scalars, list_sink) = dist.collect_flat(
             (Vec::<i32>::new(), VecListSink::<i64>::new()),
             &mut rng(),
@@ -554,10 +618,7 @@ mod tests {
     #[test]
     fn test_tracked_list_in_tuple() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", constant(42i32), &log),
-            tracked("LIST", list(constant(2usize), range(0, 1)), &log),
-        );
+        let mut dist = make_tracked_list_in_tuple(&log);
         let (scalars, list_sink) = dist.collect_flat(
             (Vec::<i32>::new(), VecListSink::<i64>::new()),
             &mut rng(),
@@ -582,10 +643,7 @@ mod tests {
     #[test]
     fn test_row_order() {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
-        let mut dist = (
-            tracked("COL1", range(0, 1), &log),
-            tracked("COL2", range(100, 1), &log),
-        );
+        let mut dist = make_row_order(&log);
         let mut sink: (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
 
         collect(&mut dist, &mut sink, 3, &mut rng());
@@ -597,5 +655,38 @@ mod tests {
             *log.borrow(),
             vec!["COL1", "COL2", "COL1", "COL2", "COL1", "COL2"]
         );
+    }
+
+    // ========================================================================
+    // Dual-backend tests: same generic helpers, two backends
+    // ========================================================================
+
+    use crate::traits::DequeBackend;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn test_constant_deque_backend() {
+        let mut dist = make_constant::<DequeBackend>();
+        let (col,) = dist.collect_flat((VecDeque::<i32>::new(),), &mut rng(), 5);
+        assert_eq!(col, VecDeque::from([42, 42, 42, 42, 42]));
+    }
+
+    #[test]
+    fn test_range_deque_backend() {
+        let mut dist = make_range::<DequeBackend>();
+        let (col,) = dist.collect_flat((VecDeque::<i64>::new(),), &mut rng(), 5);
+        assert_eq!(col, VecDeque::from([0, 1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn test_tuple_deque_backend() {
+        let mut dist = make_tuple::<DequeBackend>();
+        let (c1, c2) = dist.collect_flat(
+            (VecDeque::<i32>::new(), VecDeque::<i64>::new()),
+            &mut rng(),
+            4,
+        );
+        assert_eq!(c1, VecDeque::from([1, 1, 1, 1]));
+        assert_eq!(c2, VecDeque::from([0, 10, 20, 30]));
     }
 }

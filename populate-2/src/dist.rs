@@ -516,9 +516,7 @@ where
         let mut len_iter = self.lengths.row_iter();
         for _ in 0..n {
             let len = len_iter.next(rng);
-            let inner = std::mem::take(sink.inner());
-            *sink.inner() = self.elements.collect_into(inner, rng, len);
-            sink.end_list();
+            sink.collect_list(|inner| self.elements.collect_into(inner, rng, len));
         }
         sink
     }

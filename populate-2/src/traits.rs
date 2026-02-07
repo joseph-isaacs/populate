@@ -497,6 +497,14 @@ pub trait ListSink<T> {
         self.inner().push_n(elems);
         self.end_list();
     }
+    fn collect_list(&mut self, f: impl FnOnce(Self::Inner) -> Self::Inner)
+    where
+        Self::Inner: Default,
+    {
+        let inner = std::mem::take(self.inner());
+        *self.inner() = f(inner);
+        self.end_list();
+    }
 }
 
 impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> ListSink<T>

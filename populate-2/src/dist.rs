@@ -1,9 +1,9 @@
 use crate::traits::{
-    ColumnDistribution, Distribution, SampleIter, Sink, Splittable, SplittableExt,
+    Backend, DefaultSink, Distribution, Flatten, HAppend, ListSink, SampleIter, Sink,
 };
 use rand::Rng;
 use std::marker::PhantomData;
-
+use std::ops::Add;
 // ============================================================================
 // Constant
 // ============================================================================
@@ -16,6 +16,7 @@ pub fn constant<T>(value: T) -> Constant<T> {
     Constant { value }
 }
 
+#[derive(Clone)]
 pub struct ConstantIter<T> {
     value: T,
 }
@@ -27,23 +28,26 @@ impl<T: Copy> SampleIter for ConstantIter<T> {
     }
 }
 
-impl<T: Copy + Splittable> Distribution for Constant<T> {
+impl<B: Backend, T: Copy + DefaultSink<B>> Distribution<B> for Constant<T>
+where
+    <T as DefaultSink<B>>::Sink: Sink<T>,
+{
     type Item = T;
     type RowIter = ConstantIter<T>;
 
     fn row_iter(&mut self) -> Self::RowIter {
         ConstantIter { value: self.value }
     }
-}
 
-impl<T: Copy + Splittable> ColumnDistribution for Constant<T> {
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
-    where
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
+    fn collect_into(
+        &mut self,
+        mut sink: <T as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <T as DefaultSink<B>>::Sink {
+        let mut iter = self.row_iter();
         for _ in 0..n {
-            sink.push(sample_iter.next(rng));
+            sink.push(iter.next(rng));
         }
         sink
     }
@@ -53,32 +57,36 @@ impl<T: Copy + Splittable> ColumnDistribution for Constant<T> {
 // Range
 // ============================================================================
 
-pub struct Range {
-    pub start: i64,
-    pub step: i64,
+pub struct Range<T> {
+    pub start: T,
+    pub step: T,
 }
 
-pub fn range(start: i64, step: i64) -> Range {
+pub fn range<T: Add>(start: T, step: T) -> Range<T> {
     Range { start, step }
 }
 
-pub struct RangeIter {
-    pub current: i64,
-    pub step: i64,
+#[derive(Clone)]
+pub struct RangeIter<T> {
+    pub current: T,
+    pub step: T,
 }
 
-impl SampleIter for RangeIter {
-    type Item = i64;
+impl<T: Add<Output = T> + Copy> SampleIter for RangeIter<T> {
+    type Item = T;
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
         let v = self.current;
-        self.current += self.step;
+        self.current = self.current + self.step;
         v
     }
 }
 
-impl Distribution for Range {
-    type Item = i64;
-    type RowIter = RangeIter;
+impl<B: Backend, T: DefaultSink<B> + Add<Output = T> + Copy> Distribution<B> for Range<T>
+where
+    <T as DefaultSink<B>>::Sink: Sink<T>,
+{
+    type Item = T;
+    type RowIter = RangeIter<T>;
 
     fn row_iter(&mut self) -> Self::RowIter {
         RangeIter {
@@ -86,23 +94,23 @@ impl Distribution for Range {
             step: self.step,
         }
     }
-}
 
-impl ColumnDistribution for Range {
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
-    where
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
+    fn collect_into(
+        &mut self,
+        mut sink: <T as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <T as DefaultSink<B>>::Sink {
+        let mut iter = self.row_iter();
         for _ in 0..n {
-            sink.push(sample_iter.next(rng));
+            sink.push(iter.next(rng));
         }
         sink
     }
 }
 
 // ============================================================================
-// Tuple (D1, D2) - col-by-col collection using split/unsplit
+// Tuple (D1, D2) — col-by-col using HAppend
 // ============================================================================
 
 pub struct TupleIter2<I1, I2>(pub I1, pub I2);
@@ -115,53 +123,34 @@ impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
     }
 }
 
-impl<D1: Distribution, D2: Distribution> Distribution for (D1, D2) {
+impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>> Distribution<B> for (D1, D2)
+where
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+{
     type Item = (D1::Item, D2::Item);
     type RowIter = TupleIter2<D1::RowIter, D2::RowIter>;
 
     fn row_iter(&mut self) -> Self::RowIter {
         TupleIter2(self.0.row_iter(), self.1.row_iter())
     }
-}
 
-impl<D1: ColumnDistribution, D2: ColumnDistribution> ColumnDistribution for (D1, D2)
-where
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-{
-    /// Col-by-col collection: fills all of column 0, then all of column 1
-    fn collect_into<S: Sink<(D1::Item, D2::Item)>>(
+    fn collect_into(
         &mut self,
+        sink: <(D1::Item, D2::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
-        sink: S,
         n: usize,
-    ) -> S
-    where
-        Self: Sized,
-    {
-        let (head_sink, tail_sink) = sink.split();
-        let head_sink = self.0.collect_into(rng, head_sink, n);
-        let tail_sink = self.1.collect_into(rng, tail_sink, n);
-        S::unsplit(head_sink, tail_sink)
+    ) -> <(D1::Item, D2::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(sink);
+        let s1 = self.0.collect_into(s1, rng, n);
+        let s2 = self.1.collect_into(s2, rng, n);
+        s1.append(s2)
     }
 }
 
 // ============================================================================
-// Marker trait for distributions that can be used directly in tuples
-// (Unnest does not implement this, so it uses special tuple impls)
-// ============================================================================
-
-pub trait NotUnnest {}
-
-impl<T: Copy + Splittable> NotUnnest for Constant<T> {}
-impl NotUnnest for Range {}
-impl<D, F, In, Out: Splittable> NotUnnest for Map<D, F, In, Out> {}
-impl<D1: NotUnnest, D2: NotUnnest> NotUnnest for (D1, D2) {}
-impl<D1: NotUnnest, D2: NotUnnest, D3: NotUnnest> NotUnnest for (D1, D2, D3) {}
-impl<D1: NotUnnest, D2: NotUnnest, D3: NotUnnest, D4: NotUnnest> NotUnnest for (D1, D2, D3, D4) {}
-
-// ============================================================================
-// Tuple (D1, D2, D3) - col-by-col collection
+// Tuple (D1, D2, D3) — col-by-col
 // ============================================================================
 
 pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
@@ -174,8 +163,12 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I
     }
 }
 
-impl<D1: Distribution, D2: Distribution + NotUnnest, D3: Distribution> Distribution
+impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>, D3: Distribution<B>> Distribution<B>
     for (D1, D2, D3)
+where
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
 {
     type Item = (D1::Item, D2::Item, D3::Item);
     type RowIter = TupleIter3<D1::RowIter, D2::RowIter, D3::RowIter>;
@@ -183,37 +176,28 @@ impl<D1: Distribution, D2: Distribution + NotUnnest, D3: Distribution> Distribut
     fn row_iter(&mut self) -> Self::RowIter {
         TupleIter3(self.0.row_iter(), self.1.row_iter(), self.2.row_iter())
     }
-}
 
-impl<D1: ColumnDistribution, D2: ColumnDistribution + NotUnnest, D3: ColumnDistribution>
-    ColumnDistribution for (D1, D2, D3)
-where
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-    D3::Item: Splittable,
-{
-    /// Col-by-col collection: fills columns in order
-    fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item)>>(
+    fn collect_into(
         &mut self,
+        sink: <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
-        sink: S,
         n: usize,
-    ) -> S
-    where
-        Self: Sized,
-    {
-        let (s1, tail) = sink.split();
-        let s1 = self.0.collect_into(rng, s1, n);
-        let (s2, s3) = tail.split();
-        let s2 = self.1.collect_into(rng, s2, n);
-        let s3 = self.2.collect_into(rng, s3, n);
-        let tail = S::TailSink::unsplit(s2, s3);
-        S::unsplit(s1, tail)
+    ) -> <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
+        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(sink);
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
+        let s1 = self.0.collect_into(s1, rng, n);
+        let s2 = self.1.collect_into(s2, rng, n);
+        let s3 = self.2.collect_into(s3, rng, n);
+        s1.append(s2).append(s3)
     }
 }
 
 // ============================================================================
-// Tuple (D1, D2, D3, D4) - col-by-col collection
+// Tuple (D1, D2, D3, D4) — col-by-col
 // ============================================================================
 
 pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
@@ -233,8 +217,20 @@ impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
     }
 }
 
-impl<D1: Distribution, D2: Distribution, D3: Distribution, D4: Distribution> Distribution
-    for (D1, D2, D3, D4)
+impl<
+        B: Backend,
+        D1: Distribution<B>,
+        D2: Distribution<B>,
+        D3: Distribution<B>,
+        D4: Distribution<B>,
+    > Distribution<B> for (D1, D2, D3, D4)
+where
+    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
+    <<<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output
+        as HAppend<<D3::Item as DefaultSink<B>>::Sink>>::Output:
+        HAppend<<D4::Item as DefaultSink<B>>::Sink>,
 {
     type Item = (D1::Item, D2::Item, D3::Item, D4::Item);
     type RowIter = TupleIter4<D1::RowIter, D2::RowIter, D3::RowIter, D4::RowIter>;
@@ -247,42 +243,32 @@ impl<D1: Distribution, D2: Distribution, D3: Distribution, D4: Distribution> Dis
             self.3.row_iter(),
         )
     }
-}
 
-impl<D1: ColumnDistribution, D2: ColumnDistribution, D3: ColumnDistribution, D4: ColumnDistribution>
-    ColumnDistribution for (D1, D2, D3, D4)
-where
-    D1::Item: Splittable,
-    D2::Item: Splittable,
-    D3::Item: Splittable,
-    D4::Item: Splittable,
-{
-    /// Col-by-col collection: fills columns in order
-    fn collect_into<S: Sink<(D1::Item, D2::Item, D3::Item, D4::Item)>>(
+    fn collect_into(
         &mut self,
+        sink: <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
-        sink: S,
         n: usize,
-    ) -> S
-    where
-        Self: Sized,
-    {
-        let (s1, tail) = sink.split();
-        let s1 = self.0.collect_into(rng, s1, n);
-        let (s2, tail2) = tail.split();
-        let s2 = self.1.collect_into(rng, s2, n);
-        let (s3, s4) = tail2.split();
-        let s3 = self.2.collect_into(rng, s3, n);
-        let s4 = self.3.collect_into(rng, s4, n);
-        let tail2 =
-            <S::TailSink as Sink<(D2::Item, D3::Item, D4::Item)>>::TailSink::unsplit(s3, s4);
-        let tail = S::TailSink::unsplit(s2, tail2);
-        S::unsplit(s1, tail)
+    ) -> <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink {
+        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S4<B, D4> = <<D4 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
+        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
+        type S123<B, D1, D2, D3> = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::Output;
+        let (s123, s4) = <S123<B, D1, D2, D3> as HAppend<S4<B, D4>>>::unappend(sink);
+        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(s123);
+        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
+        let s1 = self.0.collect_into(s1, rng, n);
+        let s2 = self.1.collect_into(s2, rng, n);
+        let s3 = self.2.collect_into(s3, rng, n);
+        let s4 = self.3.collect_into(s4, rng, n);
+        s1.append(s2).append(s3).append(s4)
     }
 }
 
 // ============================================================================
-// Map
+// Map — row-by-row collection via Sink<Out>::push
 // ============================================================================
 
 pub struct Map<D, F, In, Out> {
@@ -319,10 +305,11 @@ where
     }
 }
 
-impl<D, F, In, Out: Splittable> Distribution for Map<D, F, In, Out>
+impl<B: Backend, D, F, In, Out: DefaultSink<B>> Distribution<B> for Map<D, F, In, Out>
 where
-    D: Distribution<Item = In>,
+    D: Distribution<B, Item = In>,
     F: Fn(In) -> Out + Clone,
+    <Out as DefaultSink<B>>::Sink: Sink<Out>,
 {
     type Item = Out;
     type RowIter = MapIter<D::RowIter, F>;
@@ -333,161 +320,91 @@ where
             f: self.f.clone(),
         }
     }
-}
 
-impl<D, F, In, Out: Splittable> ColumnDistribution for Map<D, F, In, Out>
-where
-    D: Distribution<Item = In>,
-    F: Fn(In) -> Out + Clone,
-{
-    /// Map must use row-by-row collection since the function couples input columns
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, mut sink: S, n: usize) -> S
-    where
-        Self: Sized,
-    {
-        let mut sample_iter = self.row_iter();
+    fn collect_into(
+        &mut self,
+        mut sink: <Out as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <Out as DefaultSink<B>>::Sink {
+        let mut iter = self.row_iter();
         for _ in 0..n {
-            sink.push(sample_iter.next(rng));
+            sink.push(iter.next(rng));
         }
         sink
     }
 }
 
 // ============================================================================
-// Unnest - marker wrapper that tells tuples to expand the inner distribution
+// List<L, E> — list/array column distribution
 // ============================================================================
 
-pub struct Unnest<D>(pub D);
-
-pub fn unnest<D>(d: D) -> Unnest<D> {
-    Unnest(d)
+pub struct List<L, E> {
+    pub lengths: L,
+    pub elements: E,
 }
 
-/// Unnest's iterator - just delegates to inner
-pub struct UnnestIter<I>(I);
+pub fn list<L, E>(lengths: L, elements: E) -> List<L, E> {
+    List { lengths, elements }
+}
 
-impl<I: SampleIter> SampleIter for UnnestIter<I> {
-    type Item = I::Item;
+pub struct ListIter<L, E> {
+    pub lengths: L,
+    pub elements: E,
+}
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        self.0.next(rng)
+impl<L, E> SampleIter for ListIter<L, E>
+where
+    L: SampleIter<Item = usize>,
+    E: SampleIter + Clone,
+{
+    type Item = Vec<E::Item>;
+
+    fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
+        let len = self.lengths.next(rng);
+        let mut elems = self.elements.clone();
+        (0..len).map(|_| elems.next(rng)).collect()
     }
 }
 
-impl<D: Distribution> Distribution for Unnest<D> {
-    type Item = D::Item;
-    type RowIter = UnnestIter<D::RowIter>;
+impl<B: Backend, L, E> Distribution<B> for List<L, E>
+where
+    L: Distribution<B, Item = usize>,
+    E: Distribution<B>,
+    E::RowIter: Clone,
+    <Vec<E::Item> as DefaultSink<B>>::Sink: ListSink<E::Item>,
+{
+    type Item = Vec<E::Item>;
+    type RowIter = ListIter<L::RowIter, E::RowIter>;
 
     fn row_iter(&mut self) -> Self::RowIter {
-        UnnestIter(self.0.row_iter())
-    }
-}
-
-impl<D: ColumnDistribution> ColumnDistribution for Unnest<D>
-where
-    D::Item: SplittableExt,
-{
-    /// Delegates to inner's collect_into - preserves col-by-col for independent columns
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
-    where
-        Self: Sized,
-    {
-        self.0.collect_into(rng, sink, n)
-    }
-}
-
-// ============================================================================
-// (D1, Unnest<D2>, D3) where D2 produces (Head, Tail) -> produces (D1::Item, Head, Tail, D3::Item)
-// ============================================================================
-
-pub struct UnnestTupleIter3<I1, I2, I3> {
-    i1: I1,
-    i2: I2,
-    i3: I3,
-}
-
-impl<I1, I2, I3> SampleIter for UnnestTupleIter3<I1, I2, I3>
-where
-    I1: SampleIter,
-    I2: SampleIter,
-    I2::Item: SplittableExt,
-    I3: SampleIter,
-{
-    type Item = (
-        I1::Item,
-        <I2::Item as Splittable>::Head,
-        <I2::Item as Splittable>::Tail,
-        I3::Item,
-    );
-
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        let v1 = self.i1.next(rng);
-        let (head, tail) = self.i2.next(rng).split_head_tail();
-        let v3 = self.i3.next(rng);
-        (v1, head, tail, v3)
-    }
-}
-
-impl<D1, D2, D3> Distribution for (D1, Unnest<D2>, D3)
-where
-    D1: Distribution,
-    D2: Distribution,
-    D2::Item: SplittableExt,
-    D3: Distribution,
-{
-    type Item = (
-        D1::Item,
-        <D2::Item as Splittable>::Head,
-        <D2::Item as Splittable>::Tail,
-        D3::Item,
-    );
-    type RowIter = UnnestTupleIter3<D1::RowIter, D2::RowIter, D3::RowIter>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        UnnestTupleIter3 {
-            i1: self.0.row_iter(),
-            i2: self.1.0.row_iter(),
-            i3: self.2.row_iter(),
+        ListIter {
+            lengths: self.lengths.row_iter(),
+            elements: self.elements.row_iter(),
         }
     }
+
+    fn collect_into(
+        &mut self,
+        mut sink: <Vec<E::Item> as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <Vec<E::Item> as DefaultSink<B>>::Sink {
+        let mut len_iter = self.lengths.row_iter();
+        let elem_base = self.elements.row_iter();
+        for _ in 0..n {
+            let len = len_iter.next(rng);
+            let mut elems = elem_base.clone();
+            sink.push_list(len, (0..len).map(|_| elems.next(rng)));
+        }
+        sink
+    }
 }
 
-impl<D1, D2, H, T, D3> ColumnDistribution for (D1, Unnest<D2>, D3)
-where
-    D1: ColumnDistribution,
-    D2: ColumnDistribution<Item = (H, T)>,
-    H: Splittable,
-    T: Splittable,
-    D3: ColumnDistribution,
-    D1::Item: Splittable,
-    D3::Item: Splittable,
-{
-    fn collect_into<S: Sink<Self::Item>>(&mut self, rng: &mut impl Rng, sink: S, n: usize) -> S
-    where
-        Self: Sized,
-    {
-        // Split: S -> (S1, TailSink) where TailSink: Sink<(H, T, D3::Item)>
-        let (s1, tail) = sink.split();
+// ============================================================================
+// Flatten — free function wrapper (avoids UFCS for generic-B contexts)
+// ============================================================================
 
-        // Fill D1 column-by-column
-        let s1 = self.0.collect_into(rng, s1, n);
-
-        // Split tail: TailSink -> (S2, Tail2) where S2: Sink<H>, Tail2: Sink<(T, D3::Item)>
-        let (s2, tail2) = tail.split();
-
-        // Split tail2: Tail2 -> (S3, S4) where S3: Sink<T>, S4: Sink<D3::Item>
-        let (s3, s4) = tail2.split();
-
-        // Unsplit (s2, s3) into a sink for (H, T) and pass to Unnest's collect_into
-        let middle_sink = self.1.collect_into(rng, (s2, s3), n);
-        let (s2, s3) = middle_sink;
-
-        // Fill D3 column-by-column
-        let s4 = self.2.collect_into(rng, s4, n);
-
-        // Reconstruct the sink hierarchy
-        let tail2 = <S::TailSink as Sink<(H, T, D3::Item)>>::TailSink::unsplit(s3, s4);
-        let tail = S::TailSink::unsplit(s2, tail2);
-        S::unsplit(s1, tail)
-    }
+pub fn flatten<D>(d: D) -> Flatten<D> {
+    Flatten(d)
 }

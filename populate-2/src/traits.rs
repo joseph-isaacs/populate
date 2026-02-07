@@ -17,7 +17,7 @@ pub struct VecBackend;
 
 impl Backend for VecBackend {
     type Prim<T> = Vec<T>;
-    type List<T> = VecListSink<T>;
+    type List<T> = Vec<Vec<T>>;
 }
 
 pub struct DequeBackend;
@@ -276,6 +276,13 @@ impl<T> Sink<Vec<T>> for VecListSink<T> {
     fn push(&mut self, value: Vec<T>) {
         let len = value.len();
         self.push_list(len, value.into_iter());
+    }
+}
+
+// Vec<Vec<T>> as a list sink — the natural representation for VecBackend
+impl<T> ListSink<T> for Vec<Vec<T>> {
+    fn push_list(&mut self, _len: usize, elems: impl Iterator<Item = T>) {
+        self.push(elems.collect());
     }
 }
 

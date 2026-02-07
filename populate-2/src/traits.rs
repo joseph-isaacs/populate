@@ -271,6 +271,7 @@ where
 // ============================================================================
 
 pub type SinkOf<B, V> = <V as SinkFor<B>>::Sink;
+pub type ListCol<B, T> = ColumnarList<<T as SinkFor<B>>::Sink, <B as Backend>::Prim<usize>>;
 
 pub trait SampleIter {
     type Item;

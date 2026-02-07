@@ -8,8 +8,7 @@
 
 use crate::dist::{constant, list, range};
 use crate::traits::{
-    ColumnarList, ColumnarVecBackend, Distribution, DistributionExt, DistributionScalar, HCons,
-    HNil,
+    ColumnarVecBackend, Distribution, DistributionExt, DistributionScalar, ListCol,
 };
 use rand::rng;
 
@@ -58,8 +57,8 @@ fn test_columnar_scalar() {
 #[test]
 fn test_columnar_list_scalar() {
     let mut dist = list_scalar();
-    let result: ColumnarList<HCons<Vec<i64>, HNil>, Vec<usize>> =
-        dist.collect_col(ColumnarList::default(), &mut rng(), 2);
+    let result: ListCol<ColumnarVecBackend, i64> =
+        dist.collect_col(Default::default(), &mut rng(), 2);
 
     // 2 lists of 3 elements each: [0,1,2], [0,1,2]
     assert_eq!(result.inner.0, vec![0, 1, 2, 0, 1, 2]);
@@ -73,13 +72,13 @@ fn test_columnar_list_scalar() {
 #[test]
 fn test_columnar_list_of_struct() {
     let mut dist = list_of_struct();
-    let result: ColumnarList<HCons<Vec<u32>, HCons<Vec<u64>, HNil>>, Vec<usize>> =
-        dist.collect_col(ColumnarList::default(), &mut rng(), 3);
+    let result: ListCol<ColumnarVecBackend, (u32, u64)> =
+        dist.collect_col(Default::default(), &mut rng(), 3);
 
     // Extract the three Arrow-like vectors:
-    let col1: &Vec<u32> = &result.inner.0;
-    let col2: &Vec<u64> = &result.inner.1.0;
-    let offsets: &Vec<usize> = &result.offsets;
+    let col1 = &result.inner.0;
+    let col2 = &result.inner.1.0;
+    let offsets = &result.offsets;
 
     // col1 (u32): all first-fields flattened across all lists
     assert_eq!(col1, &vec![0, 1, 0, 1, 0, 1]);
@@ -106,10 +105,8 @@ fn test_columnar_list_of_struct() {
 #[test]
 fn test_columnar_struct_in_list_in_tuple() {
     let mut dist = list_of_struct_in_tuple();
-    let (scalars, lists): (
-        Vec<i32>,
-        ColumnarList<HCons<Vec<u32>, HCons<Vec<u64>, HNil>>, Vec<usize>>,
-    ) = dist.collect_flat(&mut rng(), 3);
+    let (scalars, lists): (Vec<i32>, ListCol<ColumnarVecBackend, (u32, u64)>) =
+        dist.collect_flat(&mut rng(), 3);
 
     // Scalar column
     assert_eq!(scalars, vec![42, 42, 42]);
@@ -133,8 +130,8 @@ fn test_columnar_struct_in_list_in_tuple() {
 fn test_columnar_variable_length_lists() {
     // Lists with lengths 0, 1, 2, 3
     let mut dist = variable_length_list();
-    let result: ColumnarList<HCons<Vec<u32>, HNil>, Vec<usize>> =
-        dist.collect_col(ColumnarList::default(), &mut rng(), 4);
+    let result: ListCol<ColumnarVecBackend, u32> =
+        dist.collect_col(Default::default(), &mut rng(), 4);
 
     // Lists: [], [0], [0,1], [0,1,2]
     assert_eq!(result.inner.0, vec![0, 0, 1, 0, 1, 2]);

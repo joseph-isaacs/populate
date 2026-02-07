@@ -7,19 +7,19 @@ use crate::test::dist::{
     make_named_3tuple, make_named_list, make_named_scalar, make_named_tracked_tuple,
     make_named_tuple,
 };
-use crate::traits::{DistributionExt, DistributionScalar, NamedCol};
+use crate::traits::{DistributionExt, DistributionScalar, NamedCol, NamedVecBackend};
 use rand::rng;
 
 #[test]
 fn test_named_scalar_collect_col() {
-    let mut dist = make_named_scalar();
+    let mut dist = make_named_scalar::<NamedVecBackend>();
     let col = dist.collect_col(NamedCol::default(), &mut rng(), 4);
     assert_eq!(col.inner, vec![0, 1, 2, 3]);
 }
 
 #[test]
 fn test_named_scalar_collect_flat() {
-    let mut dist = make_named_scalar();
+    let mut dist = make_named_scalar::<NamedVecBackend>();
     let (col,) = dist.collect_flat(&mut rng(), 4);
     assert_eq!(col.name, "id");
     assert_eq!(col.inner, vec![0, 1, 2, 3]);
@@ -27,7 +27,7 @@ fn test_named_scalar_collect_flat() {
 
 #[test]
 fn test_named_tuple_collect_flat() {
-    let mut dist = make_named_tuple();
+    let mut dist = make_named_tuple::<NamedVecBackend>();
     let (c1, c2) = dist.collect_flat(&mut rng(), 3);
     assert_eq!(c1.name, "id");
     assert_eq!(c1.inner, vec![0, 1, 2]);
@@ -37,7 +37,7 @@ fn test_named_tuple_collect_flat() {
 
 #[test]
 fn test_named_tuple_collect_flat_into() {
-    let mut dist = make_named_tuple();
+    let mut dist = make_named_tuple::<NamedVecBackend>();
     let (c1, c2) = dist.collect_flat_into(
         (
             NamedCol {
@@ -60,7 +60,7 @@ fn test_named_tuple_collect_flat_into() {
 
 #[test]
 fn test_named_3tuple_collect_flat() {
-    let mut dist = make_named_3tuple();
+    let mut dist = make_named_3tuple::<NamedVecBackend>();
     let (c1, c2, c3) = dist.collect_flat(&mut rng(), 2);
     assert_eq!(c1.name, "id");
     assert_eq!(c1.inner, vec![0, 1]);
@@ -72,7 +72,7 @@ fn test_named_3tuple_collect_flat() {
 
 #[test]
 fn test_named_list_in_tuple() {
-    let mut dist = make_named_list();
+    let mut dist = make_named_list::<NamedVecBackend>();
     let (c1, c2) = dist.collect_flat(&mut rng(), 3);
     assert_eq!(c1.name, "id");
     assert_eq!(c1.inner, vec![1, 1, 1]);
@@ -83,7 +83,7 @@ fn test_named_list_in_tuple() {
 #[test]
 fn test_named_col_by_col_order() {
     let log: Log = Log::default();
-    let mut dist = make_named_tracked_tuple(&log);
+    let mut dist = make_named_tracked_tuple::<NamedVecBackend>(&log);
     let (c1, c2) = dist.collect_flat(&mut rng(), 3);
 
     assert_eq!(c1.name, "id");

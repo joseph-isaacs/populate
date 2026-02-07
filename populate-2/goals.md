@@ -367,19 +367,20 @@ For parallel generation to work, distributions must be **`Clone`**. Each thread 
 
 ## 11. Extensibility
 
-### 10a. Custom distributions
+
+### 11a. Custom distributions
 
 Users can implement `Distribution<B>` for custom types. The trait surface is minimal: `row_iter()`, `collect_into()`, (optionally `default_sink()`).
 
-### 10b. Custom backends
+### 11b. Custom backends
 
 Implement `Backend` with custom `Prim<T>` (and possibly `List<T>`, `Group<S>`) to target different storage formats.
 
-### 10c. Arity extensibility
+### 11c. Arity extensibility
 
 Current: 2, 3, 4-tuple Distribution impls, 1-5-tuple IntoHList/IntoTuple. Extendable via macros. HList-based approach means one recursive definition handles composition regardless of arity.
 
-### 10d. Planned distributions (from v1 FUTURE.md)
+### 11d. Planned distributions (from v1 FUTURE.md)
 
 | Distribution | Description |
 |-------------|-------------|
@@ -397,7 +398,7 @@ Current: 2, 3, 4-tuple Distribution impls, 1-5-tuple IntoHList/IntoTuple. Extend
 
 ---
 
-## 11. Composition rules summary
+## 12. Composition rules summary
 
 | Combinator | Value type | Sink type | Collection | Flattens? |
 |-----------|-----------|-----------|------------|-----------|
@@ -411,7 +412,7 @@ Current: 2, 3, 4-tuple Distribution impls, 1-5-tuple IntoHList/IntoTuple. Extend
 
 ---
 
-## 12. Key invariants
+## 13. Key invariants
 
 1. **HAppend associativity:** Nested and flat tuple `DefaultSink::Sink` resolve to the same HList type. This is why `Flatten::collect_into` can just delegate — the sinks are identical.
 

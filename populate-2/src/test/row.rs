@@ -33,7 +33,7 @@ fn test_tuple_collect() {
 
 #[test]
 fn test_map_collect() {
-    let mut dist = make_mapped();
+    let mut dist = make_mapped::<VecBackend>();
     let mut sink = Vec::new();
     collect(&mut dist, &mut sink, 5, &mut rng());
     assert_eq!(sink, vec![0, 2, 4, 6, 8]);
@@ -50,7 +50,7 @@ fn test_constant_row_iter() {
 
 #[test]
 fn test_3tuple_row_iter() {
-    let mut dist = make_3tuple();
+    let mut dist = make_3tuple::<VecBackend>();
     let mut iter = dist.row_iter();
     let mut rng = rng();
     let results: Vec<_> = (0..3).map(|_| iter.next(&mut rng)).collect();
@@ -77,7 +77,7 @@ fn test_tuple_row_iter() {
 
 #[test]
 fn test_map_row_iter() {
-    let mut dist = make_mapped();
+    let mut dist = make_mapped::<VecBackend>();
     let mut iter = dist.row_iter();
     let mut rng = rng();
     let results: Vec<_> = (0..5).map(|_| iter.next(&mut rng)).collect();

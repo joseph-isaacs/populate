@@ -22,6 +22,7 @@ struct Tracked<D> {
     log: Log,
 }
 
+#[derive(Clone)]
 struct TrackedIter<I> {
     name: &'static str,
     inner: I,

@@ -185,6 +185,20 @@ pub(crate) fn make_struct_list_in_tuple<B: Backend>()
     )
 }
 
+/// List with tracked element distributions — tracks per-element
+/// generation order inside each list.
+pub(crate) fn make_tracked_struct_list<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = Vec<(u32, u16)>> {
+    list(
+        constant(3usize),
+        (
+            tracked("U32", range(0u32, 1), log),
+            tracked("U16", range(0u16, 1), log),
+        ),
+    )
+}
+
 pub(crate) fn make_two_tracked_lists<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (Vec<i64>, Vec<i64>)> {

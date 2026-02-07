@@ -5,7 +5,8 @@
 use crate::test::Log;
 use crate::test::dist::{
     gen_list, gen_struct_list, make_list_in_tuple, make_scalar_list_scalar,
-    make_struct_list_in_tuple, make_tracked_list_in_tuple, make_two_tracked_lists,
+    make_struct_list_in_tuple, make_tracked_list_in_tuple, make_tracked_struct_list,
+    make_two_tracked_lists,
 };
 use crate::traits::{
     Distribution, DistributionExt, DistributionScalar, ListSink, SampleIter, Sink, VecBackend,
@@ -242,6 +243,34 @@ fn test_struct_list_in_tuple() {
             vec![(0, 0), (10, 1), (20, 2)],
             vec![(0, 0), (10, 1), (20, 2)],
             vec![(0, 0), (10, 1), (20, 2)],
+        ]
+    );
+}
+
+/// Verify element generation order INSIDE a list<(u32, u16)>.
+///
+/// List::collect_into uses row_iter() + clone for elements, so the tuple
+/// distribution's col-by-col collect_into is never called. Elements are
+/// generated interleaved: U32, U16, U32, U16, ... per list — NOT
+/// all U32s first then all U16s.
+#[test]
+fn test_struct_list_element_order_is_row_by_row() {
+    let log: Log = Log::default();
+    let mut dist = make_tracked_struct_list::<VecBackend>(&log);
+    let result = dist.collect_col(Vec::<Vec<(u32, u16)>>::new(), &mut rng(), 2);
+
+    // constant(3usize) → each list has 3 elements
+    assert_eq!(result[0], vec![(0, 0), (1, 1), (2, 2)]);
+    assert_eq!(result[1], vec![(0, 0), (1, 1), (2, 2)]);
+
+    // Key: within each list, elements are generated row-by-row (interleaved),
+    // NOT col-by-col. Each (u32, u16) pair is generated together.
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            // List 0: 3 elements, each generates U32 then U16
+            "U32", "U16", "U32", "U16", "U32", "U16", // List 1: same pattern
+            "U32", "U16", "U32", "U16", "U32", "U16",
         ]
     );
 }

@@ -38,8 +38,9 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
         ConstantIter { value: self.value }
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
-        self.collect_sink(sink, rng, n);
+    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+        self.collect_sink(&mut sink, rng, n);
+        sink
     }
 }
 
@@ -82,8 +83,9 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
         }
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
-        self.collect_sink(sink, rng, n);
+    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+        self.collect_sink(&mut sink, rng, n);
+        sink
     }
 }
 
@@ -139,15 +141,14 @@ where
 
     fn collect_into(
         &mut self,
-        sink: &mut SinkOf<B, Self::Value>,
+        sink: SinkOf<B, Self::Value>,
         rng: &mut impl Rng,
         n: usize,
-    ) {
-        let owned = std::mem::replace(sink, self.default_sink());
-        let (mut left, mut right) = <SinkOf<B, D1::Value>>::unappend(owned);
-        self.0.collect_into(&mut left, rng, n);
-        self.1.collect_into(&mut right, rng, n);
-        *sink = left.append(right);
+    ) -> SinkOf<B, Self::Value> {
+        let (left, right) = <SinkOf<B, D1::Value>>::unappend(sink);
+        let left = self.0.collect_into(left, rng, n);
+        let right = self.1.collect_into(right, rng, n);
+        left.append(right)
     }
 }
 
@@ -187,15 +188,14 @@ where
 
     fn collect_into(
         &mut self,
-        sink: &mut SinkOf<B, Self::Value>,
+        sink: SinkOf<B, Self::Value>,
         rng: &mut impl Rng,
         n: usize,
-    ) {
-        let owned = std::mem::replace(sink, self.default_sink());
-        let (mut left, mut right) = <SinkOf<B, D::Value>>::unappend(owned);
-        self.base.collect_into(&mut left, rng, n);
-        self.extra.collect_into(&mut right, rng, n);
-        *sink = left.append(right);
+    ) -> SinkOf<B, Self::Value> {
+        let (left, right) = <SinkOf<B, D::Value>>::unappend(sink);
+        let left = self.base.collect_into(left, rng, n);
+        let right = self.extra.collect_into(right, rng, n);
+        left.append(right)
     }
 }
 
@@ -278,24 +278,28 @@ impl<A, B, C, D, E> IntoCols for (A, B, C, D, E) {
 }
 
 // ============================================================================
-// Extend builder methods
+// DistBuilder — extend/append available on any distribution
 // ============================================================================
 
-impl<D, E> Extend<D, E> {
-    pub fn col<F>(self, f: F) -> Extend<Self, F> {
+pub trait DistBuilder: Sized {
+    /// Add flat columns from `f` into this chain.
+    fn extend<F>(self, f: F) -> Extend<Self, F> {
         Extend {
             base: self,
             extra: f,
         }
     }
 
-    pub fn nest<F>(self, f: F) -> Extend<Self, NestedDist<F>> {
+    /// Add `f` as a single nested struct column.
+    fn append<F>(self, f: F) -> Extend<Self, NestedDist<F>> {
         Extend {
             base: self,
             extra: NestedDist { inner: f },
         }
     }
 }
+
+impl<T> DistBuilder for T {}
 
 // ============================================================================
 // Map — row-by-row collection via Sink<Out>::push
@@ -350,8 +354,9 @@ where
         }
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
-        self.collect_sink(sink, rng, n);
+    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+        self.collect_sink(&mut sink, rng, n);
+        sink
     }
 }
 
@@ -405,7 +410,7 @@ where
         }
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
         let mut len_iter = self.lengths.row_iter();
         let elem_base = self.elements.row_iter();
         for _ in 0..n {
@@ -413,6 +418,7 @@ where
             let mut elems = elem_base.clone();
             sink.0.push_list(len, (0..len).map(|_| elems.next(rng)));
         }
+        sink
     }
 }
 
@@ -443,8 +449,8 @@ impl<B: Backend, D: Distribution<B>> Distribution<B> for Named<D> {
         sink
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
-        self.inner.collect_into(sink, rng, n);
+    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+        self.inner.collect_into(sink, rng, n)
     }
 }
 
@@ -484,8 +490,7 @@ where
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
-        let inner = sink.0.inner_mut();
-        self.inner.collect_into(inner, rng, n);
+    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+        HCons(sink.0.map_inner(|inner| self.inner.collect_into(inner, rng, n)), HNil)
     }
 }

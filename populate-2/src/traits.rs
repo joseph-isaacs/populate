@@ -11,7 +11,7 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 pub trait Backend: Sized {
     type Col<T>: Sink<T> + Default + NamedDefault;
     type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default + NamedDefault;
-    type Column<S>: GroupSink<Inner = S>;
+    type Column<S>: GroupSink<Inner = S> + Default + NamedDefault;
 }
 
 pub struct VecBackend;
@@ -146,25 +146,6 @@ impl<S: HAppend<R>, R> HAppend<R> for Transparent<S> {
     }
 }
 
-impl<S> GroupSink for NamedCol<S> {
-    type Inner = S;
-    fn new(name: &'static str, inner: S) -> Self {
-        NamedCol { name, inner }
-    }
-    fn into_inner(self) -> S {
-        self.inner
-    }
-    fn inner_mut(&mut self) -> &mut S {
-        &mut self.inner
-    }
-    fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
-        NamedCol {
-            name: self.name,
-            inner: f(self.inner),
-        }
-    }
-}
-
 // ============================================================================
 // Nested<V> — struct column value wrapper, prevents auto-flattening
 // ============================================================================
@@ -178,16 +159,13 @@ impl<V> ValueHList for Nested<V> {
     }
 }
 
-// Sink<Nested<V>> for Column wrappers — unwrap Nested, delegate to inner Sink<V>
-impl<V, S: Sink<V>> Sink<Nested<V>> for Transparent<S> {
+// Blanket Sink<Nested<V>> for any GroupSink whose inner implements Sink<V>
+impl<V, C: GroupSink> Sink<Nested<V>> for C
+where
+    C::Inner: Sink<V>,
+{
     fn push(&mut self, Nested(v): Nested<V>) {
-        self.0.push(v);
-    }
-}
-
-impl<V, S: Sink<V>> Sink<Nested<V>> for StructCol<S> {
-    fn push(&mut self, Nested(v): Nested<V>) {
-        self.inner.push(v);
+        self.inner_mut().push(v);
     }
 }
 
@@ -230,10 +208,7 @@ impl<B: Backend, T> SinkFor<B> for Vec<T> {
     type Sink = HCons<B::ListCol<T>, HNil>;
 }
 
-impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V>
-where
-    B::Column<V::Sink>: Sink<Nested<V>> + Default + NamedDefault,
-{
+impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V> {
     type Sink = HCons<B::Column<V::Sink>, HNil>;
 }
 
@@ -292,7 +267,7 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize);
+    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value>;
 
     /// Generic collection into any Sink. Used by tuple impls to fill view parts.
     fn collect_sink<S: Sink<Self::Value>>(&mut self, sink: &mut S, rng: &mut impl Rng, n: usize) {
@@ -642,9 +617,8 @@ impl<T> NamedDefault for DequeListSink<T> {
 
 pub trait DistributionExt<B: Backend>: Distribution<B> {
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
-        let mut sink = self.default_sink();
-        self.collect_into(&mut sink, rng, n);
-        sink
+        let sink = self.default_sink();
+        self.collect_into(sink, rng, n)
     }
 
     fn collect_flat(
@@ -663,9 +637,7 @@ pub trait DistributionExt<B: Backend>: Distribution<B> {
         T: IntoHList<HList = SinkOf<B, Self::Value>>,
         SinkOf<B, Self::Value>: IntoTuple<Tuple = T>,
     {
-        let mut hlist = sink.into_hlist();
-        self.collect_into(&mut hlist, rng, n);
-        hlist.into_tuple()
+        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
     }
 }
 
@@ -680,9 +652,7 @@ pub trait DistributionScalar<B: Backend>: Distribution<B> {
     where
         Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
     {
-        let mut hlist = HCons(sink, HNil);
-        self.collect_into(&mut hlist, rng, n);
-        hlist.0
+        self.collect_into(HCons(sink, HNil), rng, n).0
     }
 }
 

@@ -4,8 +4,8 @@
 
 use crate::test::Log;
 use crate::test::dist::{
-    make_named_3tuple, make_named_list, make_named_nested, make_named_scalar,
-    make_named_tracked_tuple, make_named_tuple,
+    make_named_3tuple, make_named_list, make_named_nested, make_named_nested_builder,
+    make_named_nested_concrete, make_named_scalar, make_named_tracked_tuple, make_named_tuple,
 };
 use crate::traits::{DistributionExt, DistributionScalar, IntoTuple, NamedCol, NamedVecBackend};
 use rand::rng;
@@ -139,6 +139,64 @@ fn test_named_nested_column() {
             "COL_AGE",
             "COL_AGE",
             "COL_AGE",
+        ]
+    );
+}
+
+#[test]
+fn test_named_nested_concrete() {
+    let log = Log::default();
+    let mut dist = make_named_nested_concrete(&log);
+    let (id, address, age) = dist.collect_flat(&mut rng(), 3);
+
+    assert_eq!(id.name, "id");
+    assert_eq!(id.inner, vec![0, 1, 2]);
+
+    assert_eq!(address.name, "address");
+    let (street, city) = address.inner.into_tuple();
+    assert_eq!(street.name, "street");
+    assert_eq!(street.inner, vec![100, 101, 102]);
+    assert_eq!(city.name, "city");
+    assert_eq!(city.inner, vec![1000, 1001, 1002]);
+
+    assert_eq!(age.name, "age");
+    assert_eq!(age.inner, vec![25, 25, 25]);
+}
+
+#[test]
+fn test_named_nested_builder() {
+    let log = Log::default();
+    let mut dist = make_named_nested_builder::<NamedVecBackend>(&log);
+    let (id, age, nested_col) = dist.collect_flat(&mut rng(), 3);
+
+    assert_eq!(id.name, "id");
+    assert_eq!(id.inner, vec![0, 1, 2]);
+
+    assert_eq!(age.name, "age");
+    assert_eq!(age.inner, vec![25, 25, 25]);
+
+    // .append() wraps via NestedDist — StructCol name is ""
+    let (street, city) = nested_col.inner.into_tuple();
+    assert_eq!(street.name, "street");
+    assert_eq!(street.inner, vec![100, 101, 102]);
+    assert_eq!(city.name, "city");
+    assert_eq!(city.inner, vec![1000, 1001, 1002]);
+
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            "COL_ID",
+            "COL_ID",
+            "COL_ID",
+            "COL_AGE",
+            "COL_AGE",
+            "COL_AGE",
+            "COL_STREET",
+            "COL_STREET",
+            "COL_STREET",
+            "COL_CITY",
+            "COL_CITY",
+            "COL_CITY",
         ]
     );
 }

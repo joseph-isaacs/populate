@@ -3,9 +3,11 @@
 // Sink type is derived from Value via SinkFor, so return types are clean.
 // ========================================================================
 
-use crate::dist::{cols, constant, list, map, named, nested, range};
+use crate::dist::{cols, constant, list, map, named, nested, range, DistBuilder};
 use crate::test::{Log, tracked};
-use crate::traits::{Backend, Distribution, NamedDefault, Nested, SampleIter, Sink, SinkOf};
+use crate::traits::{
+    Backend, Distribution, NamedDefault, NamedVecBackend, Nested, SampleIter, Sink, SinkOf,
+};
 
 // -- Scalar helpers --
 
@@ -226,12 +228,9 @@ where
     ))
 }
 
-pub(crate) fn make_named_nested2<B: Backend>(
+pub(crate) fn make_named_nested_concrete(
     log: &Log,
-) -> impl Distribution<B, Value = (i64, Nested<(i32, i32)>, i32)>
-where
-    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default + NamedDefault,
-{
+) -> impl Distribution<NamedVecBackend, Value = (i64, Nested<(i32, i32)>, i32)> {
     cols((
         named("id", tracked("COL_ID", range(0i64, 1), log)),
         named(
@@ -243,4 +242,18 @@ where
         ),
         named("age", tracked("COL_AGE", constant(25i32), log)),
     ))
+}
+
+pub(crate) fn make_named_nested_builder<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (i64, i32, Nested<(i32, i32)>)>
+where
+    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default + NamedDefault,
+{
+    named("id", tracked("COL_ID", range(0i64, 1), log))
+        .append((
+            named("street", tracked("COL_STREET", range(100i32, 1), log)),
+            named("city", tracked("COL_CITY", range(1000i32, 1), log)),
+        ))
+        .append(named("age", tracked("COL_AGE", constant(25i32), log)))
 }

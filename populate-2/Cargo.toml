@@ -5,9 +5,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-disjoint-list-skip = []
-
 [dependencies]
 rand = { workspace = true }
 

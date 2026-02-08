@@ -518,23 +518,10 @@ where
 pub struct List<L, E> {
     pub lengths: L,
     pub elements: E,
-    pub max_len: usize,
 }
 
 pub fn list<L, E>(lengths: L, elements: E) -> List<L, E> {
-    List {
-        lengths,
-        elements,
-        max_len: 0,
-    }
-}
-
-pub fn list_with_max_len<L, E>(max_len: usize, lengths: L, elements: E) -> List<L, E> {
-    List {
-        lengths,
-        elements,
-        max_len,
-    }
+    List { lengths, elements }
 }
 
 pub struct ListIter<L, E> {
@@ -575,17 +562,10 @@ where
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
-        #[cfg(not(feature = "disjoint-list-skip"))]
-        {
-            let mut len_iter = self.lengths.row_iter();
-            for _ in 0..n {
-                let len = len_iter.next(rng);
-                self.elements.skip(rng, len);
-            }
-        }
-        #[cfg(feature = "disjoint-list-skip")]
-        {
-            self.elements.skip(rng, self.max_len * n);
+        let mut len_iter = self.lengths.row_iter();
+        for _ in 0..n {
+            let len = len_iter.next(rng);
+            self.elements.skip(rng, len);
         }
         self.lengths.skip(rng, n);
     }

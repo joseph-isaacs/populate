@@ -1,6 +1,6 @@
 use crate::traits::{
     Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
-    Nested, SampleIter, Sink, SinkFor, SinkOf, ValueHList,
+    Nested, SampleIter, SinkFor, SinkOf, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -36,19 +36,6 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
 
     fn row_iter(&mut self) -> Self::Iter {
         ConstantIter { value: self.value }
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
     }
 }
 
@@ -89,19 +76,6 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
             current: self.start,
             step: self.step,
         }
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
     }
 }
 
@@ -155,23 +129,10 @@ where
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         self.0.default_sink().append(self.1.default_sink())
     }
-
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let (s1, s2) =
-            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(sink);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        s1.append(s2)
-    }
 }
 
 // ============================================================================
-// Tuple (D1, D2, D3) — col-by-col with auto-flatten
+// Tuple (D1, D2, D3) — auto-flatten
 // ============================================================================
 
 #[derive(Clone)]
@@ -241,29 +202,10 @@ where
             .append(self.1.default_sink())
             .append(self.2.default_sink())
     }
-
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        type S12<B, D1, D2> = <SinkOf<B, <D1 as Distribution<B>>::Value> as HAppend<
-            SinkOf<B, <D2 as Distribution<B>>::Value>,
-        >>::Output;
-        let (s12, s3) =
-            <S12<B, D1, D2> as HAppend<SinkOf<B, D3::Value>>>::unappend(sink);
-        let (s1, s2) =
-            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(s12);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        let s3 = self.2.collect_into(s3, rng, n);
-        s1.append(s2).append(s3)
-    }
 }
 
 // ============================================================================
-// Tuple (D1, D2, D3, D4) — col-by-col with auto-flatten
+// Tuple (D1, D2, D3, D4) — auto-flatten
 // ============================================================================
 
 #[derive(Clone)]
@@ -363,30 +305,6 @@ where
             .append(self.2.default_sink())
             .append(self.3.default_sink())
     }
-
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        type S12<B, D1, D2> = <SinkOf<B, <D1 as Distribution<B>>::Value> as HAppend<
-            SinkOf<B, <D2 as Distribution<B>>::Value>,
-        >>::Output;
-        type S123<B, D1, D2, D3> =
-            <S12<B, D1, D2> as HAppend<SinkOf<B, <D3 as Distribution<B>>::Value>>>::Output;
-        let (s123, s4) =
-            <S123<B, D1, D2, D3> as HAppend<SinkOf<B, D4::Value>>>::unappend(sink);
-        let (s12, s3) =
-            <S12<B, D1, D2> as HAppend<SinkOf<B, D3::Value>>>::unappend(s123);
-        let (s1, s2) =
-            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(s12);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        let s3 = self.2.collect_into(s3, rng, n);
-        let s4 = self.3.collect_into(s4, rng, n);
-        s1.append(s2).append(s3).append(s4)
-    }
 }
 
 // ============================================================================
@@ -441,19 +359,6 @@ where
             f: self.f.clone(),
         }
     }
-
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
-    }
 }
 
 // ============================================================================
@@ -495,7 +400,6 @@ where
     E::Iter: Clone,
     Vec<E::Value>: SinkFor<B>,
     SinkOf<B, Vec<E::Value>>: ListSink<E::Value, Inner = SinkOf<B, E::Value>>,
-    SinkOf<B, E::Value>: Default,
 {
     type Value = Vec<E::Value>;
     type Iter = ListIter<L::Iter, E::Iter>;
@@ -507,18 +411,13 @@ where
         }
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
         let mut len_iter = self.lengths.row_iter();
         for _ in 0..n {
             let len = len_iter.next(rng);
-            sink.collect_list(|inner| self.elements.collect_into(inner, rng, len));
+            self.elements.collect_into(sink.inner(), rng, len);
+            sink.end_list();
         }
-        sink
     }
 }
 
@@ -552,12 +451,7 @@ where
         sink
     }
 
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
         self.inner.collect_into(sink, rng, n)
     }
 }
@@ -598,14 +492,7 @@ where
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
     }
 
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value> {
-        let column = sink.0;
-        let filled = column.map_inner(|inner| self.inner.collect_into(inner, rng, n));
-        HCons(filled, HNil)
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        self.inner.collect_into(sink.0.inner_mut(), rng, n)
     }
 }

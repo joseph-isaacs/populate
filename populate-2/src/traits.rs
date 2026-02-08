@@ -68,6 +68,9 @@ impl<S> GroupSink for StructCol<S> {
     fn into_inner(self) -> S {
         self.inner
     }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         StructCol {
             name: self.name,
@@ -103,6 +106,7 @@ pub trait GroupSink: Sized {
     type Inner;
     fn new(name: &'static str, inner: Self::Inner) -> Self;
     fn into_inner(self) -> Self::Inner;
+    fn inner_mut(&mut self) -> &mut Self::Inner;
     fn map_inner(self, f: impl FnOnce(Self::Inner) -> Self::Inner) -> Self;
 }
 
@@ -125,6 +129,9 @@ impl<S> GroupSink for Transparent<S> {
     }
     fn into_inner(self) -> S {
         self.0
+    }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.0
     }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         Transparent(f(self.0))
@@ -149,6 +156,9 @@ impl<S> GroupSink for NamedCol<S> {
     }
     fn into_inner(self) -> S {
         self.inner
+    }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
     }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         NamedCol {
@@ -287,12 +297,12 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Value>;
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        let mut iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(iter.next(rng));
+        }
+    }
 }
 
 // ============================================================================
@@ -497,14 +507,6 @@ pub trait ListSink<T> {
         self.inner().push_n(elems);
         self.end_list();
     }
-    fn collect_list(&mut self, f: impl FnOnce(Self::Inner) -> Self::Inner)
-    where
-        Self::Inner: Default,
-    {
-        let inner = std::mem::take(self.inner());
-        *self.inner() = f(inner);
-        self.end_list();
-    }
 }
 
 impl<T, Inner: Sink<T> + SinkLen, Offsets: Sink<usize>> ListSink<T>
@@ -604,8 +606,9 @@ impl<Inner: Default, Offsets: Default + Sink<usize>> NamedDefault
 pub trait DistributionExt<B: Backend>: Distribution<B> {
     /// Collect using default_sink, return native Sink type (HList)
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
-        let sink = self.default_sink();
-        self.collect_into(sink, rng, n)
+        let mut sink = self.default_sink();
+        self.collect_into(&mut sink, rng, n);
+        sink
     }
 
     /// Collect using default_sink, return flat tuple
@@ -626,7 +629,9 @@ pub trait DistributionExt<B: Backend>: Distribution<B> {
         T: IntoHList<HList = SinkOf<B, Self::Value>>,
         SinkOf<B, Self::Value>: IntoTuple<Tuple = T>,
     {
-        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
+        let mut hlist = sink.into_hlist();
+        self.collect_into(&mut hlist, rng, n);
+        hlist.into_tuple()
     }
 }
 
@@ -652,7 +657,9 @@ pub trait DistributionScalar<B: Backend>: Distribution<B> + DistributionExt<B> {
     where
         Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
     {
-        self.collect_into(HCons(sink, HNil), rng, n).0
+        let mut hlist = HCons(sink, HNil);
+        self.collect_into(&mut hlist, rng, n);
+        hlist.0
     }
 }
 

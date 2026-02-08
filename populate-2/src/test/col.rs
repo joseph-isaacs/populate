@@ -29,10 +29,10 @@ fn test_col_by_col_order() {
 
     assert_eq!(col1, vec![0, 1, 2]);
     assert_eq!(col2, vec![100, 101, 102]);
-    // Row-by-row: COL1, COL2 alternating
+    // Col-by-col: all COL1 then all COL2
     assert_eq!(
         *log.borrow(),
-        vec!["COL1", "COL2", "COL1", "COL2", "COL1", "COL2"]
+        vec!["COL1", "COL1", "COL1", "COL2", "COL2", "COL2"]
     );
 }
 
@@ -67,7 +67,7 @@ fn test_3tuple_col_by_col_order() {
     assert_eq!(col3, vec![1000, 1001]);
     assert_eq!(
         *log.borrow(),
-        vec!["COL1", "COL2", "COL3", "COL1", "COL2", "COL3"]
+        vec!["COL1", "COL1", "COL2", "COL2", "COL3", "COL3"]
     );
 }
 
@@ -115,7 +115,7 @@ fn test_4tuple_col_by_col_order() {
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL1", "COL2", "COL3", "COL4", "COL1", "COL2", "COL3", "COL4"
+            "COL1", "COL1", "COL2", "COL2", "COL3", "COL3", "COL4", "COL4"
         ]
     );
 }
@@ -156,8 +156,8 @@ fn test_map_in_tuple_order() {
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL1", "MAP_SRC", "COL3", // row-by-row
-            "COL1", "MAP_SRC", "COL3", "COL1", "MAP_SRC", "COL3",
+            "COL1", "COL1", "COL1", // col-by-col
+            "MAP_SRC", "MAP_SRC", "MAP_SRC", "COL3", "COL3", "COL3",
         ]
     );
 }
@@ -204,12 +204,12 @@ fn test_map_tuple_auto_flatten_order() {
         3,
     );
 
-    // Row-by-row: COL1, MAP_A, MAP_B, COL4 per row
+    // Col-by-col: COL1 all, then Map (row-by-row: MAP_A, MAP_B) all, then COL4 all
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL1", "MAP_A", "MAP_B", "COL4", "COL1", "MAP_A", "MAP_B", "COL4", "COL1", "MAP_A",
-            "MAP_B", "COL4",
+            "COL1", "COL1", "COL1", "MAP_A", "MAP_B", "MAP_A", "MAP_B", "MAP_A", "MAP_B", "COL4",
+            "COL4", "COL4",
         ]
     );
 }
@@ -239,11 +239,11 @@ fn test_independent_tuple_auto_flatten() {
     assert_eq!(c3, vec![1000, 1001, 1002]);
     assert_eq!(c4, vec![0, 5, 10]);
 
-    // Row-by-row
+    // Col-by-col (nested tuples also col-by-col)
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL1", "COL2", "COL3", "COL4", "COL1", "COL2", "COL3", "COL4", "COL1", "COL2", "COL3",
+            "COL1", "COL1", "COL1", "COL2", "COL2", "COL2", "COL3", "COL3", "COL3", "COL4", "COL4",
             "COL4",
         ]
     );

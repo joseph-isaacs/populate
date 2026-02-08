@@ -92,10 +92,10 @@ fn test_named_col_by_col_order() {
     assert_eq!(c1.inner, vec![0, 1, 2]);
     assert_eq!(c2.name, "val");
     assert_eq!(c2.inner, vec![100, 101, 102]);
-    // Row-by-row: COL1, COL2 alternating
+    // Col-by-col: all COL1 then all COL2
     assert_eq!(
         *log.borrow(),
-        vec!["COL1", "COL2", "COL1", "COL2", "COL1", "COL2"]
+        vec!["COL1", "COL1", "COL1", "COL2", "COL2", "COL2"]
     );
 }
 
@@ -125,21 +125,21 @@ fn test_named_nested_column() {
     assert_eq!(age.name, "age");
     assert_eq!(age.inner, vec![25, 25, 25]);
 
-    // Row-by-row: each row fills all columns before the next
+    // Col-by-col: each column filled completely before the next
     assert_eq!(
         *log.borrow(),
         vec![
             "COL_ID",
-            "COL_STREET",
-            "COL_CITY",
-            "COL_AGE",
+            "COL_ID",
             "COL_ID",
             "COL_STREET",
-            "COL_CITY",
-            "COL_AGE",
-            "COL_ID",
+            "COL_STREET",
             "COL_STREET",
             "COL_CITY",
+            "COL_CITY",
+            "COL_CITY",
+            "COL_AGE",
+            "COL_AGE",
             "COL_AGE",
         ]
     );

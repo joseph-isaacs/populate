@@ -57,10 +57,10 @@ fn test_tracked_list_in_tuple() {
     assert_eq!(scalars, vec![42, 42, 42]);
     assert_eq!(values, vec![0, 1, 0, 1, 0, 1]);
     assert_eq!(offsets, vec![0, 2, 4, 6]);
-    // Row-by-row at tuple level: COL1, LIST alternating
+    // Col-by-col at tuple level: all COL1 then all LIST
     assert_eq!(
         *log.borrow(),
-        vec!["COL1", "LIST", "COL1", "LIST", "COL1", "LIST"]
+        vec!["COL1", "COL1", "COL1", "LIST", "LIST", "LIST"]
     );
 }
 
@@ -122,13 +122,13 @@ fn test_tracked_list_of_struct_element_order() {
     assert_eq!(offsets, vec![0, 2, 4, 6]);
 
     // Element generation order: within each list, elements are generated
-    // row-by-row (u32, u64 per element), across 3 lists of 2 elements
+    // col-by-col (all u32 then all u64), across 3 lists of 2 elements
     assert_eq!(
         *log.borrow(),
         vec![
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 0: row-by-row
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 1
-            "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // list 2
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 0: col-by-col
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 1
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 2
         ]
     );
 }
@@ -146,13 +146,13 @@ fn test_tracked_list_of_struct_in_tuple_order() {
     assert_eq!(col2, vec![100, 110, 100, 110]); // u64 column
     assert_eq!(offsets, vec![0, 2, 4]);
 
-    // Row-by-row at top level: SCALAR and list interleaved, elements row-by-row
+    // Col-by-col at top level: all SCALAR, then list elements col-by-col per list
     assert_eq!(
         *log.borrow(),
         vec![
-            "SCALAR", "ELEM_U32", "ELEM_U64", "ELEM_U32",
-            "ELEM_U64", // row 0: scalar + list elements
-            "SCALAR", "ELEM_U32", "ELEM_U64", "ELEM_U32", "ELEM_U64", // row 1
+            "SCALAR", "SCALAR", // col-by-col: scalars first
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 0: col-by-col
+            "ELEM_U32", "ELEM_U32", "ELEM_U64", "ELEM_U64", // list 1
         ]
     );
 }

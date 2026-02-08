@@ -4,6 +4,7 @@ use crate::traits::{
 };
 use rand::Rng;
 use std::marker::PhantomData;
+use std::mem;
 use std::ops::Add;
 
 // ============================================================================
@@ -116,6 +117,7 @@ where
     <<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
         as IntoTuple>::Tuple:
         SinkFor<B, Sink = <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output>,
+    <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output: Default,
 {
     type Value = <<<D1::Value as ValueHList>::HList as HAppend<
         <D2::Value as ValueHList>::HList,
@@ -128,6 +130,15 @@ where
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
         self.0.default_sink().append(self.1.default_sink())
+    }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        let combined = mem::take(sink);
+        let (mut s1, mut s2) =
+            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(combined);
+        self.0.collect_into(&mut s1, rng, n);
+        self.1.collect_into(&mut s2, rng, n);
+        *sink = s1.append(s2);
     }
 }
 
@@ -185,6 +196,9 @@ where
                 SinkOf<B, D3::Value>,
             >>::Output,
         >,
+    <<SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output as HAppend<
+        SinkOf<B, D3::Value>,
+    >>::Output: Default,
 {
     type Value = <<<<D1::Value as ValueHList>::HList as HAppend<
         <D2::Value as ValueHList>::HList,
@@ -201,6 +215,20 @@ where
             .default_sink()
             .append(self.1.default_sink())
             .append(self.2.default_sink())
+    }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        let combined = mem::take(sink);
+        let (left12, mut s3) =
+            <<SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output as HAppend<
+                SinkOf<B, D3::Value>,
+            >>::unappend(combined);
+        let (mut s1, mut s2) =
+            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(left12);
+        self.0.collect_into(&mut s1, rng, n);
+        self.1.collect_into(&mut s2, rng, n);
+        self.2.collect_into(&mut s3, rng, n);
+        *sink = s1.append(s2).append(s3);
     }
 }
 
@@ -281,6 +309,9 @@ where
                 SinkOf<B, D3::Value>,
             >>::Output as HAppend<SinkOf<B, D4::Value>>>::Output,
         >,
+    <<<SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output as HAppend<
+        SinkOf<B, D3::Value>,
+    >>::Output as HAppend<SinkOf<B, D4::Value>>>::Output: Default,
 {
     type Value = <<<<<D1::Value as ValueHList>::HList as HAppend<
         <D2::Value as ValueHList>::HList,
@@ -304,6 +335,25 @@ where
             .append(self.1.default_sink())
             .append(self.2.default_sink())
             .append(self.3.default_sink())
+    }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        let combined = mem::take(sink);
+        let (left123, mut s4) = <<<SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output
+            as HAppend<SinkOf<B, D3::Value>>>::Output as HAppend<
+            SinkOf<B, D4::Value>,
+        >>::unappend(combined);
+        let (left12, mut s3) =
+            <<SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::Output as HAppend<
+                SinkOf<B, D3::Value>,
+            >>::unappend(left123);
+        let (mut s1, mut s2) =
+            <SinkOf<B, D1::Value> as HAppend<SinkOf<B, D2::Value>>>::unappend(left12);
+        self.0.collect_into(&mut s1, rng, n);
+        self.1.collect_into(&mut s2, rng, n);
+        self.2.collect_into(&mut s3, rng, n);
+        self.3.collect_into(&mut s4, rng, n);
+        *sink = s1.append(s2).append(s3).append(s4);
     }
 }
 

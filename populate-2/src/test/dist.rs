@@ -6,7 +6,8 @@
 use crate::dist::{constant, list, map, named, nested, range};
 use crate::test::{Log, tracked};
 use crate::traits::{
-    Backend, Distribution, HCons, HNil, NamedDefault, Nested, SampleIter, Sink, SinkFor, SinkOf,
+    Backend, Distribution, HCons, HNil, HasView, NamedDefault, Nested, SampleIter, Sink, SinkFor,
+    SinkOf, ViewPush,
 };
 
 // -- Scalar helpers --
@@ -234,7 +235,7 @@ pub(crate) fn make_named_nested<B: Backend>(
 where
     SinkOf<B, i64>: NamedDefault,
     SinkOf<B, i32>: NamedDefault,
-    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default,
+    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + HasView + ViewPush<Nested<(i32, i32)>> + Default,
     Nested<(i32, i32)>: SinkFor<B, Sink = HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>>,
     HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>: NamedDefault,
 {

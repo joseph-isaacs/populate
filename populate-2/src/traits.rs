@@ -2,15 +2,17 @@ use rand::Rng;
 use std::collections::VecDeque;
 
 // Re-export HList types so existing `use crate::traits::{HCons, ...}` keeps working
-pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
+pub use crate::hlist::{
+    HAppend, HCons, HNil, HasView, IntoHList, IntoTuple, ValueHList, ViewPush, ViewSplit,
+};
 
 // ============================================================================
 // Backend — selects concrete sink types for each column kind
 // ============================================================================
 
 pub trait Backend: Sized {
-    type Col<T>: Sink<T> + Default;
-    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default;
+    type Col<T>: Sink<T> + HasView + ViewPush<T> + Default;
+    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + HasView + ViewPush<Vec<T>> + Default;
     type Column<S>: GroupSink<Inner = S>;
 }
 
@@ -65,6 +67,9 @@ impl<S> GroupSink for StructCol<S> {
     fn into_inner(self) -> S {
         self.inner
     }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
+    }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         StructCol {
             name: self.name,
@@ -100,6 +105,7 @@ pub trait GroupSink: Sized {
     type Inner;
     fn new(name: &'static str, inner: Self::Inner) -> Self;
     fn into_inner(self) -> Self::Inner;
+    fn inner_mut(&mut self) -> &mut Self::Inner;
     fn map_inner(self, f: impl FnOnce(Self::Inner) -> Self::Inner) -> Self;
 }
 
@@ -122,6 +128,9 @@ impl<S> GroupSink for Transparent<S> {
     }
     fn into_inner(self) -> S {
         self.0
+    }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.0
     }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         Transparent(f(self.0))
@@ -146,6 +155,9 @@ impl<S> GroupSink for NamedCol<S> {
     }
     fn into_inner(self) -> S {
         self.inner
+    }
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.inner
     }
     fn map_inner(self, f: impl FnOnce(S) -> S) -> Self {
         NamedCol {
@@ -181,13 +193,32 @@ impl<V, S: Sink<V>> Sink<Nested<V>> for StructCol<S> {
     }
 }
 
+// ViewPush<Nested<V>> for Column wrappers
+impl<V, S: Sink<V> + HasView> ViewPush<Nested<V>> for Transparent<S> {
+    fn view_push<'a>(view: &mut &'a mut Self, Nested(v): Nested<V>)
+    where
+        Self: 'a,
+    {
+        view.0.push(v);
+    }
+}
+
+impl<V, S: Sink<V> + HasView> ViewPush<Nested<V>> for StructCol<S> {
+    fn view_push<'a>(view: &mut &'a mut Self, Nested(v): Nested<V>)
+    where
+        Self: 'a,
+    {
+        view.inner.push(v);
+    }
+}
+
 // ============================================================================
 // SinkFor<B> — maps (value type, backend) to HList sink type
 // Replaces DefaultSink. Only required by Map (not a bound on Distribution::Value).
 // ============================================================================
 
 pub trait SinkFor<B: Backend>: Sized {
-    type Sink: Sink<Self> + Default;
+    type Sink: Sink<Self> + HasView + ViewPush<Self> + Default;
 }
 
 macro_rules! for_all_primitives {
@@ -222,7 +253,7 @@ impl<B: Backend, T> SinkFor<B> for Vec<T> {
 
 impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V>
 where
-    B::Column<V::Sink>: Sink<Nested<V>> + Default,
+    B::Column<V::Sink>: Sink<Nested<V>> + HasView + ViewPush<Nested<V>> + Default,
 {
     type Sink = HCons<B::Column<V::Sink>, HNil>;
 }
@@ -232,7 +263,7 @@ where
 impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>> SinkFor<B> for (A, C)
 where
     A::Sink: HAppend<C::Sink>,
-    <A::Sink as HAppend<C::Sink>>::Output: Sink<(A, C)> + Default,
+    <A::Sink as HAppend<C::Sink>>::Output: Sink<(A, C)> + HasView + ViewPush<(A, C)> + Default,
 {
     type Sink = <A::Sink as HAppend<C::Sink>>::Output;
 }
@@ -241,7 +272,8 @@ impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>, E: SinkFor<B>> SinkFor<B> for (A,
 where
     A::Sink: HAppend<C::Sink>,
     <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
-    <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output: Sink<(A, C, E)> + Default,
+    <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output:
+        Sink<(A, C, E)> + HasView + ViewPush<(A, C, E)> + Default,
 {
     type Sink = <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output;
 }
@@ -253,7 +285,7 @@ where
     <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
     <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output: HAppend<G::Sink>,
     <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<G::Sink>>::Output:
-        Sink<(A, C, E, G)> + Default,
+        Sink<(A, C, E, G)> + HasView + ViewPush<(A, C, E, G)> + Default,
 {
     type Sink = <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<
         G::Sink,
@@ -283,10 +315,38 @@ pub trait Distribution<B: Backend> {
 
     fn collect_into(
         &mut self,
-        sink: SinkOf<B, Self::Value>,
+        sink: &mut SinkOf<B, Self::Value>,
         rng: &mut impl Rng,
         n: usize,
-    ) -> SinkOf<B, Self::Value>;
+    ) {
+        self.collect_sink(sink, rng, n);
+    }
+
+    /// Generic collection into any Sink. Used by tuple impls to fill view parts.
+    fn collect_sink<S: Sink<Self::Value>>(
+        &mut self,
+        sink: &mut S,
+        rng: &mut impl Rng,
+        n: usize,
+    ) {
+        let mut iter = self.row_iter();
+        for _ in 0..n {
+            sink.push(iter.next(rng));
+        }
+    }
+
+    /// Collection through a view. S is the owned sink type (used for ViewPush dispatch).
+    fn collect_view<'a, S: ViewPush<Self::Value> + 'a>(
+        &mut self,
+        view: &mut S::View<'a>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) {
+        let mut iter = self.row_iter();
+        for _ in 0..n {
+            S::view_push(view, iter.next(rng));
+        }
+    }
 }
 
 // ============================================================================
@@ -398,6 +458,155 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 }
 
 // ============================================================================
+// HasView impls for leaf sink types — each returns &mut Self
+// ============================================================================
+
+impl<T> HasView for Vec<T> {
+    type View<'a> = &'a mut Self where T: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<T> HasView for VecDeque<T> {
+    type View<'a> = &'a mut Self where T: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<S: HasView> HasView for NamedCol<S> {
+    type View<'a> = &'a mut Self where S: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<S: HasView> HasView for Transparent<S> {
+    type View<'a> = &'a mut Self where S: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<S: HasView> HasView for StructCol<S> {
+    type View<'a> = &'a mut Self where S: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<T> HasView for VecListSink<T> {
+    type View<'a> = &'a mut Self where T: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+impl<T> HasView for DequeListSink<T> {
+    type View<'a> = &'a mut Self where T: 'a;
+    fn view(&mut self) -> &mut Self { self }
+}
+
+// ============================================================================
+// ViewPush impls for leaf sink types — push through &mut Self view
+// ============================================================================
+
+impl<T> ViewPush<T> for Vec<T> {
+    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
+        (*view).push(value);
+    }
+}
+
+impl<T> ViewPush<T> for VecDeque<T> {
+    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
+        (*view).push_back(value);
+    }
+}
+
+impl<T, S: Sink<T> + HasView> ViewPush<T> for NamedCol<S> {
+    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
+        view.inner.push(value);
+    }
+}
+
+impl<T> ViewPush<Vec<T>> for VecListSink<T> {
+    fn view_push<'a>(view: &mut &'a mut Self, value: Vec<T>) where Self: 'a {
+        Sink::push(*view, value);
+    }
+}
+
+impl<T> ViewPush<Vec<T>> for DequeListSink<T> {
+    fn view_push<'a>(view: &mut &'a mut Self, value: Vec<T>) where Self: 'a {
+        Sink::push(*view, value);
+    }
+}
+
+// HCons ViewPush impls — mirror HCons Sink impls
+
+impl<T, S: ViewPush<T>> ViewPush<T> for HCons<S, HNil> {
+    fn view_push<'a>(view: &mut HCons<S::View<'a>, HNil>, value: T)
+    where
+        S: 'a,
+    {
+        S::view_push(&mut view.0, value);
+    }
+}
+
+impl<A, B, SA: ViewPush<A>, SB: ViewPush<B>> ViewPush<(A, B)> for HCons<SA, HCons<SB, HNil>> {
+    fn view_push<'a>(
+        view: &mut HCons<SA::View<'a>, HCons<SB::View<'a>, HNil>>,
+        (a, b): (A, B),
+    ) where
+        SA: 'a,
+        SB: 'a,
+    {
+        SA::view_push(&mut view.0, a);
+        SB::view_push(&mut view.1 .0, b);
+    }
+}
+
+impl<A, B, C, SA: ViewPush<A>, SB: ViewPush<B>, SC: ViewPush<C>> ViewPush<(A, B, C)>
+    for HCons<SA, HCons<SB, HCons<SC, HNil>>>
+{
+    fn view_push<'a>(
+        view: &mut HCons<SA::View<'a>, HCons<SB::View<'a>, HCons<SC::View<'a>, HNil>>>,
+        (a, b, c): (A, B, C),
+    ) where
+        SA: 'a,
+        SB: 'a,
+        SC: 'a,
+    {
+        SA::view_push(&mut view.0, a);
+        SB::view_push(&mut view.1 .0, b);
+        SC::view_push(&mut view.1 .1 .0, c);
+    }
+}
+
+impl<A, B, C, D, SA: ViewPush<A>, SB: ViewPush<B>, SC: ViewPush<C>, SD: ViewPush<D>>
+    ViewPush<(A, B, C, D)> for HCons<SA, HCons<SB, HCons<SC, HCons<SD, HNil>>>>
+{
+    fn view_push<'a>(
+        view: &mut HCons<
+            SA::View<'a>,
+            HCons<SB::View<'a>, HCons<SC::View<'a>, HCons<SD::View<'a>, HNil>>>,
+        >,
+        (a, b, c, d): (A, B, C, D),
+    ) where
+        SA: 'a,
+        SB: 'a,
+        SC: 'a,
+        SD: 'a,
+    {
+        SA::view_push(&mut view.0, a);
+        SB::view_push(&mut view.1 .0, b);
+        SC::view_push(&mut view.1 .1 .0, c);
+        SD::view_push(&mut view.1 .1 .1 .0, d);
+    }
+}
+
+// ============================================================================
+// Blanket Sink and ListSink for &mut S
+// ============================================================================
+
+impl<T, S: Sink<T>> Sink<T> for &mut S {
+    fn push(&mut self, value: T) {
+        (*self).push(value);
+    }
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        (*self).push_n(value);
+    }
+}
+
+// ============================================================================
 // ListSink<T> — sink trait for list/array columns
 // ============================================================================
 
@@ -409,6 +618,12 @@ pub trait ListSink<T> {
 impl<T, S: ListSink<T>> ListSink<T> for HCons<S, HNil> {
     fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
         self.0.push_list(len, elems);
+    }
+}
+
+impl<T, S: ListSink<T>> ListSink<T> for &mut S {
+    fn push_list(&mut self, len: usize, elems: impl Iterator<Item = T>) {
+        (*self).push_list(len, elems);
     }
 }
 
@@ -556,13 +771,12 @@ impl<S: Default> NamedDefault for HCons<StructCol<S>, HNil> {
 // ============================================================================
 
 pub trait DistributionExt<B: Backend>: Distribution<B> {
-    /// Collect using default_sink, return native Sink type (HList)
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
-        let sink = self.default_sink();
-        self.collect_into(sink, rng, n)
+        let mut sink = self.default_sink();
+        self.collect_into(&mut sink, rng, n);
+        sink
     }
 
-    /// Collect using default_sink, return flat tuple
     fn collect_flat(
         &mut self,
         rng: &mut impl Rng,
@@ -574,13 +788,14 @@ pub trait DistributionExt<B: Backend>: Distribution<B> {
         self.collect(rng, n).into_tuple()
     }
 
-    /// Collect with explicit sink tuple, return flat tuple
     fn collect_flat_into<T>(&mut self, sink: T, rng: &mut impl Rng, n: usize) -> T
     where
         T: IntoHList<HList = SinkOf<B, Self::Value>>,
         SinkOf<B, Self::Value>: IntoTuple<Tuple = T>,
     {
-        self.collect_into(sink.into_hlist(), rng, n).into_tuple()
+        let mut hlist = sink.into_hlist();
+        self.collect_into(&mut hlist, rng, n);
+        hlist.into_tuple()
     }
 }
 
@@ -594,8 +809,11 @@ pub trait DistributionScalar<B: Backend>: Distribution<B> {
     fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
     where
         Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
+        S: HasView,
     {
-        self.collect_into(HCons(sink, HNil), rng, n).0
+        let mut hlist = HCons(sink, HNil);
+        self.collect_into(&mut hlist, rng, n);
+        hlist.0
     }
 }
 

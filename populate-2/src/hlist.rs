@@ -43,6 +43,63 @@ impl<H, T: HAppend<R>, R> HAppend<R> for HCons<H, T> {
 }
 
 // ============================================================================
+// HasView — owned sink → HList of &mut refs for in-place mutation
+// ============================================================================
+
+pub trait HasView {
+    type View<'a> where Self: 'a;
+    fn view(&mut self) -> Self::View<'_>;
+}
+
+impl HasView for HNil {
+    type View<'a> = HNil;
+    fn view(&mut self) -> HNil { HNil }
+}
+
+impl<H: HasView, T: HasView> HasView for HCons<H, T> {
+    type View<'a> = HCons<H::View<'a>, T::View<'a>> where H: 'a, T: 'a;
+    fn view(&mut self) -> Self::View<'_> {
+        HCons(self.0.view(), self.1.view())
+    }
+}
+
+// ============================================================================
+// ViewPush — push a value through a view without needing Sink on View
+// ============================================================================
+
+pub trait ViewPush<T>: HasView {
+    fn view_push<'a>(view: &mut Self::View<'a>, value: T)
+    where
+        Self: 'a;
+}
+
+// ============================================================================
+// ViewSplit — split &mut Combined into (Left::View, &mut Right)
+// ============================================================================
+
+pub trait ViewSplit<R>: HAppend<R> + HasView {
+    fn view_split(combined: &mut <Self as HAppend<R>>::Output) -> (Self::View<'_>, &mut R)
+    where
+        Self: Sized;
+}
+
+impl<R> ViewSplit<R> for HNil {
+    fn view_split(combined: &mut R) -> (HNil, &mut R) {
+        (HNil, combined)
+    }
+}
+
+impl<H: HasView, T: ViewSplit<R>, R> ViewSplit<R> for HCons<H, T> {
+    fn view_split(
+        combined: &mut HCons<H, <T as HAppend<R>>::Output>,
+    ) -> (HCons<H::View<'_>, T::View<'_>>, &mut R) {
+        let (t_view, r) = T::view_split(&mut combined.1);
+        let h_view = combined.0.view();
+        (HCons(h_view, t_view), r)
+    }
+}
+
+// ============================================================================
 // IntoHList / IntoTuple — conversion between flat tuples and HLists
 // ============================================================================
 

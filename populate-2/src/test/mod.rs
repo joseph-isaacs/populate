@@ -57,15 +57,14 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: SinkOf<B, Self::Value>,
+        sink: &mut SinkOf<B, Self::Value>,
         rng: &mut impl rand::Rng,
         n: usize,
-    ) -> SinkOf<B, Self::Value> {
+    ) {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
         }
-        sink
     }
 }
 

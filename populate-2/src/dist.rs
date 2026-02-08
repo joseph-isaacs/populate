@@ -562,10 +562,13 @@ where
     }
 
     fn skip(&mut self, rng: &mut impl Rng, n: usize) {
-        let mut len_iter = self.lengths.row_iter();
-        for _ in 0..n {
-            let len = len_iter.next(rng);
-            self.elements.skip(rng, len);
+        #[cfg(not(feature = "disjoint-list-skip"))]
+        {
+            let mut len_iter = self.lengths.row_iter();
+            for _ in 0..n {
+                let len = len_iter.next(rng);
+                self.elements.skip(rng, len);
+            }
         }
         self.lengths.skip(rng, n);
     }

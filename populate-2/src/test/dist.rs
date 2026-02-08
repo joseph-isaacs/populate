@@ -6,7 +6,7 @@
 use crate::dist::{DistBuilder, cols, constant, list, map, named, nested, range};
 use crate::test::{Log, tracked};
 use crate::traits::{
-    Backend, Distribution, NamedDefault, NamedVecBackend, Nested, SampleIter, Sink, SinkOf,
+    Backend, Distribution, NamedVecBackend, Nested, SampleIter, Sink,
 };
 
 // -- Scalar helpers --

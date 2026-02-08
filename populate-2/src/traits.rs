@@ -2,17 +2,15 @@ use rand::Rng;
 use std::collections::VecDeque;
 
 // Re-export HList types so existing `use crate::traits::{HCons, ...}` keeps working
-pub use crate::hlist::{
-    HAppend, HCons, HNil, HasView, IntoHList, IntoTuple, ValueHList, ViewPush, ViewSplit,
-};
+pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 
 // ============================================================================
 // Backend — selects concrete sink types for each column kind
 // ============================================================================
 
 pub trait Backend: Sized {
-    type Col<T>: Sink<T> + HasView + ViewPush<T> + Default;
-    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + HasView + ViewPush<Vec<T>> + Default;
+    type Col<T>: Sink<T> + Default + NamedDefault;
+    type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default + NamedDefault;
     type Column<S>: GroupSink<Inner = S>;
 }
 
@@ -193,32 +191,13 @@ impl<V, S: Sink<V>> Sink<Nested<V>> for StructCol<S> {
     }
 }
 
-// ViewPush<Nested<V>> for Column wrappers
-impl<V, S: Sink<V> + HasView> ViewPush<Nested<V>> for Transparent<S> {
-    fn view_push<'a>(view: &mut &'a mut Self, Nested(v): Nested<V>)
-    where
-        Self: 'a,
-    {
-        view.0.push(v);
-    }
-}
-
-impl<V, S: Sink<V> + HasView> ViewPush<Nested<V>> for StructCol<S> {
-    fn view_push<'a>(view: &mut &'a mut Self, Nested(v): Nested<V>)
-    where
-        Self: 'a,
-    {
-        view.inner.push(v);
-    }
-}
-
 // ============================================================================
 // SinkFor<B> — maps (value type, backend) to HList sink type
 // Replaces DefaultSink. Only required by Map (not a bound on Distribution::Value).
 // ============================================================================
 
 pub trait SinkFor<B: Backend>: Sized {
-    type Sink: Sink<Self> + HasView + ViewPush<Self> + Default;
+    type Sink: Sink<Self> + Default + NamedDefault;
 }
 
 macro_rules! for_all_primitives {
@@ -253,7 +232,7 @@ impl<B: Backend, T> SinkFor<B> for Vec<T> {
 
 impl<B: Backend, V: SinkFor<B>> SinkFor<B> for Nested<V>
 where
-    B::Column<V::Sink>: Sink<Nested<V>> + HasView + ViewPush<Nested<V>> + Default,
+    B::Column<V::Sink>: Sink<Nested<V>> + Default + NamedDefault,
 {
     type Sink = HCons<B::Column<V::Sink>, HNil>;
 }
@@ -263,7 +242,7 @@ where
 impl<B: Backend, A: SinkFor<B>, C: SinkFor<B>> SinkFor<B> for (A, C)
 where
     A::Sink: HAppend<C::Sink>,
-    <A::Sink as HAppend<C::Sink>>::Output: Sink<(A, C)> + HasView + ViewPush<(A, C)> + Default,
+    <A::Sink as HAppend<C::Sink>>::Output: Sink<(A, C)> + Default + NamedDefault,
 {
     type Sink = <A::Sink as HAppend<C::Sink>>::Output;
 }
@@ -273,7 +252,7 @@ where
     A::Sink: HAppend<C::Sink>,
     <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
     <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output:
-        Sink<(A, C, E)> + HasView + ViewPush<(A, C, E)> + Default,
+        Sink<(A, C, E)> + Default + NamedDefault,
 {
     type Sink = <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output;
 }
@@ -285,7 +264,7 @@ where
     <A::Sink as HAppend<C::Sink>>::Output: HAppend<E::Sink>,
     <<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output: HAppend<G::Sink>,
     <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<G::Sink>>::Output:
-        Sink<(A, C, E, G)> + HasView + ViewPush<(A, C, E, G)> + Default,
+        Sink<(A, C, E, G)> + Default + NamedDefault,
 {
     type Sink = <<<A::Sink as HAppend<C::Sink>>::Output as HAppend<E::Sink>>::Output as HAppend<
         G::Sink,
@@ -313,38 +292,13 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    fn collect_into(
-        &mut self,
-        sink: &mut SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) {
-        self.collect_sink(sink, rng, n);
-    }
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize);
 
     /// Generic collection into any Sink. Used by tuple impls to fill view parts.
-    fn collect_sink<S: Sink<Self::Value>>(
-        &mut self,
-        sink: &mut S,
-        rng: &mut impl Rng,
-        n: usize,
-    ) {
+    fn collect_sink<S: Sink<Self::Value>>(&mut self, sink: &mut S, rng: &mut impl Rng, n: usize) {
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
-        }
-    }
-
-    /// Collection through a view. S is the owned sink type (used for ViewPush dispatch).
-    fn collect_view<'a, S: ViewPush<Self::Value> + 'a>(
-        &mut self,
-        view: &mut S::View<'a>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            S::view_push(view, iter.next(rng));
         }
     }
 }
@@ -454,142 +408,6 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
         self.1.push(b);
         self.2.push(c);
         self.3.push(d);
-    }
-}
-
-// ============================================================================
-// HasView impls for leaf sink types — each returns &mut Self
-// ============================================================================
-
-impl<T> HasView for Vec<T> {
-    type View<'a> = &'a mut Self where T: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<T> HasView for VecDeque<T> {
-    type View<'a> = &'a mut Self where T: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<S: HasView> HasView for NamedCol<S> {
-    type View<'a> = &'a mut Self where S: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<S: HasView> HasView for Transparent<S> {
-    type View<'a> = &'a mut Self where S: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<S: HasView> HasView for StructCol<S> {
-    type View<'a> = &'a mut Self where S: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<T> HasView for VecListSink<T> {
-    type View<'a> = &'a mut Self where T: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-impl<T> HasView for DequeListSink<T> {
-    type View<'a> = &'a mut Self where T: 'a;
-    fn view(&mut self) -> &mut Self { self }
-}
-
-// ============================================================================
-// ViewPush impls for leaf sink types — push through &mut Self view
-// ============================================================================
-
-impl<T> ViewPush<T> for Vec<T> {
-    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
-        (*view).push(value);
-    }
-}
-
-impl<T> ViewPush<T> for VecDeque<T> {
-    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
-        (*view).push_back(value);
-    }
-}
-
-impl<T, S: Sink<T> + HasView> ViewPush<T> for NamedCol<S> {
-    fn view_push<'a>(view: &mut &'a mut Self, value: T) where Self: 'a {
-        view.inner.push(value);
-    }
-}
-
-impl<T> ViewPush<Vec<T>> for VecListSink<T> {
-    fn view_push<'a>(view: &mut &'a mut Self, value: Vec<T>) where Self: 'a {
-        Sink::push(*view, value);
-    }
-}
-
-impl<T> ViewPush<Vec<T>> for DequeListSink<T> {
-    fn view_push<'a>(view: &mut &'a mut Self, value: Vec<T>) where Self: 'a {
-        Sink::push(*view, value);
-    }
-}
-
-// HCons ViewPush impls — mirror HCons Sink impls
-
-impl<T, S: ViewPush<T>> ViewPush<T> for HCons<S, HNil> {
-    fn view_push<'a>(view: &mut HCons<S::View<'a>, HNil>, value: T)
-    where
-        S: 'a,
-    {
-        S::view_push(&mut view.0, value);
-    }
-}
-
-impl<A, B, SA: ViewPush<A>, SB: ViewPush<B>> ViewPush<(A, B)> for HCons<SA, HCons<SB, HNil>> {
-    fn view_push<'a>(
-        view: &mut HCons<SA::View<'a>, HCons<SB::View<'a>, HNil>>,
-        (a, b): (A, B),
-    ) where
-        SA: 'a,
-        SB: 'a,
-    {
-        SA::view_push(&mut view.0, a);
-        SB::view_push(&mut view.1 .0, b);
-    }
-}
-
-impl<A, B, C, SA: ViewPush<A>, SB: ViewPush<B>, SC: ViewPush<C>> ViewPush<(A, B, C)>
-    for HCons<SA, HCons<SB, HCons<SC, HNil>>>
-{
-    fn view_push<'a>(
-        view: &mut HCons<SA::View<'a>, HCons<SB::View<'a>, HCons<SC::View<'a>, HNil>>>,
-        (a, b, c): (A, B, C),
-    ) where
-        SA: 'a,
-        SB: 'a,
-        SC: 'a,
-    {
-        SA::view_push(&mut view.0, a);
-        SB::view_push(&mut view.1 .0, b);
-        SC::view_push(&mut view.1 .1 .0, c);
-    }
-}
-
-impl<A, B, C, D, SA: ViewPush<A>, SB: ViewPush<B>, SC: ViewPush<C>, SD: ViewPush<D>>
-    ViewPush<(A, B, C, D)> for HCons<SA, HCons<SB, HCons<SC, HCons<SD, HNil>>>>
-{
-    fn view_push<'a>(
-        view: &mut HCons<
-            SA::View<'a>,
-            HCons<SB::View<'a>, HCons<SC::View<'a>, HCons<SD::View<'a>, HNil>>>,
-        >,
-        (a, b, c, d): (A, B, C, D),
-    ) where
-        SA: 'a,
-        SB: 'a,
-        SC: 'a,
-        SD: 'a,
-    {
-        SA::view_push(&mut view.0, a);
-        SB::view_push(&mut view.1 .0, b);
-        SC::view_push(&mut view.1 .1 .0, c);
-        SD::view_push(&mut view.1 .1 .1 .0, d);
     }
 }
 
@@ -736,34 +554,86 @@ pub trait NamedDefault {
     fn set_name(&mut self, name: &'static str);
 }
 
-impl<S: Default> NamedDefault for HCons<NamedCol<S>, HNil> {
+// HList blanket impls — propagate NamedDefault through HCons/HNil
+
+impl NamedDefault for HNil {
+    fn named_default(_name: &'static str) -> Self {
+        HNil
+    }
+    fn set_name(&mut self, _name: &'static str) {}
+}
+
+impl<H: NamedDefault, T: NamedDefault> NamedDefault for HCons<H, T> {
     fn named_default(name: &'static str) -> Self {
-        HCons(
-            NamedCol {
-                name,
-                inner: S::default(),
-            },
-            HNil,
-        )
+        HCons(H::named_default(name), T::named_default(name))
     }
     fn set_name(&mut self, name: &'static str) {
-        self.0.name = name;
+        self.0.set_name(name);
+        self.1.set_name(name);
     }
 }
 
-impl<S: Default> NamedDefault for HCons<StructCol<S>, HNil> {
+// Real (named backends) — set the column name
+
+impl<S: Default> NamedDefault for NamedCol<S> {
     fn named_default(name: &'static str) -> Self {
-        HCons(
-            StructCol {
-                name,
-                inner: S::default(),
-            },
-            HNil,
-        )
+        NamedCol {
+            name,
+            inner: S::default(),
+        }
     }
     fn set_name(&mut self, name: &'static str) {
-        self.0.name = name;
+        self.name = name;
     }
+}
+
+impl<S: Default> NamedDefault for StructCol<S> {
+    fn named_default(name: &'static str) -> Self {
+        StructCol {
+            name,
+            inner: S::default(),
+        }
+    }
+    fn set_name(&mut self, name: &'static str) {
+        self.name = name;
+    }
+}
+
+// No-op (non-named backends — silently ignore name)
+
+impl<T> NamedDefault for Vec<T> {
+    fn named_default(_name: &'static str) -> Self {
+        Vec::new()
+    }
+    fn set_name(&mut self, _name: &'static str) {}
+}
+
+impl<T> NamedDefault for VecDeque<T> {
+    fn named_default(_name: &'static str) -> Self {
+        VecDeque::new()
+    }
+    fn set_name(&mut self, _name: &'static str) {}
+}
+
+impl<S: Default> NamedDefault for Transparent<S> {
+    fn named_default(_name: &'static str) -> Self {
+        Transparent(S::default())
+    }
+    fn set_name(&mut self, _name: &'static str) {}
+}
+
+impl<T> NamedDefault for VecListSink<T> {
+    fn named_default(_name: &'static str) -> Self {
+        VecListSink::new()
+    }
+    fn set_name(&mut self, _name: &'static str) {}
+}
+
+impl<T> NamedDefault for DequeListSink<T> {
+    fn named_default(_name: &'static str) -> Self {
+        DequeListSink::new()
+    }
+    fn set_name(&mut self, _name: &'static str) {}
 }
 
 // ============================================================================
@@ -809,7 +679,6 @@ pub trait DistributionScalar<B: Backend>: Distribution<B> {
     fn collect_col<S>(&mut self, sink: S, rng: &mut impl Rng, n: usize) -> S
     where
         Self::Value: SinkFor<B, Sink = HCons<S, HNil>>,
-        S: HasView,
     {
         let mut hlist = HCons(sink, HNil);
         self.collect_into(&mut hlist, rng, n);

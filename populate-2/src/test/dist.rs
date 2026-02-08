@@ -3,12 +3,9 @@
 // Sink type is derived from Value via SinkFor, so return types are clean.
 // ========================================================================
 
-use crate::dist::{constant, list, map, named, nested, range};
+use crate::dist::{cols, constant, list, map, named, nested, range};
 use crate::test::{Log, tracked};
-use crate::traits::{
-    Backend, Distribution, HCons, HNil, HasView, NamedDefault, Nested, SampleIter, Sink, SinkFor,
-    SinkOf, ViewPush,
-};
+use crate::traits::{Backend, Distribution, NamedDefault, Nested, SampleIter, Sink, SinkOf};
 
 // -- Scalar helpers --
 
@@ -31,16 +28,16 @@ pub(crate) fn make_tuple<B: Backend>() -> impl Distribution<B, Value = (i32, i64
 }
 
 pub(crate) fn make_3tuple<B: Backend>() -> impl Distribution<B, Value = (i32, i64, bool)> {
-    (constant(1i32), range(0i64, 10), constant(true))
+    cols((constant(1i32), range(0i64, 10), constant(true)))
 }
 
 pub(crate) fn make_4tuple<B: Backend>() -> impl Distribution<B, Value = (i32, i64, bool, f64)> {
-    (
+    cols((
         constant(1i32),
         range(0i64, 10),
         constant(true),
         constant(2.5f64),
-    )
+    ))
 }
 
 // ========================================================================
@@ -73,45 +70,45 @@ pub(crate) fn make_tracked_2tuple<B: Backend>(
 pub(crate) fn make_tracked_3tuple<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i64, i64, i32)> {
-    (
+    cols((
         tracked("COL1", range(0i64, 1), log),
         tracked("COL2", range(100i64, 1), log),
         tracked("COL3", range(1000i32, 1), log),
-    )
+    ))
 }
 
 pub(crate) fn make_tracked_4tuple<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i64, i64, i64, i64)> {
-    (
+    cols((
         tracked("COL1", range(0i64, 1), log),
         tracked("COL2", range(100i64, 1), log),
         tracked("COL3", range(1000i64, 1), log),
         tracked("COL4", range(10000i64, 1), log),
-    )
+    ))
 }
 
 pub(crate) fn make_map_in_tuple<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i64, i64, i64)> {
-    (
+    cols((
         tracked("COL1", range(0i64, 1), log),
         map(tracked("MAP_SRC", range(100i64, 1), log), |x| x * 2),
         tracked("COL3", range(1000i64, 1), log),
-    )
+    ))
 }
 
 pub(crate) fn make_nested_tuple<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i32, i32, i32, i32)> {
-    (
+    cols((
         tracked("COL1", range(0i32, 1), log),
         (
             tracked("COL2", range(100i32, 1), log),
             tracked("COL3", range(1000i32, 1), log),
         ),
         tracked("COL4", range(0i32, 5), log),
-    )
+    ))
 }
 
 pub(crate) fn make_row_order<B: Backend>(log: &Log) -> impl Distribution<B, Value = (i64, i64)> {
@@ -126,7 +123,7 @@ pub(crate) fn make_row_order<B: Backend>(log: &Log) -> impl Distribution<B, Valu
 pub(crate) fn gen_col4<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i16, i64, i64, i32)> {
-    (
+    cols((
         tracked("COL1", range(0i16, 1), log),
         map(
             (
@@ -136,13 +133,13 @@ pub(crate) fn gen_col4<B: Backend>(
             |(a, b)| (a + b, a * b),
         ),
         tracked("COL4", range(0i32, 5), log),
-    )
+    ))
 }
 
 pub(crate) fn make_flatten_order<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i32, i32, i32, i32)> {
-    (
+    cols((
         tracked("COL1", range(0i32, 1), log),
         map(
             (
@@ -152,7 +149,7 @@ pub(crate) fn make_flatten_order<B: Backend>(
             |(a, b)| (a + b, a * b),
         ),
         tracked("COL4", range(0i32, 5), log),
-    )
+    ))
 }
 
 // -- List helpers --
@@ -176,39 +173,23 @@ pub(crate) fn make_tracked_list_in_tuple<B: Backend>(
 
 // -- Named helpers --
 
-pub(crate) fn make_named_scalar<B: Backend>() -> impl Distribution<B, Value = i64>
-where
-    SinkOf<B, i64>: NamedDefault,
-{
+pub(crate) fn make_named_scalar<B: Backend>() -> impl Distribution<B, Value = i64> {
     named("id", range(0i64, 1))
 }
 
-pub(crate) fn make_named_tuple<B: Backend>() -> impl Distribution<B, Value = (i64, i32)>
-where
-    SinkOf<B, i64>: NamedDefault,
-    SinkOf<B, i32>: NamedDefault,
-{
+pub(crate) fn make_named_tuple<B: Backend>() -> impl Distribution<B, Value = (i64, i32)> {
     (named("id", range(0i64, 1)), named("val", constant(42i32)))
 }
 
-pub(crate) fn make_named_3tuple<B: Backend>() -> impl Distribution<B, Value = (i64, i32, bool)>
-where
-    SinkOf<B, i64>: NamedDefault,
-    SinkOf<B, i32>: NamedDefault,
-    SinkOf<B, bool>: NamedDefault,
-{
-    (
+pub(crate) fn make_named_3tuple<B: Backend>() -> impl Distribution<B, Value = (i64, i32, bool)> {
+    cols((
         named("id", range(0i64, 1)),
         named("val", constant(42i32)),
         named("flag", constant(true)),
-    )
+    ))
 }
 
-pub(crate) fn make_named_list<B: Backend>() -> impl Distribution<B, Value = (i32, Vec<i64>)>
-where
-    SinkOf<B, i32>: NamedDefault,
-    SinkOf<B, Vec<i64>>: NamedDefault,
-{
+pub(crate) fn make_named_list<B: Backend>() -> impl Distribution<B, Value = (i32, Vec<i64>)> {
     (
         named("id", constant(1i32)),
         named("items", list(constant(2usize), range(0i64, 1))),
@@ -217,10 +198,7 @@ where
 
 pub(crate) fn make_named_tracked_tuple<B: Backend>(
     log: &Log,
-) -> impl Distribution<B, Value = (i64, i64)>
-where
-    SinkOf<B, i64>: NamedDefault,
-{
+) -> impl Distribution<B, Value = (i64, i64)> {
     (
         named("id", tracked("COL1", range(0i64, 1), log)),
         named("val", tracked("COL2", range(100i64, 1), log)),
@@ -233,13 +211,9 @@ pub(crate) fn make_named_nested<B: Backend>(
     log: &Log,
 ) -> impl Distribution<B, Value = (i64, Nested<(i32, i32)>, i32)>
 where
-    SinkOf<B, i64>: NamedDefault,
-    SinkOf<B, i32>: NamedDefault,
-    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + HasView + ViewPush<Nested<(i32, i32)>> + Default,
-    Nested<(i32, i32)>: SinkFor<B, Sink = HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>>,
-    HCons<B::Column<SinkOf<B, (i32, i32)>>, HNil>: NamedDefault,
+    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default + NamedDefault,
 {
-    (
+    cols((
         named("id", tracked("COL_ID", range(0i64, 1), log)),
         named(
             "address",
@@ -249,5 +223,24 @@ where
             )),
         ),
         named("age", tracked("COL_AGE", constant(25i32), log)),
-    )
+    ))
+}
+
+pub(crate) fn make_named_nested2<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Value = (i64, Nested<(i32, i32)>, i32)>
+where
+    B::Column<SinkOf<B, (i32, i32)>>: Sink<Nested<(i32, i32)>> + Default + NamedDefault,
+{
+    cols((
+        named("id", tracked("COL_ID", range(0i64, 1), log)),
+        named(
+            "address",
+            nested((
+                named("street", tracked("COL_STREET", range(100i32, 1), log)),
+                named("city", tracked("COL_CITY", range(1000i32, 1), log)),
+            )),
+        ),
+        named("age", tracked("COL_AGE", constant(25i32), log)),
+    ))
 }

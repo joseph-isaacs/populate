@@ -1,5 +1,15 @@
 # Claude Code Instructions for populate-2
 
+## Three-Layer Architecture
+
+The system has three layers. Values and Sinks are user-facing and must be flat, simple tuples. Distribution impls are internal and absorb all complexity.
+
+- **Values** (`type Value`): flat tuples the user iterates over — `(i32, i64, bool)`, never HLists
+- **Sinks** (`type Sink` / `SinkOf`): flat tuples of columns the user passes in and gets back — `(Vec<i32>, Vec<i64>)`
+- **Distribution impls**: where tree sinks, HAppend, field splitting, SinkFlatten all live — the "complexity budget"
+
+When making design changes: keep values and sinks as simple flat tuples for the user. If complexity must go somewhere, push it into Distribution impls, not into user-facing types.
+
 ## Tests
 
 Tests MUST use `impl Distribution` return types, not concrete types. Always define helper functions that return `impl Distribution<Item = T>` and use those in tests.

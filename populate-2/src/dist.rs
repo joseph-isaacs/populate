@@ -1,6 +1,6 @@
 use crate::traits::{
     Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
-    Nested, SampleIter, SinkFor, SinkOf, ValueHList, ViewPush, ViewSplit,
+    Nested, SampleIter, Sink, SinkFor, SinkOf, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -36,6 +36,10 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
 
     fn row_iter(&mut self) -> Self::Iter {
         ConstantIter { value: self.value }
+    }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        self.collect_sink(sink, rng, n);
     }
 }
 
@@ -77,15 +81,19 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
             step: self.step,
         }
     }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        self.collect_sink(sink, rng, n);
+    }
 }
 
 // ============================================================================
 // Tuple (D1, D2) — col-by-col with auto-flatten
 // ============================================================================
 
-pub struct TupleIter2<I1, I2>(pub I1, pub I2);
+pub struct PairIter<I1, I2>(pub I1, pub I2);
 
-impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2>
+impl<I1: SampleIter, I2: SampleIter> SampleIter for PairIter<I1, I2>
 where
     I1::Item: ValueHList,
     I2::Item: ValueHList,
@@ -108,7 +116,7 @@ impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>> Distribution<B> for (
 where
     D1::Value: ValueHList,
     D2::Value: ValueHList,
-    SinkOf<B, D1::Value>: ViewSplit<SinkOf<B, D2::Value>> + ViewPush<D1::Value>,
+    SinkOf<B, D1::Value>: HAppend<SinkOf<B, D2::Value>>,
     <D1::Value as ValueHList>::HList: HAppend<<D2::Value as ValueHList>::HList>,
     <<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output:
         IntoTuple,
@@ -119,10 +127,10 @@ where
     type Value = <<<D1::Value as ValueHList>::HList as HAppend<
         <D2::Value as ValueHList>::HList,
     >>::Output as IntoTuple>::Tuple;
-    type Iter = TupleIter2<D1::Iter, D2::Iter>;
+    type Iter = PairIter<D1::Iter, D2::Iter>;
 
     fn row_iter(&mut self) -> Self::Iter {
-        TupleIter2(self.0.row_iter(), self.1.row_iter())
+        PairIter(self.0.row_iter(), self.1.row_iter())
     }
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
@@ -135,87 +143,46 @@ where
         rng: &mut impl Rng,
         n: usize,
     ) {
-        let (mut v1, s2) =
-            <SinkOf<B, D1::Value> as ViewSplit<SinkOf<B, D2::Value>>>::view_split(sink);
-        self.0.collect_view::<SinkOf<B, D1::Value>>(&mut v1, rng, n);
-        self.1.collect_into(s2, rng, n);
+        let owned = std::mem::replace(sink, self.default_sink());
+        let (mut left, mut right) = <SinkOf<B, D1::Value>>::unappend(owned);
+        self.0.collect_into(&mut left, rng, n);
+        self.1.collect_into(&mut right, rng, n);
+        *sink = left.append(right);
     }
 }
 
-// Type aliases for combined sink types used in where bounds
-type S23<B, D2, D3> = <SinkOf<B, <D2 as Distribution<B>>::Value> as HAppend<
-    SinkOf<B, <D3 as Distribution<B>>::Value>,
->>::Output;
-
-type S234<B, D2, D3, D4> = <SinkOf<B, <D2 as Distribution<B>>::Value> as HAppend<
-    S23<B, D3, D4>,
->>::Output;
-
 // ============================================================================
-// Tuple (D1, D2, D3) — col-by-col with auto-flatten
+// Extend<D, E> — col-by-col pair with take-split-rejoin
 // ============================================================================
 
-pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
-
-impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3>
-where
-    I1::Item: ValueHList,
-    I2::Item: ValueHList,
-    I3::Item: ValueHList,
-    <I1::Item as ValueHList>::HList: HAppend<<I2::Item as ValueHList>::HList>,
-    <<I1::Item as ValueHList>::HList as HAppend<<I2::Item as ValueHList>::HList>>::Output:
-        HAppend<<I3::Item as ValueHList>::HList>,
-    <<<I1::Item as ValueHList>::HList as HAppend<<I2::Item as ValueHList>::HList>>::Output
-        as HAppend<<I3::Item as ValueHList>::HList>>::Output: IntoTuple,
-{
-    type Item = <<<<I1::Item as ValueHList>::HList as HAppend<
-        <I2::Item as ValueHList>::HList,
-    >>::Output as HAppend<<I3::Item as ValueHList>::HList>>::Output as IntoTuple>::Tuple;
-
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        self.0
-            .next(rng)
-            .into_hlist()
-            .append(self.1.next(rng).into_hlist())
-            .append(self.2.next(rng).into_hlist())
-            .into_tuple()
-    }
+pub struct Extend<D, E> {
+    pub base: D,
+    pub extra: E,
 }
 
-impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>, D3: Distribution<B>> Distribution<B>
-    for (D1, D2, D3)
+impl<B: Backend, D: Distribution<B>, E: Distribution<B>> Distribution<B> for Extend<D, E>
 where
-    D1::Value: ValueHList,
-    D2::Value: ValueHList,
-    D3::Value: ValueHList,
-    SinkOf<B, D1::Value>: ViewSplit<S23<B, D2, D3>> + ViewPush<D1::Value>,
-    SinkOf<B, D2::Value>: ViewSplit<SinkOf<B, D3::Value>> + ViewPush<D2::Value>,
-    <D1::Value as ValueHList>::HList: HAppend<<D2::Value as ValueHList>::HList>,
-    <<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output:
-        HAppend<<D3::Value as ValueHList>::HList>,
-    <<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
-        as HAppend<<D3::Value as ValueHList>::HList>>::Output: IntoTuple,
-    <<<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
-        as HAppend<<D3::Value as ValueHList>::HList>>::Output as IntoTuple>::Tuple:
-        SinkFor<
-            B,
-            Sink = <SinkOf<B, D1::Value> as HAppend<S23<B, D2, D3>>>::Output,
-        >,
+    D::Value: ValueHList,
+    E::Value: ValueHList,
+    SinkOf<B, D::Value>: HAppend<SinkOf<B, E::Value>>,
+    <D::Value as ValueHList>::HList: HAppend<<E::Value as ValueHList>::HList>,
+    <<D::Value as ValueHList>::HList as HAppend<<E::Value as ValueHList>::HList>>::Output:
+        IntoTuple,
+    <<<D::Value as ValueHList>::HList as HAppend<<E::Value as ValueHList>::HList>>::Output
+        as IntoTuple>::Tuple:
+        SinkFor<B, Sink = <SinkOf<B, D::Value> as HAppend<SinkOf<B, E::Value>>>::Output>,
 {
-    type Value = <<<<D1::Value as ValueHList>::HList as HAppend<
-        <D2::Value as ValueHList>::HList,
-    >>::Output as HAppend<<D3::Value as ValueHList>::HList>>::Output
-        as IntoTuple>::Tuple;
-    type Iter = TupleIter3<D1::Iter, D2::Iter, D3::Iter>;
+    type Value = <<<D::Value as ValueHList>::HList as HAppend<
+        <E::Value as ValueHList>::HList,
+    >>::Output as IntoTuple>::Tuple;
+    type Iter = PairIter<D::Iter, E::Iter>;
 
     fn row_iter(&mut self) -> Self::Iter {
-        TupleIter3(self.0.row_iter(), self.1.row_iter(), self.2.row_iter())
+        PairIter(self.base.row_iter(), self.extra.row_iter())
     }
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
-        self.0
-            .default_sink()
-            .append(self.1.default_sink().append(self.2.default_sink()))
+        self.base.default_sink().append(self.extra.default_sink())
     }
 
     fn collect_into(
@@ -224,128 +191,109 @@ where
         rng: &mut impl Rng,
         n: usize,
     ) {
-        let (mut v1, s23) =
-            <SinkOf<B, D1::Value> as ViewSplit<S23<B, D2, D3>>>::view_split(sink);
-        let (mut v2, s3) =
-            <SinkOf<B, D2::Value> as ViewSplit<SinkOf<B, D3::Value>>>::view_split(s23);
-        self.0.collect_view::<SinkOf<B, D1::Value>>(&mut v1, rng, n);
-        self.1.collect_view::<SinkOf<B, D2::Value>>(&mut v2, rng, n);
-        self.2.collect_into(s3, rng, n);
+        let owned = std::mem::replace(sink, self.default_sink());
+        let (mut left, mut right) = <SinkOf<B, D::Value>>::unappend(owned);
+        self.base.collect_into(&mut left, rng, n);
+        self.extra.collect_into(&mut right, rng, n);
+        *sink = left.append(right);
     }
 }
 
 // ============================================================================
-// Tuple (D1, D2, D3, D4) — col-by-col with auto-flatten
+// IntoCols — convert tuples into Extend chains
 // ============================================================================
 
-pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
+pub trait IntoCols {
+    type Dist;
+    fn into_cols(self) -> Self::Dist;
+}
 
-impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
-    for TupleIter4<I1, I2, I3, I4>
-where
-    I1::Item: ValueHList,
-    I2::Item: ValueHList,
-    I3::Item: ValueHList,
-    I4::Item: ValueHList,
-    <I1::Item as ValueHList>::HList: HAppend<<I2::Item as ValueHList>::HList>,
-    <<I1::Item as ValueHList>::HList as HAppend<<I2::Item as ValueHList>::HList>>::Output:
-        HAppend<<I3::Item as ValueHList>::HList>,
-    <<<I1::Item as ValueHList>::HList as HAppend<<I2::Item as ValueHList>::HList>>::Output
-        as HAppend<<I3::Item as ValueHList>::HList>>::Output:
-        HAppend<<I4::Item as ValueHList>::HList>,
-    <<<<I1::Item as ValueHList>::HList as HAppend<<I2::Item as ValueHList>::HList>>::Output
-        as HAppend<<I3::Item as ValueHList>::HList>>::Output
-        as HAppend<<I4::Item as ValueHList>::HList>>::Output: IntoTuple,
-{
-    type Item = <<<<<I1::Item as ValueHList>::HList as HAppend<
-        <I2::Item as ValueHList>::HList,
-    >>::Output as HAppend<<I3::Item as ValueHList>::HList>>::Output
-        as HAppend<<I4::Item as ValueHList>::HList>>::Output
-        as IntoTuple>::Tuple;
+pub fn cols<T: IntoCols>(t: T) -> T::Dist {
+    t.into_cols()
+}
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+impl<A> IntoCols for (A,) {
+    type Dist = A;
+    fn into_cols(self) -> A {
         self.0
-            .next(rng)
-            .into_hlist()
-            .append(self.1.next(rng).into_hlist())
-            .append(self.2.next(rng).into_hlist())
-            .append(self.3.next(rng).into_hlist())
-            .into_tuple()
     }
 }
 
-impl<
-        B: Backend,
-        D1: Distribution<B>,
-        D2: Distribution<B>,
-        D3: Distribution<B>,
-        D4: Distribution<B>,
-    > Distribution<B> for (D1, D2, D3, D4)
-where
-    D1::Value: ValueHList,
-    D2::Value: ValueHList,
-    D3::Value: ValueHList,
-    D4::Value: ValueHList,
-    SinkOf<B, D1::Value>: ViewSplit<S234<B, D2, D3, D4>> + ViewPush<D1::Value>,
-    SinkOf<B, D2::Value>: ViewSplit<S23<B, D3, D4>> + ViewPush<D2::Value>,
-    SinkOf<B, D3::Value>: ViewSplit<SinkOf<B, D4::Value>> + ViewPush<D3::Value>,
-    <D1::Value as ValueHList>::HList: HAppend<<D2::Value as ValueHList>::HList>,
-    <<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output:
-        HAppend<<D3::Value as ValueHList>::HList>,
-    <<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
-        as HAppend<<D3::Value as ValueHList>::HList>>::Output:
-        HAppend<<D4::Value as ValueHList>::HList>,
-    <<<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
-        as HAppend<<D3::Value as ValueHList>::HList>>::Output
-        as HAppend<<D4::Value as ValueHList>::HList>>::Output: IntoTuple,
-    <<<<<D1::Value as ValueHList>::HList as HAppend<<D2::Value as ValueHList>::HList>>::Output
-        as HAppend<<D3::Value as ValueHList>::HList>>::Output
-        as HAppend<<D4::Value as ValueHList>::HList>>::Output as IntoTuple>::Tuple:
-        SinkFor<
-            B,
-            Sink = <SinkOf<B, D1::Value> as HAppend<S234<B, D2, D3, D4>>>::Output,
-        >,
-{
-    type Value = <<<<<D1::Value as ValueHList>::HList as HAppend<
-        <D2::Value as ValueHList>::HList,
-    >>::Output as HAppend<<D3::Value as ValueHList>::HList>>::Output
-        as HAppend<<D4::Value as ValueHList>::HList>>::Output
-        as IntoTuple>::Tuple;
-    type Iter = TupleIter4<D1::Iter, D2::Iter, D3::Iter, D4::Iter>;
+impl<A, B> IntoCols for (A, B) {
+    type Dist = Extend<A, B>;
+    fn into_cols(self) -> Extend<A, B> {
+        Extend {
+            base: self.0,
+            extra: self.1,
+        }
+    }
+}
 
-    fn row_iter(&mut self) -> Self::Iter {
-        TupleIter4(
-            self.0.row_iter(),
-            self.1.row_iter(),
-            self.2.row_iter(),
-            self.3.row_iter(),
-        )
+impl<A, B, C> IntoCols for (A, B, C) {
+    type Dist = Extend<A, Extend<B, C>>;
+    fn into_cols(self) -> Extend<A, Extend<B, C>> {
+        Extend {
+            base: self.0,
+            extra: Extend {
+                base: self.1,
+                extra: self.2,
+            },
+        }
+    }
+}
+
+impl<A, B, C, D> IntoCols for (A, B, C, D) {
+    type Dist = Extend<A, Extend<B, Extend<C, D>>>;
+    fn into_cols(self) -> Extend<A, Extend<B, Extend<C, D>>> {
+        Extend {
+            base: self.0,
+            extra: Extend {
+                base: self.1,
+                extra: Extend {
+                    base: self.2,
+                    extra: self.3,
+                },
+            },
+        }
+    }
+}
+
+impl<A, B, C, D, E> IntoCols for (A, B, C, D, E) {
+    type Dist = Extend<A, Extend<B, Extend<C, Extend<D, E>>>>;
+    fn into_cols(self) -> Extend<A, Extend<B, Extend<C, Extend<D, E>>>> {
+        Extend {
+            base: self.0,
+            extra: Extend {
+                base: self.1,
+                extra: Extend {
+                    base: self.2,
+                    extra: Extend {
+                        base: self.3,
+                        extra: self.4,
+                    },
+                },
+            },
+        }
+    }
+}
+
+// ============================================================================
+// Extend builder methods
+// ============================================================================
+
+impl<D, E> Extend<D, E> {
+    pub fn col<F>(self, f: F) -> Extend<Self, F> {
+        Extend {
+            base: self,
+            extra: f,
+        }
     }
 
-    fn default_sink(&self) -> SinkOf<B, Self::Value> {
-        self.0.default_sink().append(
-            self.1.default_sink().append(
-                self.2.default_sink().append(self.3.default_sink()),
-            ),
-        )
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: &mut SinkOf<B, Self::Value>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) {
-        let (mut v1, s234) =
-            <SinkOf<B, D1::Value> as ViewSplit<S234<B, D2, D3, D4>>>::view_split(sink);
-        let (mut v2, s34) =
-            <SinkOf<B, D2::Value> as ViewSplit<S23<B, D3, D4>>>::view_split(s234);
-        let (mut v3, s4) =
-            <SinkOf<B, D3::Value> as ViewSplit<SinkOf<B, D4::Value>>>::view_split(s34);
-        self.0.collect_view::<SinkOf<B, D1::Value>>(&mut v1, rng, n);
-        self.1.collect_view::<SinkOf<B, D2::Value>>(&mut v2, rng, n);
-        self.2.collect_view::<SinkOf<B, D3::Value>>(&mut v3, rng, n);
-        self.3.collect_into(s4, rng, n);
+    pub fn nest<F>(self, f: F) -> Extend<Self, NestedDist<F>> {
+        Extend {
+            base: self,
+            extra: NestedDist { inner: f },
+        }
     }
 }
 
@@ -400,6 +348,10 @@ where
             source: self.source.row_iter(),
             f: self.f.clone(),
         }
+    }
+
+    fn collect_into(&mut self, sink: &mut SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) {
+        self.collect_sink(sink, rng, n);
     }
 }
 
@@ -477,10 +429,7 @@ pub fn named<D>(name: &'static str, inner: D) -> Named<D> {
     Named { name, inner }
 }
 
-impl<B: Backend, D: Distribution<B>> Distribution<B> for Named<D>
-where
-    SinkOf<B, D::Value>: NamedDefault,
-{
+impl<B: Backend, D: Distribution<B>> Distribution<B> for Named<D> {
     type Value = D::Value;
     type Iter = D::Iter;
 
@@ -522,7 +471,7 @@ impl<I: SampleIter> SampleIter for NestedIter<I> {
 
 impl<B: Backend, D: Distribution<B>> Distribution<B> for NestedDist<D>
 where
-    Nested<D::Value>: SinkFor<B, Sink = HCons<B::Column<SinkOf<B, D::Value>>, HNil>>,
+    B::Column<SinkOf<B, D::Value>>: Sink<Nested<D::Value>> + Default + NamedDefault,
 {
     type Value = Nested<D::Value>;
     type Iter = NestedIter<D::Iter>;

@@ -1,6 +1,6 @@
 use crate::traits::{
     Backend, Distribution, GroupSink, HAppend, HCons, HNil, IntoTuple, ListSink, NamedDefault,
-    Nested, SampleIter, Sink, SinkFor, SinkOf, ValueHList,
+    Nested, SampleIter, SinkFor, SinkOf, ValueHList,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -38,7 +38,12 @@ impl<B: Backend, T: Copy + SinkFor<B>> Distribution<B> for Constant<T> {
         ConstantIter { value: self.value }
     }
 
-    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+    fn collect_into(
+        &mut self,
+        mut sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
         self.collect_sink(&mut sink, rng, n);
         sink
     }
@@ -83,7 +88,12 @@ impl<B: Backend, T: SinkFor<B> + Add<Output = T> + Copy> Distribution<B> for Ran
         }
     }
 
-    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+    fn collect_into(
+        &mut self,
+        mut sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
         self.collect_sink(&mut sink, rng, n);
         sink
     }
@@ -109,7 +119,7 @@ where
         self.0
             .next(rng)
             .into_hlist()
-            .append(self.1.next(rng).into_hlist())
+            .happend(self.1.next(rng).into_hlist())
             .into_tuple()
     }
 }
@@ -136,7 +146,7 @@ where
     }
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
-        self.0.default_sink().append(self.1.default_sink())
+        self.0.default_sink().happend(self.1.default_sink())
     }
 
     fn collect_into(
@@ -148,7 +158,7 @@ where
         let (left, right) = <SinkOf<B, D1::Value>>::unappend(sink);
         let left = self.0.collect_into(left, rng, n);
         let right = self.1.collect_into(right, rng, n);
-        left.append(right)
+        left.happend(right)
     }
 }
 
@@ -183,7 +193,7 @@ where
     }
 
     fn default_sink(&self) -> SinkOf<B, Self::Value> {
-        self.base.default_sink().append(self.extra.default_sink())
+        self.base.default_sink().happend(self.extra.default_sink())
     }
 
     fn collect_into(
@@ -195,7 +205,7 @@ where
         let (left, right) = <SinkOf<B, D::Value>>::unappend(sink);
         let left = self.base.collect_into(left, rng, n);
         let right = self.extra.collect_into(right, rng, n);
-        left.append(right)
+        left.happend(right)
     }
 }
 
@@ -354,7 +364,12 @@ where
         }
     }
 
-    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+    fn collect_into(
+        &mut self,
+        mut sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
         self.collect_sink(&mut sink, rng, n);
         sink
     }
@@ -410,7 +425,12 @@ where
         }
     }
 
-    fn collect_into(&mut self, mut sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+    fn collect_into(
+        &mut self,
+        mut sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
         let mut len_iter = self.lengths.row_iter();
         let elem_base = self.elements.row_iter();
         for _ in 0..n {
@@ -449,7 +469,12 @@ impl<B: Backend, D: Distribution<B>> Distribution<B> for Named<D> {
         sink
     }
 
-    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
+    fn collect_into(
+        &mut self,
+        sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
         self.inner.collect_into(sink, rng, n)
     }
 }
@@ -475,10 +500,7 @@ impl<I: SampleIter> SampleIter for NestedIter<I> {
     }
 }
 
-impl<B: Backend, D: Distribution<B>> Distribution<B> for NestedDist<D>
-where
-    B::Column<SinkOf<B, D::Value>>: Sink<Nested<D::Value>> + Default + NamedDefault,
-{
+impl<B: Backend, D: Distribution<B>> Distribution<B> for NestedDist<D> {
     type Value = Nested<D::Value>;
     type Iter = NestedIter<D::Iter>;
 
@@ -490,7 +512,16 @@ where
         HCons(GroupSink::new("", self.inner.default_sink()), HNil)
     }
 
-    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value> {
-        HCons(sink.0.map_inner(|inner| self.inner.collect_into(inner, rng, n)), HNil)
+    fn collect_into(
+        &mut self,
+        sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value> {
+        HCons(
+            sink.0
+                .map_inner(|inner| self.inner.collect_into(inner, rng, n)),
+            HNil,
+        )
     }
 }

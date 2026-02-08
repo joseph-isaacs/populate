@@ -11,7 +11,7 @@ pub struct HCons<H, T>(pub H, pub T);
 
 pub trait HAppend<R> {
     type Output;
-    fn append(self, right: R) -> Self::Output;
+    fn happend(self, right: R) -> Self::Output;
     fn unappend(combined: Self::Output) -> (Self, R)
     where
         Self: Sized;
@@ -20,7 +20,7 @@ pub trait HAppend<R> {
 impl<R> HAppend<R> for HNil {
     type Output = R;
 
-    fn append(self, right: R) -> R {
+    fn happend(self, right: R) -> R {
         right
     }
 
@@ -32,8 +32,8 @@ impl<R> HAppend<R> for HNil {
 impl<H, T: HAppend<R>, R> HAppend<R> for HCons<H, T> {
     type Output = HCons<H, T::Output>;
 
-    fn append(self, right: R) -> HCons<H, T::Output> {
-        HCons(self.0, self.1.append(right))
+    fn happend(self, right: R) -> HCons<H, T::Output> {
+        HCons(self.0, self.1.happend(right))
     }
 
     fn unappend(combined: HCons<H, T::Output>) -> (HCons<H, T>, R) {
@@ -168,7 +168,7 @@ macro_rules! impl_value_hlist_tuple {
         {
             type HList = $acc;
             fn into_hlist(self) -> Self::HList {
-                self.$first_idx.into_hlist() $(.append(self.$rest_idx.into_hlist()))*
+                self.$first_idx.into_hlist() $(.happend(self.$rest_idx.into_hlist()))*
             }
         }
     };

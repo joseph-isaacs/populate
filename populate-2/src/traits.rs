@@ -11,7 +11,7 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 pub trait Backend: Sized {
     type Col<T>: Sink<T> + Default + NamedDefault;
     type ListCol<T>: ListSink<T> + Sink<Vec<T>> + Default + NamedDefault;
-    type Column<S>: GroupSink<Inner = S> + Default + NamedDefault;
+    type Column<S: Default>: GroupSink<Inner = S> + Default + NamedDefault;
 }
 
 pub struct VecBackend;
@@ -19,7 +19,7 @@ pub struct VecBackend;
 impl Backend for VecBackend {
     type Col<T> = Vec<T>;
     type ListCol<T> = Vec<Vec<T>>;
-    type Column<S> = Transparent<S>;
+    type Column<S: Default> = Transparent<S>;
 }
 
 pub struct DequeBackend;
@@ -27,7 +27,7 @@ pub struct DequeBackend;
 impl Backend for DequeBackend {
     type Col<T> = VecDeque<T>;
     type ListCol<T> = DequeListSink<T>;
-    type Column<S> = Transparent<S>;
+    type Column<S: Default> = Transparent<S>;
 }
 
 pub struct NamedVecBackend;
@@ -35,7 +35,7 @@ pub struct NamedVecBackend;
 impl Backend for NamedVecBackend {
     type Col<T> = NamedCol<Vec<T>>;
     type ListCol<T> = NamedCol<Vec<Vec<T>>>;
-    type Column<S> = StructCol<S>;
+    type Column<S: Default> = StructCol<S>;
 }
 
 // ============================================================================
@@ -111,7 +111,7 @@ pub trait GroupSink: Sized {
 // Transparent — identity column wrapper (VecBackend / DequeBackend)
 // ============================================================================
 
-pub struct Transparent<S>(pub S);
+pub struct Transparent<S: Default>(pub S);
 
 impl<S: Default> Default for Transparent<S> {
     fn default() -> Self {
@@ -119,7 +119,7 @@ impl<S: Default> Default for Transparent<S> {
     }
 }
 
-impl<S> GroupSink for Transparent<S> {
+impl<S: Default> GroupSink for Transparent<S> {
     type Inner = S;
     fn new(_name: &'static str, inner: S) -> Self {
         Transparent(inner)
@@ -135,10 +135,10 @@ impl<S> GroupSink for Transparent<S> {
     }
 }
 
-impl<S: HAppend<R>, R> HAppend<R> for Transparent<S> {
+impl<S: HAppend<R> + Default, R> HAppend<R> for Transparent<S> {
     type Output = <S as HAppend<R>>::Output;
-    fn append(self, right: R) -> Self::Output {
-        self.0.append(right)
+    fn happend(self, right: R) -> Self::Output {
+        self.0.happend(right)
     }
     fn unappend(combined: Self::Output) -> (Self, R) {
         let (s, r) = S::unappend(combined);
@@ -267,7 +267,12 @@ pub trait Distribution<B: Backend> {
         Default::default()
     }
 
-    fn collect_into(&mut self, sink: SinkOf<B, Self::Value>, rng: &mut impl Rng, n: usize) -> SinkOf<B, Self::Value>;
+    fn collect_into(
+        &mut self,
+        sink: SinkOf<B, Self::Value>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> SinkOf<B, Self::Value>;
 
     /// Generic collection into any Sink. Used by tuple impls to fill view parts.
     fn collect_sink<S: Sink<Self::Value>>(&mut self, sink: &mut S, rng: &mut impl Rng, n: usize) {
@@ -389,15 +394,6 @@ impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sin
 // ============================================================================
 // Blanket Sink and ListSink for &mut S
 // ============================================================================
-
-impl<T, S: Sink<T>> Sink<T> for &mut S {
-    fn push(&mut self, value: T) {
-        (*self).push(value);
-    }
-    fn push_n(&mut self, value: impl Iterator<Item = T>) {
-        (*self).push_n(value);
-    }
-}
 
 // ============================================================================
 // ListSink<T> — sink trait for list/array columns

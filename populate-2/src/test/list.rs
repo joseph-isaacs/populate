@@ -31,11 +31,8 @@ fn test_list_collect_col() {
 #[test]
 fn test_list_in_tuple() {
     let mut dist = make_list_in_tuple();
-    let (scalars, lists) = dist.collect_flat(
-        (Vec::<i32>::new(), Vec::<Vec<i64>>::new()),
-        &mut rng(),
-        3,
-    );
+    let (scalars, lists) =
+        dist.collect_flat((Vec::<i32>::new(), Vec::<Vec<i64>>::new()), &mut rng(), 3);
 
     assert_eq!(scalars, vec![42, 42, 42]);
     assert_eq!(lists, vec![vec![0, 1], vec![0, 1], vec![0, 1]]);
@@ -49,11 +46,8 @@ fn test_list_in_tuple() {
 fn test_tracked_list_in_tuple() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_list_in_tuple(&log);
-    let (scalars, lists) = dist.collect_flat(
-        (Vec::<i32>::new(), Vec::<Vec<i64>>::new()),
-        &mut rng(),
-        3,
-    );
+    let (scalars, lists) =
+        dist.collect_flat((Vec::<i32>::new(), Vec::<Vec<i64>>::new()), &mut rng(), 3);
 
     assert_eq!(scalars, vec![42, 42, 42]);
     assert_eq!(lists, vec![vec![0, 1], vec![0, 1], vec![0, 1]]);

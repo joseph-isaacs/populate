@@ -4,6 +4,58 @@ use crate::traits::{
 use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
+
+// ============================================================================
+// Bernoulli — biased boolean distribution
+// ============================================================================
+
+pub struct Bernoulli {
+    pub true_prob: f64,
+}
+
+pub fn bernoulli(true_prob: f64) -> Bernoulli {
+    Bernoulli { true_prob }
+}
+
+#[derive(Clone)]
+pub struct BernoulliIter {
+    true_prob: f64,
+}
+
+impl SampleIter for BernoulliIter {
+    type Item = bool;
+    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+        rng.random::<f64>() < self.true_prob
+    }
+}
+
+impl<B: Backend> Distribution<B> for Bernoulli
+where
+    <bool as DefaultSink<B>>::Sink: Sink<bool>,
+{
+    type Item = bool;
+    type RowIter = BernoulliIter;
+
+    fn row_iter(&mut self) -> Self::RowIter {
+        BernoulliIter {
+            true_prob: self.true_prob,
+        }
+    }
+
+    fn collect_into(
+        &mut self,
+        mut sink: <bool as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <bool as DefaultSink<B>>::Sink {
+        let mut iter = <Self as Distribution<B>>::row_iter(self);
+        for _ in 0..n {
+            sink.push(iter.next(rng));
+        }
+        sink
+    }
+}
+
 // ============================================================================
 // Constant
 // ============================================================================

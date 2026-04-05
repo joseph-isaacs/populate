@@ -2,7 +2,7 @@
 // Helper functions returning impl Distribution — NO extra bounds needed!
 // ========================================================================
 
-use crate::dist::{constant, flatten, list, map, range};
+use crate::dist::{bernoulli, constant, flatten, list, map, range};
 use crate::test::{Log, tracked};
 use crate::traits::{Backend, DefaultSink, Distribution, HAppend, SampleIter, Sink, VecBackend};
 
@@ -165,4 +165,25 @@ pub(crate) fn make_row_order(log: &Log) -> impl Distribution<VecBackend, Item = 
         tracked("COL1", range(0i64, 1), log),
         tracked("COL2", range(100i64, 1), log),
     )
+}
+
+pub(crate) fn make_bernoulli_always_true<B: Backend>() -> impl Distribution<B, Item = bool>
+where
+    <bool as DefaultSink<B>>::Sink: Sink<bool>,
+{
+    bernoulli(1.0)
+}
+
+pub(crate) fn make_bernoulli_always_false<B: Backend>() -> impl Distribution<B, Item = bool>
+where
+    <bool as DefaultSink<B>>::Sink: Sink<bool>,
+{
+    bernoulli(0.0)
+}
+
+pub(crate) fn make_bernoulli_biased<B: Backend>() -> impl Distribution<B, Item = bool>
+where
+    <bool as DefaultSink<B>>::Sink: Sink<bool>,
+{
+    bernoulli(0.5)
 }

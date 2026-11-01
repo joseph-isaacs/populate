@@ -5,7 +5,6 @@ use std::rc::Rc;
 mod col;
 mod deque;
 mod dist;
-mod list;
 mod row;
 mod scalar;
 
@@ -71,3 +70,5 @@ fn tracked<D>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
         log: Rc::clone(log),
     }
 }
+mod list;
+mod list_ticks;

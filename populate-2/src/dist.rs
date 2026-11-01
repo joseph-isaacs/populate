@@ -1,5 +1,5 @@
 use crate::traits::{
-    Backend, DefaultSink, Distribution, Flatten, HAppend, ListSink, SampleIter, Sink,
+    Backend, DefaultSink, Distribution, Flatten, HAppend, HCons, HNil, ListCol, SampleIter, Sink,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -356,14 +356,14 @@ pub struct ListIter<L, E> {
 impl<L, E> SampleIter for ListIter<L, E>
 where
     L: SampleIter<Item = usize>,
-    E: SampleIter + Clone,
+    E: SampleIter,
 {
     type Item = Vec<E::Item>;
 
+    // Element stream continues across rows (same semantics as columnar path).
     fn next(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
         let len = self.lengths.next(rng);
-        let mut elems = self.elements.clone();
-        (0..len).map(|_| elems.next(rng)).collect()
+        (0..len).map(|_| self.elements.next(rng)).collect()
     }
 }
 
@@ -371,8 +371,6 @@ impl<B: Backend, L, E> Distribution<B> for List<L, E>
 where
     L: Distribution<B, Item = usize>,
     E: Distribution<B>,
-    E::RowIter: Clone,
-    <Vec<E::Item> as DefaultSink<B>>::Sink: ListSink<E::Item>,
 {
     type Item = Vec<E::Item>;
     type RowIter = ListIter<L::RowIter, E::RowIter>;
@@ -384,20 +382,39 @@ where
         }
     }
 
+    // Fully columnar:
+    //   pass 1: n lengths -> offsets column (+ total element count)
+    //   pass 2: hand the *whole* child sink to the element distribution for
+    //           `total` rows, so tuples/lists inside recurse col-by-col.
     fn collect_into(
         &mut self,
-        mut sink: <Vec<E::Item> as DefaultSink<B>>::Sink,
+        sink: <Vec<E::Item> as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
     ) -> <Vec<E::Item> as DefaultSink<B>>::Sink {
-        let mut len_iter = self.lengths.row_iter();
-        let elem_base = self.elements.row_iter();
+        let HCons(
+            ListCol {
+                mut offsets,
+                values,
+                mut len,
+            },
+            HNil,
+        ) = sink;
+        let mut lengths = self.lengths.row_iter();
+        let start = len;
         for _ in 0..n {
-            let len = len_iter.next(rng);
-            let mut elems = elem_base.clone();
-            sink.push_list(len, (0..len).map(|_| elems.next(rng)));
+            len += lengths.next(rng);
+            offsets.push(len);
         }
-        sink
+        let values = self.elements.collect_into(values, rng, len - start);
+        HCons(
+            ListCol {
+                offsets,
+                values,
+                len,
+            },
+            HNil,
+        )
     }
 }
 

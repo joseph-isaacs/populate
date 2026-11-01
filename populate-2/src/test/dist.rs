@@ -284,3 +284,46 @@ pub(crate) fn make_tracked_list_in_tuple<B: Backend>(
         ),
     )
 }
+
+// ========================================================================
+// Struct/list nesting helpers ("struct" = tuple; fields become columns)
+// ========================================================================
+
+/// struct of list: { id: i32, tags: list<i64> }
+pub(crate) fn gen_struct_of_list<B: Backend>() -> impl Distribution<B, Item = (i32, Vec<i64>)> {
+    (range(0i32, 1), list(range(0usize, 1), range(0i64, 1)))
+}
+
+/// struct of list of struct: { id: i32, items: list<{ qty: i64, ok: bool }> }
+pub(crate) fn gen_struct_of_list_of_struct<B: Backend>()
+-> impl Distribution<B, Item = (i32, Vec<(i64, bool)>)> {
+    (
+        range(0i32, 1),
+        list(constant(2usize), (range(0i64, 1), constant(true))),
+    )
+}
+
+/// list of struct of list: list<{ id: i32, tags: list<i64> }>
+pub(crate) fn gen_list_of_struct_of_list<B: Backend>()
+-> impl Distribution<B, Item = Vec<(i32, Vec<i64>)>> {
+    list(
+        constant(2usize),
+        (range(0i32, 1), list(range(1usize, 1), range(0i64, 1))),
+    )
+}
+
+/// tracked list of struct of list — for tick-order tests
+pub(crate) fn make_tracked_list_of_struct_of_list(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<(i32, Vec<i64>)>> {
+    list(
+        tracked("OUTER", constant(2usize), log),
+        (
+            tracked("ID", range(0i32, 1), log),
+            list(
+                tracked("TLEN", range(1usize, 1), log),
+                tracked("TAG", range(0i64, 1), log),
+            ),
+        ),
+    )
+}

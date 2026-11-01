@@ -10,3 +10,8 @@ rand = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "collect"
+harness = false

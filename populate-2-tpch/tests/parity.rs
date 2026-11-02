@@ -44,7 +44,7 @@ fn nation() {
 
 #[test]
 fn part() {
-    let sf = 0.1;
+    let sf = 1.0;
     assert_same::<Part>(sf, 8000, PartArrow::new(PartGenerator::new(sf, 1, 1)));
 }
 
@@ -71,7 +71,7 @@ fn supplier() {
 
 #[test]
 fn customer() {
-    let sf = 0.1;
+    let sf = 1.0;
     assert_same::<Customer>(
         sf,
         8000,
@@ -81,7 +81,7 @@ fn customer() {
 
 #[test]
 fn partsupp() {
-    let sf = 0.1;
+    let sf = 1.0;
     assert_same::<PartSupp>(
         sf,
         8000,

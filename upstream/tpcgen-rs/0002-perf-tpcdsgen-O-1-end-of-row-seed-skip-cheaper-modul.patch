@@ -1,0 +1,221 @@
+From f0078f19e4809520f537eace4fbe845fa4036ee1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 09:10:27 +0000
+Subject: [PATCH] perf(tpcdsgen): O(1) end-of-row seed skip, cheaper modulus
+
+Two drop-in changes to RandomNumberStream; generated values are
+unchanged.
+
+- consume_remaining_seeds_for_row drew every unused seed one at a time,
+  for every column stream on every row (a call_center row has 34
+  streams). RandomNumberStream::finish_row skips them with one multiply
+  by a memoized MULTIPLIER^k (rows almost always leave the same number
+  unused).
+- next_random reduces mod 2^31-1 by folding (2^31 = 1 mod M) instead of
+  Schrage's method (a division and a modulo per draw).
+
+Unit tests compare both against the original algorithms (Schrage kept
+as the test reference, including seeds above MAX_INT).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UeniBBPwY58QJUuZK9Pcd5
+---
+ tpcdsgen/src/random/stream.rs              | 123 +++++++++++++++++++--
+ tpcdsgen/src/row/abstract_row_generator.rs |   9 +-
+ 2 files changed, 113 insertions(+), 19 deletions(-)
+
+diff --git a/tpcdsgen/src/random/stream.rs b/tpcdsgen/src/random/stream.rs
+index d285a24..9c99f75 100644
+--- a/tpcdsgen/src/random/stream.rs
++++ b/tpcdsgen/src/random/stream.rs
+@@ -5,13 +5,31 @@ pub struct RandomNumberStream {
+     initial_seed: i64,
+     seeds_used: u32,
+     seeds_per_row: u32,
++    /// Memoized `MULTIPLIER^jump_count mod MAX_INT` for [`Self::finish_row`]
++    /// (`jump_count == 0`: nothing cached).
++    jump_count: u32,
++    jump_multiplier: i64,
++}
++
++/// `x mod (2^31 - 1)` for `0 <= x < 2^62`.
++///
++/// Since `2^31 ≡ 1 (mod 2^31 - 1)`, the high bits can be folded onto the low
++/// bits with a shift and add. Two folds bring any value below `2^62` into
++/// `[0, 2^31]`, and one conditional subtract finishes. Equal to Schrage's
++/// method, which computes the same remainder with a division and a modulo.
++#[inline(always)]
++fn mod_max_int(x: i64) -> i64 {
++    debug_assert!((0..1 << 62).contains(&x));
++    const M: u64 = i32::MAX as u64;
++    let x = x as u64;
++    let s = (x & M) + (x >> 31);
++    let s = (s & M) + (s >> 31);
++    (if s >= M { s - M } else { s }) as i64
+ }
+ 
+ impl RandomNumberStream {
+     const DEFAULT_SEED_BASE: i32 = 19620718;
+     const MULTIPLIER: i64 = 16807;
+-    const QUOTIENT: i64 = 127773; // the quotient MAX_INT / MULTIPLIER
+-    const REMAINDER: i64 = 2836; // the remainder MAX_INT % MULTIPLIER
+ 
+     pub fn new(seeds_per_row: u32) -> Self {
+         RandomNumberStream {
+@@ -19,6 +37,8 @@ impl RandomNumberStream {
+             seed: 3,
+             seeds_used: 0,
+             seeds_per_row,
++            jump_count: 0,
++            jump_multiplier: 1,
+         }
+     }
+ 
+@@ -33,6 +53,8 @@ impl RandomNumberStream {
+             seed: initial_seed,
+             seeds_used: 0,
+             seeds_per_row,
++            jump_count: 0,
++            jump_multiplier: 1,
+         }
+     }
+ }
+@@ -40,19 +62,41 @@ impl RandomNumberStream {
+ impl RandomNumberStream {
+     // https://en.wikipedia.org/wiki/Lehmer_random_number_generator
+     pub fn next_random(&mut self) -> i64 {
+-        let mut next_seed = self.seed;
+-        let division_result = next_seed / Self::QUOTIENT;
+-        let mod_result = next_seed % Self::QUOTIENT;
+-        next_seed = Self::MULTIPLIER * mod_result - division_result * Self::REMAINDER;
+-        if next_seed < 0 {
+-            next_seed += i32::MAX as i64;
+-        }
+-
+-        self.seed = next_seed;
++        self.seed = mod_max_int(self.seed * Self::MULTIPLIER);
+         self.seeds_used += 1;
+         self.seed
+     }
+ 
++    /// Finish the current row: skip the seeds it reserved but didn't use, and
++    /// start counting the next row. Same result as drawing the remaining seeds
++    /// one at a time, but one multiply (by a memoized `MULTIPLIER^k`; rows
++    /// almost always leave the same number unused).
++    pub fn finish_row(&mut self) {
++        if self.seeds_used < self.seeds_per_row {
++            let count = self.seeds_per_row - self.seeds_used;
++            if count != self.jump_count {
++                self.jump_multiplier = Self::multiplier_pow(count as u64);
++                self.jump_count = count;
++            }
++            self.seed = mod_max_int((self.seed % i32::MAX as i64) * self.jump_multiplier);
++        }
++        self.seeds_used = 0;
++    }
++
++    /// `MULTIPLIER^count mod MAX_INT` by square-and-multiply.
++    fn multiplier_pow(mut count: u64) -> i64 {
++        let mut result = 1;
++        let mut multiplier = Self::MULTIPLIER;
++        while count > 0 {
++            if !count.is_multiple_of(2) {
++                result = (multiplier * result) % i32::MAX as i64;
++            }
++            count /= 2;
++            multiplier = (multiplier * multiplier) % i32::MAX as i64;
++        }
++        result
++    }
++
+     pub fn next_random_double(&mut self) -> f64 {
+         self.next_random() as f64 / i32::MAX as f64
+     }
+@@ -97,6 +141,63 @@ impl RandomNumberStream {
+ mod tests {
+     use super::*;
+ 
++    /// The original `next_random` step: Schrage's method.
++    fn schrage(seed: i64) -> i64 {
++        const QUOTIENT: i64 = 127773; // MAX_INT / MULTIPLIER
++        const REMAINDER: i64 = 2836; // MAX_INT % MULTIPLIER
++        let next =
++            RandomNumberStream::MULTIPLIER * (seed % QUOTIENT) - (seed / QUOTIENT) * REMAINDER;
++        if next < 0 {
++            next + i32::MAX as i64
++        } else {
++            next
++        }
++    }
++
++    #[test]
++    fn fold_matches_schrage() {
++        let max = i32::MAX as i64;
++        // includes initial seeds above MAX_INT (large global column numbers)
++        for seed in [0, 1, 2, max - 2, max - 1, max, max + 1, 3_000_000_000] {
++            assert_eq!(
++                mod_max_int(seed * RandomNumberStream::MULTIPLIER),
++                schrage(seed),
++                "{seed}"
++            );
++        }
++        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
++        for _ in 0..1_000_000 {
++            state ^= state << 13;
++            state ^= state >> 7;
++            state ^= state << 17;
++            let seed = (state % (1 << 32)) as i64;
++            assert_eq!(
++                mod_max_int(seed * RandomNumberStream::MULTIPLIER),
++                schrage(seed),
++                "{seed}"
++            );
++        }
++    }
++
++    #[test]
++    fn finish_row_matches_drawing_remaining_seeds() {
++        let mut fast = RandomNumberStream::new_with_column(5, 7);
++        let mut slow = fast.clone();
++        for row in 0..10_000u32 {
++            let used = (row * 7 + row / 3) % 9; // 0..=8, sometimes > seeds_per_row
++            for _ in 0..used {
++                assert_eq!(fast.next_random(), slow.next_random());
++            }
++            fast.finish_row();
++            while slow.get_seeds_used() < slow.get_seeds_per_row() {
++                slow.next_random();
++            }
++            slow.reset_seeds_used();
++            assert_eq!(fast.seed, slow.seed, "row {row}");
++            assert_eq!(fast.get_seeds_used(), 0);
++        }
++    }
++
+     #[test]
+     fn test_random_stream_creation() {
+         let stream = RandomNumberStream::new(1);
+diff --git a/tpcdsgen/src/row/abstract_row_generator.rs b/tpcdsgen/src/row/abstract_row_generator.rs
+index 090afbb..8eab080 100644
+--- a/tpcdsgen/src/row/abstract_row_generator.rs
++++ b/tpcdsgen/src/row/abstract_row_generator.rs
+@@ -71,15 +71,8 @@ impl<C: GeneratorColumn> AbstractRowGenerator<C> {
+ 
+     /// Consume remaining seeds for all streams (AbstractRowGenerator.consumeRemainingSeedsForRow)
+     pub fn consume_remaining_seeds_for_row(&mut self) {
+-        use crate::random::RandomValueGenerator;
+-
+         for stream in self.random_number_streams.iter_mut() {
+-            // Consume remaining seeds until each stream has used its full seeds_per_row allocation
+-            while stream.get_seeds_used() < stream.get_seeds_per_row() {
+-                RandomValueGenerator::generate_uniform_random_int(1, 100, stream);
+-            }
+-            // Reset seeds used count for next row
+-            stream.reset_seeds_used();
++            stream.finish_row();
+         }
+     }
+ 
+-- 
+2.43.0
+

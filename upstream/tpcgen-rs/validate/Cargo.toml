@@ -1,0 +1,17 @@
+[package]
+name = "validate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+h_new = { package = "tpchgen", path = "../../../../tpcgen-rs-tpch/tpchgen" }
+h_ref = { package = "tpchgen", version = "=4.0.0" }
+ds_new = { package = "tpcdsgen", path = "../../../../tpcgen-rs-tpcds/tpcdsgen" }
+ds_ref = { package = "tpcdsgen", version = "=4.0.0" }
+
+[profile.release]
+debug = false
+
+# Standalone: not part of the data-comb workspace.
+[workspace]

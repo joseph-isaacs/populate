@@ -1,0 +1,270 @@
+From 468a4814a4ed34384ad8c685a0651920add1b206 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 09:05:00 +0000
+Subject: [PATCH] perf(tpchgen): O(1) row skips, cheaper modulus, no per-row
+ color copy
+
+Three drop-in changes to the core random number generation; generated
+values are unchanged.
+
+- RowRandomInt::advance_seed memoizes MULTIPLIER^count. row_finished
+  almost always skips the same number of unused seeds, so finishing a
+  row becomes one multiply instead of a square-and-multiply loop, for
+  every column stream on every row.
+- next_rand reduces mod 2^31-1 by folding (2^31 = 1 mod M) instead of
+  the multiply-high sequence the compiler emits for `%`.
+- RandomStringSequence (p_name) no longer copies all 92 colors into a
+  Vec per row: a partial Fisher-Yates that tracks only the swapped
+  positions gives the same draws and result.
+
+Unit tests compare each against the original algorithm; the existing
+reference-data integration tests pass unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UeniBBPwY58QJUuZK9Pcd5
+---
+ tpchgen/src/random.rs | 166 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 160 insertions(+), 6 deletions(-)
+
+diff --git a/tpchgen/src/random.rs b/tpchgen/src/random.rs
+index f39a83b..d9e61a7 100644
+--- a/tpchgen/src/random.rs
++++ b/tpchgen/src/random.rs
+@@ -3,11 +3,46 @@
+ use crate::{distribution::Distribution, text::TextPool};
+ use std::fmt::Display;
+ 
+-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Default, Debug, Clone, Copy)]
+ pub struct RowRandomInt {
+     seed: i64,
+     usage: i32,
+     seeds_per_row: i32,
++    /// Memoized `MULTIPLIER^jump_count mod MODULUS` for [`Self::advance_seed`].
++    /// Rows nearly always leave the same number of seeds unused, so
++    /// `row_finished` becomes one multiply instead of a square-and-multiply
++    /// loop. `jump_count == 0` means nothing is cached (`advance_seed(0)` is a
++    /// no-op and never consults the cache).
++    jump_count: i64,
++    jump_multiplier: i64,
++}
++
++/// Equality ignores the jump cache: it never changes the generated values.
++impl PartialEq for RowRandomInt {
++    fn eq(&self, other: &Self) -> bool {
++        self.seed == other.seed
++            && self.usage == other.usage
++            && self.seeds_per_row == other.seeds_per_row
++    }
++}
++
++impl Eq for RowRandomInt {}
++
++/// `x mod (2^31 - 1)` for `0 <= x < 2^62`.
++///
++/// Since `2^31 ≡ 1 (mod 2^31 - 1)`, the high bits can be folded onto the low
++/// bits with a shift and add, which is cheaper than the multiply-high and
++/// fix-up sequence the compiler emits for `%` by a constant. Two folds bring
++/// any value below `2^62` into `[0, 2^31]`, and one conditional subtract
++/// finishes.
++#[inline(always)]
++fn mod_modulus(x: i64) -> i64 {
++    debug_assert!((0..1 << 62).contains(&x));
++    const M: u64 = RowRandomInt::MODULUS as u64;
++    let x = x as u64;
++    let s = (x & M) + (x >> 31);
++    let s = (s & M) + (s >> 31);
++    (if s >= M { s - M } else { s }) as i64
+ }
+ 
+ impl RowRandomInt {
+@@ -25,6 +60,7 @@ impl RowRandomInt {
+             seed,
+             usage: 0,
+             seeds_per_row,
++            ..Self::default()
+         }
+     }
+ 
+@@ -41,6 +77,7 @@ impl RowRandomInt {
+             seed: seed + column_number as i64 * (Self::MODULUS / 799),
+             seeds_per_row,
+             usage: 0,
++            ..Self::default()
+         }
+     }
+ 
+@@ -59,7 +96,7 @@ impl RowRandomInt {
+ 
+     /// Instantiates a new seed for the next random value.
+     pub fn next_rand(&mut self) -> i64 {
+-        self.seed = (self.seed * Self::MULTIPLIER) % Self::MODULUS;
++        self.seed = mod_modulus(self.seed * Self::MULTIPLIER);
+         self.usage += 1;
+         self.seed
+     }
+@@ -83,16 +120,28 @@ impl RowRandomInt {
+ 
+     /// Advances the seed value by the number of uses.
+     fn advance_seed(&mut self, count: i64) {
+-        let mut multiplier = Self::MULTIPLIER;
+-        let mut count = count;
++        if count <= 0 {
++            return;
++        }
++        if count != self.jump_count {
++            self.jump_multiplier = Self::multiplier_pow(count);
++            self.jump_count = count;
++        }
++        self.seed = mod_modulus((self.seed % Self::MODULUS) * self.jump_multiplier);
++    }
+ 
++    /// `MULTIPLIER^count mod MODULUS` by square-and-multiply.
++    fn multiplier_pow(mut count: i64) -> i64 {
++        let mut result = 1;
++        let mut multiplier = Self::MULTIPLIER;
+         while count > 0 {
+             if count % 2 != 0 {
+-                self.seed = (multiplier * self.seed) % Self::MODULUS;
++                result = (multiplier * result) % Self::MODULUS;
+             }
+             count /= 2;
+             multiplier = (multiplier * multiplier) % Self::MODULUS;
+         }
++        result
+     }
+ }
+ 
+@@ -522,6 +571,46 @@ impl<'a> RandomStringSequence<'a> {
+     }
+ 
+     pub fn next_value(&mut self) -> StringSequenceInstance<'a> {
++        let all = self.distribution.get_values();
++        let count = self.count as usize;
++        if count > Self::SPARSE_MAX_COUNT {
++            return self.next_value_full_shuffle();
++        }
++
++        // Partial Fisher-Yates over `all`, without copying it: only the first
++        // `count` positions are read back, so record just the positions each
++        // swap changed (`moved[k] = (position, index into all)`) and look
++        // others up as the identity. Same draws, same result as
++        // `next_value_full_shuffle`, without a per-row copy of the list.
++        let mut moved = [(0usize, 0usize); Self::SPARSE_MAX_COUNT];
++        let at = |moved: &[(usize, usize)], position: usize| {
++            moved
++                .iter()
++                .rev()
++                .find(|(p, _)| *p == position)
++                .map_or(position, |(_, index)| *index)
++        };
++        let mut values = Vec::with_capacity(count);
++        for current_position in 0..count {
++            let swap_position = self
++                .inner
++                .next_int(current_position as i32, all.len() as i32 - 1)
++                as usize;
++            let current = at(&moved[..current_position], current_position);
++            let swapped = at(&moved[..current_position], swap_position);
++            values.push(all[swapped]);
++            // `current_position` is never read again; `swap_position` now
++            // holds what was at `current_position`.
++            moved[current_position] = (swap_position, current);
++        }
++        StringSequenceInstance { values }
++    }
++
++    /// Longest sequence handled without copying the distribution's values.
++    const SPARSE_MAX_COUNT: usize = 16;
++
++    /// Reference implementation: shuffle a full copy, keep the first `count`.
++    fn next_value_full_shuffle(&mut self) -> StringSequenceInstance<'a> {
+         // Get all values from the distribution
+         let mut values: Vec<&str> = self.distribution.get_values().to_vec();
+ 
+@@ -536,8 +625,9 @@ impl<'a> RandomStringSequence<'a> {
+             values.swap(current_position as usize, swap_position);
+         }
+ 
+-        // Keep only the first 'count' values, and join them with spaces
++        // Truncate to the desired count
+         values.truncate(self.count as usize);
++
+         StringSequenceInstance { values }
+     }
+ 
+@@ -629,7 +719,71 @@ impl<'a> RandomText<'a> {
+ #[cfg(test)]
+ mod test {
+     use super::*;
++    use crate::distribution::Distributions;
+     use std::collections::HashSet;
++
++    /// The original `advance_seed`: square-and-multiply on the seed.
++    fn advance_seed_reference(mut seed: i64, mut count: i64) -> i64 {
++        let mut multiplier = RowRandomInt::MULTIPLIER;
++        while count > 0 {
++            if count % 2 != 0 {
++                seed = (multiplier * seed) % RowRandomInt::MODULUS;
++            }
++            count /= 2;
++            multiplier = (multiplier * multiplier) % RowRandomInt::MODULUS;
++        }
++        seed
++    }
++
++    #[test]
++    fn mod_modulus_matches_remainder() {
++        const M: i64 = RowRandomInt::MODULUS;
++        for x in [0, 1, M - 1, M, M + 1, 2 * M, 2 * M + 1, (1 << 62) - 1] {
++            assert_eq!(mod_modulus(x), x % M, "{x}");
++        }
++        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
++        for _ in 0..1_000_000 {
++            state ^= state << 13;
++            state ^= state >> 7;
++            state ^= state << 17;
++            let x = (state >> 2) as i64; // [0, 2^62)
++            assert_eq!(mod_modulus(x), x % M, "{x}");
++        }
++    }
++
++    #[test]
++    fn memoized_row_jump_matches_square_and_multiply() {
++        // Rows using a varying number of their reserved seeds, so the jump
++        // count changes (cache misses) as well as repeats (cache hits).
++        let mut rng = RowRandomInt::new(709314158, 7);
++        let mut seed = 709314158;
++        for row in 0..10_000i64 {
++            let used = (row * 7 + row / 3) % 9; // 0..=8, sometimes > 7
++            for _ in 0..used {
++                rng.next_rand();
++                seed = seed * RowRandomInt::MULTIPLIER % RowRandomInt::MODULUS;
++            }
++            rng.row_finished();
++            seed = advance_seed_reference(seed, 7 - used);
++            assert_eq!(rng.seed, seed, "row {row}");
++        }
++        rng.advance_rows(123_456);
++        assert_eq!(rng.seed, advance_seed_reference(seed, 7 * 123_456));
++    }
++
++    #[test]
++    fn sparse_string_sequence_matches_full_shuffle() {
++        let colors = Distributions::static_default().part_colors();
++        for count in [1, 2, 5, 10, 16] {
++            let mut sparse = RandomStringSequence::new(709314158, count, colors);
++            let mut full = RandomStringSequence::new(709314158, count, colors);
++            for _ in 0..10_000 {
++                assert_eq!(sparse.next_value(), full.next_value_full_shuffle());
++                sparse.row_finished();
++                full.row_finished();
++            }
++        }
++    }
+     #[test]
+     fn test_small_random_alpha_numeric() {
+         RandomAlphaNumericTest {
+-- 
+2.43.0
+

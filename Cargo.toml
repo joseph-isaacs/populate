@@ -2,6 +2,7 @@
 members = [
     #    "populate",
     "populate-2",
+    "populate-2-tpch",
     #    "populate-core",
     #    "populate-builtins",
     #    "populate-builtins-tpch",

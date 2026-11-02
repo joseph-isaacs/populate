@@ -1,0 +1,27 @@
+[package]
+name = "populate-2-tpch"
+description = "TPC-H data generation built on populate-2 combinators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-2 = { workspace = true }
+rand = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+tpchgen = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+divan = { workspace = true }
+tpchgen-arrow = { workspace = true }
+
+[[bench]]
+name = "tpch"
+harness = false
+
+[[bench]]
+name = "columns"
+harness = false

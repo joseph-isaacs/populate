@@ -34,6 +34,15 @@ pub trait Column: Clone {
     #[inline]
     fn reserve(&self, _sink: &mut Self::Sink, _n: usize) {}
 
+    /// Columnar mode: append rows `[start, start + n)`. Override to exploit
+    /// structure a row-at-a-time generator can't (runs, periodic values).
+    #[inline]
+    fn write_n(&self, st: &mut Self::State, start: i64, n: usize, sink: &mut Self::Sink) {
+        for row in start..start + n as i64 {
+            self.write(st, row, sink);
+        }
+    }
+
     /// Columnar mode: append row `row` to `sink`. Override to skip building an
     /// intermediate value.
     #[inline]
@@ -91,9 +100,7 @@ impl<C: Column> Distribution<VecBackend> for Col<C> {
         let HCons(mut s, HNil) = sink;
         let mut st = self.col.init(self.start);
         self.col.reserve(&mut s, n);
-        for row in self.start..self.start + n as i64 {
-            self.col.write(&mut st, row, &mut s);
-        }
+        self.col.write_n(&mut st, self.start, n, &mut s);
         HCons(s, HNil)
     }
 }
@@ -236,33 +243,39 @@ pub fn pick(seed: i64, picks: &'static LazyLock<Picks>) -> Pick {
 
 impl Pick {
     #[inline(always)]
-    fn draw(&self, st: &mut Stream) -> &'static str {
-        let table = &self.picks.table;
-        table[st.next_item().next_int(0, table.len() as i32 - 1) as usize]
+    fn draw_index(&self, st: &mut Stream) -> usize {
+        let n = self.picks.table.len() as i32;
+        st.next_item().next_int(0, n - 1) as usize
     }
 }
 
 impl Column for Pick {
     type Item = Str;
     type Sink = StrCol;
-    type State = Stream;
+    /// Each table slot's view in the current sink, interned on first write:
+    /// one copy of each word per batch instead of one per row.
+    type State = (Stream, Vec<u128>);
 
     fn reserve(&self, sink: &mut StrCol, n: usize) {
-        sink.reserve(n, 16);
+        sink.reserve(n, 0);
     }
 
-    fn init(&self, start: i64) -> Stream {
+    fn init(&self, start: i64) -> Self::State {
         LazyLock::force(self.picks);
-        Stream::ungrouped(self.seed, 1, start)
+        (Stream::ungrouped(self.seed, 1, start), Vec::new())
     }
 
-    fn value(&self, st: &mut Stream, _row: i64) -> Str {
-        Str::borrowed(self.draw(st))
+    fn value(&self, st: &mut Self::State, _row: i64) -> Str {
+        Str::borrowed(self.picks.table[self.draw_index(&mut st.0)])
     }
 
     #[inline]
-    fn write(&self, st: &mut Stream, _row: i64, sink: &mut StrCol) {
-        sink.push_str(self.draw(st));
+    fn write(&self, st: &mut Self::State, _row: i64, sink: &mut StrCol) {
+        if st.1.is_empty() {
+            st.1 = self.picks.table.iter().map(|w| sink.intern(w)).collect();
+        }
+        let i = self.draw_index(&mut st.0);
+        sink.push_view(st.1[i]);
     }
 }
 

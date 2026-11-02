@@ -2,7 +2,7 @@
 //! bitmaps, and a nullable `Int32` sink.
 
 use arrow_array::{ArrayRef, Int32Array};
-use arrow_buffer::{BooleanBufferBuilder, NullBuffer, ScalarBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use populate_2::arrow::IntoArrowArray;
 use populate_2::hlist::{HCons, HNil};
 use populate_2::traits::{Backend, DefaultSink, Sink};
@@ -44,6 +44,8 @@ impl NullBitmap {
         }
     }
 
+    /// The full bitmap (both draws). Columnar code should prefer
+    /// [`Self::is_null`], which skips the second draw for most rows.
     #[inline(always)]
     pub fn draw(&self, r: &mut Rand) -> i64 {
         let threshold = uniform_int(r, 0, 9999);
@@ -56,10 +58,16 @@ impl NullBitmap {
         }
     }
 
-    /// Whether column `pos` is null in this row.
+    /// Whether column `pos` is null in this row. The bitmap draw only matters
+    /// when the threshold selects the row, and the stream jumps to the next
+    /// row's block either way, so it's skipped otherwise (90%+ of rows).
     #[inline(always)]
     pub fn is_null(&self, r: &mut Rand, pos: u32) -> bool {
-        (self.draw(r) >> pos) & 1 != 0
+        if uniform_int(r, 0, 9999) >= self.basis_points {
+            return false;
+        }
+        let bit_map = (r.next_rand() as i32 % i32::MAX + 1) as i64;
+        ((bit_map & !self.not_null) >> pos) & 1 != 0
     }
 }
 
@@ -75,34 +83,42 @@ impl<B: Backend> DefaultSink<B> for NullI32 {
     type Sink = HCons<NullI32Col, HNil>;
 }
 
+/// Nullable `Int32` sink. Validity is packed 64 rows at a time into a `u64`
+/// (no per-row builder call); the null buffer is only kept if a null appears.
 #[derive(Default, Debug)]
 pub struct NullI32Col {
     values: Vec<i32>,
-    valid: Option<BooleanBufferBuilder>,
+    words: Vec<u64>,
+    word: u64,
+    any_null: bool,
 }
 
 impl NullI32Col {
     pub fn reserve(&mut self, n: usize) {
         self.values.reserve(n);
+        self.words.reserve(n / 64 + 1);
+    }
+
+    #[inline(always)]
+    fn push_bit(&mut self, valid: bool) {
+        let i = self.values.len() % 64;
+        self.word |= (valid as u64) << i;
+        if i == 63 {
+            self.words.push(self.word);
+            self.word = 0;
+        }
     }
 
     #[inline(always)]
     pub fn push_value(&mut self, v: i32) {
+        self.push_bit(true);
         self.values.push(v);
-        if let Some(valid) = &mut self.valid {
-            valid.append(true);
-        }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push_null(&mut self) {
-        let valid = self.valid.get_or_insert_with(|| {
-            // first null: back-fill validity for the rows so far
-            let mut b = BooleanBufferBuilder::new(self.values.capacity().max(8));
-            b.append_n(self.values.len(), true);
-            b
-        });
-        valid.append(false);
+        self.any_null = true;
+        self.push_bit(false);
         self.values.push(0);
     }
 }
@@ -118,7 +134,14 @@ impl Sink<NullI32> for NullI32Col {
 
 impl IntoArrowArray for NullI32Col {
     fn into_array(mut self) -> ArrayRef {
-        let nulls = self.valid.as_mut().map(|b| NullBuffer::new(b.finish()));
+        let len = self.values.len();
+        let nulls = self.any_null.then(|| {
+            if !len.is_multiple_of(64) {
+                self.words.push(self.word);
+            }
+            let bits = BooleanBuffer::new(Buffer::from_vec(self.words), 0, len);
+            NullBuffer::new(bits)
+        });
         Arc::new(Int32Array::new(ScalarBuffer::from(self.values), nulls))
     }
 }

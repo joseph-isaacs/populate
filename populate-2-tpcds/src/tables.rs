@@ -111,11 +111,25 @@ pub struct InventoryKey {
     item_rows: i64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Odometer {
     item: i64,
     warehouse: i64,
     week: i64,
+    /// Item column: this week's keys for every item (`week_keys_for` week).
+    week_keys: Vec<i32>,
+    week_keys_for: i64,
+}
+
+impl InventoryKey {
+    pub fn new(key: InvKey, items: i64, warehouses: i64, item_rows: i64) -> Self {
+        Self {
+            key,
+            items,
+            warehouses,
+            item_rows,
+        }
+    }
 }
 
 impl Column for InventoryKey {
@@ -132,6 +146,46 @@ impl Column for InventoryKey {
             item: start % self.items,
             warehouse: (start / self.items) % self.warehouses,
             week: start / (self.items * self.warehouses),
+            week_keys: Vec::new(),
+            week_keys_for: -1,
+        }
+    }
+
+    /// Bulk path: rows come in runs of one (week, warehouse) covering the
+    /// item range, so each run is a fill (date, warehouse) or a slice copy of
+    /// the week's item keys, computed once per week.
+    fn write_n(&self, o: &mut Odometer, _start: i64, mut n: usize, sink: &mut Vec<i32>) {
+        while n > 0 {
+            let run = ((self.items - o.item) as usize).min(n);
+            let date = Date::JULIAN_DATE_MINIMUM as i64 + o.week * 7;
+            match self.key {
+                InvKey::Date => sink.extend(std::iter::repeat_n(date as i32, run)),
+                InvKey::Warehouse => {
+                    sink.extend(std::iter::repeat_n((o.warehouse + 1) as i32, run))
+                }
+                InvKey::Item => {
+                    if o.week_keys_for != o.week {
+                        o.week_keys.clear();
+                        o.week_keys.extend(
+                            (1..=self.items)
+                                .map(|u| match_item_key(u, date, self.item_rows) as i32),
+                        );
+                        o.week_keys_for = o.week;
+                    }
+                    let i = o.item as usize;
+                    sink.extend_from_slice(&o.week_keys[i..i + run]);
+                }
+            }
+            n -= run;
+            o.item += run as i64;
+            if o.item == self.items {
+                o.item = 0;
+                o.warehouse += 1;
+                if o.warehouse == self.warehouses {
+                    o.warehouse = 0;
+                    o.week += 1;
+                }
+            }
         }
     }
 
@@ -255,10 +309,13 @@ pub struct Digit<T: 'static> {
     values: &'static [T],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct DigitState {
     digit: usize,
     left_in_run: i64,
+    /// String digits: each value's view in the current sink, interned on the
+    /// first write (one copy of each string per batch, not per row).
+    views: Vec<u128>,
 }
 
 impl<T: 'static> Digit<T> {
@@ -266,12 +323,19 @@ impl<T: 'static> Digit<T> {
         DigitState {
             digit: ((start / self.divisor) % self.values.len() as i64) as usize,
             left_in_run: self.divisor - start % self.divisor,
+            views: Vec::new(),
         }
     }
 
     #[inline(always)]
     fn step(&self, st: &mut DigitState) -> &'static T {
-        let v = &self.values[st.digit];
+        &self.values[self.advance(st)]
+    }
+
+    /// Current digit, then move to the next row.
+    #[inline(always)]
+    fn advance(&self, st: &mut DigitState) -> usize {
+        let v = st.digit;
         st.left_in_run -= 1;
         if st.left_in_run == 0 {
             st.left_in_run = self.divisor;
@@ -303,7 +367,11 @@ impl Column for Digit<&'static str> {
 
     #[inline(always)]
     fn write(&self, st: &mut DigitState, _row: i64, sink: &mut StrCol) {
-        sink.push_str(self.step(st));
+        if st.views.is_empty() {
+            st.views = self.values.iter().map(|v| sink.intern(v)).collect();
+        }
+        let d = self.advance(st);
+        sink.push_view(st.views[d]);
     }
 }
 

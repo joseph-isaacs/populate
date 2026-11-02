@@ -187,6 +187,25 @@ impl StrCol {
             .push(pool_view(pool, offset as usize, len as usize));
     }
 
+    /// The view for `s` in this sink: inline if <= 12 bytes, otherwise its
+    /// bytes are stored once in the data buffer. Push it with
+    /// [`Self::push_view`] for every repeat (dictionary-like columns).
+    pub fn intern(&mut self, s: &str) -> u128 {
+        let bytes = s.as_bytes();
+        if bytes.len() <= 12 {
+            return make_view(bytes, DATA_BLOCK, 0);
+        }
+        let offset = self.data.len() as u32;
+        self.data.extend_from_slice(bytes);
+        make_view(bytes, DATA_BLOCK, offset)
+    }
+
+    /// Push a view from [`Self::intern`] on this same sink.
+    #[inline(always)]
+    pub fn push_view(&mut self, view: u128) {
+        self.views.push(view);
+    }
+
     pub fn len(&self) -> usize {
         self.views.len()
     }

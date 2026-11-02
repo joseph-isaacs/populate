@@ -17,6 +17,9 @@ tpcdsgen = { workspace = true }
 tpcdsgen-arrow = { workspace = true }
 divan = { workspace = true }
 rand = { workspace = true }
+parquet = { workspace = true }
+tpchgen = { workspace = true }
+tpchgen-arrow = { workspace = true }
 
 [[bench]]
 name = "tpcds"

@@ -2,6 +2,8 @@ use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "arrow")]
+mod arrow;
 mod col;
 mod deque;
 mod dist;

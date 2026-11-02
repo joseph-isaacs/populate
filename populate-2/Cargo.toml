@@ -7,6 +7,13 @@ license.workspace = true
 
 [dependencies]
 rand = { workspace = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+
+[features]
+default = ["arrow"]
+arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema"]
 
 [dev-dependencies]
 rand = { workspace = true }
@@ -15,3 +22,8 @@ divan = { workspace = true }
 [[bench]]
 name = "collect"
 harness = false
+
+[[bench]]
+name = "arrow"
+harness = false
+required-features = ["arrow"]

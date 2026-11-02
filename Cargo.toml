@@ -23,15 +23,17 @@ license = "MIT"
 [workspace.dependencies]
 divan = "0.1"
 rand = "0.9"
-arrow = { version = "57.2.0" }
-arrow-array = "57"
-arrow-schema = "57"
-arrow-buffer = "57"
-arrow-cast = "57"
+arrow = { version = "60" }
+arrow-array = "60"
+arrow-schema = "60"
+arrow-buffer = "60"
+arrow-cast = "60"
 serde_json = "1"
-tpchgen = "2.0"
-tpchgen-arrow = "2.0"
+tpchgen = "4.0"
+tpchgen-arrow = "4.0"
 populate-2 = { path = "populate-2" }
+tpcdsgen = "4.0"
+tpcdsgen-arrow = "4.0"
 
 #populate-core = { path = "populate-core" }
 #populate-derive = { path = "populate-derive" }

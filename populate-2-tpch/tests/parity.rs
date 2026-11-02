@@ -2,6 +2,7 @@
 //! equal (schema, types, every value).
 
 use arrow_array::RecordBatch;
+use arrow_schema::ArrowError;
 use populate_2_tpch::{Customer, Nation, Part, PartSupp, Region, Supplier, Table, batches};
 use tpchgen::generators::{
     CustomerGenerator, NationGenerator, PartGenerator, PartSuppGenerator, RegionGenerator,
@@ -11,9 +12,15 @@ use tpchgen_arrow::{
     CustomerArrow, NationArrow, PartArrow, PartSuppArrow, RegionArrow, SupplierArrow,
 };
 
-fn assert_same<T: Table>(sf: f64, batch_size: usize, reference: impl Iterator<Item = RecordBatch>) {
+fn assert_same<T: Table>(
+    sf: f64,
+    batch_size: usize,
+    reference: impl Iterator<Item = Result<RecordBatch, ArrowError>>,
+) {
     let ours: Vec<RecordBatch> = batches::<T>(sf, batch_size).collect();
-    let theirs: Vec<RecordBatch> = reference.collect();
+    let theirs: Vec<RecordBatch> = reference
+        .collect::<Result<_, _>>()
+        .expect("reference batches");
     assert_eq!(ours.len(), theirs.len(), "batch count");
     let mut rows = 0;
     for (i, (o, t)) in ours.iter().zip(&theirs).enumerate() {

@@ -27,6 +27,7 @@ fn comparison_detects_one_char_change() {
     let theirs = PartArrow::new(PartGenerator::new(0.01, 1, 1))
         .with_batch_size(100)
         .next()
+        .unwrap()
         .unwrap();
     assert_eq!(ours, theirs);
     // flip one byte in one comment and rebuild

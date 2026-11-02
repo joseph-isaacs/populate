@@ -211,7 +211,7 @@ impl IntoArrowArray for StrCol {
         // SAFETY: views were made by `make_view` over in-bounds slices of
         // these buffers, and all TPC-H text is ASCII.
         let array = unsafe {
-            StringViewArray::new_unchecked(ScalarBuffer::from(self.views), buffers, None)
+            StringViewArray::new_unchecked(ScalarBuffer::from(self.views), buffers.into(), None)
         };
         Arc::new(array)
     }

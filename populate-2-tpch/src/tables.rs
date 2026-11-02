@@ -10,7 +10,7 @@ use crate::column::{
     Column, MARKET_SEGMENTS, PART_CONTAINERS, PART_TYPES, alpha_num, bounded, col, dists,
     grouped_bounded, grouped_text, key_name, phone, pick, text,
 };
-use crate::rng::Stream;
+use crate::rng::{Stream, scale};
 use crate::values::{Dec, POOL_BUFFER, Str, StrCol, push_int, text_pool};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -172,9 +172,23 @@ pub struct PartName;
 
 const NAME_WORDS: usize = 5;
 
+/// Part colors zero-padded to 16 bytes, with their lengths (longest is 10).
+static PADDED_COLORS: LazyLock<Vec<([u8; 16], u8)>> = LazyLock::new(|| {
+    dists()
+        .part_colors()
+        .get_values()
+        .iter()
+        .map(|c| {
+            let mut word = [0u8; 16];
+            word[..c.len()].copy_from_slice(c.as_bytes());
+            (word, c.len() as u8)
+        })
+        .collect()
+});
+
 impl PartName {
     #[inline]
-    fn fill(st: &mut Stream, colors: &[&'static str], out: &mut Vec<u8>) {
+    fn fill(st: &mut Stream, colors: &[([u8; 16], u8)], out: &mut Vec<u8>) {
         // Only the first NAME_WORDS slots are read back, so track the swapped
         // positions sparsely instead of copying all 92 colors per row.
         // moved[k] = (position, color index) written by swap k
@@ -187,35 +201,41 @@ impl PartName {
                 .find(|(p, _)| *p == pos)
                 .map_or(pos, |(_, v)| *v)
         };
-        let r = st.next_item();
+        let draws = st.next_item().ahead::<NAME_WORDS>();
         for (i, slot) in slots.iter_mut().enumerate() {
-            let j = r.next_int(i as i32, colors.len() as i32 - 1) as u16;
+            let j = scale(draws[i], i as i32, colors.len() as i32 - 1) as u16;
             let vi = at(&moved[..i], i as u16);
             *slot = at(&moved[..i], j);
             // position j now holds vi (position i is never read again)
             moved[i] = (j, vi);
         }
-        for (k, &idx) in slots.iter().enumerate() {
-            if k > 0 {
-                out.push(b' ');
-            }
-            out.extend_from_slice(colors[idx as usize].as_bytes());
+        // Fixed 16-byte stores of zero-padded words into a stack buffer, then
+        // one append (instead of a memcpy call per word).
+        let mut buf = [0u8; NAME_WORDS * 17 + 16];
+        let mut pos = 0;
+        for &idx in &slots {
+            let (word, len) = &colors[idx as usize];
+            buf[pos..pos + 16].copy_from_slice(word);
+            pos += *len as usize;
+            buf[pos] = b' ';
+            pos += 1;
         }
+        out.extend_from_slice(&buf[..pos - 1]);
     }
 }
 
 impl Column for PartName {
     type Item = Str;
     type Sink = StrCol;
-    /// The color list is looked up once, not per row.
-    type State = (Stream, &'static [&'static str]);
+    /// The (padded) color list is looked up once, not per row.
+    type State = (Stream, &'static [([u8; 16], u8)]);
 
     fn reserve(&self, sink: &mut StrCol, n: usize) {
         sink.reserve(n, 34);
     }
 
     fn init(&self, start: i64) -> Self::State {
-        let colors = dists().part_colors().get_values();
+        let colors = PADDED_COLORS.as_slice();
         (
             Stream::ungrouped(709314158, colors.len() as i32, start),
             colors,

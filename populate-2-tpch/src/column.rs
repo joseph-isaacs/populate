@@ -6,7 +6,7 @@
 //! column into a `populate_2::traits::Distribution<VecBackend>`, so tables are
 //! ordinary populate-2 tuples of columns.
 
-use crate::rng::{Rand, Stream};
+use crate::rng::{Rand, Stream, scale};
 use crate::values::{Dec, DecCol, POOL_BUFFER, Str, StrCol, push_int, text_pool};
 use populate_2::hlist::{HCons, HNil};
 use populate_2::traits::{DefaultSink, Distribution, SampleIter, Sink, VecBackend};
@@ -302,9 +302,8 @@ impl Text {
     /// (offset, len) into the text pool.
     #[inline(always)]
     pub fn draw(&self, r: &mut Rand) -> (i32, i32) {
-        let offset = r.next_int(0, self.span);
-        let len = r.next_int(self.min, self.max);
-        (offset, len)
+        let [a, b] = r.ahead::<2>();
+        (scale(a, 0, self.span), scale(b, self.min, self.max))
     }
 }
 
@@ -351,6 +350,10 @@ pub struct AlphaNum {
 }
 
 pub fn alpha_num(seed: i64, average_length: i32) -> AlphaNum {
+    assert!(
+        average_length <= 25,
+        "alpha_num supports average lengths up to 25"
+    );
     AlphaNum {
         seed,
         min: (average_length as f64 * 0.4) as i32,
@@ -365,15 +368,22 @@ impl AlphaNum {
     fn fill(&self, st: &mut Stream, out: &mut Vec<u8>) {
         let r = st.next_item();
         let len = r.next_int(self.min, self.max) as usize;
-        let mut snapshot = *r;
-        let mut char_index: i64 = 0;
-        for i in 0..len {
-            if i % 5 == 0 {
-                char_index = snapshot.next_int(0, i32::MAX) as i64;
+        // Characters come from a copy of the stream: draw i serves chars
+        // 5i..5i+5. Compute all of them independently (no serial chain).
+        // TPC-H addresses (average 25) are at most 40 chars: 8 draws.
+        debug_assert!(len <= 40, "alpha_num supports average lengths up to 25");
+        let draws = (*r).ahead::<8>();
+        // Build in a stack buffer, append once (no per-byte capacity checks).
+        let mut buf = [0u8; 40];
+        let buf = &mut buf[..len.min(40)];
+        for (chunk, &seed) in buf.chunks_mut(5).zip(&draws) {
+            let mut char_index = scale(seed, 0, i32::MAX) as i64;
+            for b in chunk {
+                *b = ALPHA_NUMERIC[(char_index & 0x3f) as usize];
+                char_index >>= 6;
             }
-            out.push(ALPHA_NUMERIC[(char_index & 0x3f) as usize]);
-            char_index >>= 6;
         }
+        out.extend_from_slice(buf);
     }
 }
 
@@ -430,13 +440,27 @@ impl Phone {
             r.next_int(100, 999),
             r.next_int(1000, 9999),
         );
-        push_int(out, 10 + nation_key % 90, 2);
-        out.push(b'-');
-        push_int(out, l1 as u64, 3);
-        out.push(b'-');
-        push_int(out, l2 as u64, 3);
-        out.push(b'-');
-        push_int(out, l3 as u64, 4);
+        // Fixed "CC-LLL-LLL-LLLL": every field has a known digit count.
+        let cc = (10 + nation_key % 90) as u32;
+        let (l1, l2, l3) = (l1 as u32, l2 as u32, l3 as u32);
+        let d = |v: u32| b'0' + v as u8;
+        out.extend_from_slice(&[
+            d(cc / 10),
+            d(cc % 10),
+            b'-',
+            d(l1 / 100),
+            d(l1 / 10 % 10),
+            d(l1 % 10),
+            b'-',
+            d(l2 / 100),
+            d(l2 / 10 % 10),
+            d(l2 % 10),
+            b'-',
+            d(l3 / 1000),
+            d(l3 / 100 % 10),
+            d(l3 / 10 % 10),
+            d(l3 % 10),
+        ]);
     }
 }
 

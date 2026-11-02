@@ -632,6 +632,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-2-tpcds"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "divan",
+ "populate-2",
+ "populate-2-tpch",
+ "tpcdsgen",
+ "tpcdsgen-arrow",
+]
+
+[[package]]
 name = "populate-2-tpch"
 version = "0.1.0"
 dependencies = [
@@ -819,6 +833,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
 dependencies = [
  "crunchy",
+]
+
+[[package]]
+name = "tpcdsgen"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e541a215c67a513706b921efd2cbaf41699720eb5036c7c058661942cfe30e15"
+
+[[package]]
+name = "tpcdsgen-arrow"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efe811ce4c7cf7877d6ed51e057fe6e89bb3f7d53eae8cf3a43bce9ba4c70d6c"
+dependencies = [
+ "arrow",
+ "tpcdsgen",
 ]
 
 [[package]]

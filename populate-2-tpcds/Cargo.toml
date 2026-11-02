@@ -1,0 +1,18 @@
+[package]
+name = "populate-2-tpcds"
+description = "TPC-DS data generation built on populate-2 combinators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-2 = { workspace = true }
+populate-2-tpch = { path = "../populate-2-tpch" }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+tpcdsgen = { workspace = true }
+
+[dev-dependencies]
+tpcdsgen-arrow = { workspace = true }
+divan = { workspace = true }

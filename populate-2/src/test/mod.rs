@@ -2,10 +2,11 @@ use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "arrow")]
+mod arrow;
 mod col;
 mod deque;
 mod dist;
-mod list;
 mod row;
 mod scalar;
 
@@ -71,3 +72,6 @@ fn tracked<D>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
         log: Rc::clone(log),
     }
 }
+mod list;
+mod list_ticks;
+mod nested;

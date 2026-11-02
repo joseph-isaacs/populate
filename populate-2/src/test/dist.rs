@@ -143,26 +143,187 @@ pub(crate) fn make_nested_tuple(
     ))
 }
 
-pub(crate) fn gen_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
-    list(range(0usize, 1), range(0, 1))
-}
-
-pub(crate) fn make_list_in_tuple() -> impl Distribution<VecBackend, Item = (i32, Vec<i64>)> {
-    (constant(42i32), list(constant(2usize), range(0, 1)))
-}
-
-pub(crate) fn make_tracked_list_in_tuple(
-    log: &Log,
-) -> impl Distribution<VecBackend, Item = (i32, Vec<i64>)> {
-    (
-        tracked("COL1", constant(42i32), log),
-        tracked("LIST", list(constant(2usize), range(0, 1)), log),
-    )
-}
-
 pub(crate) fn make_row_order(log: &Log) -> impl Distribution<VecBackend, Item = (i64, i64)> {
     (
         tracked("COL1", range(0i64, 1), log),
         tracked("COL2", range(100i64, 1), log),
+    )
+}
+
+// ========================================================================
+// List helpers
+// ========================================================================
+
+/// lens 0,1,2,..; elements 0,1,2,.. continuing across rows
+pub(crate) fn gen_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    list(range(0usize, 1), range(0i64, 1))
+}
+
+pub(crate) fn gen_list_of_tuples() -> impl Distribution<VecBackend, Item = Vec<(i64, bool)>> {
+    list(constant(2usize), (range(0i64, 1), constant(true)))
+}
+
+pub(crate) fn gen_nested_list() -> impl Distribution<VecBackend, Item = Vec<Vec<i64>>> {
+    list(constant(2usize), list(range(1usize, 1), range(0i64, 1)))
+}
+
+pub(crate) fn gen_list_in_tuple<B: Backend>() -> impl Distribution<B, Item = (i32, Vec<i64>)> {
+    (constant(7i32), list(constant(2usize), range(0i64, 1)))
+}
+
+pub(crate) fn gen_list_in_flatten() -> impl Distribution<VecBackend, Item = (i32, Vec<i64>, i64)> {
+    flatten((
+        constant(1i32),
+        (list(constant(1usize), range(0i64, 1)), constant(2i64)),
+    ))
+}
+
+pub(crate) fn gen_map_to_list_of_tuples() -> impl Distribution<VecBackend, Item = Vec<(i64, i32)>> {
+    map(range(0i64, 1), |x: i64| vec![(x, x as i32); 2])
+}
+
+// ---- tracked list helpers (tick tests) ----
+
+pub(crate) fn make_tracked_list(log: &Log) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    list(
+        tracked("LEN", range(0usize, 1), log),
+        tracked("E", range(0i64, 1), log),
+    )
+}
+
+pub(crate) fn make_tracked_empty_list(log: &Log) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    list(
+        tracked("LEN", constant(0usize), log),
+        tracked("E", range(0i64, 1), log),
+    )
+}
+
+pub(crate) fn make_tracked_list_from_1(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    list(
+        tracked("LEN", range(1usize, 1), log),
+        tracked("E", range(0i64, 1), log),
+    )
+}
+
+pub(crate) fn make_tracked_list_len2(log: &Log) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    list(
+        tracked("LEN", constant(2usize), log),
+        tracked("E", range(0i64, 1), log),
+    )
+}
+
+pub(crate) fn make_tracked_list_between_cols(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = (i32, Vec<i64>, i32)> {
+    (
+        tracked("C1", range(0i32, 1), log),
+        list(
+            tracked("LEN", constant(2usize), log),
+            tracked("E", range(0i64, 1), log),
+        ),
+        tracked("C3", range(0i32, 1), log),
+    )
+}
+
+pub(crate) fn make_tracked_list_of_tuples(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<(i64, i32, bool)>> {
+    list(
+        tracked("LEN", constant(3usize), log),
+        (
+            tracked("A", range(0i64, 1), log),
+            tracked("B", range(0i32, 1), log),
+            tracked("C", constant(true), log),
+        ),
+    )
+}
+
+pub(crate) fn make_tracked_nested_list(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<Vec<i64>>> {
+    list(
+        tracked("OUTER", constant(2usize), log),
+        list(
+            tracked("INNER", range(1usize, 1), log),
+            tracked("E", range(0i64, 1), log),
+        ),
+    )
+}
+
+pub(crate) fn make_list_wrapped_in_tracked(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    tracked(
+        "LIST",
+        list(
+            tracked("LEN", constant(2usize), log),
+            tracked("E", range(0i64, 1), log),
+        ),
+        log,
+    )
+}
+
+pub(crate) fn make_tracked_map_to_list(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<i64>> {
+    map(tracked("SRC", range(1usize, 1), log), |n: usize| {
+        (0..n as i64).collect::<Vec<_>>()
+    })
+}
+
+pub(crate) fn make_tracked_list_in_tuple<B: Backend>(
+    log: &Log,
+) -> impl Distribution<B, Item = (i32, Vec<i64>)> {
+    (
+        tracked("C1", constant(7i32), log),
+        list(
+            tracked("LEN", constant(2usize), log),
+            tracked("E", range(0i64, 1), log),
+        ),
+    )
+}
+
+// ========================================================================
+// Struct/list nesting helpers ("struct" = tuple; fields become columns)
+// ========================================================================
+
+/// struct of list: { id: i32, tags: list<i64> }
+pub(crate) fn gen_struct_of_list<B: Backend>() -> impl Distribution<B, Item = (i32, Vec<i64>)> {
+    (range(0i32, 1), list(range(0usize, 1), range(0i64, 1)))
+}
+
+/// struct of list of struct: { id: i32, items: list<{ qty: i64, ok: bool }> }
+pub(crate) fn gen_struct_of_list_of_struct<B: Backend>()
+-> impl Distribution<B, Item = (i32, Vec<(i64, bool)>)> {
+    (
+        range(0i32, 1),
+        list(constant(2usize), (range(0i64, 1), constant(true))),
+    )
+}
+
+/// list of struct of list: list<{ id: i32, tags: list<i64> }>
+pub(crate) fn gen_list_of_struct_of_list<B: Backend>()
+-> impl Distribution<B, Item = Vec<(i32, Vec<i64>)>> {
+    list(
+        constant(2usize),
+        (range(0i32, 1), list(range(1usize, 1), range(0i64, 1))),
+    )
+}
+
+/// tracked list of struct of list — for tick-order tests
+pub(crate) fn make_tracked_list_of_struct_of_list(
+    log: &Log,
+) -> impl Distribution<VecBackend, Item = Vec<(i32, Vec<i64>)>> {
+    list(
+        tracked("OUTER", constant(2usize), log),
+        (
+            tracked("ID", range(0i32, 1), log),
+            list(
+                tracked("TLEN", range(1usize, 1), log),
+                tracked("TAG", range(0i64, 1), log),
+            ),
+        ),
     )
 }

@@ -7,7 +7,6 @@ members = [
     #    "populate-builtins-tpch",
     #    "populate-derive",
     #    "populate-sink-vec",
-    #    "populate-sink-arrow",
     #    "populate-sink-json",
     #    "examples",
     #    "tpch",
@@ -26,6 +25,7 @@ rand = "0.9"
 arrow = { version = "57.2.0" }
 arrow-array = "57"
 arrow-schema = "57"
+arrow-buffer = "57"
 arrow-cast = "57"
 serde_json = "1"
 tpchgen = "2.0"
@@ -37,6 +37,11 @@ populate-2 = { path = "populate-2" }
 #populate-builtins = { path = "populate-builtins" }
 #populate-builtins-tpch = { path = "populate-builtins-tpch" }
 #populate-sink-vec = { path = "populate-sink-vec" }
-#populate-sink-arrow = { path = "populate-sink-arrow" }
 #populate-sink-json = { path = "populate-sink-json" }
 #
+# Benchmarks: one codegen unit so inlining/layout is deterministic run to run
+# (populate-2 is generic, so everything is monomorphised into the bench crate
+# anyway). Debug info is for `perf`/flamegraphs and doesn't change codegen.
+[profile.bench]
+codegen-units = 1
+debug = true

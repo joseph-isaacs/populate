@@ -9,3 +9,6 @@ populate-2 = { workspace = true }
 rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true, features = ["small_rng"] }

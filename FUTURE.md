@@ -260,9 +260,10 @@ Shared building blocks (in populate-2, used by both ports):
 |--------|------|---------|
 | `sampler` | `Sampler` dialects: `FastSampler`, `RSampler` + `RRng` (R), `GoSampler` + `GoRand` (Go) | both |
 | `dist::Leaf` | any clonable `SampleIter` as a column | both |
-| `random` | `choose`, `uniform_int`, `uniform` leaves | H2O |
+| `column` | `StrCol` (offsets + bytes), `NullableCol` (column + validity bitmap), `DictCol` (codes + one value list): Arrow layouts, no per-row allocation | both |
+| `random` | `choose`, `choose_dict`, `uniform_int`, `uniform` leaves | H2O |
 | `process` | random / clamped / monotonic walks, `precision`, `lazy`, `series` | TSBS |
-| `table` | NA injection, covering samples, key splits, stable multi-key sort | H2O |
+| `table` | NA injection on value codes, covering samples, key splits, linear-time stable multi-key (radix) sort | H2O |
 | `panel` | entity × time panels with ramp-up | TSBS |
 | `fixed` + `arrow::flatten_named` | wide same-typed column groups, named flat batches | TSBS |
 

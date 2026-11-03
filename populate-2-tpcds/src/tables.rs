@@ -116,9 +116,12 @@ pub struct Odometer {
     item: i64,
     warehouse: i64,
     week: i64,
-    /// Item column: this week's keys for every item (`week_keys_for` week).
-    week_keys: Vec<i32>,
-    week_keys_for: i64,
+    /// Item column: keys of items `keys_from .. keys_from + keys.len()` for
+    /// week `keys_week`, a window grown on demand (only items this batch
+    /// emits), reused when one batch spans several warehouses of a week.
+    keys: Vec<i32>,
+    keys_from: i64,
+    keys_week: i64,
 }
 
 impl InventoryKey {
@@ -146,14 +149,15 @@ impl Column for InventoryKey {
             item: start % self.items,
             warehouse: (start / self.items) % self.warehouses,
             week: start / (self.items * self.warehouses),
-            week_keys: Vec::new(),
-            week_keys_for: -1,
+            keys: Vec::new(),
+            keys_from: 0,
+            keys_week: -1,
         }
     }
 
-    /// Bulk path: rows come in runs of one (week, warehouse) covering the
-    /// item range, so each run is a fill (date, warehouse) or a slice copy of
-    /// the week's item keys, computed once per week.
+    /// Bulk path: rows come in runs of one (week, warehouse) over a range of
+    /// items, so each run is a fill (date, warehouse) or a slice copy of item
+    /// keys, each computed once per week (see [`Odometer::keys`]).
     fn write_n(&self, o: &mut Odometer, _start: i64, mut n: usize, sink: &mut Vec<i32>) {
         while n > 0 {
             let run = ((self.items - o.item) as usize).min(n);
@@ -164,16 +168,24 @@ impl Column for InventoryKey {
                     sink.extend(std::iter::repeat_n((o.warehouse + 1) as i32, run))
                 }
                 InvKey::Item => {
-                    if o.week_keys_for != o.week {
-                        o.week_keys.clear();
-                        o.week_keys.extend(
-                            (1..=self.items)
+                    let (from, to) = (o.item, o.item + run as i64);
+                    let window_end = o.keys_from + o.keys.len() as i64;
+                    // Start a new window on a new week, or if this run isn't
+                    // inside or adjacent to the current one.
+                    if o.keys_week != o.week || from < o.keys_from || from > window_end {
+                        o.keys.clear();
+                        o.keys_from = from;
+                        o.keys_week = o.week;
+                    }
+                    let window_end = o.keys_from + o.keys.len() as i64;
+                    if to > window_end {
+                        o.keys.extend(
+                            (window_end + 1..=to)
                                 .map(|u| match_item_key(u, date, self.item_rows) as i32),
                         );
-                        o.week_keys_for = o.week;
                     }
-                    let i = o.item as usize;
-                    sink.extend_from_slice(&o.week_keys[i..i + run]);
+                    let i = (from - o.keys_from) as usize;
+                    sink.extend_from_slice(&o.keys[i..i + run]);
                 }
             }
             n -= run;

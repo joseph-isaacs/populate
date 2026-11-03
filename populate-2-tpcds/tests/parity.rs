@@ -64,3 +64,27 @@ fn customer_demographics_odd_batches() {
         CustomerDemographicsArrow::new(session(1.0)).with_batch_size(999),
     );
 }
+
+/// SF 10 (133M rows), streamed batch by batch so memory stays bounded.
+/// Item ids (51k) exceed the batch size here, unlike SF 1 (9k).
+/// `cargo test --release -p populate-2-tpcds -- --ignored`
+#[test]
+#[ignore = "slow: 133M rows"]
+fn inventory_sf10_streamed() {
+    let sf = 10.0;
+    let mut ours = batches::<Inventory>(sf, 8000);
+    let mut theirs = InventoryArrow::new(session(sf));
+    let mut rows = 0;
+    loop {
+        match (ours.next(), theirs.next()) {
+            (None, None) => break,
+            (Some(o), Some(t)) => {
+                let t = t.unwrap();
+                assert_eq!(o, t, "batch starting at row {rows}");
+                rows += o.num_rows();
+            }
+            _ => panic!("batch count differs after {rows} rows"),
+        }
+    }
+    assert_eq!(rows as i64, Inventory::row_count(&Scale::new(sf)));
+}

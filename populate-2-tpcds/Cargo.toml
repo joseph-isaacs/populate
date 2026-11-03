@@ -17,6 +17,7 @@ tpcdsgen = { workspace = true }
 tpcdsgen-arrow = { workspace = true }
 divan = { workspace = true }
 parquet = { workspace = true }
+bytes = "1"
 tpchgen = { workspace = true }
 tpchgen-arrow = { workspace = true }
 

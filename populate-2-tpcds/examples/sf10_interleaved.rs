@@ -13,82 +13,22 @@
 //!
 //!   cargo run --release -p populate-2-tpcds --example sf10_interleaved [seed]
 
-use arrow_array::RecordBatch;
-use arrow_schema::ArrowError;
+mod common;
+
+use common::{BATCH, Counter, TABLES, median, peak_rss_mb, seed_from_args, shuffle, source};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use populate_2_tpch::values::POOL_BUFFER;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::time::Instant;
-use tpcdsgen::config::SessionBuilder;
 
 const SF: f64 = 10.0;
-const BATCH: usize = 8000;
 const REPS: usize = 3;
-
-type Batches = Box<dyn Iterator<Item = RecordBatch>>;
-
-/// Discards bytes, counts them.
-struct Counter(u64);
-
-impl Write for Counter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0 += buf.len() as u64;
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-fn ok(r: Result<RecordBatch, ArrowError>) -> RecordBatch {
-    r.expect("reference batch")
-}
-
-fn source(table: &str, ours: bool) -> Batches {
-    use tpchgen::generators::*;
-    use tpchgen_arrow::*;
-    let ds = || SessionBuilder::new().with_scale_factor(SF).build().unwrap();
-    match (table, ours) {
-        ("H part", true) => Box::new(populate_2_tpch::batches::<populate_2_tpch::Part>(SF, BATCH)),
-        ("H part", false) => Box::new(PartArrow::new(PartGenerator::new(SF, 1, 1)).map(ok)),
-        ("H partsupp", true) => Box::new(populate_2_tpch::batches::<populate_2_tpch::PartSupp>(
-            SF, BATCH,
-        )),
-        ("H partsupp", false) => {
-            Box::new(PartSuppArrow::new(PartSuppGenerator::new(SF, 1, 1)).map(ok))
-        }
-        ("H customer", true) => Box::new(populate_2_tpch::batches::<populate_2_tpch::Customer>(
-            SF, BATCH,
-        )),
-        ("H customer", false) => {
-            Box::new(CustomerArrow::new(CustomerGenerator::new(SF, 1, 1)).map(ok))
-        }
-        ("H supplier", true) => Box::new(populate_2_tpch::batches::<populate_2_tpch::Supplier>(
-            SF, BATCH,
-        )),
-        ("H supplier", false) => {
-            Box::new(SupplierArrow::new(SupplierGenerator::new(SF, 1, 1)).map(ok))
-        }
-        ("DS inventory", true) => Box::new(
-            populate_2_tpcds::batches::<populate_2_tpcds::Inventory>(SF, BATCH),
-        ),
-        ("DS inventory", false) => Box::new(tpcdsgen_arrow::InventoryArrow::new(ds()).map(ok)),
-        ("DS customer_demographics", true) => Box::new(populate_2_tpcds::batches::<
-            populate_2_tpcds::CustomerDemographics,
-        >(SF, BATCH)),
-        ("DS customer_demographics", false) => {
-            Box::new(tpcdsgen_arrow::CustomerDemographicsArrow::new(ds()).map(ok))
-        }
-        _ => unreachable!("{table}"),
-    }
-}
 
 /// Returns (rows, parquet bytes or 0).
 fn run(table: &str, ours: bool, mode: &str) -> (u64, u64) {
-    let mut batches = source(table, ours).peekable();
+    let mut batches = source(table, ours, SF).peekable();
     let mut rows = 0;
     if mode == "arrow" {
         for b in batches {
@@ -111,43 +51,15 @@ fn run(table: &str, ours: bool, mode: &str) -> (u64, u64) {
     (rows, out.0)
 }
 
-fn peak_rss_mb() -> u64 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines().find(|l| l.starts_with("VmHWM")).and_then(|l| {
-                l.split_whitespace()
-                    .nth(1)
-                    .map(|kb| kb.parse::<u64>().unwrap() / 1024)
-            })
-        })
-        .unwrap_or(0)
-}
-
 fn main() {
-    let seed: u64 = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64
-        });
+    let seed = seed_from_args();
     println!("SF {SF}, batch {BATCH}, {REPS} reps, shuffle seed {seed}");
 
     // Shared one-time setup (text pool) outside timing, for both sides.
     tpchgen::text::TextPool::get_or_init_default();
     std::sync::LazyLock::force(&POOL_BUFFER);
 
-    let tables = [
-        "H part",
-        "H partsupp",
-        "H customer",
-        "H supplier",
-        "DS inventory",
-        "DS customer_demographics",
-    ];
+    let tables = TABLES;
     let modes = ["arrow", "snappy", "zstd3"];
     let mut trials = Vec::new();
     for t in tables {
@@ -159,15 +71,7 @@ fn main() {
             }
         }
     }
-    // Fisher-Yates with xorshift64*
-    let mut x = seed | 1;
-    for i in (1..trials.len()).rev() {
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        let j = (x.wrapping_mul(0x2545F4914F6CDD1D) % (i as u64 + 1)) as usize;
-        trials.swap(i, j);
-    }
+    shuffle(&mut trials, seed);
 
     let mut times: BTreeMap<(&str, &str, bool), Vec<f64>> = BTreeMap::new();
     let mut sizes: BTreeMap<(&str, &str, bool), u64> = BTreeMap::new();
@@ -193,11 +97,6 @@ fn main() {
         );
     }
 
-    let median = |v: &[f64]| {
-        let mut v = v.to_vec();
-        v.sort_by(f64::total_cmp);
-        v[v.len() / 2]
-    };
     println!();
     println!(
         "{:<26} {:>11} {:<6} | {:>27} | {:>27} | {:>14} | parquet MB ours/tpcgen",

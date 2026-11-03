@@ -12,4 +12,6 @@ pub mod rng;
 pub mod tables;
 pub mod values;
 
-pub use tables::{Customer, Nation, Part, PartSupp, Region, Supplier, Table, batches};
+pub use tables::{
+    Customer, Nation, Part, PartSupp, Region, Supplier, Table, batches, batches_copied,
+};

@@ -1,16 +1,12 @@
 //! Is encode slower on our batches because comment views point at random
 //! places in the 300 MB text pool? Compare encode of: our batches as-is,
-//! our batches after StringViewArray::gc() (strings copied into compact
-//! buffers), and the cost of gc itself. Snappy, SF 1, best of 5.
+//! our batches after copy_text (strings copied into compact buffers), and the cost of gc itself. Snappy, SF 1, best of 5.
 
-use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, RecordBatch};
-use arrow_schema::DataType;
+use arrow_array::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use populate_2_tpch::values::POOL_BUFFER;
-use std::sync::Arc;
+use populate_2_tpch::values::{POOL_BUFFER, copy_text};
 use std::time::Instant;
 
 fn best_of_3<T>(mut f: impl FnMut() -> T) -> (f64, T) {
@@ -39,20 +35,7 @@ fn encode(batches: &[RecordBatch]) -> usize {
 }
 
 fn compact(batches: &[RecordBatch]) -> Vec<RecordBatch> {
-    batches
-        .iter()
-        .map(|b| {
-            let cols: Vec<ArrayRef> = b
-                .columns()
-                .iter()
-                .map(|c| match c.data_type() {
-                    DataType::Utf8View => Arc::new(c.as_string_view().gc()) as ArrayRef,
-                    _ => c.clone(),
-                })
-                .collect();
-            RecordBatch::try_new(b.schema(), cols).unwrap()
-        })
-        .collect()
+    batches.iter().map(copy_text).collect()
 }
 
 fn run<T: populate_2_tpch::Table>(table: &str, reference: Vec<RecordBatch>) {

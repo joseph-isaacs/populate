@@ -7,26 +7,13 @@ use populate_2::traits::{DistributionScalar, VecBackend};
 use populate_2_tpcds::columns::NullI32Col;
 use populate_2_tpcds::tables::{InvKey, InventoryKey, InventoryQuantity, Scale};
 use populate_2_tpch::column::col;
-use rand::RngCore;
+use populate_2_tpch::tables::NoRng;
 use tpcdsgen::config::Table as DsTable;
 
 const N: usize = 1_000_000;
 
 fn main() {
     divan::main();
-}
-
-struct NoRng;
-impl RngCore for NoRng {
-    fn next_u32(&mut self) -> u32 {
-        0
-    }
-    fn next_u64(&mut self) -> u64 {
-        0
-    }
-    fn fill_bytes(&mut self, d: &mut [u8]) {
-        d.fill(0)
-    }
 }
 
 fn key(k: InvKey) -> InventoryKey {

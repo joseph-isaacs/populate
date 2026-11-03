@@ -722,7 +722,6 @@ dependencies = [
  "parquet",
  "populate-2",
  "populate-2-tpch",
- "rand",
  "tpcdsgen",
  "tpcdsgen-arrow",
  "tpchgen",

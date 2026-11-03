@@ -11,7 +11,6 @@ use crate::values::{Dec, DecCol, POOL_BUFFER, Str, StrCol, push_int, text_pool};
 use populate_2::hlist::{HCons, HNil};
 use populate_2::traits::{DefaultSink, Distribution, SampleIter, Sink, VecBackend};
 use rand::Rng;
-use std::borrow::Cow;
 use std::sync::LazyLock;
 use tpchgen::distribution::{Distribution as TpchDistribution, Distributions};
 
@@ -414,9 +413,7 @@ impl Column for AlphaNum {
     }
 
     fn value(&self, st: &mut Stream, _row: i64) -> Str {
-        let mut out = Vec::new();
-        self.fill(st, &mut out);
-        Str(Cow::Owned(String::from_utf8(out).expect("ascii")))
+        Str::build(|out| self.fill(st, out))
     }
 
     #[inline]
@@ -494,9 +491,7 @@ impl Column for Phone {
     }
 
     fn value(&self, st: &mut (Stream, Stream), _row: i64) -> Str {
-        let mut out = Vec::with_capacity(15);
-        self.fill(st, &mut out);
-        Str(Cow::Owned(String::from_utf8(out).expect("ascii")))
+        Str::build(|out| self.fill(st, out))
     }
 
     #[inline]
@@ -539,9 +534,7 @@ impl Column for KeyName {
     fn init(&self, _start: i64) {}
 
     fn value(&self, _st: &mut (), row: i64) -> Str {
-        let mut out = Vec::new();
-        self.fill(row, &mut out);
-        Str(Cow::Owned(String::from_utf8(out).expect("ascii")))
+        Str::build(|out| self.fill(row, out))
     }
 
     #[inline]

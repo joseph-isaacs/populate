@@ -16,7 +16,6 @@ tpcdsgen = { workspace = true }
 [dev-dependencies]
 tpcdsgen-arrow = { workspace = true }
 divan = { workspace = true }
-rand = { workspace = true }
 parquet = { workspace = true }
 tpchgen = { workspace = true }
 tpchgen-arrow = { workspace = true }

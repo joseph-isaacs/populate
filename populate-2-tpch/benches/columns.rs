@@ -11,10 +11,10 @@ use populate_2_tpch::column::{
     text,
 };
 use populate_2_tpch::rng::Stream;
+use populate_2_tpch::tables::NoRng;
 use populate_2_tpch::tables::{Mfgr, PartName, retail_price};
 use populate_2_tpch::values::{Dec, DecCol, POOL_BUFFER, StrCol};
 use populate_2_tpch::{Customer, batches};
-use rand::RngCore;
 use tpchgen::text::TextPool;
 
 const N: usize = 200_000;
@@ -23,19 +23,6 @@ fn main() {
     TextPool::get_or_init_default();
     std::sync::LazyLock::force(&POOL_BUFFER);
     divan::main();
-}
-
-struct NoRng;
-impl RngCore for NoRng {
-    fn next_u32(&mut self) -> u32 {
-        0
-    }
-    fn next_u64(&mut self) -> u64 {
-        0
-    }
-    fn fill_bytes(&mut self, d: &mut [u8]) {
-        d.fill(0)
-    }
 }
 
 macro_rules! col_bench {

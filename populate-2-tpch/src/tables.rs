@@ -11,14 +11,13 @@ use crate::column::{
     grouped_bounded, grouped_text, key_name, phone, pick, text,
 };
 use crate::rng::{Stream, scale};
-use crate::values::{Dec, POOL_BUFFER, Str, StrCol, push_int, text_pool};
+use crate::values::{Dec, POOL_BUFFER, Str, StrCol, copy_text, push_int, text_pool};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_2::arrow::IntoArrowColumns;
 use populate_2::dist::{map, range};
 use populate_2::traits::{DefaultSink, Distribution, VecBackend};
 use rand::RngCore;
-use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 
 // ============================================================================
@@ -44,8 +43,16 @@ pub fn batches<T: Table>(sf: f64, batch_size: usize) -> impl Iterator<Item = Rec
         .map(move |start| T::batch(sf, start, (rows - start).min(batch_size as i64) as usize))
 }
 
-/// TPC-H columns carry their own streams; populate-2's `rng` argument is unused.
-struct NoRng;
+/// All rows of `T` in batches, with string columns copied out of the shared
+/// text pool ([`copy_text`]): for batches that leave the generator (Parquet,
+/// query engines that account memory per batch).
+pub fn batches_copied<T: Table>(sf: f64, batch_size: usize) -> impl Iterator<Item = RecordBatch> {
+    batches::<T>(sf, batch_size).map(|b| copy_text(&b))
+}
+
+/// TPC-H columns carry their own streams; populate-2's `rng` argument is
+/// unused. Pass this where an `Rng` is required.
+pub struct NoRng;
 
 impl RngCore for NoRng {
     fn next_u32(&mut self) -> u32 {
@@ -243,9 +250,8 @@ impl Column for PartName {
     }
 
     fn value(&self, st: &mut Self::State, _row: i64) -> Str {
-        let mut out = Vec::new();
-        Self::fill(&mut st.0, st.1, &mut out);
-        Str(Cow::Owned(String::from_utf8(out).expect("ascii")))
+        let colors = st.1;
+        Str::build(|out| Self::fill(&mut st.0, colors, out))
     }
 
     #[inline]
@@ -278,30 +284,27 @@ impl Column for Mfgr {
         )
     }
 
-    fn value(&self, st: &mut (Stream, Stream), row: i64) -> Str {
-        let mut sink = StrCol::default();
-        self.write(st, row, &mut sink);
-        let arr = populate_2::arrow::IntoArrowArray::into_array(sink);
-        let s = arrow_array::cast::AsArray::as_string_view(&arr)
-            .value(0)
-            .to_string();
-        Str(Cow::Owned(s))
+    fn value(&self, st: &mut (Stream, Stream), _row: i64) -> Str {
+        Str::build(|out| self.fill(st, out))
     }
 
     #[inline]
     fn write(&self, st: &mut (Stream, Stream), _row: i64, sink: &mut StrCol) {
+        sink.push_with(|out| self.fill(st, out));
+    }
+}
+
+impl Mfgr {
+    #[inline(always)]
+    fn fill(&self, st: &mut (Stream, Stream), out: &mut Vec<u8>) {
         let m = st.0.next_item().next_int(1, 5);
         if self.brand {
             let b = st.1.next_item().next_int(1, 5);
-            sink.push_with(|out| {
-                out.extend_from_slice(b"Brand#");
-                push_int(out, (m * 10 + b) as u64, 1);
-            });
+            out.extend_from_slice(b"Brand#");
+            push_int(out, (m * 10 + b) as u64, 1);
         } else {
-            sink.push_with(|out| {
-                out.extend_from_slice(b"Manufacturer#");
-                push_int(out, m as u64, 1);
-            });
+            out.extend_from_slice(b"Manufacturer#");
+            push_int(out, m as u64, 1);
         }
     }
 }
@@ -373,6 +376,60 @@ const BBB_LEN: usize = BBB_BASE.len() + BBB_COMPLAINT.len();
 #[derive(Clone, Copy)]
 pub struct SupplierComment;
 
+/// One row's comment: what `write` (columnar) and `value` (row mode) render.
+enum CommentRow {
+    /// `pool[offset .. offset + len]` unchanged (~99.9% of rows)
+    Pool { offset: i32, len: i32 },
+    /// that slice with a BBB phrase spliced in at `at`
+    Spliced {
+        comment: &'static str,
+        at: usize,
+        noise: usize,
+        kind: &'static str,
+    },
+}
+
+impl SupplierComment {
+    #[inline(always)]
+    fn next_row(streams: &mut [Stream; 5], comment: &Text) -> CommentRow {
+        let (offset, len) = comment.draw(streams[0].next_item());
+        // Every stream advances every row, used or not.
+        let bbb = streams[1].next_item().next_int(1, 10_000);
+        let mut junk = *streams[2].next_item();
+        let mut place = *streams[3].next_item();
+        let mut kind = *streams[4].next_item();
+        if bbb > 10 {
+            return CommentRow::Pool { offset, len };
+        }
+        let comment = text_pool().text(offset, offset + len);
+        let noise = junk.next_int(0, (comment.len() - BBB_LEN) as i32) as usize;
+        let at = place.next_int(0, (comment.len() - (BBB_LEN + noise)) as i32) as usize;
+        let kind = if kind.next_int(0, 100) < 50 {
+            BBB_COMPLAINT
+        } else {
+            BBB_RECOMMEND
+        };
+        CommentRow::Spliced {
+            comment,
+            at,
+            noise,
+            kind,
+        }
+    }
+
+    /// `comment` with "Customer " at `at`, `noise` original bytes kept, then
+    /// `kind`, overwriting in place (the length is unchanged).
+    fn splice(comment: &str, at: usize, noise: usize, kind: &str, out: &mut Vec<u8>) {
+        let bytes = comment.as_bytes();
+        let base_end = at + BBB_BASE.len();
+        out.extend_from_slice(&bytes[..at]);
+        out.extend_from_slice(BBB_BASE.as_bytes());
+        out.extend_from_slice(&bytes[base_end..base_end + noise]);
+        out.extend_from_slice(kind.as_bytes());
+        out.extend_from_slice(&bytes[base_end + noise + kind.len()..]);
+    }
+}
+
 impl Column for SupplierComment {
     type Item = Str;
     type Sink = StrCol;
@@ -386,55 +443,38 @@ impl Column for SupplierComment {
         let streams = [
             Stream::ungrouped(1341315363, 2, start), // comment text
             Stream::ungrouped(202794285, 1, start),  // BBB yes/no
-            Stream::ungrouped(263032577, 1, start),  // junk length
-            Stream::ungrouped(715851524, 1, start),  // offset
+            Stream::ungrouped(263032577, 1, start),  // noise length
+            Stream::ungrouped(715851524, 1, start),  // position
             Stream::ungrouped(753643799, 1, start),  // complaint vs recommend
         ];
         (streams, text(0, 63), POOL_BUFFER.as_slice())
     }
 
-    fn value(&self, st: &mut Self::State, row: i64) -> Str {
-        let mut sink = StrCol::default();
-        self.write(st, row, &mut sink);
-        let arr = populate_2::arrow::IntoArrowArray::into_array(sink);
-        let s = arrow_array::cast::AsArray::as_string_view(&arr)
-            .value(0)
-            .to_string();
-        Str(Cow::Owned(s))
+    fn value(&self, (streams, comment, _): &mut Self::State, _row: i64) -> Str {
+        match Self::next_row(streams, comment) {
+            CommentRow::Pool { offset, len } => {
+                Str::borrowed(text_pool().text(offset, offset + len))
+            }
+            CommentRow::Spliced {
+                comment,
+                at,
+                noise,
+                kind,
+            } => Str::build(|out| Self::splice(comment, at, noise, kind, out)),
+        }
     }
 
     #[inline]
-    fn write(&self, state: &mut Self::State, _row: i64, sink: &mut StrCol) {
-        let (st, comment, pool) = state;
-        let (offset, len) = comment.draw(st[0].next_item());
-        // The other streams must advance every row even when unused.
-        let bbb = st[1].next_item().next_int(1, 10_000);
-        let mut junk = *st[2].next_item();
-        let mut place = *st[3].next_item();
-        let mut kind = *st[4].next_item();
-        if bbb > 10 {
-            sink.push_pool(pool, offset as u32, len as u32);
-            return;
+    fn write(&self, (streams, comment, pool): &mut Self::State, _row: i64, sink: &mut StrCol) {
+        match Self::next_row(streams, comment) {
+            CommentRow::Pool { offset, len } => sink.push_pool(pool, offset as u32, len as u32),
+            CommentRow::Spliced {
+                comment,
+                at,
+                noise,
+                kind,
+            } => sink.push_with(|out| Self::splice(comment, at, noise, kind, out)),
         }
-        let comment = text_pool().text(offset, offset + len);
-        let noise = junk.next_int(0, (comment.len() - BBB_LEN) as i32) as usize;
-        let at = place.next_int(0, (comment.len() - (BBB_LEN + noise)) as i32) as usize;
-        let kind_text = if kind.next_int(0, 100) < 50 {
-            BBB_COMPLAINT
-        } else {
-            BBB_RECOMMEND
-        };
-        sink.push_with(|out| {
-            out.extend_from_slice(&comment.as_bytes()[..at]);
-            out.extend_from_slice(BBB_BASE.as_bytes());
-            out.extend_from_slice(
-                &comment.as_bytes()[at + BBB_BASE.len()..at + BBB_BASE.len() + noise],
-            );
-            out.extend_from_slice(kind_text.as_bytes());
-            out.extend_from_slice(
-                &comment.as_bytes()[at + BBB_BASE.len() + noise + kind_text.len()..],
-            );
-        });
     }
 }
 

@@ -9,8 +9,9 @@
 //! text pool (all `*_comment` columns) aren't copied at all: their views point
 //! into a shared, read-only Arrow buffer holding the whole pool.
 
+use arrow_array::cast::AsArray;
 use arrow_array::types::Decimal128Type;
-use arrow_array::{ArrayRef, PrimitiveArray, StringViewArray};
+use arrow_array::{ArrayRef, PrimitiveArray, RecordBatch, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use populate_2::arrow::IntoArrowArray;
 use populate_2::hlist::{HCons, HNil};
@@ -130,6 +131,17 @@ impl Str {
     pub fn borrowed(s: &'static str) -> Self {
         Str(Cow::Borrowed(s))
     }
+
+    /// An owned string built by `fill` appending bytes: the row-mode twin of
+    /// [`StrCol::push_with`], so a column's `value` and `write` can share one
+    /// `fill` function.
+    pub fn build(fill: impl FnOnce(&mut Vec<u8>)) -> Self {
+        let mut bytes = Vec::new();
+        fill(&mut bytes);
+        Str(Cow::Owned(
+            String::from_utf8(bytes).expect("TPC-H text is ASCII"),
+        ))
+    }
 }
 
 impl<B: Backend> DefaultSink<B> for Str {
@@ -234,6 +246,34 @@ impl IntoArrowArray for StrCol {
         };
         Arc::new(array)
     }
+}
+
+// ============================================================================
+// Copied text: detach string columns from the shared pool
+// ============================================================================
+
+/// `batch` with every string column that views the shared text pool
+/// compacted into its own buffers ([`StringViewArray::gc`]).
+///
+/// Zero-copy comment views are fastest for in-memory Arrow, but anything that
+/// walks or measures the bytes pays for the shared 300 MB pool: Parquet
+/// encoding reads each comment from a random pool offset, and
+/// `get_array_memory_size` charges the whole pool to every batch (SF 1
+/// partsupp reports ~31 GB instead of ~141 MB). Use this (or
+/// `tables::batches_copied`) when the batches leave the generator.
+pub fn copy_text(batch: &RecordBatch) -> RecordBatch {
+    let pool = POOL_BUFFER.as_ptr();
+    let columns: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| match c.as_string_view_opt() {
+            Some(s) if s.data_buffers().iter().any(|b| b.as_ptr() == pool) => {
+                Arc::new(s.gc()) as ArrayRef
+            }
+            _ => Arc::clone(c),
+        })
+        .collect();
+    RecordBatch::try_new(batch.schema(), columns).expect("same schema")
 }
 
 // ============================================================================

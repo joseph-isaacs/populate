@@ -239,3 +239,17 @@ impl Schema {
 - **ForeignKey combinator** - Reference values from another generated column
 - **Grammar-based text** - Template-driven string generation (like TPC-H comments)
 - **Arrow/Parquet integration** - Direct `FromDistribution` impls for Arrow arrays
+
+## Benchmark Generators
+
+Ports of existing benchmark data generators onto populate combinators, in the
+same spirit as tpchgen-rs over TPC-H `dbgen`: in-process, Arrow output, any
+scale, seeded, and with the knobs the original can't express (skew, clustered
+nulls, partial sortedness).
+
+| # | Benchmark | Reference generator | Status |
+|---|-----------|---------------------|--------|
+| 1 | H2O.ai db-benchmark (groupby + join) | `groupby-datagen.R`, `join-datagen.R` (R + data.table) | `populate-h2o` |
+| 2 | Star Schema Benchmark | `ssb-dbgen` (C fork of TPC-H dbgen) | planned |
+| 3 | TSBS (Time Series Benchmark Suite) | `tsbs_generate_data` (Go) | `populate-tsbs` |
+| 4 | YCSB | YCSB core workloads (Java) | planned |

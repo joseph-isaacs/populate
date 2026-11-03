@@ -2,6 +2,8 @@
 members = [
     #    "populate",
     "populate-2",
+    "populate-h2o",
+    "populate-tsbs",
     #    "populate-core",
     #    "populate-builtins",
     #    "populate-builtins-tpch",

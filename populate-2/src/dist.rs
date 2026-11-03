@@ -21,14 +21,14 @@ pub struct ConstantIter<T> {
     value: T,
 }
 
-impl<T: Copy> SampleIter for ConstantIter<T> {
+impl<T: Clone> SampleIter for ConstantIter<T> {
     type Item = T;
     fn next(&mut self, _rng: &mut impl Rng) -> Self::Item {
-        self.value
+        self.value.clone()
     }
 }
 
-impl<B: Backend, T: Copy + DefaultSink<B>> Distribution<B> for Constant<T>
+impl<B: Backend, T: Clone + DefaultSink<B>> Distribution<B> for Constant<T>
 where
     <T as DefaultSink<B>>::Sink: Sink<T>,
 {
@@ -36,7 +36,9 @@ where
     type RowIter = ConstantIter<T>;
 
     fn row_iter(&mut self) -> Self::RowIter {
-        ConstantIter { value: self.value }
+        ConstantIter {
+            value: self.value.clone(),
+        }
     }
 
     fn collect_into(

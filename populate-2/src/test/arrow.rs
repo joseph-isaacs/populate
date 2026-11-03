@@ -3,12 +3,13 @@
 // ========================================================================
 
 use crate::arrow::DistributionArrow;
+use crate::dist::{map, range};
 use crate::test::Log;
 use crate::test::dist::{
     gen_list, gen_list_in_tuple, gen_list_of_struct_of_list, gen_list_of_tuples, gen_nested_list,
     gen_struct_of_list_of_struct, make_4tuple, make_tracked_list_of_struct_of_list,
 };
-use crate::traits::VecBackend;
+use crate::traits::{Distribution, VecBackend};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type, Int64Type};
 use arrow_array::{Array, ListArray, StructArray};
@@ -156,4 +157,36 @@ fn arrow_output_keeps_columnar_tick_order() {
         runs,
         vec![("OUTER", 2), ("ID", 4), ("TLEN", 4), ("TAG", 10)]
     );
+}
+
+fn make_string_and_nullable()
+-> impl Distribution<VecBackend, Item = (String, Option<i64>, Option<String>)> {
+    (
+        map(range(0i64, 1), |i: i64| format!("id{i:03}")),
+        map(range(0i64, 1), |i: i64| (i % 2 == 0).then_some(i)),
+        map(range(0i64, 1), |i: i64| (i % 3 != 0).then(|| i.to_string())),
+    )
+}
+
+#[test]
+fn strings_and_nulls_to_record_batch() {
+    let mut d = make_string_and_nullable();
+    let rb = d
+        .collect_named_record_batch(&mut rng(), 4, &["id", "even"])
+        .unwrap();
+    let schema = rb.schema();
+    assert_eq!(schema.field(0).name(), "id");
+    assert_eq!(schema.field(0).data_type(), &DataType::Utf8);
+    assert!(!schema.field(0).is_nullable());
+    assert_eq!(schema.field(1).name(), "even");
+    assert!(schema.field(1).is_nullable());
+    assert_eq!(schema.field(2).name(), "c2");
+    assert!(schema.field(2).is_nullable());
+
+    let ids: Vec<&str> = rb.column(0).as_string::<i32>().iter().flatten().collect();
+    assert_eq!(ids, vec!["id000", "id001", "id002", "id003"]);
+    let even: Vec<Option<i64>> = rb.column(1).as_primitive::<Int64Type>().iter().collect();
+    assert_eq!(even, vec![Some(0), None, Some(2), None]);
+    let s: Vec<Option<&str>> = rb.column(2).as_string::<i32>().iter().collect();
+    assert_eq!(s, vec![None, Some("1"), Some("2"), None]);
 }

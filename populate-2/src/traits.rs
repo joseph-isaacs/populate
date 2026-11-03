@@ -34,7 +34,9 @@ pub trait DefaultSink<B: Backend> {
 
 macro_rules! for_all_primitives {
     ($macro:ident) => {
-        $macro!(i16, i32, i64, f64, bool, usize);
+        $macro!(
+            i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize, String
+        );
     };
 }
 
@@ -57,6 +59,19 @@ macro_rules! impl_value_hlist_scalar {
 
 for_all_primitives!(impl_default_sink_scalar);
 for_all_primitives!(impl_value_hlist_scalar);
+
+// A nullable column is a single column of `Option<T>`: the backend's primitive
+// sink holds the `Option`s and the Arrow layer turns `None` into nulls.
+impl<B: Backend, T> DefaultSink<B> for Option<T> {
+    type Sink = HCons<B::Prim<Option<T>>, HNil>;
+}
+
+impl<T> ValueHList for Option<T> {
+    type HList = HCons<Option<T>, HNil>;
+    fn into_hlist(self) -> Self::HList {
+        HCons(self, HNil)
+    }
+}
 
 // A list column = offsets column + the element type's *own* columnar sink.
 // Recurses: Vec<(A, B)> -> ListCol<offsets, HCons<A-col, HCons<B-col, HNil>>>

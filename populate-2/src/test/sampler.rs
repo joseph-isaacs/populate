@@ -1,10 +1,11 @@
 //! Sampler dialects against their references: Go `math/rand` (golden dump
 //! from `validate/gorand`, real Go) and R 4.3.3 (values printed by R).
 
+use crate::column::{DictCol, DictValue, StrCol};
 use crate::dist::map;
-use crate::random::{choose, uniform, uniform_int};
+use crate::random::{choose, choose_dict, uniform, uniform_int};
 use crate::sampler::{FastSampler, GoRand, GoRandExt, GoSampler, RRng, RSampler, Sampler, r_round};
-use crate::traits::{Distribution, DistributionScalar, VecBackend};
+use crate::traits::{Distribution, DistributionScalar, SampleIter, VecBackend};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashSet;
@@ -140,8 +141,9 @@ fn make_rounded<S: Sampler>(s: S) -> impl Distribution<VecBackend, Item = f64> {
 #[test]
 fn leaves_work_with_every_dialect() {
     fn check<S: Sampler>(s: S, rng: &mut impl rand::Rng) {
-        let labels: Vec<String> = make_labels(s).collect_col(Vec::new(), rng, 300);
-        let distinct: HashSet<&str> = labels.iter().map(String::as_str).collect();
+        let labels: StrCol = make_labels(s).collect_col(StrCol::new(), rng, 300);
+        assert_eq!(labels.len(), 300);
+        let distinct: HashSet<&str> = labels.iter().collect();
         assert_eq!(distinct, HashSet::from(["a", "b", "c"]));
         let xs: Vec<f64> = make_rounded(s).collect_col(Vec::new(), rng, 300);
         assert!(xs.iter().all(|x| (0.0..=100.0).contains(x)));
@@ -159,4 +161,24 @@ fn leaves_work_with_every_dialect() {
     check(GoSampler, &mut GoRand::new(1));
     // a dialect's algorithms over a foreign RNG ("fast mode")
     check(GoSampler, &mut StdRng::seed_from_u64(2));
+}
+
+fn make_label_codes<S: Sampler>(s: S) -> impl Distribution<VecBackend, Item = DictValue<String>> {
+    choose_dict(s, vec!["a".to_string(), "b".to_string(), "c".to_string()])
+}
+
+/// `choose_dict` draws the same picks as `choose`, column-wise and row-wise.
+#[test]
+fn choose_dict_matches_choose() {
+    let plain: StrCol = make_labels(RSampler).collect_col(StrCol::new(), &mut RRng::new(5), 200);
+    let dict: DictCol<String> =
+        make_label_codes(RSampler).collect_col(DictCol::default(), &mut RRng::new(5), 200);
+    assert_eq!(dict.len(), 200);
+    let decoded: Vec<&str> = (0..200).map(|i| dict.get(i).as_str()).collect();
+    assert_eq!(decoded, plain.iter().collect::<Vec<_>>());
+
+    let rng = &mut RRng::new(5);
+    let mut rows = make_label_codes(RSampler).row_iter();
+    let row_wise: Vec<String> = (0..200).map(|_| (*rows.next(rng)).clone()).collect();
+    assert_eq!(row_wise, decoded);
 }

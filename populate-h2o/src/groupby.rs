@@ -14,14 +14,16 @@
 
 use crate::csv::{Column, Table};
 use crate::runif_rounded;
+use populate_2::column::{DictCol, DictValue, NullableCol, TakeRows};
 use populate_2::hlist::{HCons, HNil};
-use populate_2::random::{choose, padded_labels, uniform_int};
+use populate_2::random::{choose_dict, padded_labels, uniform_int};
 use populate_2::sampler::{RRng, RSampler, Sampler};
 use populate_2::table::{
-    RankKey, fraction_of, null_rows_with_sampled_values, null_sampled_rows, radix_order_by, take,
+    RankKey, fraction_of, null_rows_with_sampled_values, null_sampled_rows, radix_order_by,
 };
 use populate_2::traits::{Distribution, VecBackend};
 use rand::Rng;
+use std::sync::Arc;
 
 /// Parameters of `Rscript groupby-datagen.R N K nas sort`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,7 +56,11 @@ impl GroupByConfig {
     }
 }
 
-type Row = ((String, String, String, i32), (i32, i32, i32, i32), f64);
+type Row = (
+    (DictValue<String>, DictValue<String>, DictValue<String>, i32),
+    (i32, i32, i32, i32),
+    f64,
+);
 
 /// The row distribution before NA injection and sorting: nine independent
 /// columns, collected column by column.
@@ -63,13 +69,13 @@ pub fn groupby_dist<S: Sampler>(
     k: usize,
     n_over_k: usize,
 ) -> impl Distribution<VecBackend, Item = Row> {
-    let small = padded_labels("id", 3, k);
-    let large = padded_labels("id", 10, n_over_k);
+    let small: Arc<[String]> = padded_labels("id", 3, k).into();
+    let large: Arc<[String]> = padded_labels("id", 10, n_over_k).into();
     (
         (
-            choose(sampler, small.clone()),
-            choose(sampler, small),
-            choose(sampler, large),
+            choose_dict(sampler, Arc::clone(&small)),
+            choose_dict(sampler, small),
+            choose_dict(sampler, large),
             uniform_int(sampler, 1, k),
         ),
         (
@@ -82,22 +88,19 @@ pub fn groupby_dist<S: Sampler>(
     )
 }
 
-/// The G1 table.
+/// The G1 table, column by column: id1..id3 are dictionary codes into the
+/// label lists, the rest plain value buffers, each with a validity bitmap.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupByTable {
-    pub id1: Vec<Option<String>>,
-    pub id2: Vec<Option<String>>,
-    pub id3: Vec<Option<String>>,
-    pub id4: Vec<Option<i32>>,
-    pub id5: Vec<Option<i32>>,
-    pub id6: Vec<Option<i32>>,
-    pub v1: Vec<Option<i32>>,
-    pub v2: Vec<Option<i32>>,
-    pub v3: Vec<Option<f64>>,
-}
-
-fn some<T>(v: Vec<T>) -> Vec<Option<T>> {
-    v.into_iter().map(Some).collect()
+    pub id1: NullableCol<DictCol<String>>,
+    pub id2: NullableCol<DictCol<String>>,
+    pub id3: NullableCol<DictCol<String>>,
+    pub id4: NullableCol<Vec<i32>>,
+    pub id5: NullableCol<Vec<i32>>,
+    pub id6: NullableCol<Vec<i32>>,
+    pub v1: NullableCol<Vec<i32>>,
+    pub v2: NullableCol<Vec<i32>>,
+    pub v3: NullableCol<Vec<f64>>,
 }
 
 impl GroupByTable {
@@ -107,22 +110,7 @@ impl GroupByTable {
     }
 
     pub fn generate<S: Sampler>(cfg: GroupByConfig, sampler: S, rng: &mut impl Rng) -> Self {
-        let n_over_k = cfg.n / cfg.k;
-        let sink =
-            groupby_dist(sampler, cfg.k, n_over_k).collect_into(Default::default(), rng, cfg.n);
-        let HCons(id1, HCons(id2, HCons(id3, HCons(id4, sink)))) = sink;
-        let HCons(id5, HCons(id6, HCons(v1, HCons(v2, HCons(v3, HNil))))) = sink;
-        let mut t = Self {
-            id1: some(id1),
-            id2: some(id2),
-            id3: some(id3),
-            id4: some(id4),
-            id5: some(id5),
-            id6: some(id6),
-            v1: some(v1),
-            v2: some(v2),
-            v3: some(v3),
-        };
+        let mut t = Self::columns(cfg, sampler, rng);
         if cfg.nas > 0 {
             t.inject_nas(sampler, rng, f64::from(cfg.nas) / 100.0);
         }
@@ -130,6 +118,26 @@ impl GroupByTable {
             t.sort_by_ids();
         }
         t
+    }
+
+    /// The nine columns as drawn, before NA injection and sorting.
+    pub fn columns<S: Sampler>(cfg: GroupByConfig, sampler: S, rng: &mut impl Rng) -> Self {
+        let n_over_k = cfg.n / cfg.k;
+        let sink =
+            groupby_dist(sampler, cfg.k, n_over_k).collect_into(Default::default(), rng, cfg.n);
+        let HCons(id1, HCons(id2, HCons(id3, HCons(id4, sink)))) = sink;
+        let HCons(id5, HCons(id6, HCons(v1, HCons(v2, HCons(v3, HNil))))) = sink;
+        Self {
+            id1: NullableCol::all_valid(id1),
+            id2: NullableCol::all_valid(id2),
+            id3: NullableCol::all_valid(id3),
+            id4: NullableCol::all_valid(id4),
+            id5: NullableCol::all_valid(id5),
+            id6: NullableCol::all_valid(id6),
+            v1: NullableCol::all_valid(v1),
+            v2: NullableCol::all_valid(v2),
+            v3: NullableCol::all_valid(v3),
+        }
     }
 
     fn inject_nas<S: Sampler>(&mut self, sampler: S, rng: &mut impl Rng, frac: f64) {
@@ -143,32 +151,35 @@ impl GroupByTable {
         if k > 0 {
             null_sampled_rows(sampler, rng, &mut self.v1, k);
             null_sampled_rows(sampler, rng, &mut self.v2, k);
-            // f64 isn't Hash/Ord but null_sampled_rows doesn't need either.
             null_sampled_rows(sampler, rng, &mut self.v3, k);
         }
     }
 
     fn sort_by_ids(&mut self) {
-        let keys: [&dyn RankKey; 6] = [
+        let order = radix_order_by(self.id1.len(), &self.id_keys());
+        self.id1 = self.id1.take_rows(&order);
+        self.id2 = self.id2.take_rows(&order);
+        self.id3 = self.id3.take_rows(&order);
+        self.id4 = self.id4.take_rows(&order);
+        self.id5 = self.id5.take_rows(&order);
+        self.id6 = self.id6.take_rows(&order);
+        self.v1 = self.v1.take_rows(&order);
+        self.v2 = self.v2.take_rows(&order);
+        self.v3 = self.v3.take_rows(&order);
+    }
+
+    /// id1..id6 as sort keys (`setkeyv(DT, paste0("id", 1:6))`).
+    pub fn id_keys(&self) -> [&dyn RankKey; 6] {
+        [
             &self.id1, &self.id2, &self.id3, &self.id4, &self.id5, &self.id6,
-        ];
-        let order = radix_order_by(self.id1.len(), &keys);
-        self.id1 = take(&self.id1, &order);
-        self.id2 = take(&self.id2, &order);
-        self.id3 = take(&self.id3, &order);
-        self.id4 = take(&self.id4, &order);
-        self.id5 = take(&self.id5, &order);
-        self.id6 = take(&self.id6, &order);
-        self.v1 = take(&self.v1, &order);
-        self.v2 = take(&self.v2, &order);
-        self.v3 = take(&self.v3, &order);
+        ]
     }
 
     pub fn into_table(self) -> Table {
         let cols = [
-            ("id1", Column::Str(self.id1)),
-            ("id2", Column::Str(self.id2)),
-            ("id3", Column::Str(self.id3)),
+            ("id1", Column::Dict(self.id1)),
+            ("id2", Column::Dict(self.id2)),
+            ("id3", Column::Dict(self.id3)),
             ("id4", Column::Int(self.id4)),
             ("id5", Column::Int(self.id5)),
             ("id6", Column::Int(self.id6)),

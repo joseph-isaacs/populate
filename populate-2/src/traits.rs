@@ -1,3 +1,4 @@
+use crate::column::{DictCol, DictValue, NullableCol, StrCol};
 use rand::Rng;
 use std::collections::VecDeque;
 
@@ -34,9 +35,7 @@ pub trait DefaultSink<B: Backend> {
 
 macro_rules! for_all_primitives {
     ($macro:ident) => {
-        $macro!(
-            i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize, String
-        );
+        $macro!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
     };
 }
 
@@ -60,14 +59,40 @@ macro_rules! impl_value_hlist_scalar {
 for_all_primitives!(impl_default_sink_scalar);
 for_all_primitives!(impl_value_hlist_scalar);
 
-// A nullable column is a single column of `Option<T>`: the backend's primitive
-// sink holds the `Option`s and the Arrow layer turns `None` into nulls.
-impl<B: Backend, T> DefaultSink<B> for Option<T> {
-    type Sink = HCons<B::Prim<Option<T>>, HNil>;
+// Strings live in one byte buffer (Arrow layout), not a `Vec<String>`.
+impl<B: Backend> DefaultSink<B> for String {
+    type Sink = HCons<StrCol, HNil>;
+}
+
+impl ValueHList for String {
+    type HList = HCons<String, HNil>;
+    fn into_hlist(self) -> Self::HList {
+        HCons(self, HNil)
+    }
+}
+
+// A nullable column is `T`'s own single column plus a validity bitmap.
+impl<B: Backend, T, S> DefaultSink<B> for Option<T>
+where
+    T: DefaultSink<B, Sink = HCons<S, HNil>>,
+{
+    type Sink = HCons<NullableCol<S>, HNil>;
 }
 
 impl<T> ValueHList for Option<T> {
     type HList = HCons<Option<T>, HNil>;
+    fn into_hlist(self) -> Self::HList {
+        HCons(self, HNil)
+    }
+}
+
+// A dictionary column: a code per row into one shared value list.
+impl<B: Backend, T> DefaultSink<B> for DictValue<T> {
+    type Sink = HCons<DictCol<T>, HNil>;
+}
+
+impl<T> ValueHList for DictValue<T> {
+    type HList = HCons<DictValue<T>, HNil>;
     fn into_hlist(self) -> Self::HList {
         HCons(self, HNil)
     }

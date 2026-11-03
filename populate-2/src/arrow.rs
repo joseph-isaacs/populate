@@ -9,8 +9,9 @@
 //! | `Vec<T>` (numeric)       | `PrimitiveArray`, buffer moved, no copy      |
 //! | `Vec<bool>`              | `BooleanArray` (bit-packed)                  |
 //! | `Vec<usize>`             | `UInt64Array`                                |
-//! | `Vec<String>`            | `StringArray`                                |
-//! | `Vec<Option<T>>`         | the array for `T`, with `None` as null       |
+//! | `StrCol`                 | `StringArray`, offsets + bytes moved         |
+//! | `NullableCol<S>`         | `S`'s array, validity bitmap moved as nulls  |
+//! | `DictCol<T>`             | `DictionaryArray<UInt32>`, codes moved       |
 //! | `ListCol<offsets, V>`    | `ListArray` with V's columns as its values;  |
 //! |                          | several columns become a `StructArray`       |
 //! | `FixedCols<S, N>`        | `StructArray` (`f0..`), see [`flatten_named`] |
@@ -19,6 +20,7 @@
 //! So `list<(i32, list<i64>)>` becomes `List<Struct<c0: Int32, c1: List<Int64>>>`.
 //! Nothing goes through a per-value `dyn ArrayBuilder` call.
 
+use crate::column::{DictCol, NullableCol, StrCol};
 use crate::fixed::FixedCols;
 use crate::hlist::{HCons, HNil};
 use crate::traits::{DefaultSink, Distribution, ListCol, VecBackend};
@@ -27,10 +29,13 @@ use arrow_array::types::{
     UInt32Type, UInt64Type,
 };
 use arrow_array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Int64Array, ListArray, PrimitiveArray,
-    RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt64Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, Int64Array, ListArray,
+    PrimitiveArray, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt32Array,
+    UInt64Array, make_array,
 };
-use arrow_buffer::{ArrowNativeType, NullBuffer, OffsetBuffer};
+use arrow_buffer::{
+    ArrowNativeType, BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer,
+};
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema};
 use rand::Rng;
 use std::sync::Arc;
@@ -83,32 +88,70 @@ impl IntoArrowArray for Vec<usize> {
     }
 }
 
-impl IntoArrowArray for Vec<String> {
+/// Offsets and bytes move into the `StringArray` as they are.
+impl IntoArrowArray for StrCol {
     fn into_arrow_array(self) -> ArrayRef {
-        Arc::new(StringArray::from(self))
+        let (offsets, data) = self.into_parts();
+        let offsets = OffsetBuffer::new(ScalarBuffer::from(offsets));
+        Arc::new(
+            StringArray::try_new(offsets, Buffer::from_vec(data), None)
+                .expect("StrCol holds whole UTF-8 strings"),
+        )
     }
 }
 
-impl<T: ArrowNative> IntoArrowArray for Vec<Option<T>> {
+/// The inner column's array with the validity bitmap as its null buffer
+/// (moved, not rebuilt); no nulls means no null buffer.
+impl<S: IntoArrowArray> IntoArrowArray for NullableCol<S> {
     const NULLABLE: bool = true;
     fn into_arrow_array(self) -> ArrayRef {
-        let nulls = NullBuffer::from_iter(self.iter().map(Option::is_some));
-        let values: Vec<T> = self.into_iter().map(Option::unwrap_or_default).collect();
-        Arc::new(PrimitiveArray::<T::Arrow>::new(values.into(), Some(nulls)))
+        let nulls = self.null_count();
+        let values = self.values.into_arrow_array();
+        if nulls == 0 {
+            return values;
+        }
+        let (words, len) = self.validity.into_parts();
+        let validity = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(words), 0, len));
+        let data = values
+            .to_data()
+            .into_builder()
+            .nulls(Some(validity))
+            .build()
+            .expect("validity matches the column length");
+        make_array(data)
     }
 }
 
-impl IntoArrowArray for Vec<Option<bool>> {
-    const NULLABLE: bool = true;
-    fn into_arrow_array(self) -> ArrayRef {
-        Arc::new(BooleanArray::from(self))
+/// Values a [`DictCol`] can hold: they become its dictionary array.
+pub trait DictionaryValues: Sized + Default {
+    fn values_array(values: &[Self]) -> ArrayRef;
+}
+
+impl DictionaryValues for String {
+    fn values_array(values: &[Self]) -> ArrayRef {
+        Arc::new(StringArray::from_iter_values(values))
     }
 }
 
-impl IntoArrowArray for Vec<Option<String>> {
-    const NULLABLE: bool = true;
+impl<T: ArrowNative> DictionaryValues for T {
+    fn values_array(values: &[Self]) -> ArrayRef {
+        Arc::new(PrimitiveArray::<T::Arrow>::from_iter_values(
+            values.iter().copied(),
+        ))
+    }
+}
+
+/// Codes move into the keys array; the value list is converted once.
+impl<T: DictionaryValues> IntoArrowArray for DictCol<T> {
     fn into_arrow_array(self) -> ArrayRef {
-        Arc::new(StringArray::from(self))
+        let values = if self.dictionary().is_empty() && !self.is_empty() {
+            // only null placeholders (code 0): give them a value to point at
+            T::values_array(&[T::default()])
+        } else {
+            T::values_array(self.dictionary())
+        };
+        let keys = UInt32Array::new(ScalarBuffer::from(self.codes), None);
+        Arc::new(DictionaryArray::<UInt32Type>::new(keys, values))
     }
 }
 

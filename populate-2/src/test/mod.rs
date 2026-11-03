@@ -5,6 +5,7 @@ use std::rc::Rc;
 #[cfg(feature = "arrow")]
 mod arrow;
 mod col;
+mod column;
 mod deque;
 mod dist;
 #[cfg(feature = "arrow")]

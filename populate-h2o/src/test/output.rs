@@ -1,6 +1,7 @@
 use crate::csv::fwrite_f64;
 use crate::{FastSampler, GroupByConfig, GroupByTable};
 use arrow_array::cast::AsArray;
+use arrow_array::types::UInt32Type;
 use arrow_schema::DataType;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -48,17 +49,17 @@ fn groupby_record_batch() {
         vec!["id1", "id2", "id3", "id4", "id5", "id6", "v1", "v2", "v3"]
     );
     let types: Vec<&DataType> = schema.fields().iter().map(|f| f.data_type()).collect();
-    assert_eq!(types[0], &DataType::Utf8);
+    let dict = DataType::Dictionary(Box::new(DataType::UInt32), Box::new(DataType::Utf8));
+    assert_eq!(types[0], &dict);
     assert_eq!(types[3], &DataType::Int32);
     assert_eq!(types[8], &DataType::Float64);
     assert_eq!(rb.num_rows(), 1000);
     // 5% of 1000 rows of v1 are null.
     assert_eq!(rb.column(6).null_count(), 50);
-    assert!(
-        rb.column(0)
-            .as_string::<i32>()
-            .iter()
-            .flatten()
-            .all(|s| s.len() == 5)
-    );
+    // id1 codes point into the 10 labels id001..id010
+    let id1 = rb.column(0).as_dictionary::<UInt32Type>();
+    let labels: Vec<&str> = id1.values().as_string::<i32>().iter().flatten().collect();
+    assert_eq!(labels.len(), 10);
+    assert_eq!((labels[0], labels[9]), ("id001", "id010"));
+    assert!(id1.keys().iter().flatten().all(|k| k < 10));
 }

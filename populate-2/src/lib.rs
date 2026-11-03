@@ -1,5 +1,6 @@
 #[cfg(feature = "arrow")]
 pub mod arrow;
+pub mod column;
 pub mod dist;
 pub mod fixed;
 pub mod hlist;

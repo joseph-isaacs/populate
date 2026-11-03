@@ -25,8 +25,13 @@ impl<S: Default, const N: usize> Default for FixedCols<S, N> {
     }
 }
 
-impl<B: Backend, T, const N: usize> DefaultSink<B> for Fixed<T, N> {
-    type Sink = HCons<FixedCols<B::Prim<T>, N>, HNil>;
+/// Each element goes into `T`'s own column (`StrCol` for `String`,
+/// `NullableCol` for `Option`, ...).
+impl<B: Backend, T, S, const N: usize> DefaultSink<B> for Fixed<T, N>
+where
+    T: DefaultSink<B, Sink = HCons<S, HNil>>,
+{
+    type Sink = HCons<FixedCols<S, N>, HNil>;
 }
 
 impl<T, S: Sink<T>, const N: usize> Sink<Fixed<T, N>> for FixedCols<S, N> {

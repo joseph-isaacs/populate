@@ -4,9 +4,10 @@
 //! `pkg/data/usecases/iot`.
 
 use crate::influx::{FieldValue, LineWriter};
-use arrow_array::{ArrayRef, Float64Array, Int64Array, StructArray};
+use arrow_array::{ArrayRef, StructArray};
 use arrow_schema::{DataType, Field, Fields};
 use populate_2::arrow::IntoArrowArray;
+use populate_2::column::NullableCol;
 use populate_2::fixed::Fixed;
 use populate_2::panel::{Entity, EntityFactory, PanelConfig, PanelCursor};
 use populate_2::process::{
@@ -70,7 +71,7 @@ pub struct DiagnosticsCols<F, I> {
 }
 
 impl<B: Backend> DefaultSink<B> for DiagnosticsFields {
-    type Sink = HCons<DiagnosticsCols<B::Prim<Option<f64>>, B::Prim<Option<i64>>>, HNil>;
+    type Sink = HCons<DiagnosticsCols<NullableCol<B::Prim<f64>>, NullableCol<B::Prim<i64>>>, HNil>;
 }
 
 impl<F: Sink<Option<f64>>, I: Sink<Option<i64>>> Sink<DiagnosticsFields> for DiagnosticsCols<F, I> {
@@ -81,7 +82,7 @@ impl<F: Sink<Option<f64>>, I: Sink<Option<i64>>> Sink<DiagnosticsFields> for Dia
     }
 }
 
-impl IntoArrowArray for DiagnosticsCols<Vec<Option<f64>>, Vec<Option<i64>>> {
+impl IntoArrowArray for DiagnosticsCols<NullableCol<Vec<f64>>, NullableCol<Vec<i64>>> {
     fn into_arrow_array(self) -> ArrayRef {
         let f = |n: &str, dt| Field::new(n, dt, true);
         Arc::new(StructArray::new(
@@ -91,9 +92,9 @@ impl IntoArrowArray for DiagnosticsCols<Vec<Option<f64>>, Vec<Option<i64>>> {
                 f("f2", DataType::Int64),
             ]),
             vec![
-                Arc::new(Float64Array::from(self.fuel_state)) as ArrayRef,
-                Arc::new(Float64Array::from(self.current_load)),
-                Arc::new(Int64Array::from(self.status)),
+                self.fuel_state.into_arrow_array(),
+                self.current_load.into_arrow_array(),
+                self.status.into_arrow_array(),
             ],
             None,
         ))

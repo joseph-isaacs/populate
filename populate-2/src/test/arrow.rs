@@ -2,7 +2,8 @@
 // Arrow output — collect_record_batch over the same helpers as list tests
 // ========================================================================
 
-use crate::arrow::DistributionArrow;
+use crate::arrow::{DistributionArrow, IntoArrowArray};
+use crate::column::{DictCol, DictValue, NullableCol, PushNull};
 use crate::dist::{map, range};
 use crate::test::Log;
 use crate::test::dist::{
@@ -11,7 +12,7 @@ use crate::test::dist::{
 };
 use crate::traits::{Distribution, VecBackend};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float64Type, Int32Type, Int64Type};
+use arrow_array::types::{Float64Type, Int32Type, Int64Type, UInt32Type};
 use arrow_array::{Array, ListArray, StructArray};
 use arrow_schema::{DataType, Field, Fields};
 use rand::rng;
@@ -189,4 +190,53 @@ fn strings_and_nulls_to_record_batch() {
     assert_eq!(even, vec![Some(0), None, Some(2), None]);
     let s: Vec<Option<&str>> = rb.column(2).as_string::<i32>().iter().collect();
     assert_eq!(s, vec![None, Some("1"), Some("2"), None]);
+}
+
+fn make_dict_and_nullable_dict()
+-> impl Distribution<VecBackend, Item = (DictValue<String>, Option<DictValue<String>>, String)> {
+    let labels: Arc<[String]> = vec!["b".to_string(), "a".to_string(), "c".to_string()].into();
+    let pick = |i: i64, labels: &Arc<[String]>| DictValue {
+        code: (i % 3) as u32,
+        values: Arc::clone(labels),
+    };
+    let (l1, l2) = (Arc::clone(&labels), labels);
+    (
+        map(range(0i64, 1), move |i: i64| pick(i, &l1)),
+        map(range(0i64, 1), move |i: i64| {
+            (i % 2 == 0).then(|| pick(i, &l2))
+        }),
+        map(range(0i64, 1), |i: i64| "x".repeat(i as usize)),
+    )
+}
+
+#[test]
+fn dictionary_and_string_columns_to_arrow() {
+    let mut d = make_dict_and_nullable_dict();
+    let rb = d.collect_record_batch(&mut rng(), 5).unwrap();
+    let dict_type = DataType::Dictionary(Box::new(DataType::UInt32), Box::new(DataType::Utf8));
+    assert_eq!(rb.schema().field(0).data_type(), &dict_type);
+    assert!(!rb.schema().field(0).is_nullable());
+    assert!(rb.schema().field(1).is_nullable());
+
+    let plain = rb.column(0).as_dictionary::<UInt32Type>();
+    assert_eq!(plain.keys().values().to_vec(), vec![0, 1, 2, 0, 1]);
+    let labels: Vec<&str> = plain.values().as_string::<i32>().iter().flatten().collect();
+    assert_eq!(labels, vec!["b", "a", "c"]);
+
+    let nullable = rb.column(1).as_dictionary::<UInt32Type>();
+    let keys: Vec<Option<u32>> = nullable.keys().iter().collect();
+    assert_eq!(keys, vec![Some(0), None, Some(2), None, Some(1)]);
+
+    let s: Vec<&str> = rb.column(2).as_string::<i32>().iter().flatten().collect();
+    assert_eq!(s, vec!["", "x", "xx", "xxx", "xxxx"]);
+}
+
+#[test]
+fn all_null_dictionary_column_to_arrow() {
+    let mut col: NullableCol<DictCol<String>> = NullableCol::default();
+    col.push_null();
+    col.push_null();
+    let a = col.into_arrow_array();
+    assert_eq!(a.len(), 2);
+    assert_eq!(a.null_count(), 2);
 }

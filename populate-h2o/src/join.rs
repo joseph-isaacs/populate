@@ -10,10 +10,11 @@
 use crate::csv::{Column, Table};
 use crate::groupby::pretty_sci;
 use crate::runif_rounded;
+use populate_2::column::{NullableCol, TakeRows};
 use populate_2::sampler::{RRng, RSampler, Sampler};
 use populate_2::table::{
     KeySplit, RankKey, covering_sample, fraction_of, null_rows_with_sampled_values,
-    null_sampled_rows, radix_order_by, split_keys, take,
+    null_sampled_rows, radix_order_by, split_keys,
 };
 use populate_2::traits::{DistributionScalar, VecBackend};
 use rand::Rng;
@@ -88,10 +89,10 @@ impl JoinConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct JoinTable {
     /// `id1..` (1 to 3 of them).
-    pub ids: Vec<Vec<Option<i32>>>,
+    pub ids: Vec<NullableCol<Vec<i32>>>,
     /// Name of the value column (`v1` on the LHS, `v2` on the RHS).
     pub value_name: &'static str,
-    pub value: Vec<Option<f64>>,
+    pub value: NullableCol<Vec<f64>>,
 }
 
 impl JoinTable {
@@ -101,14 +102,9 @@ impl JoinTable {
         rng: &mut impl Rng,
         keys: &[Vec<i32>],
         rows: usize,
-    ) -> Vec<Vec<Option<i32>>> {
+    ) -> Vec<NullableCol<Vec<i32>>> {
         keys.iter()
-            .map(|k| {
-                covering_sample(sampler, rng, k, rows)
-                    .into_iter()
-                    .map(Some)
-                    .collect()
-            })
+            .map(|k| NullableCol::all_valid(covering_sample(sampler, rng, k, rows)))
             .collect()
     }
 
@@ -119,7 +115,7 @@ impl JoinTable {
             .collect();
         let order = radix_order_by(self.ids[0].len(), &keys);
         for col in &mut self.ids {
-            *col = take(col, &order);
+            *col = col.take_rows(&order);
         }
     }
 
@@ -132,23 +128,24 @@ impl JoinTable {
             rows,
         );
         self.value_name = name;
-        self.value = v.into_iter().map(Some).collect();
+        self.value = NullableCol::all_valid(v);
     }
 
     /// Columns in the reference's written order:
     /// `id1.., id4.. (= "id" + id1..), value`.
     pub fn into_table(self) -> Table {
         let mut columns = Vec::new();
-        let twins: Vec<Vec<Option<String>>> = self
+        // "id" + key, NA stays NA (the reference's sprintfId); formatted on output.
+        let twins: Vec<Column> = self
             .ids
             .iter()
-            .map(|c| c.iter().map(|v| v.map(|i| format!("id{i}"))).collect())
+            .map(|c| Column::Prefixed("id", c.clone()))
             .collect();
         for (i, c) in self.ids.into_iter().enumerate() {
             columns.push((format!("id{}", i + 1), Column::Int(c)));
         }
         for (i, c) in twins.into_iter().enumerate() {
-            columns.push((format!("id{}", i + 4), Column::Str(c)));
+            columns.push((format!("id{}", i + 4), c));
         }
         columns.push((self.value_name.to_string(), Column::Float(self.value)));
         Table { columns }
@@ -179,7 +176,7 @@ impl JoinTables {
         let empty = |ids| JoinTable {
             ids,
             value_name: "",
-            value: Vec::new(),
+            value: NullableCol::default(),
         };
 
         // LHS: sort (before values and NAs, as the reference does), values, NAs.

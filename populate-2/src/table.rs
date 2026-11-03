@@ -14,6 +14,7 @@
 //! | [`radix_order_by`] + [`take`] | `setkeyv(DT, cols)` (stable, NA first), linear time |
 //! | [`stable_order_by`] | same order by comparison sort; the reference [`radix_order_by`] is tested against |
 
+use crate::column::{DictCol, NullableCol, StrCol};
 use crate::sampler::Sampler;
 use rand::Rng;
 use std::cmp::Ordering;
@@ -32,47 +33,214 @@ pub fn fraction_of(len: usize, frac: f64) -> usize {
     (len as f64 * frac) as usize
 }
 
+// ============================================================================
+// Null injection
+// ============================================================================
+
+/// A column whose rows can be grouped by value: per-row codes in
+/// `0..code_count` where two rows have equal codes exactly when they hold
+/// equal values (all null rows share one code).
+pub trait GroupCodes {
+    fn group_codes(&self) -> (Vec<u32>, usize);
+}
+
+/// A column whose rows can be set to null.
+pub trait SetNull {
+    fn row_count(&self) -> usize;
+    fn set_null(&mut self, row: usize);
+}
+
 /// Null out whole *values*: sample `trunc(distinct * frac)` of the column's
-/// distinct values (without replacement) and set every row holding one of
-/// them to `None`. Returns the number of distinct values nulled.
+/// distinct values (in order of first appearance, without replacement) and
+/// set every row holding one of them to null. Returns the number of distinct
+/// values nulled.
 ///
 /// Unlike [`null_sampled_rows`] this removes entire groups/keys, which is how
-/// db-benchmark makes NA groups.
-pub fn null_rows_with_sampled_values<T: Hash + Eq + Clone>(
+/// db-benchmark makes NA groups. Works on per-row codes, so it costs the same
+/// for strings as for integers.
+pub fn null_rows_with_sampled_values<C: GroupCodes + SetNull + ?Sized>(
     sampler: impl Sampler,
     rng: &mut impl Rng,
-    col: &mut [Option<T>],
+    col: &mut C,
     frac: f64,
 ) -> usize {
-    let distinct = unique_in_order(col);
+    let (codes, code_count) = col.group_codes();
+    let mut seen = vec![false; code_count];
+    let mut distinct: Vec<u32> = Vec::new();
+    for &c in &codes {
+        if !seen[c as usize] {
+            seen[c as usize] = true;
+            distinct.push(c);
+        }
+    }
     let k = fraction_of(distinct.len(), frac);
     if k == 0 {
         return 0;
     }
-    let chosen: HashSet<Option<T>> = sampler
-        .sample_without_replacement(rng, distinct.len(), k)
-        .into_iter()
-        .map(|i| distinct[i].clone())
-        .collect();
-    for v in col.iter_mut() {
-        if chosen.contains(v) {
-            *v = None;
+    let mut chosen = vec![false; code_count];
+    for i in sampler.sample_without_replacement(rng, distinct.len(), k) {
+        chosen[distinct[i] as usize] = true;
+    }
+    for (row, &c) in codes.iter().enumerate() {
+        if chosen[c as usize] {
+            col.set_null(row);
         }
     }
     k
 }
 
-/// Set `k` distinct, uniformly chosen rows to `None`.
-pub fn null_sampled_rows<T>(
+/// Set `k` distinct, uniformly chosen rows to null.
+pub fn null_sampled_rows<C: SetNull + ?Sized>(
     sampler: impl Sampler,
     rng: &mut impl Rng,
-    col: &mut [Option<T>],
+    col: &mut C,
     k: usize,
 ) {
-    for i in sampler.sample_without_replacement(rng, col.len(), k) {
-        col[i] = None;
+    for i in sampler.sample_without_replacement(rng, col.row_count(), k) {
+        col.set_null(i);
     }
 }
+
+type FxBuild = BuildHasherDefault<FxHasher>;
+
+/// Codes in order of first appearance, `None` (if present) included as a value.
+fn hashed_codes<'a, T: Hash + Eq + 'a>(
+    rows: impl Iterator<Item = Option<&'a T>>,
+) -> (Vec<u32>, usize) {
+    let mut ids: HashMap<Option<&T>, u32, FxBuild> = HashMap::default();
+    let codes = rows
+        .map(|v| {
+            let next = ids.len() as u32;
+            *ids.entry(v).or_insert(next)
+        })
+        .collect();
+    (codes, ids.len())
+}
+
+impl<T: Hash + Eq> GroupCodes for [Option<T>] {
+    fn group_codes(&self) -> (Vec<u32>, usize) {
+        hashed_codes(self.iter().map(Option::as_ref))
+    }
+}
+
+impl<T: Hash + Eq> GroupCodes for Vec<Option<T>> {
+    fn group_codes(&self) -> (Vec<u32>, usize) {
+        self.as_slice().group_codes()
+    }
+}
+
+impl<T> SetNull for [Option<T>] {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+    fn set_null(&mut self, row: usize) {
+        self[row] = None;
+    }
+}
+
+impl<T> SetNull for Vec<Option<T>> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+    fn set_null(&mut self, row: usize) {
+        self[row] = None;
+    }
+}
+
+/// Value codes of a column without nulls: equal codes exactly when equal
+/// values. The building block of [`GroupCodes`] for a [`NullableCol`].
+pub trait ValueCodes {
+    fn value_codes(&self) -> (Vec<u32>, usize);
+}
+
+/// Null rows get one extra code after the values' codes.
+impl<S: ValueCodes> GroupCodes for NullableCol<S> {
+    fn group_codes(&self) -> (Vec<u32>, usize) {
+        let (mut codes, n) = self.values.value_codes();
+        for (i, c) in codes.iter_mut().enumerate() {
+            if !self.validity.get(i) {
+                *c = n as u32;
+            }
+        }
+        (codes, n + 1)
+    }
+}
+
+impl<S> SetNull for NullableCol<S> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+    fn set_null(&mut self, row: usize) {
+        NullableCol::set_null(self, row);
+    }
+}
+
+/// The codes themselves, after merging codes of equal dictionary values
+/// (a lookup over the dictionary only, not the rows).
+impl<T: Hash + Eq> ValueCodes for DictCol<T> {
+    fn value_codes(&self) -> (Vec<u32>, usize) {
+        if self.dictionary().is_empty() {
+            // only null placeholders (code 0): one value
+            return (vec![0; self.len()], usize::from(!self.is_empty()));
+        }
+        let (canonical, n) = hashed_codes(self.dictionary().iter().map(Some));
+        let codes = self.codes.iter().map(|&c| canonical[c as usize]).collect();
+        (codes, n)
+    }
+}
+
+impl ValueCodes for StrCol {
+    fn value_codes(&self) -> (Vec<u32>, usize) {
+        let mut ids: HashMap<&str, u32, FxBuild> = HashMap::default();
+        let codes = self
+            .iter()
+            .map(|v| {
+                let next = ids.len() as u32;
+                *ids.entry(v).or_insert(next)
+            })
+            .collect();
+        (codes, ids.len())
+    }
+}
+
+/// Integers in a span at most a few times the row count map to `v - min`
+/// (no hashing); wider spans fall back to a hash table.
+fn int_span(len: usize, min: i128, max: i128) -> Option<usize> {
+    let span = usize::try_from(max - min + 1).ok()?;
+    (span <= 4 * len + 1024 && u32::try_from(span).is_ok()).then_some(span)
+}
+
+macro_rules! impl_int_codes {
+    ($($t:ty),*) => {$(
+        impl ValueCodes for Vec<$t> {
+            fn value_codes(&self) -> (Vec<u32>, usize) {
+                let (Some(&min), Some(&max)) = (self.iter().min(), self.iter().max()) else {
+                    return (Vec::new(), 0);
+                };
+                match int_span(self.len(), min as i128, max as i128) {
+                    Some(span) => (self.iter().map(|&v| (v as i128 - min as i128) as u32).collect(), span),
+                    None => hashed_codes(self.iter().map(Some)),
+                }
+            }
+        }
+
+        /// Ranks `v - min` for a narrow span (no hashing, no sort); otherwise
+        /// dense ranks via the distinct values.
+        impl RankKey for Vec<$t> {
+            fn ranks(&self) -> (Vec<u32>, usize) {
+                let (Some(&min), Some(&max)) = (self.iter().min(), self.iter().max()) else {
+                    return (Vec::new(), 0);
+                };
+                match int_span(self.len(), min as i128, max as i128) {
+                    Some(span) => (self.iter().map(|&v| (v as i128 - min as i128) as u32).collect(), span),
+                    None => dense_ranks(self.iter().map(Some)),
+                }
+            }
+        }
+    )*};
+}
+
+impl_int_codes!(i8, i16, i32, i64, u8, u16, u32, u64, usize);
 
 /// A shuffled column of `size` values drawn from `keys` that contains every
 /// key at least once: all keys, topped up with `size - keys.len()` draws with
@@ -195,35 +363,87 @@ pub trait RankKey {
     fn ranks(&self) -> (Vec<u32>, usize);
 }
 
-/// `None` is rank 0; values are ranked `1..` in their `Ord` order, so ranks
-/// sort exactly as [`SortKey`] compares.
+/// Dense ranks of `rows`: `None` is rank 0, values are ranked `1..` in their
+/// `Ord` order (equal values, equal rank), so ranks sort exactly as
+/// [`SortKey`] compares.
 ///
 /// One hash lookup per row: rows get provisional ids in order of first
 /// appearance, then only the distinct values are sorted and the ids remapped.
-impl<T: Ord + Hash> RankKey for [Option<T>] {
-    fn ranks(&self) -> (Vec<u32>, usize) {
-        let mut ids: HashMap<&T, u32, BuildHasherDefault<FxHasher>> = HashMap::default();
-        let mut distinct: Vec<&T> = Vec::new();
-        let provisional: Vec<u32> = self
-            .iter()
-            .map(|v| {
-                v.as_ref().map_or(0, |x| {
-                    *ids.entry(x).or_insert_with(|| {
-                        distinct.push(x);
-                        distinct.len() as u32
-                    })
+fn dense_ranks<'a, T: Ord + Hash + ?Sized + 'a>(
+    rows: impl Iterator<Item = Option<&'a T>>,
+) -> (Vec<u32>, usize) {
+    let mut ids: HashMap<&T, u32, FxBuild> = HashMap::default();
+    let mut distinct: Vec<&T> = Vec::new();
+    let provisional: Vec<u32> = rows
+        .map(|v| {
+            v.map_or(0, |x| {
+                *ids.entry(x).or_insert_with(|| {
+                    distinct.push(x);
+                    distinct.len() as u32
                 })
             })
-            .collect();
-        // by_value[r] = provisional id (1-based) of the r-th smallest value.
-        let mut by_value: Vec<u32> = (1..=distinct.len() as u32).collect();
-        by_value.sort_unstable_by(|&a, &b| distinct[a as usize - 1].cmp(distinct[b as usize - 1]));
-        let mut rank_of = vec![0u32; distinct.len() + 1];
-        for (r, &id) in by_value.iter().enumerate() {
-            rank_of[id as usize] = r as u32 + 1;
+        })
+        .collect();
+    // by_value[r] = provisional id (1-based) of the r-th smallest value.
+    let mut by_value: Vec<u32> = (1..=distinct.len() as u32).collect();
+    by_value.sort_unstable_by(|&a, &b| distinct[a as usize - 1].cmp(distinct[b as usize - 1]));
+    let mut rank_of = vec![0u32; distinct.len() + 1];
+    for (r, &id) in by_value.iter().enumerate() {
+        rank_of[id as usize] = r as u32 + 1;
+    }
+    let ranks = provisional.iter().map(|&id| rank_of[id as usize]).collect();
+    (ranks, distinct.len() + 1)
+}
+
+impl<T: Ord + Hash> RankKey for [Option<T>] {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        dense_ranks(self.iter().map(Option::as_ref))
+    }
+}
+
+/// Ranks of the codes via a sort of the dictionary only: `O(rows + K log K)`,
+/// no hashing per row. Equal dictionary values share a rank.
+impl<T: Ord> RankKey for DictCol<T> {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        let dict = self.dictionary();
+        if dict.is_empty() {
+            // only null placeholders (code 0): one rank
+            return (vec![0; self.len()], usize::from(!self.is_empty()));
         }
-        let ranks = provisional.iter().map(|&id| rank_of[id as usize]).collect();
-        (ranks, distinct.len() + 1)
+        let mut by_value: Vec<usize> = (0..dict.len()).collect();
+        by_value.sort_by(|&a, &b| dict[a].cmp(&dict[b]));
+        let mut rank_of = vec![0u32; dict.len()];
+        let mut rank = 0u32;
+        for (i, &code) in by_value.iter().enumerate() {
+            if i > 0 && dict[by_value[i - 1]] != dict[code] {
+                rank += 1;
+            }
+            rank_of[code] = rank;
+        }
+        let cardinality = if dict.is_empty() {
+            0
+        } else {
+            rank as usize + 1
+        };
+        let ranks = self.codes.iter().map(|&c| rank_of[c as usize]).collect();
+        (ranks, cardinality)
+    }
+}
+
+impl RankKey for StrCol {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        dense_ranks(self.iter().map(Some))
+    }
+}
+
+/// Null rows rank 0, values rank `1 +` their inner rank.
+impl<S: RankKey> RankKey for NullableCol<S> {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        let (mut ranks, cardinality) = self.values.ranks();
+        for (i, r) in ranks.iter_mut().enumerate() {
+            *r = if self.validity.get(i) { *r + 1 } else { 0 };
+        }
+        (ranks, cardinality + 1)
     }
 }
 

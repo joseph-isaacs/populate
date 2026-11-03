@@ -3,15 +3,20 @@
 //! | leaf | value | R | Go |
 //! |------|-------|---|----|
 //! | [`choose`] | uniform pick from a fixed set | `sample(x, n, TRUE)` | `x[Intn(len(x))]` |
+//! | [`choose_dict`] | the same picks as a dictionary column (codes) | `sample(x, n, TRUE)` | `x[Intn(len(x))]` |
 //! | [`uniform_int`] | uniform integer in `start..start + n` | `sample(n, N, TRUE)` (start 1) | `Intn(n)` (start 0) |
 //! | [`uniform`] | uniform double in `(min, max)` | `runif(N, min, max)` | — |
 //!
-//! Each is a [`Leaf`] over a small clonable [`SampleIter`], so the row and
-//! column paths draw the same stream.
+//! Each draws one index per row from the sampler, so the row and column
+//! paths draw the same stream, and `choose` and `choose_dict` draw the same
+//! picks. Columnar, `choose` copies a borrowed value into its column
+//! ([`PushRef`]: bytes for a string, no `String` per row) and `choose_dict`
+//! writes only a `u32` code.
 
+use crate::column::{DictCol, DictValue, PushRef};
 use crate::dist::{Leaf, leaf};
 use crate::sampler::Sampler;
-use crate::traits::SampleIter;
+use crate::traits::{Backend, DefaultSink, Distribution, HCons, HNil, SampleIter};
 use rand::Rng;
 use std::sync::Arc;
 
@@ -29,12 +34,95 @@ impl<T: Clone, S: Sampler> SampleIter for Choose<T, S> {
     }
 }
 
+impl<B: Backend, T, S, C> Distribution<B> for Choose<T, S>
+where
+    T: Clone + DefaultSink<B, Sink = HCons<C, HNil>>,
+    S: Sampler,
+    C: PushRef<T>,
+{
+    type Item = T;
+    type RowIter = Self;
+
+    fn row_iter(&mut self) -> Self {
+        self.clone()
+    }
+
+    fn collect_into(
+        &mut self,
+        mut sink: HCons<C, HNil>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> HCons<C, HNil> {
+        for _ in 0..n {
+            let i = self.sampler.index(rng, self.values.len());
+            sink.0.push_ref(&self.values[i]);
+        }
+        sink
+    }
+}
+
 /// Uniform pick from `values`.
-pub fn choose<T: Clone, S: Sampler>(sampler: S, values: impl Into<Arc<[T]>>) -> Leaf<Choose<T, S>> {
-    leaf(Choose {
+pub fn choose<T: Clone, S: Sampler>(sampler: S, values: impl Into<Arc<[T]>>) -> Choose<T, S> {
+    Choose {
         values: values.into(),
         sampler,
-    })
+    }
+}
+
+/// Uniform pick from a fixed set, as a dictionary column: a `u32` code per
+/// row into the shared value list.
+#[derive(Clone, Debug)]
+pub struct ChooseDict<T, S> {
+    pub values: Arc<[T]>,
+    pub sampler: S,
+}
+
+impl<T, S: Sampler> SampleIter for ChooseDict<T, S> {
+    type Item = DictValue<T>;
+    fn next(&mut self, rng: &mut impl Rng) -> DictValue<T> {
+        DictValue {
+            code: self.sampler.index(rng, self.values.len()) as u32,
+            values: Arc::clone(&self.values),
+        }
+    }
+}
+
+impl<B: Backend, T, S: Sampler> Distribution<B> for ChooseDict<T, S> {
+    type Item = DictValue<T>;
+    type RowIter = Self;
+
+    fn row_iter(&mut self) -> Self {
+        ChooseDict {
+            values: Arc::clone(&self.values),
+            sampler: self.sampler,
+        }
+    }
+
+    fn collect_into(
+        &mut self,
+        mut sink: HCons<DictCol<T>, HNil>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> HCons<DictCol<T>, HNil> {
+        let col = &mut sink.0;
+        col.set_values(&self.values);
+        col.codes.reserve(n);
+        for _ in 0..n {
+            col.codes
+                .push(self.sampler.index(rng, self.values.len()) as u32);
+        }
+        sink
+    }
+}
+
+/// Uniform pick from `values` as a dictionary column (same draws as [`choose`]).
+pub fn choose_dict<T, S: Sampler>(sampler: S, values: impl Into<Arc<[T]>>) -> ChooseDict<T, S> {
+    let values = values.into();
+    assert!(
+        u32::try_from(values.len()).is_ok(),
+        "choose_dict: more than u32::MAX values"
+    );
+    ChooseDict { values, sampler }
 }
 
 /// Uniform integer in `start..start + n`.

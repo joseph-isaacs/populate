@@ -18,7 +18,9 @@ let g1 = GroupByTable::generate(GroupByConfig::new(1_000_000, 10, 5, true), Fast
 let [x, small, medium, big] = JoinTables::reference(JoinConfig::new(10_000_000, 0, false)).into_tables();
 ```
 
-Two modes share one generator graph and differ only in the `Sampler` type:
+Two modes share one generator graph and differ only in the `Sampler` type
+(populate-2's `sampler` module; the leaf columns are `populate_2::random`,
+NA injection / covering samples / key splits / sorting are `populate_2::table`):
 
 * `RRng` + `RSampler`: a port of R's Mersenne-Twister (`set.seed` scrambling
   included), `unif_rand`, `R_unif_index` rejection sampling, `sample` with and
@@ -38,8 +40,9 @@ byte for byte:
 | groupby | 1e4 1e1 0 0, 1e4 1e2 0 0, 1e4 1e1 5 1, 1e4 1e2 5 0, 1e5 1e1 0 1, 1e5 1e2 5 0, 1e5 1e2 5 1, 1e6 1e2 0 0, 1e6 1e1 5 1, 1e6 2e0 50 1, 1e7 1e2 0 0, 1e7 1e1 5 1 |
 | join | 1e7 0 0 0, 1e7 0 0 1, 1e7 0 5 0, 1e7 0 5 1 |
 
-`cargo test` checks R-produced golden values (RNG primitives, `round`,
-`split_xlr`/`sample_all`, CSV heads) without needing R.
+`cargo test` checks R-produced CSV heads without needing R; the R dialect's
+primitives (`sample.int`, `runif`, `round`, `split_xlr`/`sample_all`) are
+checked against R-produced values in populate-2's tests.
 
 ## Extensions beyond the reference
 

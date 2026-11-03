@@ -2,13 +2,14 @@
 
 Two references, both produced by real Go code:
 
-1. **`gorand/`**: a Go program that imports only the standard library. It dumps
-   `math/rand` outputs (`Int63`, `Float64`, `Intn`, `Int63n`, `NormFloat64`,
-   `Uint32`) for several seeds. `tests/golden/gorand.txt` is its output, and the
-   `gorand_matches_go_stdlib` test checks `GoRand` + `GoRandExt` against it bit
-   for bit.
+1. **`populate-2/validate/gorand/`**: a Go program that imports only the
+   standard library. It dumps `math/rand` outputs (`Int63`, `Float64`, `Intn`,
+   `Int63n`, `NormFloat64`, `Uint32`, `Perm`) for several seeds.
+   `populate-2/tests/golden/gorand.txt` is its output, and populate-2's
+   `go_matches_go_stdlib` test checks `GoRand` + `GoSampler` + `GoRandExt`
+   against it bit for bit.
 
-       go run ./validate/gorand/main.go > tests/golden/gorand.txt
+       cd populate-2 && go run ./validate/gorand > tests/golden/gorand.txt
 
 2. **`diff_reference.sh`**: runs `tsbs_generate_data --format=influx` and our
    `examples/tsbs_generate.rs` with the same flags, then byte-diffs the two

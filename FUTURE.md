@@ -253,3 +253,18 @@ nulls, partial sortedness).
 | 2 | Star Schema Benchmark | `ssb-dbgen` (C fork of TPC-H dbgen) | planned |
 | 3 | TSBS (Time Series Benchmark Suite) | `tsbs_generate_data` (Go) | `populate-tsbs` |
 | 4 | YCSB | YCSB core workloads (Java) | planned |
+
+Shared building blocks (in populate-2, used by both ports):
+
+| module | what | used by |
+|--------|------|---------|
+| `sampler` | `Sampler` dialects: `FastSampler`, `RSampler` + `RRng` (R), `GoSampler` + `GoRand` (Go) | both |
+| `dist::Leaf` | any clonable `SampleIter` as a column | both |
+| `random` | `choose`, `uniform_int`, `uniform` leaves | H2O |
+| `process` | random / clamped / monotonic walks, `precision`, `lazy`, `series` | TSBS |
+| `table` | NA injection, covering samples, key splits, stable multi-key sort | H2O |
+| `panel` | entity × time panels with ramp-up | TSBS |
+| `fixed` + `arrow::flatten_named` | wide same-typed column groups, named flat batches | TSBS |
+
+A new port (SSB's `dbgen` RNG, YCSB's Java `Random`) adds a `Sampler` dialect
+and reuses the rest.

@@ -200,14 +200,13 @@ fn main() {
     };
     println!();
     println!(
-        "{:<26} {:>11} {:<6} | {:>27} | {:>27} | {:>14} | {}",
+        "{:<26} {:>11} {:<6} | {:>27} | {:>27} | {:>14} | parquet MB ours/tpcgen",
         "table",
         "rows",
         "mode",
         "ours median (min) ms",
         "tpcgen median (min) ms",
         "speedup med/min",
-        "parquet MB ours/tpcgen"
     );
     for t in tables {
         for m in modes {

@@ -13,7 +13,7 @@
 //!    linearly from `initial` to all entities over the run (TSBS
 //!    `--initial-scale`). Inactive entities still tick.
 
-use populate_2::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
+use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
 use rand::Rng;
 
 /// One simulated entity (a host, a truck).
@@ -58,7 +58,7 @@ impl PanelConfig {
 }
 
 /// Go's `uint64(f)` on amd64 (NaN / overflow → 2^63) so degenerate configs
-/// (one epoch) behave like the reference instead of panicking.
+/// (one epoch) behave like TSBS instead of panicking.
 fn go_f64_to_u64(f: f64) -> u64 {
     if !(0.0..18446744073709551616.0).contains(&f) {
         1 << 63

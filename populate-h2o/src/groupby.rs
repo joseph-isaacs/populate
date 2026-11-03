@@ -13,13 +13,13 @@
 //! `nas` percent of v1..v3's rows) and optionally a sort by id1..id6.
 
 use crate::csv::{Column, Table};
-use crate::dist::{choose, padded_labels, runif_rounded, sample_int};
-use crate::ops::{
+use crate::runif_rounded;
+use populate_2::hlist::{HCons, HNil};
+use populate_2::random::{choose, padded_labels, uniform_int};
+use populate_2::sampler::{RRng, RSampler, Sampler};
+use populate_2::table::{
     SortKey, fraction_of, null_rows_with_sampled_values, null_sampled_rows, stable_order_by, take,
 };
-use crate::rng::RRng;
-use crate::sampler::{RSampler, Sampler};
-use populate_2::hlist::{HCons, HNil};
 use populate_2::traits::{Distribution, VecBackend};
 use rand::Rng;
 
@@ -70,13 +70,13 @@ pub fn groupby_dist<S: Sampler>(
             choose(sampler, small.clone()),
             choose(sampler, small),
             choose(sampler, large),
-            sample_int(sampler, k),
+            uniform_int(sampler, 1, k),
         ),
         (
-            sample_int(sampler, k),
-            sample_int(sampler, n_over_k),
-            sample_int(sampler, 5),
-            sample_int(sampler, 15),
+            uniform_int(sampler, 1, k),
+            uniform_int(sampler, 1, n_over_k),
+            uniform_int(sampler, 1, 5),
+            uniform_int(sampler, 1, 15),
         ),
         runif_rounded(sampler, 0.0, 100.0, 6),
     )

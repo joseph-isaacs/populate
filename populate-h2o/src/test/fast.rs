@@ -1,8 +1,8 @@
 //! Fast mode (`FastSampler` + any `Rng`) keeps the reference's structure.
 
 use crate::csv::Column;
-use crate::ops::unique_in_order;
 use crate::{FastSampler, GroupByConfig, GroupByTable, JoinConfig, JoinTables};
+use populate_2::table::unique_in_order;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::HashSet;

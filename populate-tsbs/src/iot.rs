@@ -3,17 +3,17 @@
 //! and entries, and randomly cleared fields/tags. Ported from
 //! `pkg/data/usecases/iot`.
 
-use crate::fixed::Fixed;
-use crate::gorand::GoRandExt;
 use crate::influx::{FieldValue, LineWriter};
-use crate::panel::{Entity, EntityFactory, PanelConfig, PanelCursor};
-use crate::process::{
-    Lazy, Normal, Precision, Process, RefillWalk, SharedUniform, Uniform, Walk, clamped_walk, lazy,
-    normal, precision, shared_uniform, uniform,
-};
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StructArray};
 use arrow_schema::{DataType, Field, Fields};
 use populate_2::arrow::IntoArrowArray;
+use populate_2::fixed::Fixed;
+use populate_2::panel::{Entity, EntityFactory, PanelConfig, PanelCursor};
+use populate_2::process::{
+    Lazy, Normal, Precision, Process, RefillWalk, SharedUniform, Uniform, Walk, clamped_walk, lazy,
+    normal, precision, shared_uniform, uniform,
+};
+use populate_2::sampler::{GoRandExt, GoSampler};
 use populate_2::traits::{Backend, DefaultSink, Distribution, HCons, HNil, SampleIter, Sink};
 use rand::Rng;
 use std::array::from_fn;
@@ -82,7 +82,7 @@ impl<F: Sink<Option<f64>>, I: Sink<Option<i64>>> Sink<DiagnosticsFields> for Dia
 }
 
 impl IntoArrowArray for DiagnosticsCols<Vec<Option<f64>>, Vec<Option<i64>>> {
-    fn into_array(self) -> ArrayRef {
+    fn into_arrow_array(self) -> ArrayRef {
         let f = |n: &str, dt| Field::new(n, dt, true);
         Arc::new(StructArray::new(
             Fields::from(vec![
@@ -175,7 +175,7 @@ impl IotPoint {
 // Trucks
 // ============================================================================
 
-type Reading = Precision<Walk<Uniform>>;
+type Reading = Precision<Walk<Uniform<GoSampler>>>;
 
 /// A simulated truck.
 #[derive(Clone, Debug)]
@@ -183,9 +183,9 @@ pub struct Truck {
     tags: StringTags,
     capacities: FloatTags,
     readings: [Reading; 7],
-    fuel: Precision<RefillWalk<Uniform>>,
-    load: Precision<Lazy<Uniform, SharedUniform>>,
-    status: Precision<Walk<Normal>>,
+    fuel: Precision<RefillWalk<Uniform<GoSampler>>>,
+    load: Precision<Lazy<Uniform<GoSampler>, SharedUniform<GoSampler>>>,
+    status: Precision<Walk<Normal<GoSampler>>>,
 }
 
 impl Entity for Truck {
@@ -224,13 +224,13 @@ impl Entity for Truck {
 /// where it is a package-level variable); it is reset when truck 0 is built.
 #[derive(Clone, Debug)]
 pub struct TruckFactory {
-    load: SharedUniform,
+    load: SharedUniform<GoSampler>,
 }
 
 impl Default for TruckFactory {
     fn default() -> Self {
         TruckFactory {
-            load: shared_uniform(0.0, 5000.0),
+            load: shared_uniform(GoSampler, 0.0, 5000.0),
         }
     }
 }
@@ -239,11 +239,11 @@ impl EntityFactory for TruckFactory {
     type Entity = Truck;
     fn make(&mut self, id: usize, rng: &mut impl Rng) -> Truck {
         if id == 0 {
-            self.load = shared_uniform(0.0, 5000.0);
+            self.load = shared_uniform(GoSampler, 0.0, 5000.0);
         }
-        let geo = || uniform(-0.005, 0.005);
-        let big = || uniform(-10.0, 10.0);
-        let small = || uniform(-5.0, 5.0);
+        let geo = || uniform(GoSampler, -0.005, 0.005);
+        let big = || uniform(GoSampler, -10.0, 10.0);
+        let small = || uniform(GoSampler, -5.0, 5.0);
         // Field constructors run in order; some draw their initial state.
         let lat = precision(clamped_walk(geo(), -90.0, 90.0, rng.go_float64() * 90.0), 5);
         let lon = precision(
@@ -285,11 +285,14 @@ impl EntityFactory for TruckFactory {
                 fuel_consumption,
             ],
             fuel: precision(
-                RefillWalk(clamped_walk(uniform(-0.001, 0.0), 0.0, 1.0, 1.0)),
+                RefillWalk(clamped_walk(uniform(GoSampler, -0.001, 0.0), 0.0, 1.0, 1.0)),
                 1,
             ),
-            load: precision(lazy(uniform(0.0, 1.0), self.load.clone(), 0.95), 0),
-            status: precision(clamped_walk(normal(0.0, 1.0), 0.0, 5.0, 0.0), 0),
+            load: precision(
+                lazy(uniform(GoSampler, 0.0, 1.0), self.load.clone(), 0.95),
+                0,
+            ),
+            status: precision(clamped_walk(normal(GoSampler, 0.0, 1.0), 0.0, 5.0, 0.0), 0),
         }
     }
 }

@@ -1,12 +1,6 @@
 use crate::devops::{ARCHES, CpuRow, ENVIRONMENTS, HOST_TAGS, OSES, REGIONS, TEAMS};
-use crate::fixed::Fixed;
-use crate::gorand::{GoRand, GoRandExt};
 use crate::influx::{go_format_float, go_format_float32};
 use crate::iot::{DRIVERS, FLEETS, IotPoint, MODELS};
-use crate::process::{
-    Constant, Process, RefillWalk, clamped_walk, lazy, monotonic_walk, precision, random_walk,
-    series,
-};
 use crate::{
     DEFAULT_START_NS, TsbsConfig, UseCase, cpu_only, cpu_only_record_batch, devops,
     devops_record_batches, influx_lines, iot_points, iot_record_batches,
@@ -16,7 +10,8 @@ use arrow_array::types::{Float32Type, Float64Type, Int64Type, TimestampNanosecon
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
 use populate_2::arrow::DistributionArrow;
-use populate_2::traits::{Distribution, DistributionScalar, SampleIter, VecBackend};
+use populate_2::fixed::Fixed;
+use populate_2::traits::{Distribution, SampleIter, VecBackend};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::collections::HashSet;
@@ -39,45 +34,6 @@ fn config(use_case: UseCase, seed: i64, scale: u64, minutes: i64) -> TsbsConfig 
         end_ns: DEFAULT_START_NS + minutes * MIN_NS,
         ..TsbsConfig::new(use_case)
     }
-}
-
-// ============================================================================
-// (a) Go RNG port vs a Go stdlib golden dump (validate/gorand)
-// ============================================================================
-
-#[test]
-fn gorand_matches_go_stdlib() {
-    let text = golden("gorand.txt");
-    let mut rng = GoRand::new(0);
-    let mut checked = 0;
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split(' ').collect();
-        match parts[..] {
-            ["seed", s] => rng = GoRand::new(s.parse().unwrap()),
-            ["int63", v] => assert_eq!(rng.go_int63(), v.parse::<i64>().unwrap()),
-            ["float64", v] => {
-                assert_eq!(
-                    rng.go_float64().to_bits(),
-                    u64::from_str_radix(v, 16).unwrap()
-                )
-            }
-            ["intn", n, v] => {
-                assert_eq!(rng.go_intn(n.parse().unwrap()), v.parse::<usize>().unwrap())
-            }
-            ["int63n", n, v] => {
-                assert_eq!(rng.go_int63n(n.parse().unwrap()), v.parse::<i64>().unwrap())
-            }
-            ["norm", v] => assert_eq!(
-                rng.go_norm_float64().to_bits(),
-                u64::from_str_radix(v, 16).unwrap(),
-                "line {line}"
-            ),
-            ["uint32", v] => assert_eq!(rng.go_uint32(), v.parse::<u32>().unwrap()),
-            _ => panic!("unexpected golden line {line}"),
-        }
-        checked += 1;
-    }
-    assert!(checked > 6000);
 }
 
 // ============================================================================
@@ -136,91 +92,6 @@ fn iot_matches_reference() {
         influx_lines(&c, &mut c.rng()),
         golden("iot_seed7_scale3_10m.influx")
     );
-}
-
-// ============================================================================
-// Ported TSBS unit tests (deterministic parts)
-// ============================================================================
-
-#[test]
-fn float_precision_get() {
-    // common/distribution_test.go TestFloatPrecisionGet
-    let cases = [
-        (-1, 1.0),
-        (0, 1.0),
-        (1, 1.2),
-        (2, 1.23),
-        (3, 1.234),
-        (4, 1.2345),
-        (5, 1.23456),
-        (6, 1.23456),
-        (9, 1.23456),
-    ];
-    for (digits, want) in cases {
-        assert_eq!(precision(Constant(1.234567890), digits).get(), want);
-    }
-}
-
-#[test]
-fn lazy_distribution() {
-    // common/distribution_test.go TestLazyDistribution
-    let mut rng = GoRand::new(1);
-    let cases = [
-        (1.0, 0.0, 1.0, 2.0, 2.0),
-        (1.0, 1.0, 1.0, 2.0, 3.0),
-        (0.5, 1.0, 0.5, 0.5, 2.0),
-    ];
-    for (threshold, motive, step, state, want) in cases {
-        let mut ld = lazy(
-            Constant(motive),
-            clamped_walk(Constant(step), 2.0, 4.0, state),
-            threshold,
-        );
-        ld.advance(&mut rng);
-        assert_eq!(ld.get(), want);
-    }
-}
-
-#[test]
-fn refill_walk_refills_at_min() {
-    // iot/diagnostics_test.go TestCustomFuelDistribution
-    let mut rng = GoRand::new(1);
-    let mut clamped = clamped_walk(Constant(-1.0), 10.0, 100.0, 100.0);
-    let mut fuel = RefillWalk(clamped.clone());
-    while clamped.get() > 10.0 {
-        clamped.advance(&mut rng);
-        fuel.advance(&mut rng);
-        if clamped.get() == 10.0 {
-            assert_eq!(fuel.get(), 100.0);
-        } else {
-            assert_eq!(fuel.get(), clamped.get());
-        }
-    }
-}
-
-#[test]
-fn walks() {
-    let mut rng = GoRand::new(1);
-    let mut w = random_walk(Constant(-2.0), 1.0);
-    let mut m = monotonic_walk(Constant(-2.0), 1.0);
-    w.advance(&mut rng);
-    m.advance(&mut rng);
-    assert_eq!((w.get(), m.get()), (-1.0, 3.0));
-}
-
-// ============================================================================
-// Processes as populate-2 columns
-// ============================================================================
-
-fn make_clamped_series() -> impl Distribution<VecBackend, Item = f64> {
-    series(clamped_walk(Constant(30.0), 0.0, 100.0, 15.0))
-}
-
-#[test]
-fn series_is_a_populate_column() {
-    let mut d = make_clamped_series();
-    let col: Vec<f64> = d.collect_col(Vec::new(), &mut GoRand::new(1), 5);
-    assert_eq!(col, vec![15.0, 45.0, 75.0, 100.0, 100.0]);
 }
 
 fn make_cpu_panel(c: &TsbsConfig) -> impl Distribution<VecBackend, Item = CpuRow> {

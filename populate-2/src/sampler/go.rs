@@ -10,8 +10,9 @@
 //! - with any other `rand` RNG they are simply fast, well-distributed samplers
 //!   ("fast mode"), so every TSBS distribution works with any `rand::Rng`.
 
-use crate::gorand_tables::{FN, KN, RNG_COOKED, WN};
-use rand::RngCore;
+use crate::sampler::Sampler;
+use crate::sampler::go_tables::{FN, KN, RNG_COOKED, WN};
+use rand::{Rng, RngCore};
 
 const RNG_LEN: usize = 607;
 const RNG_TAP: usize = 273;
@@ -209,3 +210,34 @@ pub trait GoRandExt: RngCore {
 }
 
 impl<R: RngCore + ?Sized> GoRandExt for R {}
+
+/// Go `math/rand` algorithms as a [`Sampler`]: `unif` is `Float64`, `index` is
+/// `Intn`, `normal` is `NormFloat64`, `permutation` is `Perm`. With a
+/// [`GoRand`] the draws match Go's exactly.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GoSampler;
+
+impl Sampler for GoSampler {
+    fn unif(self, rng: &mut impl Rng) -> f64 {
+        rng.go_float64()
+    }
+
+    fn index(self, rng: &mut impl Rng, n: usize) -> usize {
+        rng.go_intn(n)
+    }
+
+    fn normal(self, rng: &mut impl Rng) -> f64 {
+        rng.go_norm_float64()
+    }
+
+    /// Go `Perm(n)`: inside-out Fisher–Yates with `Intn(i + 1)`.
+    fn permutation(self, rng: &mut impl Rng, n: usize) -> Vec<usize> {
+        let mut m = vec![0; n];
+        for i in 0..n {
+            let j = rng.go_intn(i + 1);
+            m[i] = m[j];
+            m[j] = i;
+        }
+        m
+    }
+}

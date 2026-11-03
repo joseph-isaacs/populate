@@ -31,9 +31,9 @@ impl Column {
 
     pub fn into_array(self) -> ArrayRef {
         match self {
-            Column::Int(v) => IntoArrowArray::into_array(v),
-            Column::Float(v) => IntoArrowArray::into_array(v),
-            Column::Str(v) => IntoArrowArray::into_array(v),
+            Column::Int(v) => v.into_arrow_array(),
+            Column::Float(v) => v.into_arrow_array(),
+            Column::Str(v) => v.into_arrow_array(),
         }
     }
 

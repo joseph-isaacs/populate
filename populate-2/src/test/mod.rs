@@ -7,8 +7,13 @@ mod arrow;
 mod col;
 mod deque;
 mod dist;
+#[cfg(feature = "arrow")]
+mod panel;
+mod process;
 mod row;
+mod sampler;
 mod scalar;
+mod table;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 

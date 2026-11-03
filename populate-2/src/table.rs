@@ -1,6 +1,8 @@
 //! Whole-table operations that can't be expressed row by row: they need to
 //! see a complete column (its distinct values, its length) before deciding
-//! what to do. All are generic over the column type and the [`Sampler`].
+//! what to do. All are generic over the column type and the [`Sampler`], so
+//! with [`RSampler`](crate::sampler::RSampler) they reproduce the R idioms
+//! below exactly.
 //!
 //! | op | R idiom it ports |
 //! |----|------------------|
@@ -11,7 +13,7 @@
 //! | [`split_keys`] | `split_xlr`: disjoint matched / left-only / right-only key sets |
 //! | [`stable_order_by`] + [`take`] | `setkeyv(DT, cols)` (stable, NA first) |
 
-use crate::sampler::{Sampler, permutation, sample_with_replacement, sample_without_replacement};
+use crate::sampler::Sampler;
 use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -45,7 +47,8 @@ pub fn null_rows_with_sampled_values<T: Hash + Eq + Clone>(
     if k == 0 {
         return 0;
     }
-    let chosen: HashSet<Option<T>> = sample_without_replacement(sampler, rng, distinct.len(), k)
+    let chosen: HashSet<Option<T>> = sampler
+        .sample_without_replacement(rng, distinct.len(), k)
         .into_iter()
         .map(|i| distinct[i].clone())
         .collect();
@@ -64,7 +67,7 @@ pub fn null_sampled_rows<T>(
     col: &mut [Option<T>],
     k: usize,
 ) {
-    for i in sample_without_replacement(sampler, rng, col.len(), k) {
+    for i in sampler.sample_without_replacement(rng, col.len(), k) {
         col[i] = None;
     }
 }
@@ -79,9 +82,10 @@ pub fn covering_sample<T: Clone>(
     size: usize,
 ) -> Vec<T> {
     assert!(keys.len() <= size, "covering_sample: more keys than rows");
-    let extra = sample_with_replacement(sampler, rng, keys.len(), size - keys.len());
+    let extra = sampler.sample_with_replacement(rng, keys.len(), size - keys.len());
     let pool: Vec<&T> = keys.iter().chain(extra.iter().map(|&i| &keys[i])).collect();
-    permutation(sampler, rng, size)
+    sampler
+        .permutation(rng, size)
         .into_iter()
         .map(|i| pool[i].clone())
         .collect()
@@ -117,7 +121,8 @@ pub fn split_keys(sampler: impl Sampler, rng: &mut impl Rng, n: f64, unmatched: 
     let total = n * (1.0 + unmatched);
     // sample.int(total): a permutation of trunc(total) keys.
     let pool = total as usize;
-    let key: Vec<i32> = permutation(sampler, rng, pool)
+    let key: Vec<i32> = sampler
+        .permutation(rng, pool)
         .into_iter()
         .map(|i| i as i32 + 1)
         .collect();

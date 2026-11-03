@@ -427,3 +427,44 @@ where
 pub fn flatten<D>(d: D) -> Flatten<D> {
     Flatten(d)
 }
+
+// ============================================================================
+// Leaf — any clonable SampleIter as a single-column Distribution
+// ============================================================================
+
+/// A single-column distribution backed by a clonable [`SampleIter`]:
+/// `row_iter` clones the iterator, `collect_into` pushes `n` draws. This is
+/// the one-liner way to turn a custom sampler into a column.
+#[derive(Clone, Debug)]
+pub struct Leaf<I>(pub I);
+
+pub fn leaf<I: SampleIter + Clone>(iter: I) -> Leaf<I> {
+    Leaf(iter)
+}
+
+impl<B: Backend, I> Distribution<B> for Leaf<I>
+where
+    I: SampleIter + Clone,
+    I::Item: DefaultSink<B>,
+    <I::Item as DefaultSink<B>>::Sink: Sink<I::Item>,
+{
+    type Item = I::Item;
+    type RowIter = I;
+
+    fn row_iter(&mut self) -> I {
+        self.0.clone()
+    }
+
+    fn collect_into(
+        &mut self,
+        mut sink: <I::Item as DefaultSink<B>>::Sink,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> <I::Item as DefaultSink<B>>::Sink {
+        let mut iter = self.0.clone();
+        for _ in 0..n {
+            sink.push(iter.next(rng));
+        }
+        sink
+    }
+}

@@ -5,23 +5,20 @@
 //! the reference generator's `--format=influx` output byte for byte; the same
 //! simulation can be collected column by column into Arrow `RecordBatch`es.
 //!
-//! The pieces are generic populate-2 building blocks:
+//! Only the TSBS models (tag tables, measurement definitions, IoT fault
+//! injection) and the Influx serializer live here; the building blocks are
+//! generic populate-2 modules:
 //!
-//! - [`gorand`]: Go `math/rand`-compatible RNG + Go sampling algorithms over any `RngCore`;
-//! - [`process`]: stateful time-series processes (random walks, clamping, …),
-//!   usable directly as populate-2 columns via [`process::series`];
-//! - [`panel`]: entity × time panels (attributes drawn once per entity, state
-//!   ticked every interval) as a populate-2 [`Distribution`](populate_2::traits::Distribution);
-//! - [`fixed`]: fixed-width same-typed column groups and named, flattened Arrow output.
+//! - [`populate_2::sampler::go`]: Go `math/rand` RNG ([`GoRand`]) and
+//!   algorithms ([`GoSampler`], [`GoRandExt`]);
+//! - [`populate_2::process`]: random walks, clamping, … as stateful processes;
+//! - [`populate_2::panel`]: entity × time panels (hosts × epochs);
+//! - [`populate_2::fixed`] + [`populate_2::arrow::flatten_named`]: wide,
+//!   named Arrow output.
 
 pub mod devops;
-pub mod fixed;
-pub mod gorand;
-mod gorand_tables;
 pub mod influx;
 pub mod iot;
-pub mod panel;
-pub mod process;
 
 #[cfg(test)]
 mod tests;
@@ -31,18 +28,18 @@ use crate::devops::{
     HOST_TAGS, KERNEL_FIELDS, MEASUREMENTS, MEM_FLOAT_FIELDS, MEM_INT_FIELDS, NET_FIELDS,
     NGINX_FIELDS, POSTGRESQL_FIELDS, REDIS_FIELDS, write_cpu_line,
 };
-use crate::fixed::flatten_named;
 use crate::iot::{
     DIAGNOSTICS_FIELDS, FLOAT_TAGS, Iot, IotSinks, IotStream, READINGS_FIELDS, STRING_TAGS,
 };
-use crate::panel::{Panel, PanelConfig, panel, written_rows};
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
+use populate_2::arrow::flatten_named;
+use populate_2::panel::{Panel, PanelConfig, panel, written_rows};
 use populate_2::traits::{Distribution, HCons, HNil, SampleIter, Sink, VecBackend};
 use rand::Rng;
 use std::iter::once;
 
-pub use crate::gorand::{GoRand, GoRandExt};
+pub use populate_2::sampler::{GoRand, GoRandExt, GoSampler};
 
 /// TSBS use cases implemented here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

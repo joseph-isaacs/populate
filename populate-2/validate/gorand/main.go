@@ -1,5 +1,5 @@
-// Dumps Go math/rand outputs used by TSBS, for validating the Rust GoRand port.
-// Usage: go run ./validate/gorand > tests/golden/gorand.txt
+// Dumps Go math/rand outputs, for validating populate-2's GoRand / GoSampler port.
+// Usage (in populate-2/): go run ./validate/gorand > tests/golden/gorand.txt
 package main
 
 import (
@@ -29,5 +29,12 @@ func main() {
 			fmt.Printf("norm %x\n", math.Float64bits(r.NormFloat64()))
 		}
 		fmt.Printf("uint32 %d\n", r.Uint32())
+		for _, n := range []int{0, 1, 2, 5, 17, 100} {
+			fmt.Printf("perm %d", n)
+			for _, v := range r.Perm(n) {
+				fmt.Printf(" %d", v)
+			}
+			fmt.Println()
+		}
 	}
 }

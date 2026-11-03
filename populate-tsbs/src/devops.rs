@@ -5,11 +5,13 @@
 //! RNG call order matches TSBS exactly: per host, every measurement is built
 //! (in the order above, with its own draws) *before* the host tags are drawn.
 
-use crate::fixed::Fixed;
-use crate::gorand::GoRandExt;
 use crate::influx::{FieldValue, LineWriter};
-use crate::panel::{Entity, EntityFactory};
-use crate::process::{Normal, Process, Walk, clamped_walk, monotonic_walk, normal, random_walk};
+use populate_2::fixed::Fixed;
+use populate_2::panel::{Entity, EntityFactory};
+use populate_2::process::{
+    Normal, Process, Walk, clamped_walk, monotonic_walk, normal, random_walk,
+};
+use populate_2::sampler::{GoRandExt, GoSampler};
 use populate_2::traits::{Backend, DefaultSink, HCons, HNil, Sink};
 use rand::Rng;
 use std::array::from_fn;
@@ -226,7 +228,7 @@ fn tags_plus<const N: usize, const M: usize>(
     }))
 }
 
-fn ints<const N: usize>(ws: &[Walk<Normal>; N]) -> Fixed<i64, N> {
+fn ints<const N: usize>(ws: &[Walk<Normal<GoSampler>>; N]) -> Fixed<i64, N> {
     Fixed(from_fn(|i| ws[i].get() as i64))
 }
 
@@ -243,15 +245,15 @@ const FS_TYPES: [&str; 3] = ["ext3", "ext4", "btrfs"];
 #[derive(Clone, Debug)]
 // Field walks are boxed so the variants stay small.
 enum Measurement {
-    Cpu(Box<[Walk<Normal>; 10]>),
-    DiskIo(Box<[Walk<Normal>; 7]>, String),
-    Disk(Walk<Normal>, String, String),
-    Kernel(Box<[Walk<Normal>; 5]>, i64),
-    Mem(Box<[Walk<Normal>; 3]>, i64),
-    Net(Box<[Walk<Normal>; 8]>, String),
-    Nginx(Box<[Walk<Normal>; 7]>, String, String),
-    Postgresql(Box<[Walk<Normal>; 16]>),
-    Redis(Box<[Walk<Normal>; 30]>, String, String, i64),
+    Cpu(Box<[Walk<Normal<GoSampler>>; 10]>),
+    DiskIo(Box<[Walk<Normal<GoSampler>>; 7]>, String),
+    Disk(Walk<Normal<GoSampler>>, String, String),
+    Kernel(Box<[Walk<Normal<GoSampler>>; 5]>, i64),
+    Mem(Box<[Walk<Normal<GoSampler>>; 3]>, i64),
+    Net(Box<[Walk<Normal<GoSampler>>; 8]>, String),
+    Nginx(Box<[Walk<Normal<GoSampler>>; 7]>, String, String),
+    Postgresql(Box<[Walk<Normal<GoSampler>>; 16]>),
+    Redis(Box<[Walk<Normal<GoSampler>>; 30]>, String, String, i64),
 }
 
 fn new_cpu(rng: &mut impl Rng) -> Measurement {
@@ -259,7 +261,7 @@ fn new_cpu(rng: &mut impl Rng) -> Measurement {
     let mut f = Vec::with_capacity(10);
     for _ in 0..10 {
         f.push(clamped_walk(
-            normal(0.0, 1.0),
+            normal(GoSampler, 0.0, 1.0),
             0.0,
             100.0,
             rng.go_float64() * 100.0,
@@ -269,7 +271,11 @@ fn new_cpu(rng: &mut impl Rng) -> Measurement {
 }
 
 fn new_diskio(rng: &mut impl Rng) -> Measurement {
-    let (ops, bytes, time) = (normal(50.0, 1.0), normal(100.0, 1.0), normal(5.0, 1.0));
+    let (ops, bytes, time) = (
+        normal(GoSampler, 50.0, 1.0),
+        normal(GoSampler, 100.0, 1.0),
+        normal(GoSampler, 5.0, 1.0),
+    );
     let f = [
         monotonic_walk(ops.clone(), 0.0),
         monotonic_walk(ops, 0.0),
@@ -287,7 +293,7 @@ fn new_disk(rng: &mut impl Rng) -> Measurement {
     let path = format!("/dev/sda{}", rng.go_intn(10));
     let fs = rng.go_choice(&FS_TYPES).to_string();
     let free = clamped_walk(
-        normal(50.0, 1.0),
+        normal(GoSampler, 50.0, 1.0),
         0.0,
         ONE_TERABYTE as f64,
         (ONE_TERABYTE / 2) as f64,
@@ -296,14 +302,14 @@ fn new_disk(rng: &mut impl Rng) -> Measurement {
 }
 
 fn new_kernel(rng: &mut impl Rng) -> Measurement {
-    let f = from_fn(|_| monotonic_walk(normal(5.0, 1.0), 0.0));
+    let f = from_fn(|_| monotonic_walk(normal(GoSampler, 5.0, 1.0), 0.0));
     Measurement::Kernel(Box::new(f), rng.go_int63n(240))
 }
 
 fn new_mem(rng: &mut impl Rng) -> Measurement {
     let total = *rng.go_choice(&MEMORY_TOTALS);
     let t = total as f64;
-    let nd = normal(0.0, t / 64.0);
+    let nd = normal(GoSampler, 0.0, t / 64.0);
     let mut f = Vec::with_capacity(3);
     for _ in 0..3 {
         f.push(clamped_walk(nd.clone(), 0.0, t, rng.go_float64() * t));
@@ -314,7 +320,7 @@ fn new_mem(rng: &mut impl Rng) -> Measurement {
 fn new_net(rng: &mut impl Rng) -> Measurement {
     let f = from_fn(|i| {
         let mean = if i < 4 { 50.0 } else { 5.0 };
-        monotonic_walk(normal(mean, 1.0), 0.0)
+        monotonic_walk(normal(GoSampler, mean, 1.0), 0.0)
     });
     Measurement::Net(Box::new(f), format!("eth{}", rng.go_intn(4)))
 }
@@ -329,9 +335,9 @@ fn new_nginx(rng: &mut impl Rng) -> Measurement {
     // accepts, handled, requests are monotonic; the rest clamp to [0, 100].
     let f = from_fn(|i| {
         if matches!(i, 0 | 2 | 4) {
-            monotonic_walk(normal(5.0, 1.0), 0.0)
+            monotonic_walk(normal(GoSampler, 5.0, 1.0), 0.0)
         } else {
-            clamped_walk(normal(5.0, 1.0), 0.0, 100.0, 0.0)
+            clamped_walk(normal(GoSampler, 5.0, 1.0), 0.0, 100.0, 0.0)
         }
     });
     let (port, server) = server_and_port(rng, "nginx");
@@ -341,21 +347,26 @@ fn new_nginx(rng: &mut impl Rng) -> Measurement {
 fn new_postgresql() -> Measurement {
     let f = from_fn(|i| {
         if i == 12 {
-            clamped_walk(normal(1024.0, 1.0), 0.0, 1024.0 * 1024.0 * 1024.0, 0.0)
+            clamped_walk(
+                normal(GoSampler, 1024.0, 1.0),
+                0.0,
+                1024.0 * 1024.0 * 1024.0,
+                0.0,
+            )
         } else {
-            clamped_walk(normal(5.0, 1.0), 0.0, 1000.0, 0.0)
+            clamped_walk(normal(GoSampler, 5.0, 1.0), 0.0, 1000.0, 0.0)
         }
     });
     Measurement::Postgresql(Box::new(f))
 }
 
 fn new_redis(rng: &mut impl Rng) -> Measurement {
-    let low = || normal(5.0, 1.0);
-    let high = || normal(50.0, 1.0);
-    let f: [Walk<Normal>; 30] = from_fn(|i| match i {
+    let low = || normal(GoSampler, 5.0, 1.0);
+    let high = || normal(GoSampler, 50.0, 1.0);
+    let f: [Walk<Normal<GoSampler>>; 30] = from_fn(|i| match i {
         0 => monotonic_walk(low(), 0.0),
         1..=4 => monotonic_walk(high(), 0.0),
-        5..=7 => random_walk(normal(1.0, 1.0), 0.0),
+        5..=7 => random_walk(normal(GoSampler, 1.0, 1.0), 0.0),
         8 | 13 => clamped_walk(high(), 0.0, 10000.0, 0.0),
         9..=12 => clamped_walk(high(), 0.0, SIXTEEN_GB, SIXTEEN_GB / 2.0),
         25 => clamped_walk(low(), 0.0, 100.0, 0.0),
@@ -374,7 +385,7 @@ fn duration_seconds(ns: i64) -> i64 {
 
 impl Measurement {
     fn tick(&mut self, rng: &mut impl Rng, interval_ns: i64) {
-        fn adv(ws: &mut [Walk<Normal>], rng: &mut impl Rng) {
+        fn adv(ws: &mut [Walk<Normal<GoSampler>>], rng: &mut impl Rng) {
             ws.iter_mut().for_each(|w| w.advance(rng));
         }
         match self {

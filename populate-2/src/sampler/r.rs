@@ -6,9 +6,12 @@
 //! It implements [`RngCore`]: `next_u32` is the tempered 32-bit MT output that
 //! R's `unif_rand()` scales to `[0, 1)`.
 //!
+//! [`RSampler`] is R's sampling algorithms on top of any RNG, and
 //! [`r_round`] is R (>= 4.0.0)'s `round(x, digits)`.
 
-use rand::RngCore;
+use crate::sampler::{Sampler, swap_remove_sample};
+use rand::{Rng, RngCore};
+use std::collections::HashSet;
 
 const N: usize = 624;
 const M: usize = 397;
@@ -130,5 +133,65 @@ pub fn r_round(x: f64, digits: i32) -> f64 {
         xu
     } else {
         xd
+    }
+}
+
+/// R's sampling algorithms (R >= 3.6, `sample.kind = "Rejection"`). With an
+/// [`RRng`] it reproduces R's `runif`, `sample`, `sample.int` exactly.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RSampler;
+
+impl RSampler {
+    /// R's `rbits`: `bits` random bits built from 16-bit chunks of `unif_rand`.
+    fn rbits(self, rng: &mut impl Rng, bits: u32) -> f64 {
+        let mut v: i64 = 0;
+        let mut n = 0;
+        while n <= bits {
+            let v1 = (self.unif(rng) * 65536.0).floor() as i64;
+            v = 65536 * v + v1;
+            n += 16;
+        }
+        (v & ((1i64 << bits) - 1)) as f64
+    }
+}
+
+impl Sampler for RSampler {
+    /// `unif_rand()`: in `(0, 1)`.
+    fn unif(self, rng: &mut impl Rng) -> f64 {
+        r_unif_from_u32(rng.next_u32())
+    }
+
+    /// `R_unif_index`: rejection sampling below the next power of two.
+    fn index(self, rng: &mut impl Rng, n: usize) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let dn = n as f64;
+        let bits = dn.log2().ceil() as u32;
+        loop {
+            let dv = self.rbits(rng, bits);
+            if dn > dv {
+                return dv as usize;
+            }
+        }
+    }
+
+    /// `sample.int(n, k)`, including R's choice of algorithm: the
+    /// hash-rejection variant (`do_sample2`) when `n > 1e7 && k <= n/2`, else
+    /// partial Fisher–Yates by swap-remove (the provided default).
+    fn sample_without_replacement(self, rng: &mut impl Rng, n: usize, k: usize) -> Vec<usize> {
+        assert!(k <= n, "cannot take a sample larger than the population");
+        if n > 10_000_000 && (k as f64) <= n as f64 / 2.0 {
+            let mut seen = HashSet::with_capacity(k);
+            let mut out = Vec::with_capacity(k);
+            while out.len() < k {
+                let v = self.index(rng, n);
+                if seen.insert(v) {
+                    out.push(v);
+                }
+            }
+            return out;
+        }
+        swap_remove_sample(self, rng, n, k)
     }
 }

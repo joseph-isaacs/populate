@@ -8,14 +8,13 @@
 //! twins `id4..id6 = "id" + id1..id3` and one value column.
 
 use crate::csv::{Column, Table};
-use crate::dist::runif_rounded;
 use crate::groupby::pretty_sci;
-use crate::ops::{
+use crate::runif_rounded;
+use populate_2::sampler::{RRng, RSampler, Sampler};
+use populate_2::table::{
     KeySplit, SortKey, covering_sample, fraction_of, null_rows_with_sampled_values,
     null_sampled_rows, split_keys, stable_order_by, take,
 };
-use crate::rng::RRng;
-use crate::sampler::{RSampler, Sampler};
 use populate_2::traits::{DistributionScalar, VecBackend};
 use rand::Rng;
 

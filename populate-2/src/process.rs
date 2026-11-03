@@ -1,8 +1,10 @@
-//! Stateful time-series processes (TSBS's `common.Distribution`).
+//! Stateful value processes: random walks, clamping, rarely-changing values.
 //!
 //! A [`Process`] has a current value ([`Process::get`], idempotent) and moves
-//! one step forward on [`Process::advance`]. They compose like TSBS's
-//! constructors:
+//! one step forward on [`Process::advance`]. Unlike independent random
+//! columns, consecutive values are correlated, which is what time series
+//! (metrics, sensor readings, prices) look like. They compose like TSBS's
+//! `common.Distribution` constructors:
 //!
 //! | TSBS          | here                                   |
 //! |---------------|----------------------------------------|
@@ -14,14 +16,14 @@
 //! | `FP(d, p)`    | [`precision`]                          |
 //! | `LD(m, d, t)` | [`lazy`]                               |
 //!
-//! All sampling goes through [`GoRandExt`], so with a
-//! [`GoRand`](crate::gorand::GoRand) the draws match Go bit for bit, and with
-//! any other RNG they are ordinary fast samplers.
+//! Random leaves take a [`Sampler`]: with [`GoSampler`](crate::sampler::GoSampler)
+//! and a [`GoRand`](crate::sampler::GoRand) the draws match TSBS bit for bit.
 //!
-//! [`series`] turns any process into a populate-2 column distribution.
+//! [`series`] turns any process into a column distribution.
 
-use crate::gorand::GoRandExt;
-use populate_2::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
+use crate::dist::{Leaf, leaf};
+use crate::sampler::Sampler;
+use crate::traits::SampleIter;
 use rand::Rng;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -37,23 +39,25 @@ pub trait Process {
 
 /// `N(mean, std_dev)`, redrawn on every advance.
 #[derive(Clone, Debug)]
-pub struct Normal {
+pub struct Normal<S> {
     pub mean: f64,
     pub std_dev: f64,
+    pub sampler: S,
     value: f64,
 }
 
-pub fn normal(mean: f64, std_dev: f64) -> Normal {
+pub fn normal<S: Sampler>(sampler: S, mean: f64, std_dev: f64) -> Normal<S> {
     Normal {
         mean,
         std_dev,
+        sampler,
         value: 0.0,
     }
 }
 
-impl Process for Normal {
+impl<S: Sampler> Process for Normal<S> {
     fn advance(&mut self, rng: &mut impl Rng) {
-        self.value = rng.go_norm_float64() * self.std_dev + self.mean;
+        self.value = self.sampler.normal(rng) * self.std_dev + self.mean;
     }
     fn get(&self) -> f64 {
         self.value
@@ -62,23 +66,26 @@ impl Process for Normal {
 
 /// `U[low, high)`, redrawn on every advance.
 #[derive(Clone, Debug)]
-pub struct Uniform {
+pub struct Uniform<S> {
     pub low: f64,
     pub high: f64,
+    pub sampler: S,
     value: f64,
 }
 
-pub fn uniform(low: f64, high: f64) -> Uniform {
+pub fn uniform<S: Sampler>(sampler: S, low: f64, high: f64) -> Uniform<S> {
     Uniform {
         low,
         high,
+        sampler,
         value: 0.0,
     }
 }
 
-impl Process for Uniform {
+impl<S: Sampler> Process for Uniform<S> {
+    /// Always draws (unlike [`Sampler::runif`], which skips `low == high`).
     fn advance(&mut self, rng: &mut impl Rng) {
-        let mut x = rng.go_float64();
+        let mut x = self.sampler.unif(rng);
         x *= self.high - self.low;
         x += self.low;
         self.value = x;
@@ -90,27 +97,29 @@ impl Process for Uniform {
 
 /// A uniform whose current value is shared by every clone.
 ///
-/// TSBS's IoT `current_load` reads a *package-level* `UD` that every truck
-/// advances, so all trucks observe the most recent draw by any truck. This
-/// reproduces that coupling.
+/// Couples entities through one global value (e.g. TSBS's IoT
+/// `current_load`, a package-level `UD` that every truck advances, so all
+/// trucks observe the most recent draw by any truck).
 #[derive(Clone, Debug)]
-pub struct SharedUniform {
+pub struct SharedUniform<S> {
     pub low: f64,
     pub high: f64,
+    pub sampler: S,
     value: Rc<Cell<f64>>,
 }
 
-pub fn shared_uniform(low: f64, high: f64) -> SharedUniform {
+pub fn shared_uniform<S: Sampler>(sampler: S, low: f64, high: f64) -> SharedUniform<S> {
     SharedUniform {
         low,
         high,
+        sampler,
         value: Rc::new(Cell::new(0.0)),
     }
 }
 
-impl Process for SharedUniform {
+impl<S: Sampler> Process for SharedUniform<S> {
     fn advance(&mut self, rng: &mut impl Rng) {
-        let mut x = rng.go_float64();
+        let mut x = self.sampler.unif(rng);
         x *= self.high - self.low;
         x += self.low;
         self.value.set(x);
@@ -272,17 +281,11 @@ impl<M: Process, P: Process> Process for Lazy<M, P> {
 }
 
 // ============================================================================
-// Series — a process as a populate-2 column
+// Series — a process as a column
 // ============================================================================
 
-/// A process as a single `f64` column: row `i` is the value after `i` advances.
+/// Iterates a process: row `i` is the value after `i` advances.
 #[derive(Clone, Debug)]
-pub struct Series<P>(pub P);
-
-pub fn series<P: Process + Clone>(process: P) -> Series<P> {
-    Series(process)
-}
-
 pub struct SeriesIter<P> {
     process: P,
     started: bool,
@@ -299,30 +302,10 @@ impl<P: Process> SampleIter for SeriesIter<P> {
     }
 }
 
-impl<B: Backend, P: Process + Clone> Distribution<B> for Series<P>
-where
-    <f64 as DefaultSink<B>>::Sink: Sink<f64>,
-{
-    type Item = f64;
-    type RowIter = SeriesIter<P>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        SeriesIter {
-            process: self.0.clone(),
-            started: false,
-        }
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: <f64 as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <f64 as DefaultSink<B>>::Sink {
-        let mut iter = <Self as Distribution<B>>::row_iter(self);
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
-    }
+/// A process as a single `f64` column: row `i` is the value after `i` advances.
+pub fn series<P: Process + Clone>(process: P) -> Leaf<SeriesIter<P>> {
+    leaf(SeriesIter {
+        process,
+        started: false,
+    })
 }

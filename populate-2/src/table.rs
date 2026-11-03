@@ -11,13 +11,15 @@
 //! | [`null_sampled_rows`] | `set(DT, sample(nrow(DT), k), col, NA)` |
 //! | [`covering_sample`] | `sample(c(x, sample(x, size - length(x), TRUE)))` |
 //! | [`split_keys`] | `split_xlr`: disjoint matched / left-only / right-only key sets |
-//! | [`stable_order_by`] + [`take`] | `setkeyv(DT, cols)` (stable, NA first) |
+//! | [`radix_order_by`] + [`take`] | `setkeyv(DT, cols)` (stable, NA first), linear time |
+//! | [`stable_order_by`] | same order by comparison sort; the reference [`radix_order_by`] is tested against |
 
 use crate::sampler::Sampler;
 use rand::Rng;
 use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::hash::Hash;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::mem::swap;
 
 /// Distinct values in order of first appearance.
 pub fn unique_in_order<T: Hash + Eq + Clone>(col: &[T]) -> Vec<T> {
@@ -180,6 +182,123 @@ pub fn stable_order_by(len: usize, keys: &[&dyn SortKey]) -> Vec<usize> {
             .unwrap_or(Ordering::Equal)
     });
     order
+}
+
+// ============================================================================
+// Radix sorting
+// ============================================================================
+
+/// A column that can describe its rows as dense ranks: equal values get equal
+/// ranks, and rank order is the column's sort order (`None` first).
+pub trait RankKey {
+    /// Per-row ranks in `0..cardinality`, and that cardinality.
+    fn ranks(&self) -> (Vec<u32>, usize);
+}
+
+/// `None` is rank 0; values are ranked `1..` in their `Ord` order, so ranks
+/// sort exactly as [`SortKey`] compares.
+///
+/// One hash lookup per row: rows get provisional ids in order of first
+/// appearance, then only the distinct values are sorted and the ids remapped.
+impl<T: Ord + Hash> RankKey for [Option<T>] {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        let mut ids: HashMap<&T, u32, BuildHasherDefault<FxHasher>> = HashMap::default();
+        let mut distinct: Vec<&T> = Vec::new();
+        let provisional: Vec<u32> = self
+            .iter()
+            .map(|v| {
+                v.as_ref().map_or(0, |x| {
+                    *ids.entry(x).or_insert_with(|| {
+                        distinct.push(x);
+                        distinct.len() as u32
+                    })
+                })
+            })
+            .collect();
+        // by_value[r] = provisional id (1-based) of the r-th smallest value.
+        let mut by_value: Vec<u32> = (1..=distinct.len() as u32).collect();
+        by_value.sort_unstable_by(|&a, &b| distinct[a as usize - 1].cmp(distinct[b as usize - 1]));
+        let mut rank_of = vec![0u32; distinct.len() + 1];
+        for (r, &id) in by_value.iter().enumerate() {
+            rank_of[id as usize] = r as u32 + 1;
+        }
+        let ranks = provisional.iter().map(|&id| rank_of[id as usize]).collect();
+        (ranks, distinct.len() + 1)
+    }
+}
+
+/// FxHash (rustc's hasher): a fast non-cryptographic hasher for the rank
+/// table, where SipHash's DoS resistance buys nothing.
+#[derive(Default)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let w = u64::from_le_bytes(c.try_into().expect("8 bytes"));
+            self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(K);
+        }
+        for &b in chunks.remainder() {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(K);
+        }
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl<T: Ord + Hash> RankKey for Vec<Option<T>> {
+    fn ranks(&self) -> (Vec<u32>, usize) {
+        self.as_slice().ranks()
+    }
+}
+
+/// The same row order as [`stable_order_by`] (lexicographic by `keys`, ties in
+/// original order, `None` first) without comparisons: each key is turned into
+/// dense ranks and the rows are counting-sorted by one key at a time, last key
+/// first (LSD radix sort). Each pass is stable, so earlier keys dominate and
+/// full ties keep their original order. `O(keys × (rows + cardinality))`.
+pub fn radix_order_by(len: usize, keys: &[&dyn RankKey]) -> Vec<usize> {
+    assert!(
+        u32::try_from(len).is_ok(),
+        "radix_order_by: more than u32::MAX rows"
+    );
+    // u32 row ids halve the memory traffic of the scattered passes.
+    let mut order: Vec<u32> = (0..len as u32).collect();
+    let mut next = vec![0u32; len];
+    for key in keys.iter().rev() {
+        let (ranks, cardinality) = key.ranks();
+        assert_eq!(ranks.len(), len, "key column length differs from table");
+        if cardinality <= 1 {
+            continue;
+        }
+        // starts[r] = next output slot for rank r.
+        let mut starts = vec![0usize; cardinality + 1];
+        for &r in &ranks {
+            starts[r as usize + 1] += 1;
+        }
+        for r in 1..=cardinality {
+            starts[r] += starts[r - 1];
+        }
+        for &row in &order {
+            let r = ranks[row as usize] as usize;
+            next[starts[r]] = row;
+            starts[r] += 1;
+        }
+        swap(&mut order, &mut next);
+    }
+    order.into_iter().map(|r| r as usize).collect()
 }
 
 /// Reorder `col` by `order` (`out[i] = col[order[i]]`).

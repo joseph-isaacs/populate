@@ -12,8 +12,8 @@ use crate::groupby::pretty_sci;
 use crate::runif_rounded;
 use populate_2::sampler::{RRng, RSampler, Sampler};
 use populate_2::table::{
-    KeySplit, SortKey, covering_sample, fraction_of, null_rows_with_sampled_values,
-    null_sampled_rows, split_keys, stable_order_by, take,
+    KeySplit, RankKey, covering_sample, fraction_of, null_rows_with_sampled_values,
+    null_sampled_rows, radix_order_by, split_keys, take,
 };
 use populate_2::traits::{DistributionScalar, VecBackend};
 use rand::Rng;
@@ -113,11 +113,11 @@ impl JoinTable {
     }
 
     fn sort_by(&mut self, key_cols: &[usize]) {
-        let keys: Vec<&dyn SortKey> = key_cols
+        let keys: Vec<&dyn RankKey> = key_cols
             .iter()
-            .map(|&i| &self.ids[i] as &dyn SortKey)
+            .map(|&i| &self.ids[i] as &dyn RankKey)
             .collect();
-        let order = stable_order_by(self.ids[0].len(), &keys);
+        let order = radix_order_by(self.ids[0].len(), &keys);
         for col in &mut self.ids {
             *col = take(col, &order);
         }

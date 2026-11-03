@@ -18,7 +18,7 @@ use populate_2::hlist::{HCons, HNil};
 use populate_2::random::{choose, padded_labels, uniform_int};
 use populate_2::sampler::{RRng, RSampler, Sampler};
 use populate_2::table::{
-    SortKey, fraction_of, null_rows_with_sampled_values, null_sampled_rows, stable_order_by, take,
+    RankKey, fraction_of, null_rows_with_sampled_values, null_sampled_rows, radix_order_by, take,
 };
 use populate_2::traits::{Distribution, VecBackend};
 use rand::Rng;
@@ -149,10 +149,10 @@ impl GroupByTable {
     }
 
     fn sort_by_ids(&mut self) {
-        let keys: [&dyn SortKey; 6] = [
+        let keys: [&dyn RankKey; 6] = [
             &self.id1, &self.id2, &self.id3, &self.id4, &self.id5, &self.id6,
         ];
-        let order = stable_order_by(self.id1.len(), &keys);
+        let order = radix_order_by(self.id1.len(), &keys);
         self.id1 = take(&self.id1, &order);
         self.id2 = take(&self.id2, &order);
         self.id3 = take(&self.id3, &order);

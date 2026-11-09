@@ -1,0 +1,1821 @@
+diff --git a/datafusion/physical-plan/src/filter_pushdown.rs b/datafusion/physical-plan/src/filter_pushdown.rs
+index f24f702..9525b46 100644
+--- a/datafusion/physical-plan/src/filter_pushdown.rs
++++ b/datafusion/physical-plan/src/filter_pushdown.rs
+@@ -24,6 +24,8 @@
+ use std::collections::{HashMap, HashSet};
+ use std::sync::Arc;
+ 
++use crate::aggregates::AggregateExec;
++use crate::windows::{BoundedWindowAggExec, WindowAggExec};
+ use arrow_schema::SchemaRef;
+ use datafusion_common::{
+     Result,
+@@ -615,3 +617,26 @@ impl FilterDescription {
+             .collect()
+     }
+ }
++
++/// Whether `plan` contains an operator that may stop a filter on several
++/// columns while a filter on just one of those columns could still pass it.
++///
++/// Such operators are those with several inputs, such as joins and unions,
++/// which route a filter only to an input that produces all of its columns, and
++/// aggregates and windows, which pass filters on some of their output columns
++/// only. Operators that produce a dynamic filter over several columns use this
++/// to decide whether to also push narrower filters, which elsewhere would only
++/// repeat the wider one.
++pub(crate) fn may_split_multi_column_filter(
++    plan: &Arc<dyn crate::ExecutionPlan>,
++) -> bool {
++    let children = plan.children();
++    if children.len() > 1
++        || plan.is::<AggregateExec>()
++        || plan.is::<BoundedWindowAggExec>()
++        || plan.is::<WindowAggExec>()
++    {
++        return true;
++    }
++    children.into_iter().any(may_split_multi_column_filter)
++}
+diff --git a/datafusion/physical-plan/src/joins/hash_join/exec.rs b/datafusion/physical-plan/src/joins/hash_join/exec.rs
+index ffa77f5..eb40abb 100644
+--- a/datafusion/physical-plan/src/joins/hash_join/exec.rs
++++ b/datafusion/physical-plan/src/joins/hash_join/exec.rs
+@@ -14,7 +14,7 @@ use crate::execution_plan::{
+ };
+ use crate::filter_pushdown::{
+     ChildFilterDescription, ChildPushdownResult, FilterDescription, FilterPushdownPhase,
+-    FilterPushdownPropagation, PushedDownPredicate,
++    FilterPushdownPropagation, PushedDownPredicate, may_split_multi_column_filter,
+ };
+ use crate::joins::Map;
+ use crate::joins::array_map::ArrayMap;
+@@ -509,6 +509,9 @@ impl HashJoinExecBuilder {
+ 
+         if let Some(dynamic_filter) = &mut self.exec.dynamic_filter {
+             dynamic_filter.filter.reset();
++            for key_filter in dynamic_filter.key_filters.iter().flatten() {
++                key_filter.reset();
++            }
+             dynamic_filter.build_accumulator = OnceLock::new();
+         }
+ 
+@@ -934,6 +937,10 @@ pub struct HashJoinExec {
+ struct HashJoinExecDynamicFilter {
+     /// Dynamic filter that we'll update with the results of the build side once that is done.
+     filter: Arc<DynamicFilterPhysicalExpr>,
++    /// For a multi-key join, one range filter per join key, aligned with `on`.
++    /// `None` for a key whose filter no probe-side node consumes. See
++    /// `SharedBuildAccumulator::key_filters`.
++    key_filters: Vec<Option<Arc<DynamicFilterPhysicalExpr>>>,
+     /// Build accumulator to collect build-side information (hash maps and/or bounds) from each partition.
+     /// It is lazily initialized during execution to make sure we use the actual execution time partition counts.
+     build_accumulator: OnceLock<Arc<SharedBuildAccumulator>>,
+@@ -1013,6 +1020,26 @@ impl HashJoinExec {
+         Arc::new(DynamicFilterPhysicalExpr::new(right_keys, lit(true)))
+     }
+ 
++    /// For a join on more than one key, one range filter per probe key.
++    ///
++    /// The filter from [`Self::create_dynamic_filter`] references every probe
++    /// key, so a probe-side join whose sides each produce some of the keys
++    /// cannot route it to either side. A filter on a single key can still be
++    /// pushed to the side that produces that key.
++    fn create_key_filters(on: &JoinOn) -> Vec<Arc<DynamicFilterPhysicalExpr>> {
++        if on.len() < 2 {
++            return vec![];
++        }
++        on.iter()
++            .map(|(_, right)| {
++                Arc::new(DynamicFilterPhysicalExpr::new(
++                    vec![Arc::clone(right)],
++                    lit(true),
++                ))
++            })
++            .collect()
++    }
++
+     /// Join types whose output rows all carry a matching key on both sides.
+     ///
+     /// For these a parent filter over one side's join keys can be transferred
+@@ -1243,6 +1270,7 @@ impl HashJoinExec {
+         }
+         self.dynamic_filter = Some(HashJoinExecDynamicFilter {
+             filter,
++            key_filters: vec![],
+             // Initialize with an empty accumulator which will be lazily populated
+             // during execution.
+             build_accumulator: OnceLock::new(),
+@@ -1632,19 +1660,20 @@ impl ExecutionPlan for HashJoinExec {
+             .filter
+             .iter()
+             .map(|filter| Arc::clone(filter.expression()));
+-        let dynamic_filter = self.dynamic_filter.iter().map(|dynamic_filter| {
+-            Arc::<DynamicFilterPhysicalExpr>::clone(&dynamic_filter.filter)
+-                as Arc<dyn PhysicalExpr>
+-        });
++        let dynamic_filter = self.dynamic_expressions_produced();
+         crate::apply_expression_roots(join_keys.chain(filter).chain(dynamic_filter), f)
+     }
+ 
+     fn dynamic_expressions_produced(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+         self.dynamic_filter
+             .iter()
+-            .map(|dynamic_filter| {
+-                Arc::<DynamicFilterPhysicalExpr>::clone(&dynamic_filter.filter)
+-                    as Arc<dyn PhysicalExpr>
++            .flat_map(|dynamic_filter| {
++                std::iter::once(&dynamic_filter.filter)
++                    .chain(dynamic_filter.key_filters.iter().flatten())
++                    .map(|filter| {
++                        Arc::<DynamicFilterPhysicalExpr>::clone(filter)
++                            as Arc<dyn PhysicalExpr>
++                    })
+             })
+             .collect()
+     }
+@@ -1731,23 +1760,27 @@ impl ExecutionPlan for HashJoinExec {
+             .then(|| {
+                 self.dynamic_filter.as_ref().map(|df| {
+                     let filter = Arc::clone(&df.filter);
++                    let key_filters = df.key_filters.clone();
+                     let on_right = self
+                         .on
+                         .iter()
+                         .map(|(_, right_expr)| Arc::clone(right_expr))
+                         .collect::<Vec<_>>();
+                     Some(Arc::clone(df.build_accumulator.get_or_init(|| {
+-                        Arc::new(SharedBuildAccumulator::new_from_partition_mode(
+-                            self.mode,
+-                            self.left.as_ref(),
+-                            self.right.as_ref(),
+-                            filter,
+-                            on_right,
+-                            repartition_random_state,
+-                            self.null_equality,
+-                            not_in,
+-                            &context.session_config().options().optimizer,
+-                        ))
++                        Arc::new(
++                            SharedBuildAccumulator::new_from_partition_mode(
++                                self.mode,
++                                self.left.as_ref(),
++                                self.right.as_ref(),
++                                filter,
++                                on_right,
++                                repartition_random_state,
++                                self.null_equality,
++                                not_in,
++                                &context.session_config().options().optimizer,
++                            )
++                            .with_key_filters(key_filters),
++                        )
+                     })))
+                 })
+             })
+@@ -2054,6 +2087,13 @@ impl ExecutionPlan for HashJoinExec {
+             // Add actual dynamic filter to right side (probe side)
+             let dynamic_filter = Self::create_dynamic_filter(&self.on);
+             right_child = right_child.with_self_filter(dynamic_filter);
++            // Null-aware joins rely on the full filter's NULL handling, see
++            // `allow_join_dynamic_filter_pushdown`.
++            if !self.null_aware && may_split_multi_column_filter(self.right()) {
++                for key_filter in Self::create_key_filters(&self.on) {
++                    right_child = right_child.with_self_filter(key_filter);
++                }
++            }
+         }
+ 
+         Ok(FilterDescription::new()
+@@ -2070,9 +2110,31 @@ impl ExecutionPlan for HashJoinExec {
+         let mut result = FilterPushdownPropagation::if_any(child_pushdown_result.clone());
+         assert_eq!(child_pushdown_result.self_filters.len(), 2); // Should always be 2, we have 2 children
+         let right_child_self_filters = &child_pushdown_result.self_filters[1]; // We only push down filters to the right child
+-        // We expect 0 or 1 self filters
++        // A filter reached a consumer if some node in the probe subtree holds it.
++        let has_consumer = |filter: &Arc<DynamicFilterPhysicalExpr>| -> Result<bool> {
++            Ok(filter
++                .expression_id()
++                .map(|id| plan_contains_expression_id(&self.right, id))
++                .transpose()?
++                .unwrap_or(false))
++        };
++        // We expect no self filters, or the full filter followed by the
++        // per-key filters of a multi-key join
+         if let Some(filter) = right_child_self_filters.first() {
+             let predicate = Arc::clone(&filter.predicate);
++            let mut key_filters = Vec::new();
++            for key_filter in &right_child_self_filters[1..] {
++                let key_predicate = Arc::clone(&key_filter.predicate);
++                let consumed =
++                    match Arc::downcast::<DynamicFilterPhysicalExpr>(key_predicate) {
++                        Ok(key_filter) => {
++                            has_consumer(&key_filter)?.then_some(key_filter)
++                        }
++                        Err(_) => None,
++                    };
++                key_filters.push(consumed);
++            }
++            let any_key_filter_consumed = key_filters.iter().any(Option::is_some);
+             if let Ok(dynamic_filter) =
+                 Arc::downcast::<DynamicFilterPhysicalExpr>(predicate)
+             {
+@@ -2087,12 +2149,7 @@ impl ExecutionPlan for HashJoinExec {
+                 // from `self` would always find the producer expression pushed by this
+                 // join. This is the last chance to make the decision: the Post-phase
+                 // `FilterPushdown` rule is the final rule that mutates the plan.
+-                let has_consumer = dynamic_filter
+-                    .expression_id()
+-                    .map(|id| plan_contains_expression_id(&self.right, id))
+-                    .transpose()?
+-                    .unwrap_or(false);
+-                if has_consumer {
++                if has_consumer(&dynamic_filter)? || any_key_filter_consumed {
+                     // Our self filter reached a consumer: rebuild the node holding onto
+                     // the dynamic filter so that `execute` populates it from the build
+                     // side. If it did not, we leave `dynamic_filter` as `None` and skip
+@@ -2101,6 +2158,7 @@ impl ExecutionPlan for HashJoinExec {
+                         .builder()
+                         .with_dynamic_filter(Some(HashJoinExecDynamicFilter {
+                             filter: dynamic_filter,
++                            key_filters,
+                             build_accumulator: OnceLock::new(),
+                         }))
+                         .build_exec()?;
+@@ -2194,6 +2252,27 @@ impl ExecutionPlan for HashJoinExec {
+             .map(|f| crate::joins::proto::join_filter_to_proto(f, ctx))
+             .transpose()?;
+ 
++        let key_filters = dynamic_filter
++            .iter()
++            .flat_map(|df| df.key_filters.iter().enumerate())
++            .filter_map(|(key_index, key_filter)| {
++                key_filter
++                    .as_ref()
++                    .map(|key_filter| (key_index, key_filter))
++            })
++            .map(|(key_index, key_filter)| {
++                let key_expr: Arc<dyn PhysicalExpr> =
++                    Arc::clone(key_filter) as Arc<dyn PhysicalExpr>;
++                Ok(protobuf::HashJoinKeyFilter {
++                    key_index: u32::try_from(key_index).map_err(|_| {
++                        internal_datafusion_err!(
++                            "HashJoinExec: key index {key_index} does not fit in u32"
++                        )
++                    })?,
++                    filter: Some(ctx.encode_expr(&key_expr)?),
++                })
++            })
++            .collect::<Result<Vec<_>>>()?;
+         let dynamic_filter = dynamic_filter
+             .as_ref()
+             .map(|df| {
+@@ -2235,6 +2314,7 @@ impl ExecutionPlan for HashJoinExec {
+                             })?,
+                         dynamic_filter,
+                         fetch: fetch.map(|f| f as u64),
++                        key_filters,
+                     },
+                 )),
+             ),
+@@ -2274,6 +2354,7 @@ impl HashJoinExec {
+             null_aware_value_keys,
+             dynamic_filter,
+             fetch,
++            key_filters,
+         } = &**hashjoin;
+ 
+         let left = ctx.decode_required_child(left.as_deref(), "HashJoinExec", "left")?;
+@@ -2369,6 +2450,36 @@ impl HashJoinExec {
+                     )
+                 })?;
+             hash_join = hash_join.set_dynamic_filter(df)?;
++
++            let mut decoded_key_filters = vec![None; hash_join.on.len()];
++            for key_filter in key_filters {
++                let key_index = usize::try_from(key_filter.key_index)
++                    .ok()
++                    .filter(|key_index| *key_index < decoded_key_filters.len())
++                    .ok_or_else(|| {
++                        internal_datafusion_err!(
++                            "HashJoinExec key filter index {} out of range",
++                            key_filter.key_index
++                        )
++                    })?;
++                let filter_proto = key_filter.filter.as_ref().ok_or_else(|| {
++                    internal_datafusion_err!(
++                        "HashJoinExec key filter is missing its filter"
++                    )
++                })?;
++                let key_expr = ctx.decode_expr(filter_proto, right_schema.as_ref())?;
++                let key_df = (key_expr as Arc<dyn Any + Send + Sync>)
++                    .downcast::<DynamicFilterPhysicalExpr>()
++                    .map_err(|_| {
++                        internal_datafusion_err!(
++                            "HashJoinExec key filter did not decode to a DynamicFilterPhysicalExpr"
++                        )
++                    })?;
++                decoded_key_filters[key_index] = Some(key_df);
++            }
++            if let Some(dynamic_filter) = &mut hash_join.dynamic_filter {
++                dynamic_filter.key_filters = decoded_key_filters;
++            }
+         }
+ 
+         Ok(Arc::new(hash_join))
+@@ -2449,6 +2560,7 @@ mod proto_tests {
+             null_aware_value_keys: 0,
+             dynamic_filter: None,
+             fetch: None,
++            key_filters: vec![],
+         }
+     }
+ 
+@@ -4202,6 +4314,7 @@ mod tests {
+         )?;
+         join.dynamic_filter = Some(HashJoinExecDynamicFilter {
+             filter: Arc::clone(&dynamic_filter),
++            key_filters: vec![],
+             build_accumulator: OnceLock::new(),
+         });
+ 
+@@ -10510,6 +10623,7 @@ mod tests {
+         )?;
+         join.dynamic_filter = Some(HashJoinExecDynamicFilter {
+             filter: Arc::clone(&dynamic_filter),
++            key_filters: vec![],
+             build_accumulator: OnceLock::new(),
+         });
+ 
+@@ -10620,6 +10734,7 @@ mod tests {
+         )?;
+         join.dynamic_filter = Some(HashJoinExecDynamicFilter {
+             filter: Arc::clone(&dynamic_filter),
++            key_filters: vec![],
+             build_accumulator: OnceLock::new(),
+         });
+ 
+diff --git a/datafusion/physical-plan/src/joins/hash_join/exec/prepared/tests.rs b/datafusion/physical-plan/src/joins/hash_join/exec/prepared/tests.rs
+index 4f874f8..93457a1 100644
+--- a/datafusion/physical-plan/src/joins/hash_join/exec/prepared/tests.rs
++++ b/datafusion/physical-plan/src/joins/hash_join/exec/prepared/tests.rs
+@@ -121,6 +121,7 @@ fn with_probe_filter(join: HashJoinExec) -> Result<HashJoinExec> {
+         .with_new_children(vec![Arc::clone(join.left()), probe])?
+         .with_dynamic_filter(Some(HashJoinExecDynamicFilter {
+             filter,
++            key_filters: vec![],
+             build_accumulator: OnceLock::new(),
+         }))
+         .build()
+diff --git a/datafusion/physical-plan/src/joins/hash_join/shared_bounds.rs b/datafusion/physical-plan/src/joins/hash_join/shared_bounds.rs
+index 395e8c9..5721cee 100644
+--- a/datafusion/physical-plan/src/joins/hash_join/shared_bounds.rs
++++ b/datafusion/physical-plan/src/joins/hash_join/shared_bounds.rs
+@@ -304,6 +304,14 @@ pub(crate) struct SharedBuildAccumulator {
+     /// Largest merged IN list, in values, that partitioned filters keep as an IN
+     /// list: `hash_join_inlist_pushdown_max_distinct_values`, as for a single build.
+     in_list_max_values: usize,
++    /// Per-key range filters of a multi-key join, aligned with `on_right`.
++    ///
++    /// [`Self::dynamic_filter`] references every probe key, so it only reaches
++    /// a probe-side node that produces all of them. Each of these references a
++    /// single key and is set to that key's build-side `[min, max]` across all
++    /// partitions, so it can be pushed to whichever scan produces that key.
++    /// `None` for a key whose filter no probe-side node consumes.
++    key_filters: Vec<Option<Arc<DynamicFilterPhysicalExpr>>>,
+ }
+ 
+ /// Strategy for filter pushdown (decided at collection time)
+@@ -476,9 +484,21 @@ impl SharedBuildAccumulator {
+             not_in,
+             in_list_max_size: optimizer.hash_join_inlist_pushdown_max_size,
+             in_list_max_values: optimizer.hash_join_inlist_pushdown_max_distinct_values,
++            key_filters: vec![],
+         }
+     }
+ 
++    /// Also maintain per-key range filters, aligned with the join keys.
++    ///
++    /// See [`Self::key_filters`].
++    pub(crate) fn with_key_filters(
++        mut self,
++        key_filters: Vec<Option<Arc<DynamicFilterPhysicalExpr>>>,
++    ) -> Self {
++        self.key_filters = key_filters;
++        self
++    }
++
+     /// Report build-side data from a partition
+     ///
+     /// This unified method handles both CollectLeft and Partitioned modes. When all partitions
+@@ -620,8 +640,14 @@ impl SharedBuildAccumulator {
+     }
+ 
+     fn finish(&self, finalize_input: FinalizeInput) {
+-        let result = self.build_filter(finalize_input).map_err(Arc::new);
++        let result = self
++            .build_key_filters(&finalize_input)
++            .and_then(|()| self.build_filter(finalize_input))
++            .map_err(Arc::new);
+         self.dynamic_filter.mark_complete();
++        for key_filter in self.key_filters.iter().flatten() {
++            key_filter.mark_complete();
++        }
+ 
+         let mut guard = self.inner.lock();
+         guard.completion = CompletionState::Ready(result);
+@@ -658,6 +684,91 @@ impl SharedBuildAccumulator {
+         }
+     }
+ 
++    /// Sets each per-key filter to `key >= min AND key <= max`, the bounds of
++    /// that key over the whole build side.
++    ///
++    /// A key's filter stays `true` when there are no bounds: a canceled
++    /// partition may hold any key, a key without non-null build values has no
++    /// bound, and an empty build side is already handled by the full filter
++    /// and the join itself.
++    fn build_key_filters(&self, finalize_input: &FinalizeInput) -> Result<()> {
++        if self.key_filters.iter().all(Option::is_none) {
++            return Ok(());
++        }
++        let statuses = match finalize_input {
++            FinalizeInput::CollectLeft(partition) => std::slice::from_ref(partition),
++            FinalizeInput::Partitioned(partitions) => partitions.as_slice(),
++        };
++        let mut bounds: Option<PartitionBounds> = None;
++        let mut keys_have_null = false;
++        for status in statuses {
++            match status {
++                PartitionStatus::Reported(data) => {
++                    if matches!(data.pushdown, PushdownStrategy::Empty) {
++                        continue;
++                    }
++                    keys_have_null |= data.keys_have_null;
++                    bounds = Some(match bounds {
++                        None => data.bounds.clone(),
++                        Some(acc) => acc.union(&data.bounds),
++                    });
++                }
++                // Unknown build contents: keep every per-key filter permissive
++                PartitionStatus::Pending | PartitionStatus::CanceledUnknown => {
++                    return Ok(());
++                }
++            }
++        }
++        for (idx, key_filter) in self.key_filters.iter().enumerate() {
++            let (Some(key_filter), Some(key)) = (key_filter, self.on_right.get(idx))
++            else {
++                continue;
++            };
++            let Some(column_bounds) =
++                bounds.as_ref().and_then(|b| b.get_column_bounds(idx))
++            else {
++                continue;
++            };
++            if column_bounds.min.is_null() || column_bounds.max.is_null() {
++                continue;
++            }
++            let Some(range) = create_bounds_predicate(
++                std::slice::from_ref(key),
++                &PartitionBounds::new(vec![column_bounds.clone()]),
++            ) else {
++                continue;
++            };
++            key_filter.update(self.preserve_probe_key_nulls(
++                range,
++                key,
++                keys_have_null,
++            )?)?;
++        }
++        Ok(())
++    }
++
++    /// Like [`Self::preserve_probe_nulls`] for a filter on the single probe key
++    /// `key` of a null-equal join.
++    fn preserve_probe_key_nulls(
++        &self,
++        filter_expr: Arc<dyn PhysicalExpr>,
++        key: &PhysicalExprRef,
++        build_keys_have_null: bool,
++    ) -> Result<Arc<dyn PhysicalExpr>> {
++        let needs_probe_nulls = self.null_equality == NullEquality::NullEqualsNull
++            && build_keys_have_null
++            && key.nullable(&self.probe_schema)?;
++        if !needs_probe_nulls {
++            return Ok(filter_expr);
++        }
++        let is_null = Arc::new(IsNullExpr::new(Arc::clone(key))) as Arc<dyn PhysicalExpr>;
++        Ok(Arc::new(BinaryExpr::new(
++            is_null,
++            Operator::Or,
++            filter_expr,
++        )))
++    }
++
+     /// Builds the single global filter used by a collect-left join.
+     fn build_collect_left_filter(&self, partition: PartitionStatus) -> Result<()> {
+         match partition {
+@@ -1106,6 +1217,7 @@ pub(super) fn make_partitioned_accumulator_for_test(
+         not_in: None,
+         in_list_max_size: 128 * 1024,
+         in_list_max_values: 150,
++        key_filters: vec![],
+     }
+ }
+ 
+@@ -1175,6 +1287,83 @@ mod tests {
+             not_in: None,
+             in_list_max_size: 128 * 1024,
+             in_list_max_values: 150,
++            key_filters: vec![],
++        }
++    }
++
++    /// A partitioned two-key accumulator whose per-key filters are returned
++    /// alongside it.
++    fn make_two_key_accumulator_for_test(
++        num_partitions: usize,
++    ) -> (SharedBuildAccumulator, Vec<Arc<DynamicFilterPhysicalExpr>>) {
++        let on_right: Vec<PhysicalExprRef> = vec![
++            Arc::new(Column::new("probe_key", 0)),
++            Arc::new(Column::new("probe_key2", 1)),
++        ];
++        let key_filters: Vec<_> = on_right
++            .iter()
++            .map(|key| test_dynamic_filter(std::slice::from_ref(key)))
++            .collect();
++        let mut acc = make_accumulator_for_test(
++            AccumulatedBuildData::Partitioned {
++                partitions: vec![PartitionStatus::Pending; num_partitions],
++                completed_partitions: 0,
++            },
++            on_right,
++        );
++        acc.probe_schema = Arc::new(Schema::new(vec![
++            Field::new("probe_key", DataType::Int32, false),
++            Field::new("probe_key2", DataType::Int32, false),
++        ]));
++        let acc = acc.with_key_filters(key_filters.iter().cloned().map(Some).collect());
++        (acc, key_filters)
++    }
++
++    fn two_key_bounds(a: (i32, i32), b: (i32, i32)) -> PartitionBounds {
++        PartitionBounds::new(vec![
++            ColumnBounds::new(
++                ScalarValue::Int32(Some(a.0)),
++                ScalarValue::Int32(Some(a.1)),
++            ),
++            ColumnBounds::new(
++                ScalarValue::Int32(Some(b.0)),
++                ScalarValue::Int32(Some(b.1)),
++            ),
++        ])
++    }
++
++    #[test]
++    fn key_filters_cover_every_partition() {
++        let (acc, key_filters) = make_two_key_accumulator_for_test(3);
++        acc.finish(FinalizeInput::Partitioned(vec![
++            reported(hash_map(), two_key_bounds((1, 5), (10, 20))),
++            reported(PushdownStrategy::Empty, no_bounds()),
++            reported(hash_map(), two_key_bounds((3, 8), (0, 4))),
++        ]));
++        let rendered: Vec<String> = key_filters
++            .iter()
++            .map(|f| f.current().unwrap().to_string())
++            .collect();
++        assert_eq!(
++            rendered,
++            vec![
++                "probe_key@0 >= 1 AND probe_key@0 <= 8",
++                "probe_key2@1 >= 0 AND probe_key2@1 <= 20",
++            ]
++        );
++        assert!(key_filters.iter().all(|f| f.is_complete()));
++    }
++
++    #[test]
++    fn key_filters_stay_permissive_for_canceled_partition() {
++        let (acc, key_filters) = make_two_key_accumulator_for_test(2);
++        acc.finish(FinalizeInput::Partitioned(vec![
++            reported(hash_map(), two_key_bounds((1, 5), (10, 20))),
++            PartitionStatus::CanceledUnknown,
++        ]));
++        for key_filter in &key_filters {
++            assert_literal_bool(&key_filter.current().unwrap(), true);
++            assert!(key_filter.is_complete());
+         }
+     }
+ 
+@@ -1818,6 +2007,7 @@ mod tests {
+             }),
+             in_list_max_size: 128 * 1024,
+             in_list_max_values: 150,
++            key_filters: vec![],
+         }
+     }
+ 
+@@ -2035,6 +2225,7 @@ mod tests {
+                 }),
+                 in_list_max_size: 128 * 1024,
+                 in_list_max_values: 150,
++                key_filters: vec![],
+             };
+ 
+             let bounds = PartitionBounds::new(
+diff --git a/datafusion/physical-plan/src/sorts/sort.rs b/datafusion/physical-plan/src/sorts/sort.rs
+index 96e673e..0b4afb2 100644
+--- a/datafusion/physical-plan/src/sorts/sort.rs
++++ b/datafusion/physical-plan/src/sorts/sort.rs
+@@ -21,7 +21,7 @@ use crate::expressions::PhysicalSortExpr;
+ use crate::filter::FilterExec;
+ use crate::filter_pushdown::{
+     ChildFilterDescription, ChildPushdownResult, FilterDescription, FilterPushdownPhase,
+-    FilterPushdownPropagation, PushedDown,
++    FilterPushdownPropagation, PushedDown, may_split_multi_column_filter,
+ };
+ use crate::limit::LimitStream;
+ use crate::metrics::{
+@@ -1370,36 +1370,67 @@ impl SortExec {
+             .iter()
+             .map(|sort_expr| Arc::clone(&sort_expr.expr))
+             .collect::<Vec<_>>();
+-        self.create_filter_with_expr(Arc::new(DynamicFilterPhysicalExpr::new(
+-            children,
++        self.create_filter_with_exprs(
++            Arc::new(DynamicFilterPhysicalExpr::new(children, lit(true))),
++            self.create_prefix_filter(),
++        )
++    }
++
++    /// With more than one sort key, a filter on the first key alone, which can
++    /// be pushed below operators that the full TopK filter cannot pass, such as
++    /// a join whose sides each produce some of the sort keys.
++    fn create_prefix_filter(&self) -> Option<Arc<DynamicFilterPhysicalExpr>> {
++        if self.expr.len() < 2 {
++            return None;
++        }
++        let first = Arc::clone(&self.expr.first().expr);
++        Some(Arc::new(DynamicFilterPhysicalExpr::new(
++            vec![first],
+             lit(true),
+         )))
+     }
+ 
+-    fn create_filter_with_expr(
++    fn create_filter_with_exprs(
+         &self,
+         expr: Arc<DynamicFilterPhysicalExpr>,
++        prefix_expr: Option<Arc<DynamicFilterPhysicalExpr>>,
+     ) -> Arc<RwLock<TopKDynamicFilters>> {
+         Arc::new(RwLock::new(
+             TopKDynamicFilters::new_with_topk_emitter_count(
+                 expr,
+                 self.topk_emitter_count(),
+-            ),
++            )
++            .with_prefix_expr(prefix_expr),
+         ))
+     }
+ 
+     /// Rebuild the shared TopK filter wrapper for the current output partitioning.
+     ///
+-    /// The dynamic filter expression is preserved, but wrapper state such as the
++    /// The dynamic filter expressions are preserved, but wrapper state such as the
+     /// shared threshold and remaining emitter count is reset for the new
+     /// partitioning.
+     fn rebuild_filter_for_current_partitioning(&mut self) {
+-        let filter_expr = self.filter.as_ref().map(|filter| filter.read().expr());
+-        if let Some(filter_expr) = filter_expr {
+-            self.filter = Some(self.create_filter_with_expr(filter_expr));
++        let filter_exprs = self.filter.as_ref().map(|filter| {
++            let filter = filter.read();
++            (filter.expr(), filter.prefix_expr())
++        });
++        if let Some((filter_expr, prefix_expr)) = filter_exprs {
++            self.filter = Some(self.create_filter_with_exprs(filter_expr, prefix_expr));
+         }
+     }
+ 
++    /// The TopK dynamic filters this sort produces: the full filter, then the
++    /// filter on the first sort key, if any.
++    fn dynamic_filters(&self) -> Vec<Arc<DynamicFilterPhysicalExpr>> {
++        let Some(filter) = &self.filter else {
++            return vec![];
++        };
++        let filter = filter.read();
++        std::iter::once(filter.expr())
++            .chain(filter.prefix_expr())
++            .collect()
++    }
++
+     fn cloned(&self) -> Self {
+         SortExec {
+             input: Arc::clone(&self.input),
+@@ -1498,15 +1529,28 @@ impl SortExec {
+     ///
+     /// Only used to restore the filter when decoding a serialized plan: every
+     /// other code path creates the filter in [`SortExec::with_fetch`].
+-    fn set_dynamic_filter(
++    fn set_dynamic_filter(self, filter: Arc<DynamicFilterPhysicalExpr>) -> Result<Self> {
++        self.set_dynamic_filters(filter, None)
++    }
++
++    /// Like [`Self::set_dynamic_filter`], also restoring the filter on the
++    /// first sort key. Without one, a new first-key filter is created when the
++    /// sort has several keys.
++    fn set_dynamic_filters(
+         mut self,
+         filter: Arc<DynamicFilterPhysicalExpr>,
++        prefix_filter: Option<Arc<DynamicFilterPhysicalExpr>>,
+     ) -> Result<Self> {
+         let input_schema = self.input.schema();
+-        for child in filter.children() {
++        for child in filter
++            .children()
++            .into_iter()
++            .chain(prefix_filter.iter().flat_map(|f| f.children()))
++        {
+             child.data_type(&input_schema)?;
+         }
+-        self.filter = Some(self.create_filter_with_expr(filter));
++        let prefix_filter = prefix_filter.or_else(|| self.create_prefix_filter());
++        self.filter = Some(self.create_filter_with_exprs(filter, prefix_filter));
+         Ok(self)
+     }
+ 
+@@ -1668,23 +1712,24 @@ impl ExecutionPlan for SortExec {
+         &self,
+         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+     ) -> Result<TreeNodeRecursion> {
+-        let dynamic_filter = self
+-            .filter
+-            .as_ref()
+-            .map(|filter| filter.read().expr() as Arc<dyn PhysicalExpr>);
++        let dynamic_filters = self
++            .dynamic_filters()
++            .into_iter()
++            .map(|filter| filter as Arc<dyn PhysicalExpr>)
++            .collect::<Vec<_>>();
+         crate::apply_expression_roots(
+             self.expr
+                 .iter()
+                 .map(|sort_expr| &sort_expr.expr)
+-                .chain(dynamic_filter.iter()),
++                .chain(dynamic_filters.iter()),
+             f,
+         )
+     }
+ 
+     fn dynamic_expressions_produced(&self) -> Vec<Arc<dyn PhysicalExpr>> {
+-        self.filter
+-            .iter()
+-            .map(|filter| filter.read().expr() as Arc<dyn PhysicalExpr>)
++        self.dynamic_filters()
++            .into_iter()
++            .map(|filter| filter as Arc<dyn PhysicalExpr>)
+             .collect()
+     }
+ 
+@@ -1743,8 +1788,10 @@ impl ExecutionPlan for SortExec {
+             .clone();
+         // Our dynamic filter, execution metrics and sort concurrency are the state
+         // we need to reset.
+-        if let Some(filter) = &new_sort.filter {
+-            filter.read().expr().reset();
++        if new_sort.filter.is_some() {
++            for filter in new_sort.dynamic_filters() {
++                filter.reset();
++            }
+             new_sort.filter = Some(new_sort.create_filter());
+         }
+         new_sort.metrics_set = ExecutionPlanMetricsSet::new();
+@@ -1948,10 +1995,16 @@ impl ExecutionPlan for SortExec {
+             ChildFilterDescription::from_child(&parent_filters, self.input())?
+         };
+ 
+-        if let Some(filter) = &self.filter
+-            && config.optimizer.enable_topk_dynamic_filter_pushdown
++        if config.optimizer.enable_topk_dynamic_filter_pushdown
++            && let Some(filter) = &self.filter
+         {
+-            child = child.with_self_filter(filter.read().expr());
++            let filter = filter.read();
++            child = child.with_self_filter(filter.expr());
++            if let Some(prefix_expr) = filter.prefix_expr()
++                && may_split_multi_column_filter(&self.input)
++            {
++                child = child.with_self_filter(prefix_expr);
++            }
+         }
+ 
+         Ok(FilterDescription::new().with_child(child))
+@@ -2057,6 +2110,14 @@ impl ExecutionPlan for SortExec {
+                 ctx.encode_expr(&df_expr)
+             })
+             .transpose()?;
++        let topk_prefix_filter = filter
++            .as_ref()
++            .and_then(|filter| filter.read().prefix_expr())
++            .map(|prefix_expr| {
++                let prefix_expr: Arc<dyn PhysicalExpr> = prefix_expr;
++                ctx.encode_expr(&prefix_expr)
++            })
++            .transpose()?;
+         Ok(Some(protobuf::PhysicalPlanNode {
+             physical_plan_type: Some(
+                 protobuf::physical_plan_node::PhysicalPlanType::Sort(Box::new(
+@@ -2069,6 +2130,7 @@ impl ExecutionPlan for SortExec {
+                         },
+                         preserve_partitioning: *preserve_partitioning,
+                         dynamic_filter,
++                        topk_prefix_filter,
+                     },
+                 )),
+             ),
+@@ -2098,6 +2160,7 @@ impl SortExec {
+             fetch,
+             preserve_partitioning,
+             dynamic_filter,
++            topk_prefix_filter,
+         } = &**sort;
+         let input = ctx.decode_required_child(input.as_deref(), "SortExec", "input")?;
+         let input_schema = input.schema();
+@@ -2133,17 +2196,26 @@ impl SortExec {
+             .with_fetch(fetch)
+             .with_preserve_partitioning(*preserve_partitioning);
+ 
+-        let new_sort = if let Some(df_proto) = dynamic_filter {
++        let decode_dynamic_filter = |df_proto, field: &str| {
+             let df_expr =
+                 ctx.decode_expr(df_proto, new_sort.input().schema().as_ref())?;
+-            let df = (df_expr as Arc<dyn std::any::Any + Send + Sync>)
++            (df_expr as Arc<dyn std::any::Any + Send + Sync>)
+                 .downcast::<DynamicFilterPhysicalExpr>()
+                 .map_err(|_| {
+                     internal_datafusion_err!(
+-                        "SortExec dynamic_filter did not decode to a DynamicFilterPhysicalExpr"
++                        "SortExec {field} did not decode to a DynamicFilterPhysicalExpr"
+                     )
+-                })?;
+-            new_sort.set_dynamic_filter(df)?
++                })
++        };
++        let new_sort = if let Some(df_proto) = dynamic_filter {
++            let df = decode_dynamic_filter(df_proto, "dynamic_filter")?;
++            let prefix_filter = topk_prefix_filter
++                .as_ref()
++                .map(|prefix_proto| {
++                    decode_dynamic_filter(prefix_proto, "topk_prefix_filter")
++                })
++                .transpose()?;
++            new_sort.set_dynamic_filters(df, prefix_filter)?
+         } else {
+             new_sort
+         };
+@@ -2214,6 +2286,7 @@ mod proto_tests {
+             fetch,
+             preserve_partitioning,
+             dynamic_filter: None,
++            topk_prefix_filter: None,
+         }
+     }
+ 
+diff --git a/datafusion/physical-plan/src/topk/mod.rs b/datafusion/physical-plan/src/topk/mod.rs
+index f35abc3..3e640ca 100644
+--- a/datafusion/physical-plan/src/topk/mod.rs
++++ b/datafusion/physical-plan/src/topk/mod.rs
+@@ -181,6 +181,16 @@ pub struct TopKDynamicFilters {
+     /// The expression used to evaluate the dynamic filter
+     /// Only updated when lock held for the duration of the update
+     expr: Arc<DynamicFilterPhysicalExpr>,
++    /// Optional filter on the first sort key alone.
++    ///
++    /// With several sort keys, [`Self::expr`] references every key, so an
++    /// operator below the TopK can only route it to a child that produces
++    /// all of them (for example, not through a join whose sides each produce
++    /// one key). This filter keeps `first_key <= threshold` (or `>=` for a
++    /// descending key), which every row that can still enter the TopK
++    /// satisfies, and references the first key only, so it can be pushed
++    /// further down on its own.
++    prefix_expr: Option<Arc<DynamicFilterPhysicalExpr>>,
+     /// Number of local TopK emitters that have not called `emit` yet.
+     ///
+     /// A partition-preserving `SortExec` creates one local TopK per output
+@@ -303,14 +313,32 @@ impl TopKDynamicFilters {
+         Self {
+             shared_threshold: None,
+             expr,
++            prefix_expr: None,
+             remaining_topk_emitters: AtomicUsize::new(topk_emitter_count),
+         }
+     }
+ 
++    /// Also maintain `prefix_expr`, a filter on the first sort key only.
++    ///
++    /// See [`Self::prefix_expr`].
++    pub fn with_prefix_expr(
++        mut self,
++        prefix_expr: Option<Arc<DynamicFilterPhysicalExpr>>,
++    ) -> Self {
++        self.prefix_expr = prefix_expr;
++        self
++    }
++
+     pub fn expr(&self) -> Arc<DynamicFilterPhysicalExpr> {
+         Arc::clone(&self.expr)
+     }
+ 
++    /// The filter on the first sort key alone, if this TopK has more than one
++    /// sort key.
++    pub fn prefix_expr(&self) -> Option<Arc<DynamicFilterPhysicalExpr>> {
++        self.prefix_expr.as_ref().map(Arc::clone)
++    }
++
+     fn mark_topk_emitted(&self) {
+         let previous = self
+             .remaining_topk_emitters
+@@ -327,6 +355,9 @@ impl TopKDynamicFilters {
+ 
+         if previous == 1 {
+             self.expr.mark_complete();
++            if let Some(prefix_expr) = &self.prefix_expr {
++                prefix_expr.mark_complete();
++            }
+         }
+     }
+ }
+@@ -576,8 +607,14 @@ impl TopK {
+         // Extract scalar values BEFORE acquiring lock to reduce critical section
+         let thresholds = boundary.threshold_values(&self.expr)?;
+ 
+-        // Build the filter expression OUTSIDE any synchronization
++        // Build the filter expressions OUTSIDE any synchronization
+         let predicate = Self::build_filter_expression(&self.expr, &thresholds)?;
++        let prefix_predicate = match (self.expr.iter().next(), thresholds.first()) {
++            (Some(sort_expr), Some(value)) => {
++                Self::build_prefix_filter_expression(sort_expr, value)?
++            }
++            _ => None,
++        };
+         let new_threshold =
+             boundary.threshold(self.encode_topk_common_prefix_row(boundary)?);
+ 
+@@ -602,10 +639,59 @@ impl TopK {
+         {
+             filter.expr.update(pred)?;
+         }
++        if let (Some(prefix_expr), Some(pred)) = (&filter.prefix_expr, prefix_predicate) {
++            prefix_expr.update(pred)?;
++        }
+ 
+         Ok(())
+     }
+ 
++    /// Build the filter on the first sort key alone: the rows whose first key
++    /// sorts no later than `value`, the first key of the current heap boundary.
++    ///
++    /// Ties on the first key are kept, since later keys may still let such a
++    /// row into the heap. Returns `None` when no rows can be excluded this way.
++    fn build_prefix_filter_expression(
++        sort_expr: &PhysicalSortExpr,
++        value: &ScalarValue,
++    ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
++        // Comparisons on nested types do not follow the sort's null ordering,
++        // see `build_filter_expression`.
++        if value.data_type().is_nested() {
++            return Ok(None);
++        }
++        let expr = &sort_expr.expr;
++        let predicate: Arc<dyn PhysicalExpr> =
++            match (sort_expr.options.nulls_first, value.is_null()) {
++                // NULLs sort first and the boundary is NULL: only NULLs remain
++                (true, true) => is_null(Arc::clone(expr))?,
++                // NULLs sort last and the boundary is NULL: every row remains
++                (false, true) => return Ok(None),
++                (nulls_first, false) => {
++                    let op = if sort_expr.options.descending {
++                        Operator::GtEq
++                    } else {
++                        Operator::LtEq
++                    };
++                    let comparison: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
++                        Arc::clone(expr),
++                        op,
++                        lit(value.clone()),
++                    ));
++                    if nulls_first {
++                        Arc::new(BinaryExpr::new(
++                            is_null(Arc::clone(expr))?,
++                            Operator::Or,
++                            comparison,
++                        ))
++                    } else {
++                        comparison
++                    }
++                }
++            };
++        Ok(Some(predicate))
++    }
++
+     /// Build the filter expression with the given thresholds.
+     /// This is now called outside of any locks to reduce critical section time.
+     fn build_filter_expression(
+@@ -3221,6 +3307,79 @@ mod tests {
+     use datafusion_physical_expr::{DynamicFilterTracking, expressions::col};
+     use futures::TryStreamExt;
+ 
++    /// The first-key filter keeps exactly the rows whose first sort key sorts
++    /// no later than the heap boundary, for every sort direction and NULL order.
++    #[test]
++    fn test_prefix_filter_expression_null_ordering() -> Result<()> {
++        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
++        let batch = RecordBatch::try_new(
++            Arc::clone(&schema),
++            vec![Arc::new(Int32Array::from(vec![
++                Some(1),
++                Some(2),
++                Some(3),
++                None,
++            ]))],
++        )?;
++        let keeps = |descending: bool, nulls_first: bool, value: Option<i32>| {
++            let sort_expr = PhysicalSortExpr {
++                expr: col("a", &schema).unwrap(),
++                options: SortOptions {
++                    descending,
++                    nulls_first,
++                },
++            };
++            let predicate = TopK::build_prefix_filter_expression(
++                &sort_expr,
++                &ScalarValue::Int32(value),
++            )
++            .unwrap();
++            predicate.map(|predicate| {
++                let result = predicate
++                    .evaluate(&batch)
++                    .unwrap()
++                    .into_array(batch.num_rows())
++                    .unwrap();
++                result
++                    .as_boolean()
++                    .iter()
++                    .map(|v| v.unwrap_or(false))
++                    .collect::<Vec<_>>()
++            })
++        };
++
++        // rows: 1, 2, 3, NULL; boundary first key: 2
++        assert_eq!(
++            keeps(false, false, Some(2)),
++            Some(vec![true, true, false, false])
++        );
++        assert_eq!(
++            keeps(false, true, Some(2)),
++            Some(vec![true, true, false, true])
++        );
++        assert_eq!(
++            keeps(true, true, Some(2)),
++            Some(vec![false, true, true, true])
++        );
++        assert_eq!(
++            keeps(true, false, Some(2)),
++            Some(vec![false, true, true, false])
++        );
++        // a NULL boundary keeps only NULLs when they sort first, and every row
++        // when they sort last
++        assert_eq!(
++            keeps(false, true, None),
++            Some(vec![false, false, false, true])
++        );
++        assert_eq!(
++            keeps(true, true, None),
++            Some(vec![false, false, false, true])
++        );
++        assert_eq!(keeps(false, false, None), None);
++        assert_eq!(keeps(true, false, None), None);
++        Ok(())
++    }
++
+     /// This test ensures the size calculation is correct for RecordBatches with multiple columns.
+     #[test]
+     fn test_record_batch_store_size() {
+diff --git a/datafusion/physical-plan/src/windows/bounded_window_agg_exec.rs b/datafusion/physical-plan/src/windows/bounded_window_agg_exec.rs
+index fa8568e..3ee42db 100644
+--- a/datafusion/physical-plan/src/windows/bounded_window_agg_exec.rs
++++ b/datafusion/physical-plan/src/windows/bounded_window_agg_exec.rs
+@@ -14,13 +14,15 @@ use std::sync::Arc;
+ use std::task::{Context, Poll};
+ 
+ use super::utils::create_schema;
++use crate::filter_pushdown::{FilterDescription, FilterPushdownPhase};
+ use crate::metrics::{
+     BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet, SplitMetrics,
+ };
+ use crate::statistics::{ChildStats, StatisticsArgs};
+ use crate::stream::{BatchSplitStream, EmptyRecordBatchStream, ObservedStream};
+ use crate::windows::{
+-    calc_requirements, get_ordered_partition_by_indices, get_partition_by_sort_exprs,
++    calc_requirements, gather_window_filters_for_pushdown,
++    get_ordered_partition_by_indices, get_partition_by_sort_exprs,
+     window_equivalence_properties,
+ };
+ use crate::{
+@@ -37,6 +39,7 @@ use arrow::{
+     datatypes::SchemaRef,
+     record_batch::RecordBatch,
+ };
++use datafusion_common::config::ConfigOptions;
+ use datafusion_common::hash_utils::create_hashes;
+ use datafusion_common::stats::Precision;
+ use datafusion_common::tree_node::TreeNodeRecursion;
+@@ -410,6 +413,21 @@ impl ExecutionPlan for BoundedWindowAggExec {
+         &self.cache
+     }
+ 
++    /// Filters on columns that every window expression partitions by are
++    /// pushed to the input, see [`gather_window_filters_for_pushdown`].
++    fn gather_filters_for_pushdown(
++        &self,
++        _phase: FilterPushdownPhase,
++        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
++        _config: &ConfigOptions,
++    ) -> Result<FilterDescription> {
++        gather_window_filters_for_pushdown(
++            &self.window_expr,
++            &self.input,
++            &parent_filters,
++        )
++    }
++
+     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+         vec![&self.input]
+     }
+diff --git a/datafusion/physical-plan/src/windows/mod.rs b/datafusion/physical-plan/src/windows/mod.rs
+index 1e5eea0..fba32d6 100644
+--- a/datafusion/physical-plan/src/windows/mod.rs
++++ b/datafusion/physical-plan/src/windows/mod.rs
+@@ -11,8 +11,10 @@ mod utils;
+ mod window_agg_exec;
+ 
+ use std::borrow::Borrow;
++use std::collections::{HashMap, HashSet};
+ use std::sync::Arc;
+ 
++use crate::filter_pushdown::{ChildFilterDescription, FilterDescription};
+ use crate::{
+     ExecutionPlan, ExecutionPlanProperties, InputOrderMode, PhysicalExpr,
+     expressions::PhysicalSortExpr,
+@@ -40,6 +42,44 @@ use datafusion_physical_expr_common::sort_expr::{
+ 
+ use itertools::Itertools;
+ 
++/// Route parent filters through a window operator.
++///
++/// A window operator outputs its input columns at their input positions,
++/// followed by one column per window expression. A filter that only references
++/// columns every window expression partitions by keeps or drops whole
++/// partitions, so the window values of the rows it keeps are unchanged. Such a
++/// filter can be evaluated below the window instead. Filters on any other
++/// column, including the window columns, stay above.
++pub(crate) fn gather_window_filters_for_pushdown(
++    window_expr: &[Arc<dyn WindowExpr>],
++    input: &Arc<dyn ExecutionPlan>,
++    parent_filters: &[Arc<dyn PhysicalExpr>],
++) -> Result<FilterDescription> {
++    let mut partition_columns: Option<HashSet<usize>> = None;
++    for expr in window_expr {
++        let columns: HashSet<usize> = expr
++            .partition_by()
++            .iter()
++            .filter_map(|e| e.downcast_ref::<Column>().map(Column::index))
++            .collect();
++        partition_columns = Some(match partition_columns {
++            None => columns,
++            Some(previous) => previous.intersection(&columns).copied().collect(),
++        });
++    }
++    let column_mapping: HashMap<usize, usize> = partition_columns
++        .unwrap_or_default()
++        .into_iter()
++        .map(|index| (index, index))
++        .collect();
++    let child = ChildFilterDescription::from_child_with_column_mapping(
++        parent_filters,
++        column_mapping,
++        input,
++    )?;
++    Ok(FilterDescription::new().with_child(child))
++}
++
+ // Public interface:
+ pub use bounded_window_agg_exec::{BoundedWindowAggExec, WindowStateObserver};
+ pub use datafusion_physical_expr::window::{
+diff --git a/datafusion/physical-plan/src/windows/window_agg_exec.rs b/datafusion/physical-plan/src/windows/window_agg_exec.rs
+index ba4bb5a..250c51c 100644
+--- a/datafusion/physical-plan/src/windows/window_agg_exec.rs
++++ b/datafusion/physical-plan/src/windows/window_agg_exec.rs
+@@ -12,11 +12,13 @@ use std::task::{Context, Poll};
+ use super::proto::{decode_physical_window_expr, encode_physical_window_expr};
+ use super::utils::create_schema;
+ use crate::execution_plan::{CardinalityEffect, EmissionType};
++use crate::filter_pushdown::{FilterDescription, FilterPushdownPhase};
+ use crate::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+ use crate::statistics::{ChildStats, StatisticsArgs};
+ use crate::stream::EmptyRecordBatchStream;
+ use crate::windows::{
+-    calc_requirements, get_ordered_partition_by_indices, get_partition_by_sort_exprs,
++    calc_requirements, gather_window_filters_for_pushdown,
++    get_ordered_partition_by_indices, get_partition_by_sort_exprs,
+     window_equivalence_properties,
+ };
+ use crate::{
+@@ -31,6 +33,7 @@ use arrow::compute::{concat, concat_batches};
+ use arrow::datatypes::SchemaRef;
+ use arrow::error::ArrowError;
+ use arrow::record_batch::RecordBatch;
++use datafusion_common::config::ConfigOptions;
+ use datafusion_common::stats::Precision;
+ use datafusion_common::tree_node::TreeNodeRecursion;
+ use datafusion_common::utils::{evaluate_partition_ranges, transpose};
+@@ -198,6 +201,21 @@ impl ExecutionPlan for WindowAggExec {
+         &self.cache
+     }
+ 
++    /// Filters on columns that every window expression partitions by are
++    /// pushed to the input, see [`gather_window_filters_for_pushdown`].
++    fn gather_filters_for_pushdown(
++        &self,
++        _phase: FilterPushdownPhase,
++        parent_filters: Vec<Arc<dyn PhysicalExpr>>,
++        _config: &ConfigOptions,
++    ) -> Result<FilterDescription> {
++        gather_window_filters_for_pushdown(
++            &self.window_expr,
++            &self.input,
++            &parent_filters,
++        )
++    }
++
+     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+         vec![&self.input]
+     }
+diff --git a/datafusion/proto-models/proto/datafusion.proto b/datafusion/proto-models/proto/datafusion.proto
+index ee1d803..2bc7e02 100644
+--- a/datafusion/proto-models/proto/datafusion.proto
++++ b/datafusion/proto-models/proto/datafusion.proto
+@@ -1470,6 +1470,16 @@ message HashJoinExecNode {
+   // only for a single key. Messages predating this field decode it as 0:
+   // they can only hold scalar `NOT IN` joins.
+   uint32 null_aware_value_keys = 13;
++  // Per-key dynamic filters of a join on several keys, for the keys whose
++  // filter reached a probe-side consumer.
++  repeated HashJoinKeyFilter key_filters = 14;
++}
++
++// A dynamic filter on a single probe-side key of a hash join.
++message HashJoinKeyFilter {
++  // Index of the key in `HashJoinExecNode.on`
++  uint32 key_index = 1;
++  PhysicalExprNode filter = 2;
+ }
+ 
+ enum StreamPartitionMode {
+@@ -1648,6 +1658,9 @@ message SortExecNode {
+   bool preserve_partitioning = 4;
+   // Optional dynamic filter expression for TopK pushdown.
+   PhysicalExprNode dynamic_filter = 5;
++  // Optional TopK dynamic filter on the first sort key alone, kept with more
++  // than one sort key.
++  PhysicalExprNode topk_prefix_filter = 6;
+ }
+ 
+ message SortPreservingMergeExecNode {
+diff --git a/datafusion/proto-models/src/generated/pbjson.rs b/datafusion/proto-models/src/generated/pbjson.rs
+index 34f2a29..006b679 100644
+--- a/datafusion/proto-models/src/generated/pbjson.rs
++++ b/datafusion/proto-models/src/generated/pbjson.rs
+@@ -9816,6 +9816,9 @@ impl serde::Serialize for HashJoinExecNode {
+         if self.null_aware_value_keys != 0 {
+             len += 1;
+         }
++        if !self.key_filters.is_empty() {
++            len += 1;
++        }
+         let mut struct_ser = serializer.serialize_struct("datafusion.HashJoinExecNode", len)?;
+         if let Some(v) = self.left.as_ref() {
+             struct_ser.serialize_field("left", v)?;
+@@ -9861,6 +9864,9 @@ impl serde::Serialize for HashJoinExecNode {
+         if self.null_aware_value_keys != 0 {
+             struct_ser.serialize_field("nullAwareValueKeys", &self.null_aware_value_keys)?;
+         }
++        if !self.key_filters.is_empty() {
++            struct_ser.serialize_field("keyFilters", &self.key_filters)?;
++        }
+         struct_ser.end()
+     }
+ }
+@@ -9889,6 +9895,8 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+             "fetch",
+             "null_aware_value_keys",
+             "nullAwareValueKeys",
++            "key_filters",
++            "keyFilters",
+         ];
+ 
+         #[allow(clippy::enum_variant_names)]
+@@ -9905,6 +9913,7 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+             DynamicFilter,
+             Fetch,
+             NullAwareValueKeys,
++            KeyFilters,
+         }
+         impl<'de> serde::Deserialize<'de> for GeneratedField {
+             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+@@ -9938,6 +9947,7 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+                             "dynamicFilter" | "dynamic_filter" => Ok(GeneratedField::DynamicFilter),
+                             "fetch" => Ok(GeneratedField::Fetch),
+                             "nullAwareValueKeys" | "null_aware_value_keys" => Ok(GeneratedField::NullAwareValueKeys),
++                            "keyFilters" | "key_filters" => Ok(GeneratedField::KeyFilters),
+                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
+                         }
+                     }
+@@ -9969,6 +9979,7 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+                 let mut dynamic_filter__ = None;
+                 let mut fetch__ = None;
+                 let mut null_aware_value_keys__ = None;
++                let mut key_filters__ = None;
+                 while let Some(k) = map_.next_key()? {
+                     match k {
+                         GeneratedField::Left => {
+@@ -10050,6 +10061,12 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+                                 Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
+                             ;
+                         }
++                        GeneratedField::KeyFilters => {
++                            if key_filters__.is_some() {
++                                return Err(serde::de::Error::duplicate_field("keyFilters"));
++                            }
++                            key_filters__ = Some(map_.next_value()?);
++                        }
+                     }
+                 }
+                 Ok(HashJoinExecNode {
+@@ -10065,12 +10082,124 @@ impl<'de> serde::Deserialize<'de> for HashJoinExecNode {
+                     dynamic_filter: dynamic_filter__,
+                     fetch: fetch__,
+                     null_aware_value_keys: null_aware_value_keys__.unwrap_or_default(),
++                    key_filters: key_filters__.unwrap_or_default(),
+                 })
+             }
+         }
+         deserializer.deserialize_struct("datafusion.HashJoinExecNode", FIELDS, GeneratedVisitor)
+     }
+ }
++impl serde::Serialize for HashJoinKeyFilter {
++    #[allow(deprecated)]
++    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
++    where
++        S: serde::Serializer,
++    {
++        use serde::ser::SerializeStruct;
++        let mut len = 0;
++        if self.key_index != 0 {
++            len += 1;
++        }
++        if self.filter.is_some() {
++            len += 1;
++        }
++        let mut struct_ser = serializer.serialize_struct("datafusion.HashJoinKeyFilter", len)?;
++        if self.key_index != 0 {
++            struct_ser.serialize_field("keyIndex", &self.key_index)?;
++        }
++        if let Some(v) = self.filter.as_ref() {
++            struct_ser.serialize_field("filter", v)?;
++        }
++        struct_ser.end()
++    }
++}
++impl<'de> serde::Deserialize<'de> for HashJoinKeyFilter {
++    #[allow(deprecated)]
++    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++    {
++        const FIELDS: &[&str] = &[
++            "key_index",
++            "keyIndex",
++            "filter",
++        ];
++
++        #[allow(clippy::enum_variant_names)]
++        enum GeneratedField {
++            KeyIndex,
++            Filter,
++        }
++        impl<'de> serde::Deserialize<'de> for GeneratedField {
++            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
++            where
++                D: serde::Deserializer<'de>,
++            {
++                struct GeneratedVisitor;
++
++                impl serde::de::Visitor<'_> for GeneratedVisitor {
++                    type Value = GeneratedField;
++
++                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++                        write!(formatter, "expected one of: {:?}", &FIELDS)
++                    }
++
++                    #[allow(unused_variables)]
++                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
++                    where
++                        E: serde::de::Error,
++                    {
++                        match value {
++                            "keyIndex" | "key_index" => Ok(GeneratedField::KeyIndex),
++                            "filter" => Ok(GeneratedField::Filter),
++                            _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
++                        }
++                    }
++                }
++                deserializer.deserialize_identifier(GeneratedVisitor)
++            }
++        }
++        struct GeneratedVisitor;
++        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
++            type Value = HashJoinKeyFilter;
++
++            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++                formatter.write_str("struct datafusion.HashJoinKeyFilter")
++            }
++
++            fn visit_map<V>(self, mut map_: V) -> std::result::Result<HashJoinKeyFilter, V::Error>
++                where
++                    V: serde::de::MapAccess<'de>,
++            {
++                let mut key_index__ = None;
++                let mut filter__ = None;
++                while let Some(k) = map_.next_key()? {
++                    match k {
++                        GeneratedField::KeyIndex => {
++                            if key_index__.is_some() {
++                                return Err(serde::de::Error::duplicate_field("keyIndex"));
++                            }
++                            key_index__ = 
++                                Some(map_.next_value::<::pbjson::private::NumberDeserialize<_>>()?.0)
++                            ;
++                        }
++                        GeneratedField::Filter => {
++                            if filter__.is_some() {
++                                return Err(serde::de::Error::duplicate_field("filter"));
++                            }
++                            filter__ = map_.next_value()?;
++                        }
++                    }
++                }
++                Ok(HashJoinKeyFilter {
++                    key_index: key_index__.unwrap_or_default(),
++                    filter: filter__,
++                })
++            }
++        }
++        deserializer.deserialize_struct("datafusion.HashJoinKeyFilter", FIELDS, GeneratedVisitor)
++    }
++}
+ impl serde::Serialize for HashRepartition {
+     #[allow(deprecated)]
+     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+@@ -27274,6 +27403,9 @@ impl serde::Serialize for SortExecNode {
+         if self.dynamic_filter.is_some() {
+             len += 1;
+         }
++        if self.topk_prefix_filter.is_some() {
++            len += 1;
++        }
+         let mut struct_ser = serializer.serialize_struct("datafusion.SortExecNode", len)?;
+         if let Some(v) = self.input.as_ref() {
+             struct_ser.serialize_field("input", v)?;
+@@ -27292,6 +27424,9 @@ impl serde::Serialize for SortExecNode {
+         if let Some(v) = self.dynamic_filter.as_ref() {
+             struct_ser.serialize_field("dynamicFilter", v)?;
+         }
++        if let Some(v) = self.topk_prefix_filter.as_ref() {
++            struct_ser.serialize_field("topkPrefixFilter", v)?;
++        }
+         struct_ser.end()
+     }
+ }
+@@ -27309,6 +27444,8 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+             "preservePartitioning",
+             "dynamic_filter",
+             "dynamicFilter",
++            "topk_prefix_filter",
++            "topkPrefixFilter",
+         ];
+ 
+         #[allow(clippy::enum_variant_names)]
+@@ -27318,6 +27455,7 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+             Fetch,
+             PreservePartitioning,
+             DynamicFilter,
++            TopkPrefixFilter,
+         }
+         impl<'de> serde::Deserialize<'de> for GeneratedField {
+             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+@@ -27344,6 +27482,7 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+                             "fetch" => Ok(GeneratedField::Fetch),
+                             "preservePartitioning" | "preserve_partitioning" => Ok(GeneratedField::PreservePartitioning),
+                             "dynamicFilter" | "dynamic_filter" => Ok(GeneratedField::DynamicFilter),
++                            "topkPrefixFilter" | "topk_prefix_filter" => Ok(GeneratedField::TopkPrefixFilter),
+                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
+                         }
+                     }
+@@ -27368,6 +27507,7 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+                 let mut fetch__ = None;
+                 let mut preserve_partitioning__ = None;
+                 let mut dynamic_filter__ = None;
++                let mut topk_prefix_filter__ = None;
+                 while let Some(k) = map_.next_key()? {
+                     match k {
+                         GeneratedField::Input => {
+@@ -27402,6 +27542,12 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+                             }
+                             dynamic_filter__ = map_.next_value()?;
+                         }
++                        GeneratedField::TopkPrefixFilter => {
++                            if topk_prefix_filter__.is_some() {
++                                return Err(serde::de::Error::duplicate_field("topkPrefixFilter"));
++                            }
++                            topk_prefix_filter__ = map_.next_value()?;
++                        }
+                     }
+                 }
+                 Ok(SortExecNode {
+@@ -27410,6 +27556,7 @@ impl<'de> serde::Deserialize<'de> for SortExecNode {
+                     fetch: fetch__.unwrap_or_default(),
+                     preserve_partitioning: preserve_partitioning__.unwrap_or_default(),
+                     dynamic_filter: dynamic_filter__,
++                    topk_prefix_filter: topk_prefix_filter__,
+                 })
+             }
+         }
+diff --git a/datafusion/proto-models/src/generated/prost.rs b/datafusion/proto-models/src/generated/prost.rs
+index 0634288..bbb8e4e 100644
+--- a/datafusion/proto-models/src/generated/prost.rs
++++ b/datafusion/proto-models/src/generated/prost.rs
+@@ -2241,6 +2241,19 @@ pub struct HashJoinExecNode {
+     /// they can only hold scalar `NOT IN` joins.
+     #[prost(uint32, tag = "13")]
+     pub null_aware_value_keys: u32,
++    /// Per-key dynamic filters of a join on several keys, for the keys whose
++    /// filter reached a probe-side consumer.
++    #[prost(message, repeated, tag = "14")]
++    pub key_filters: ::prost::alloc::vec::Vec<HashJoinKeyFilter>,
++}
++/// A dynamic filter on a single probe-side key of a hash join.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct HashJoinKeyFilter {
++    /// Index of the key in `HashJoinExecNode.on`
++    #[prost(uint32, tag = "1")]
++    pub key_index: u32,
++    #[prost(message, optional, tag = "2")]
++    pub filter: ::core::option::Option<PhysicalExprNode>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct SymmetricHashJoinExecNode {
+@@ -2487,6 +2500,10 @@ pub struct SortExecNode {
+     /// Optional dynamic filter expression for TopK pushdown.
+     #[prost(message, optional, tag = "5")]
+     pub dynamic_filter: ::core::option::Option<PhysicalExprNode>,
++    /// Optional TopK dynamic filter on the first sort key alone, kept with more
++    /// than one sort key.
++    #[prost(message, optional, tag = "6")]
++    pub topk_prefix_filter: ::core::option::Option<PhysicalExprNode>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct SortPreservingMergeExecNode {
+diff --git a/datafusion/sqllogictest/test_files/dynamic_filter_split_pushdown.slt b/datafusion/sqllogictest/test_files/dynamic_filter_split_pushdown.slt
+new file mode 100644
+index 0000000..0a58f46
+--- /dev/null
++++ b/datafusion/sqllogictest/test_files/dynamic_filter_split_pushdown.slt
+@@ -0,0 +1,215 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
++# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
++
++# Dynamic filters that reach scans which the full filter cannot reach:
++# 1. A TopK on several sort keys also pushes a filter on its first sort key alone
++# 2. A join on several keys also pushes one range filter per key
++# 3. Window operators pass filters on columns every window expression partitions by
++
++statement ok
++set datafusion.execution.target_partitions = 1;
++
++statement ok
++CREATE TABLE fact_v(f_dim1 INT, f_dim2 INT, f_qty INT) AS VALUES
++(1, 10, 5), (1, 20, 6), (2, 10, 7), (2, 20, 8), (3, 30, 9), (4, 40, 10), (5, 50, 11);
++
++statement ok
++CREATE TABLE dim1_v(d1_key INT, d1_name VARCHAR, d1_group INT) AS VALUES
++(1, 'a', 1), (2, 'b', 1), (3, 'c', 2), (4, 'd', 2), (5, 'e', 3);
++
++statement ok
++CREATE TABLE dim2_v(d2_key INT, d2_code VARCHAR, d2_group INT) AS VALUES
++(10, 'x', 1), (20, 'y', 1), (30, 'z', 2), (40, 'w', 2), (50, 'v', 3);
++
++query I
++COPY fact_v TO 'test_files/scratch/dynamic_filter_split_pushdown/fact.parquet' STORED AS PARQUET;
++----
++7
++
++query I
++COPY dim1_v TO 'test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet' STORED AS PARQUET;
++----
++5
++
++query I
++COPY dim2_v TO 'test_files/scratch/dynamic_filter_split_pushdown/dim2.parquet' STORED AS PARQUET;
++----
++5
++
++statement ok
++CREATE EXTERNAL TABLE fact STORED AS PARQUET
++LOCATION 'test_files/scratch/dynamic_filter_split_pushdown/fact.parquet';
++
++statement ok
++CREATE EXTERNAL TABLE dim1 STORED AS PARQUET
++LOCATION 'test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet';
++
++statement ok
++CREATE EXTERNAL TABLE dim2 STORED AS PARQUET
++LOCATION 'test_files/scratch/dynamic_filter_split_pushdown/dim2.parquet';
++
++# 1. TopK on sort keys from two sides of a join: the full TopK filter references
++# both `d1_name` and `d2_code` and cannot pass the join, but the filter on the
++# first key, `d1_name`, reaches the dim1 scan.
++query TT
++EXPLAIN SELECT d1_name, d2_code, f_qty
++FROM fact JOIN dim1 ON f_dim1 = d1_key JOIN dim2 ON f_dim2 = d2_key
++ORDER BY d1_name, d2_code LIMIT 2;
++----
++logical_plan
++01)Sort: dim1.d1_name ASC NULLS LAST, dim2.d2_code ASC NULLS LAST, fetch=2
++02)--Projection: dim1.d1_name, dim2.d2_code, fact.f_qty
++03)----Inner Join: fact.f_dim2 = dim2.d2_key
++04)------Projection: fact.f_dim2, fact.f_qty, dim1.d1_name
++05)--------Inner Join: fact.f_dim1 = dim1.d1_key
++06)----------TableScan: fact projection=[f_dim1, f_dim2, f_qty]
++07)----------TableScan: dim1 projection=[d1_key, d1_name]
++08)------TableScan: dim2 projection=[d2_key, d2_code]
++physical_plan
++01)SortExec: TopK(fetch=2), expr=[d1_name@0 ASC NULLS LAST, d2_code@1 ASC NULLS LAST], preserve_partitioning=[false]
++02)--HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d2_key@0, f_dim2@0)], projection=[d1_name@4, d2_code@1, f_qty@3]
++03)----DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim2.parquet]]}, projection=[d2_key, d2_code], file_type=parquet
++04)----HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d1_key@0, f_dim1@0)], projection=[f_dim2@3, f_qty@4, d1_name@1]
++05)------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet]]}, projection=[d1_key, d1_name], file_type=parquet, predicate=DynamicFilter [ empty ], dynamic_rg_pruning=eligible
++06)------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/fact.parquet]]}, projection=[f_dim1, f_dim2, f_qty], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
++
++query TTI
++SELECT d1_name, d2_code, f_qty
++FROM fact JOIN dim1 ON f_dim1 = d1_key JOIN dim2 ON f_dim2 = d2_key
++ORDER BY d1_name, d2_code LIMIT 2;
++----
++a x 5
++a y 6
++
++query TTI
++SELECT d1_name, d2_code, f_qty
++FROM fact JOIN dim1 ON f_dim1 = d1_key JOIN dim2 ON f_dim2 = d2_key
++ORDER BY d1_name DESC, d2_code DESC LIMIT 3;
++----
++e v 11
++d w 10
++c z 9
++
++# A single sort key needs no separate first-key filter
++query TT
++EXPLAIN SELECT d1_name FROM dim1 ORDER BY d1_name LIMIT 2;
++----
++logical_plan
++01)Sort: dim1.d1_name ASC NULLS LAST, fetch=2
++02)--TableScan: dim1 projection=[d1_name]
++physical_plan
++01)SortExec: TopK(fetch=2), expr=[d1_name@0 ASC NULLS LAST], preserve_partitioning=[false]
++02)--DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet]]}, projection=[d1_name], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[d1_name@0 ASC NULLS LAST], dynamic_rg_pruning=eligible
++
++# 2. A join on two keys produced by different probe-side scans: the full filter
++# references both keys and cannot pass the inner join below, but each key's range
++# filter reaches the scan that produces it. Since `d1_group = d2_group`, the inner
++# join also transfers each of them to the other side.
++query TT
++EXPLAIN SELECT d1_name, d2_code
++FROM dim1 JOIN dim2 ON d1_group = d2_group
++JOIN (SELECT * FROM (VALUES (1, 2), (2, 2)) AS t(g1, g2)) AS s
++  ON s.g1 = d1_group AND s.g2 = d2_group;
++----
++logical_plan
++01)Projection: dim1.d1_name, dim2.d2_code
++02)--Inner Join: CAST(dim1.d1_group AS Int64) = s.g1, CAST(dim2.d2_group AS Int64) = s.g2
++03)----Inner Join: dim1.d1_group = dim2.d2_group
++04)------TableScan: dim1 projection=[d1_name, d1_group]
++05)------TableScan: dim2 projection=[d2_code, d2_group]
++06)----SubqueryAlias: s
++07)------SubqueryAlias: t
++08)--------Projection: column1 AS g1, column2 AS g2
++09)----------Values: (Int64(1), Int64(2)), (Int64(2), Int64(2))
++physical_plan
++01)HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(g1@0, CAST(dim1.d1_group AS Int64)@5), (g2@1, CAST(dim2.d2_group AS Int64)@4)], projection=[d1_name@2, d2_code@4]
++02)--ProjectionExec: expr=[column1@0 as g1, column2@1 as g2]
++03)----DataSourceExec: partitions=1, partition_sizes=[1]
++04)--ProjectionExec: expr=[d1_name@0 as d1_name, d1_group@1 as d1_group, d2_code@2 as d2_code, d2_group@3 as d2_group, CAST(d2_group@3 AS Int64) as CAST(dim2.d2_group AS Int64), CAST(d1_group@1 AS Int64) as CAST(dim1.d1_group AS Int64)]
++05)----HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d1_group@1, d2_group@1)]
++06)------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet]]}, projection=[d1_name, d1_group], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
++07)------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim2.parquet]]}, projection=[d2_code, d2_group], file_type=parquet, predicate=DynamicFilter [ empty ] AND DynamicFilter [ empty ] AND DynamicFilter [ empty ], dynamic_rg_pruning=eligible
++
++query TT rowsort
++SELECT d1_name, d2_code
++FROM dim1 JOIN dim2 ON d1_group = d2_group
++JOIN (SELECT * FROM (VALUES (1, 2), (2, 2)) AS t(g1, g2)) AS s
++  ON s.g1 = d1_group AND s.g2 = d2_group;
++----
++c w
++c z
++d w
++d z
++
++# 3. A join filter on the window's partition column passes the window
++query TT
++EXPLAIN SELECT w.f_dim1, w.total
++FROM (SELECT f_dim1, sum(f_qty) OVER (PARTITION BY f_dim1) AS total FROM fact) AS w
++JOIN (SELECT d1_key FROM dim1 WHERE d1_name = 'b') AS d ON w.f_dim1 = d.d1_key;
++----
++logical_plan
++01)Projection: w.f_dim1, w.total
++02)--Inner Join: w.f_dim1 = d.d1_key
++03)----SubqueryAlias: w
++04)------Projection: fact.f_dim1, sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING AS total
++05)--------WindowAggr: windowExpr=[[sum(CAST(fact.f_qty AS Int64)) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING]]
++06)----------TableScan: fact projection=[f_dim1, f_qty]
++07)----SubqueryAlias: d
++08)------Projection: dim1.d1_key
++09)--------Filter: dim1.d1_name = Utf8View("b")
++10)----------TableScan: dim1 projection=[d1_key, d1_name], partial_filters=[dim1.d1_name = Utf8View("b")]
++physical_plan
++01)HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d1_key@0, f_dim1@0)], projection=[f_dim1@1, total@2]
++02)--FilterExec: d1_name@1 = b, projection=[d1_key@0]
++03)----DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim1.parquet]]}, projection=[d1_key, d1_name], file_type=parquet, predicate=d1_name@1 = b, pruning_predicate=d1_name_null_count@2 != row_count@3 AND d1_name_min@0 <= b AND b <= d1_name_max@1, required_guarantees=[d1_name in (b)]
++04)--ProjectionExec: expr=[f_dim1@0 as f_dim1, sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING@2 as total]
++05)----WindowAggExec: wdw=[sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING: Ok(Field { name: "sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", data_type: Int64, nullable: true }), frame: WindowFrame { units: Rows, start_bound: Preceding(UInt64(NULL)), end_bound: Following(UInt64(NULL)), is_causal: false }]
++06)------SortExec: expr=[f_dim1@0 ASC NULLS LAST], preserve_partitioning=[false]
++07)--------FilterExec: DynamicFilter [ empty ]
++08)----------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/fact.parquet]]}, projection=[f_dim1, f_qty], file_type=parquet, predicate=DynamicFilter [ empty ], sort_order_for_reorder=[f_dim1@0 ASC NULLS LAST], dynamic_rg_pruning=eligible
++
++query II rowsort
++SELECT w.f_dim1, w.total
++FROM (SELECT f_dim1, sum(f_qty) OVER (PARTITION BY f_dim1) AS total FROM fact) AS w
++JOIN (SELECT d1_key FROM dim1 WHERE d1_name = 'b') AS d ON w.f_dim1 = d.d1_key;
++----
++2 15
++2 15
++
++# A filter on a column the window does not partition by stays above the window
++query TT
++EXPLAIN SELECT w.f_dim2, w.total
++FROM (SELECT f_dim2, sum(f_qty) OVER (PARTITION BY f_dim1) AS total FROM fact) AS w
++JOIN (SELECT d2_key FROM dim2 WHERE d2_code = 'x') AS d ON w.f_dim2 = d.d2_key;
++----
++logical_plan
++01)Projection: w.f_dim2, w.total
++02)--Inner Join: w.f_dim2 = d.d2_key
++03)----SubqueryAlias: w
++04)------Projection: fact.f_dim2, sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING AS total
++05)--------WindowAggr: windowExpr=[[sum(CAST(fact.f_qty AS Int64)) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING]]
++06)----------TableScan: fact projection=[f_dim1, f_dim2, f_qty]
++07)----SubqueryAlias: d
++08)------Projection: dim2.d2_key
++09)--------Filter: dim2.d2_code = Utf8View("x")
++10)----------TableScan: dim2 projection=[d2_key, d2_code], partial_filters=[dim2.d2_code = Utf8View("x")]
++physical_plan
++01)HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(d2_key@0, f_dim2@0)], projection=[f_dim2@1, total@2]
++02)--FilterExec: d2_code@1 = x, projection=[d2_key@0]
++03)----DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/dim2.parquet]]}, projection=[d2_key, d2_code], file_type=parquet, predicate=d2_code@1 = x, pruning_predicate=d2_code_null_count@2 != row_count@3 AND d2_code_min@0 <= x AND x <= d2_code_max@1, required_guarantees=[d2_code in (x)]
++04)--ProjectionExec: expr=[f_dim2@1 as f_dim2, sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING@3 as total]
++05)----WindowAggExec: wdw=[sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING: Ok(Field { name: "sum(fact.f_qty) PARTITION BY [fact.f_dim1] ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", data_type: Int64, nullable: true }), frame: WindowFrame { units: Rows, start_bound: Preceding(UInt64(NULL)), end_bound: Following(UInt64(NULL)), is_causal: false }]
++06)------SortExec: expr=[f_dim1@0 ASC NULLS LAST], preserve_partitioning=[false]
++07)--------DataSourceExec: file_groups={1 group: [[WORKSPACE_ROOT/datafusion/sqllogictest/test_files/scratch/dynamic_filter_split_pushdown/fact.parquet]]}, projection=[f_dim1, f_dim2, f_qty], file_type=parquet, sort_order_for_reorder=[f_dim1@0 ASC NULLS LAST]
++
++query II rowsort
++SELECT w.f_dim2, w.total
++FROM (SELECT f_dim2, sum(f_qty) OVER (PARTITION BY f_dim1) AS total FROM fact) AS w
++JOIN (SELECT d2_key FROM dim2 WHERE d2_code = 'x') AS d ON w.f_dim2 = d.d2_key;
++----
++10 11
++10 15
++
++statement ok
++reset datafusion.execution.target_partitions;

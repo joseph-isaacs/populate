@@ -15,9 +15,19 @@
 //!
 //! So `list<(i32, list<i64>)>` becomes `List<Struct<c0: Int32, c1: List<Int64>>>`.
 //! Nothing goes through a per-value `dyn ArrayBuilder` call.
+//!
+//! ## `ArrowBackend`: generate straight into the final Arrow buffers
+//!
+//! With `VecBackend` list offsets are `Vec<usize>` end offsets, so building a
+//! `ListArray` copies them into a new `i32` buffer with a leading 0.
+//! `ArrowBackend` stores offsets as [`ArrowOffsets`] instead: already `i32`,
+//! already starting at 0. Combined with exact up-front `reserve`s, a
+//! `list<numeric>` column is written into exactly two allocations (offsets and
+//! values) and both are moved into the `ListArray` as-is. `Vec<bool>` and
+//! `Vec<usize>` columns are still converted (bit-packing / widening).
 
 use crate::hlist::{HCons, HNil};
-use crate::traits::{DefaultSink, Distribution, ListCol, VecBackend};
+use crate::traits::{Backend, DefaultSink, Distribution, ListCol, Sink};
 use arrow_array::types::{
     Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
     UInt32Type, UInt64Type,
@@ -30,6 +40,64 @@ use arrow_buffer::{ArrowNativeType, OffsetBuffer};
 use arrow_schema::{ArrowError, Field, Fields, Schema};
 use rand::Rng;
 use std::sync::Arc;
+
+// ============================================================================
+// ArrowBackend — offsets in Arrow layout from the start
+// ============================================================================
+
+/// Backend whose sinks are already in Arrow memory layout, so turning the
+/// collected sink into a `RecordBatch` moves buffers instead of copying them.
+pub struct ArrowBackend;
+
+impl Backend for ArrowBackend {
+    type Prim<T> = Vec<T>;
+    type Offsets = ArrowOffsets;
+}
+
+/// List offsets in Arrow `ListArray` layout: `i32`, `n + 1` entries, first is 0.
+///
+/// Starts empty (no allocation); the leading 0 is written together with the
+/// first reserve/push, so `reserve(n)` sizes the buffer for all `n + 1`
+/// entries in one allocation.
+#[derive(Debug, Default, PartialEq)]
+pub struct ArrowOffsets(Vec<i32>);
+
+impl ArrowOffsets {
+    /// The offsets buffer, including the leading 0 (empty if nothing written).
+    pub fn as_slice(&self) -> &[i32] {
+        &self.0
+    }
+
+    fn start(&mut self, additional: usize) {
+        if self.0.is_empty() {
+            self.0.reserve(additional + 1);
+            self.0.push(0);
+        }
+    }
+
+    fn into_vec(mut self) -> Vec<i32> {
+        self.start(0);
+        self.0
+    }
+}
+
+impl Sink<usize> for ArrowOffsets {
+    fn push(&mut self, end: usize) {
+        self.start(0);
+        self.0.push(
+            i32::try_from(end)
+                .expect("list values exceed i32 offsets; LargeList not supported yet"),
+        );
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        if self.0.is_empty() {
+            self.start(additional);
+        } else {
+            self.0.reserve(additional);
+        }
+    }
+}
 
 // ============================================================================
 // Single column -> ArrayRef
@@ -87,15 +155,26 @@ impl<V: IntoArrowColumns> IntoArrowArray for ListCol<Vec<usize>, V> {
             i32::try_from(o).expect("list values exceed i32 offsets; LargeList not supported yet")
         }));
 
-        let values = columns_to_value_array(self.values);
-        let field = Arc::new(Field::new_list_field(values.data_type().clone(), false));
-        Arc::new(ListArray::new(
-            field,
-            OffsetBuffer::new(offsets.into()),
-            values,
-            None,
-        ))
+        list_array(offsets, self.values)
     }
+}
+
+/// `ArrowBackend` list: the offsets buffer is moved into the array, no copy.
+impl<V: IntoArrowColumns> IntoArrowArray for ListCol<ArrowOffsets, V> {
+    fn into_array(self) -> ArrayRef {
+        list_array(self.offsets.into_vec(), self.values)
+    }
+}
+
+fn list_array<V: IntoArrowColumns>(offsets: Vec<i32>, values: V) -> ArrayRef {
+    let values = columns_to_value_array(values);
+    let field = Arc::new(Field::new_list_field(values.data_type().clone(), false));
+    Arc::new(ListArray::new(
+        field,
+        OffsetBuffer::new(offsets.into()),
+        values,
+        None,
+    ))
 }
 
 /// One column is the list's values directly; several columns (a tuple element)
@@ -150,7 +229,7 @@ pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, Ar
 // DistributionArrow — collect straight to a RecordBatch
 // ============================================================================
 
-pub trait DistributionArrow: Distribution<VecBackend> {
+pub trait DistributionArrow<B: Backend>: Distribution<B> {
     /// Collect `n` rows column by column and return them as a `RecordBatch`.
     /// No sink type to spell out: it's derived from `Self::Item`.
     fn collect_record_batch(
@@ -159,11 +238,11 @@ pub trait DistributionArrow: Distribution<VecBackend> {
         n: usize,
     ) -> Result<RecordBatch, ArrowError>
     where
-        <Self::Item as DefaultSink<VecBackend>>::Sink: Default + IntoArrowColumns,
+        <Self::Item as DefaultSink<B>>::Sink: Default + IntoArrowColumns,
     {
         let sink = self.collect_into(Default::default(), rng, n);
         into_record_batch(sink)
     }
 }
 
-impl<D: Distribution<VecBackend>> DistributionArrow for D {}
+impl<B: Backend, D: Distribution<B>> DistributionArrow<B> for D {}

@@ -10,18 +10,22 @@ pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 
 pub trait Backend {
     type Prim<T>: Sink<T>;
+    /// Sink for list offsets. Receives the running end offset of each row.
+    type Offsets: Sink<usize>;
 }
 
 pub struct VecBackend;
 
 impl Backend for VecBackend {
     type Prim<T> = Vec<T>;
+    type Offsets = Vec<usize>;
 }
 
 pub struct DequeBackend;
 
 impl Backend for DequeBackend {
     type Prim<T> = VecDeque<T>;
+    type Offsets = VecDeque<usize>;
 }
 
 // ============================================================================
@@ -62,7 +66,7 @@ for_all_primitives!(impl_value_hlist_scalar);
 // Recurses: Vec<(A, B)> -> ListCol<offsets, HCons<A-col, HCons<B-col, HNil>>>
 //           Vec<Vec<T>> -> ListCol<offsets, HCons<ListCol<offsets, ..>, HNil>>
 impl<B: Backend, T: DefaultSink<B>> DefaultSink<B> for Vec<T> {
-    type Sink = HCons<ListCol<B::Prim<usize>, T::Sink>, HNil>;
+    type Sink = HCons<ListCol<B::Offsets, T::Sink>, HNil>;
 }
 
 /// Columnar list sink: end-offsets per row plus child column sinks.
@@ -90,6 +94,11 @@ impl<T, O: Sink<usize>, V: Sink<T>> Sink<Vec<T>> for ListCol<O, V> {
         self.len += value.len();
         self.values.push_n(value.into_iter());
         self.offsets.push(self.len);
+    }
+
+    // Only the offsets count is known up front (one per row).
+    fn reserve(&mut self, additional: usize) {
+        self.offsets.reserve(additional);
     }
 }
 
@@ -158,6 +167,11 @@ pub trait Distribution<B: Backend> {
 pub trait Sink<T> {
     fn push(&mut self, value: T);
 
+    /// Hint that `additional` more values are about to be pushed. Columnar
+    /// collection always knows the exact count, so buffers are allocated once
+    /// at their final size and never grown (no realloc copies).
+    fn reserve(&mut self, _additional: usize) {}
+
     fn push_n(&mut self, value: impl Iterator<Item = T>) {
         value.for_each(|v| self.push(v));
     }
@@ -167,6 +181,10 @@ pub trait Sink<T> {
 impl<T> Sink<T> for Vec<T> {
     fn push(&mut self, value: T) {
         Vec::push(self, value);
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        Vec::reserve(self, additional);
     }
 
     fn push_n(&mut self, value: impl Iterator<Item = T>) {
@@ -179,6 +197,10 @@ impl<T> Sink<T> for VecDeque<T> {
     fn push(&mut self, value: T) {
         self.push_back(value);
     }
+
+    fn reserve(&mut self, additional: usize) {
+        VecDeque::reserve(self, additional);
+    }
 }
 
 // HList Sink impls — bridge between leaf distributions and HList sinks
@@ -188,6 +210,10 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
     fn push(&mut self, value: T) {
         self.0.push(value);
     }
+
+    fn reserve(&mut self, additional: usize) {
+        self.0.reserve(additional);
+    }
 }
 
 // 2-tuple into 2-element HList
@@ -195,6 +221,11 @@ impl<A, B, SA: Sink<A>, SB: Sink<B>> Sink<(A, B)> for HCons<SA, HCons<SB, HNil>>
     fn push(&mut self, (a, b): (A, B)) {
         self.0.push(a);
         self.1.0.push(b);
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n);
+        self.1.0.reserve(n);
     }
 }
 
@@ -207,6 +238,12 @@ impl<A, B, C, SA: Sink<A>, SB: Sink<B>, SC: Sink<C>> Sink<(A, B, C)>
         self.1.0.push(b);
         self.1.1.0.push(c);
     }
+
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n);
+        self.1.0.reserve(n);
+        self.1.1.0.reserve(n);
+    }
 }
 
 // 4-tuple into 4-element HList
@@ -218,6 +255,13 @@ impl<A, B, C, D, SA: Sink<A>, SB: Sink<B>, SC: Sink<C>, SD: Sink<D>> Sink<(A, B,
         self.1.0.push(b);
         self.1.1.0.push(c);
         self.1.1.1.0.push(d);
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n);
+        self.1.0.reserve(n);
+        self.1.1.0.reserve(n);
+        self.1.1.1.0.reserve(n);
     }
 }
 

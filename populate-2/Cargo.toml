@@ -10,14 +10,21 @@ rand = { workspace = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 arrow-buffer = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true, features = ["arrow"] }
 
 [features]
 default = ["arrow"]
 arrow = ["dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema"]
+parquet = ["arrow", "dep:parquet"]
 
 [dev-dependencies]
 rand = { workspace = true }
 divan = { workspace = true }
+bytes = "1"
+
+[[test]]
+name = "zero_copy"
+required-features = ["arrow"]
 
 [[bench]]
 name = "collect"

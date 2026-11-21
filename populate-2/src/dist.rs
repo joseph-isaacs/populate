@@ -45,6 +45,7 @@ where
         rng: &mut impl Rng,
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
+        sink.reserve(n);
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -101,6 +102,7 @@ where
         rng: &mut impl Rng,
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
+        sink.reserve(n);
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -327,6 +329,7 @@ where
         rng: &mut impl Rng,
         n: usize,
     ) -> <Out as DefaultSink<B>>::Sink {
+        sink.reserve(n);
         let mut iter = self.row_iter();
         for _ in 0..n {
             sink.push(iter.next(rng));
@@ -400,6 +403,7 @@ where
             },
             HNil,
         ) = sink;
+        offsets.reserve(n);
         let mut lengths = self.lengths.row_iter();
         let start = len;
         for _ in 0..n {

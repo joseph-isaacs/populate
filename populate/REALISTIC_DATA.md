@@ -5,11 +5,11 @@ Eight "interesting data" scenarios, each written three ways:
 - **Today, as shipped**: [`examples/realistic_today.rs`](examples/realistic_today.rs).
   Only what's on `main`; the user writes every leaf and helper.
 - **Today + general combinators**: [`examples/realistic_combinators.rs`](examples/realistic_combinators.rs).
-  Today's `populate-core` unchanged, plus every general-purpose combinator
-  we'd add anyway (`uniform`, `normal`, `zipf`, `geometric`, `bernoulli`,
-  `map_rng`, `walk`, `list_with_len`, and `named` / `with_nulls`
-  post-processing). Those live in `mod general` and **aren't counted**. All of
-  them compile against today's traits.
+  Today's traits plus general-purpose combinators: `derive` (now in
+  `populate-builtins`), and `uniform`, `normal`, `zipf`, `geometric`,
+  `bernoulli`, `walk`, `list_with_len`, `named` / `with_nulls`
+  post-processing (in the example's `mod general`). None of these are
+  counted.
 - **Proposed**: the API sketched below. Doesn't compile yet.
 
 Both examples run: `cargo run -p populate --example realistic_combinators`.
@@ -23,44 +23,70 @@ both sides (a `const NAMES` line today, `.named()` calls proposed).
 | scenario | as shipped | + combinators | proposed | what's still awkward with combinators |
 |---|---:|---:|---:|---|
 | skewed (Zipf ids, log-normal prices) | 11 | 8 | 7 | names live apart from the columns |
-| correlated (weight from height + noise) | 9 | 9 | 5 | `map_rng` is row-at-a-time; must re-emit the parent in the closure |
-| dependent (receipt = ship + lag; late) | 6 | 7 | 5 | can't chain two dependent steps (see below); one closure emits every column |
-| conditional (country given region) | 14 | 11 | 5 | no strings: countries are int codes + side tables |
+| correlated (weight from height + noise) | 9 | 6 | 5 | names live apart from the columns |
+| dependent (receipt = ship + lag; late) | 6 | 7 | 5 | nested `derive(derive(..))` calls instead of a method chain |
+| conditional (country given region) | 14 | 9 | 5 | no strings: countries are int codes + side tables |
 | nulls (20% null score) | 25 | 7 | 6 | a `present` column plus batch post-processing; top level only |
 | nested (list<struct> + `n_lines`) | 21* | 11 | 9 | struct fields stay `c0, c1`; nested `Item` type needs an alias for clippy |
 | random walk | 43 | 4 | 3 | nothing |
 | leaf / names (setup) | 50 | 0 | 0 | |
-| **total** | **179** | **57** | **40** | |
+| **total** | **179** | **52** | **40** | |
 
 \* `n_lines` isn't possible as shipped.
 
-**Most of the gap is missing combinators.** With them,
-today's core gets to 57 lines vs 40 proposed, and the remaining 17 lines
-aren't the real issue. What combinators **can't** fix, because it's in
-`populate-core`:
+**Most of the gap is missing combinators.** With them, today's core gets
+to 52 lines vs 40 proposed.
 
-1. **Dependent columns don't compose.** A `map_rng` that returns
-   `((ship, receipt), late)` doesn't compile: a nested row tuple can't be
-   pushed into the flat column HList (`HCons<Vec<i32>, HCons<Vec<i32>,
-   HCons<Vec<bool>, HNil>>>: Sink<((i32, i32), bool)>` is not satisfied).
-   So `derive(..).derive(..)` can't be built; everything dependent goes into
-   one closure. Fix: flattening tuple sinks in the core.
-2. **Dependent columns are row-at-a-time.** `map_rng` collects with
-   `collect_rows`. A columnar `derive` (fill the parent, then walk its
-   buffer) needs a way to read back what a sink just wrote. Fix: a row/slice
-   view on sinks.
-3. **No nullable columns.** Needs an `Option<T>` `DefaultSink` (values +
+### Dependent columns: `derive` (implemented)
+
+`derive(parent, |row, rng| value)` adds one column computed from the
+parent's row and the RNG. It's in `populate-builtins` and is **columnar**:
+the parent fills its own columns first, then the new column is computed in
+one pass over the buffers the parent just wrote (zipped slice iterators into
+`Vec::extend`). The output is flat, so derives chain:
+
+```rust
+let receipt = derive(uniform(D1992, D1998), |ship, rng| ship + rng.random_range(1..=30));
+derive(receipt, |(ship, receipt), _| receipt - ship > 14) // Item = (i32, i32, bool)
+```
+
+Closures need no type annotations. Limits for now: the parent must be up to
+3 scalar columns (list parents can't be read back yet), and the RNG reaches
+the closure as `&mut dyn RngCore`.
+
+A `map` returning nested rows such as `((ship, receipt), late)` still
+doesn't compile, because nested row tuples can't be pushed into the flat
+column HList. `derive` avoids that by keeping rows flat.
+
+`cargo bench -p populate --bench derive`, 65,536 rows, sinks pre-allocated
+(median):
+
+| case | `derive` columnar | same, row by row | `map` to a tuple |
+|---|---:|---:|---:|
+| 2 columns, `b = 3a + 1` | 48.5 µs | 74.0 µs | 73.7 µs |
+| 3 columns, chained | 74.7 µs | 108.1 µs | 108.9 µs |
+| 2 columns, `b = a + rng.random_range(0..8)` | 208.2 µs | 217.4 µs | n/a |
+
+So `derive` is about 1.5x faster than row by row on arithmetic. With RNG
+draws it's only 4% faster, because the `dyn RngCore` call dominates. A first
+naive version (index + `push` per row) was *slower* than row mode, so the
+slice-iterator + `extend` path matters. It needed one small core change:
+`HCons<S, HNil>` now forwards `push_n` to its sink.
+
+### Still needs core changes
+
+1. **No nullable columns.** Needs an `Option<T>` `DefaultSink` (values +
    validity) so nulls work anywhere, including inside lists and structs.
    Post-processing only reaches top-level columns.
-4. **No names.** Post-hoc renaming can't reach struct fields inside lists,
+2. **No names.** Post-hoc renaming can't reach struct fields inside lists,
    and the names live away from the columns they describe. Fix: names carried
    by the distribution into the Arrow schema.
-5. **No strings.** No `String`/`&str` `DefaultSink`, so no Utf8 or Dictionary
+3. **No strings.** No `String`/`&str` `DefaultSink`, so no Utf8 or Dictionary
    columns.
-6. **Every intermediate must be a column type.** `map(.., |k: u64| ..)`
+4. **Every intermediate must be a column type.** `map(.., |k: u64| ..)`
    fails because `u64` has no sink, even when it's never stored. The
    combinators work around it by converting inside the leaf.
-7. **Backend in every signature**: `impl Distribution<B, Item = ..>`.
+5. **Backend in every signature**: `impl Distribution<B, Item = ..>`.
 
 Ease of understanding: with combinators, today's scenario code reads fine.
 The proposed version mostly reads better because names, nulls and dependent
@@ -232,11 +258,10 @@ fn random_walk() -> impl Distribution<Item = (i64, f64)> {
 
 1. Ship the general combinators from `realistic_combinators.rs` in
    `populate-builtins` (no core change; they already compile).
-2. Core: flattening tuple sinks, so dependent steps compose (`derive` chains).
+2. ~~Columnar, chainable dependent columns~~: done, `derive`.
 3. Core: `Option<T>` sinks with Arrow validity (`nullable`).
 4. Core: names carried into the schema (`named`), including struct fields.
-5. Core: read-back on sinks, so `derive` stays columnar.
-6. Core: string columns; move `Item: DefaultSink` off the trait.
+5. Core: string columns; move `Item: DefaultSink` off the trait.
 
 ## Open questions
 

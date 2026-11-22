@@ -26,7 +26,7 @@ in place (`collect_parquet`).
 |-------------------------|-----------------------------------------------------|
 | `populate`              | facade: re-exports everything below                 |
 | `populate-core`         | `Distribution`, `SampleIter`, `Sink`, `Backend`, HLists, tuples |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `flatten`       |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `derive`, `flatten` |
 | `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output                |
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 

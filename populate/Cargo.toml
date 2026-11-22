@@ -39,3 +39,7 @@ harness = false
 name = "arrow"
 harness = false
 required-features = ["arrow"]
+
+[[bench]]
+name = "derive"
+harness = false

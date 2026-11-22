@@ -1,6 +1,6 @@
 [package]
 name = "populate-builtins"
-description = "Built-in populate distributions: constant, range, map, list, flatten"
+description = "Built-in populate distributions: constant, range, map, list, derive, flatten"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

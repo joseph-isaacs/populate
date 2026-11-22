@@ -1,6 +1,6 @@
 //! The same scenarios as `realistic_today.rs`, but assuming populate grows
-//! every general-purpose combinator we'd want, with **no change to
-//! `populate-core`**. The combinators live in `mod general` at the bottom and
+//! every general-purpose combinator we'd want (`derive` is now in
+//! builtins). The combinators live in `mod general` at the bottom and
 //! aren't counted; only the code between `// == scenario` markers is.
 //!
 //! What's left after that is what the core traits themselves cost. Run with:
@@ -12,11 +12,11 @@
 use arrow_array::RecordBatch;
 use arrow_cast::pretty::pretty_format_batches;
 use general::{
-    B, bernoulli, geometric, list_with_len, lognormal, map_rng, named, normal, uniform, walk,
-    with_nulls, zipf,
+    B, bernoulli, geometric, list_with_len, lognormal, named, normal, uniform, walk, with_nulls,
+    zipf,
 };
 use populate::arrow::DistributionArrow;
-use populate::dist::{map, range};
+use populate::dist::{derive, map, range};
 use populate::traits::Distribution;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -34,28 +34,21 @@ pub fn skewed() -> impl Distribution<B, Item = (i64, i64, i64)> {
 // == end
 
 // == scenario: correlated
-// map_rng is row-at-a-time: height and weight are generated row by row.
 pub const CORRELATED: [&str; 2] = ["height_cm", "weight_kg"];
 pub fn correlated() -> impl Distribution<B, Item = (f64, f64)> {
-    map_rng(normal(170.0, 10.0), |h, rng| {
-        (
-            h,
-            0.9 * h - 85.0 + 8.0 * rng.sample::<f64, _>(StandardNormal),
-        )
+    derive(normal(170.0, 10.0), |h, rng| {
+        0.9 * h - 85.0 + 8.0 * rng.sample::<f64, _>(StandardNormal)
     })
 }
 // == end
 
 // == scenario: dependent
-// CORE: can't chain `receipt` then `late` as two derives. A row of nested
-// tuples `((ship, receipt), late)` can't be pushed into the flat column
-// HList, so every dependent column must come out of one closure.
 pub const DEPENDENT: [&str; 3] = ["ship_day", "receipt_day", "late"];
 pub fn dependent() -> impl Distribution<B, Item = (i32, i32, bool)> {
-    map_rng(uniform(8035i32, 10_591), |ship, rng| {
-        let lag = rng.random_range(1..=30);
-        (ship, ship + lag, lag > 14)
-    })
+    let receipt = derive(uniform(8035i32, 10_591), |ship, rng| {
+        ship + rng.random_range(1..=30)
+    });
+    derive(receipt, |(ship, receipt), _| receipt - ship > 14)
 }
 // == end
 
@@ -65,11 +58,9 @@ const FIRST: [i32; 4] = [0, 12, 17, 20];
 const COUNT: [i32; 4] = [12, 5, 3, 8];
 pub const CONDITIONAL: [&str; 2] = ["region", "country"];
 pub fn conditional() -> impl Distribution<B, Item = (i32, i32)> {
-    map_rng(map(zipf(4, 1.0), |r: i64| r as i32 - 1), |r, rng| {
-        (
-            r,
-            FIRST[r as usize] + rng.random_range(0..COUNT[r as usize]),
-        )
+    let region = map(zipf(4, 1.0), |r: i64| r as i32 - 1);
+    derive(region, |r, rng| {
+        FIRST[r as usize] + rng.random_range(0..COUNT[r as usize])
     })
 }
 // == end
@@ -142,9 +133,9 @@ mod general {
     use populate::traits::{
         DefaultSink, Distribution, HCons, HNil, ListCol, SampleIter, Sink, collect_rows,
     };
+    use rand::Rng;
     use rand::distr::uniform::SampleUniform;
     use rand::distr::{Bernoulli, Distribution as RandDistribution, Uniform};
-    use rand::{Rng, RngCore};
     use rand_distr::{Geometric, LogNormal, Normal, Zipf};
     use std::marker::PhantomData;
     use std::sync::Arc;
@@ -247,66 +238,6 @@ mod general {
 
     pub fn bernoulli(p: f64) -> impl Distribution<B, Item = bool> {
         sampled(Bernoulli::new(p).expect("0 <= p <= 1"))
-    }
-
-    // ------------------------------------------------------------------
-    // map_rng: map with access to the RNG (row-at-a-time)
-    // ------------------------------------------------------------------
-
-    pub struct MapRng<D, F> {
-        source: D,
-        f: F,
-    }
-
-    pub fn map_rng<D, F, O>(source: D, f: F) -> MapRng<D, F>
-    where
-        D: Distribution<B>,
-        F: Fn(D::Item, &mut dyn RngCore) -> O,
-    {
-        MapRng { source, f }
-    }
-
-    pub struct MapRngIter<I, F> {
-        source: I,
-        f: F,
-    }
-
-    impl<I: SampleIter, F, O> SampleIter for MapRngIter<I, F>
-    where
-        F: Fn(I::Item, &mut dyn RngCore) -> O,
-    {
-        type Item = O;
-        fn next(&mut self, rng: &mut impl Rng) -> O {
-            let x = self.source.next(rng);
-            (self.f)(x, rng)
-        }
-    }
-
-    impl<D, F, O> Distribution<B> for MapRng<D, F>
-    where
-        D: Distribution<B>,
-        F: Fn(D::Item, &mut dyn RngCore) -> O + Clone,
-        O: DefaultSink<B>,
-        <O as DefaultSink<B>>::Sink: Sink<O>,
-    {
-        type Item = O;
-        type RowIter = MapRngIter<D::RowIter, F>;
-
-        fn row_iter(&mut self) -> Self::RowIter {
-            MapRngIter {
-                source: self.source.row_iter(),
-                f: self.f.clone(),
-            }
-        }
-
-        fn collect_into(
-            &mut self,
-            sink: <O as DefaultSink<B>>::Sink,
-            rng: &mut impl Rng,
-            n: usize,
-        ) -> <O as DefaultSink<B>>::Sink {
-            collect_rows(self.row_iter(), sink, rng, n)
-        }
     }
 
     // ------------------------------------------------------------------

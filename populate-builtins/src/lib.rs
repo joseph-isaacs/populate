@@ -1,5 +1,5 @@
-//! Built-in distributions: [`constant`], [`range`], [`map`], [`list`] and
-//! [`flatten`]. Tuples of distributions are implemented in `populate-core`
+//! Built-in distributions: [`constant`], [`range`], [`map`], [`list`],
+//! [`derive`] and [`flatten`]. Tuples of distributions are implemented in `populate-core`
 //! (orphan rule); their iterator types are re-exported here.
 
 use populate_core::traits::{
@@ -9,6 +9,9 @@ use populate_core::traits::{
 use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
+
+mod derive;
+pub use derive::{Column, Derive, DeriveIter, ReadRows, WithColumn, derive};
 
 pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
 // ============================================================================

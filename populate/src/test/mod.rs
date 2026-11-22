@@ -6,6 +6,7 @@ use std::rc::Rc;
 mod arrow;
 mod col;
 mod deque;
+mod derive;
 mod dist;
 mod row;
 mod scalar;

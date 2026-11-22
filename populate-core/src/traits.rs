@@ -230,6 +230,10 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
     fn reserve(&mut self, additional: usize) {
         self.0.reserve(additional);
     }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        self.0.push_n(value);
+    }
 }
 
 // Tuples into an HList of sinks (columnar) or a tuple of sinks (row tests).

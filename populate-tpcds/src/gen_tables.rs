@@ -3,7 +3,7 @@
 
 use crate::TableName;
 use crate::dat::{self, Encoding};
-use crate::fused::{self, Want};
+use crate::fused::{Channel, Want};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
@@ -88,13 +88,9 @@ macro_rules! tables {
                 batch: usize,
                 emit: &mut dyn FnMut(RecordBatch),
             ) {
-                let want = match self.name {
-                    TableName::StoreSales => Some(Want { sales: true, returns: false }),
-                    TableName::StoreReturns => Some(Want { sales: false, returns: true }),
-                    _ => None,
-                };
-                if let Some(want) = want {
-                    return fused::store_channel(&self.session, first, last, batch, want, &mut |_, b| emit(b));
+                if let Some((channel, sales)) = Channel::of(self.name) {
+                    let want = Want { sales, returns: !sales };
+                    return channel.run(&self.session, first, last, batch, want, &mut |_, b| emit(b));
                 }
                 match self.name {
                     $(TableName::$t => {
@@ -312,8 +308,8 @@ pub fn parquet_props() -> WriterPropertiesBuilder {
 /// [`DsTable::write_parquet`] for several tables, `tables[i]` to
 /// `writers[i]`, on one shared pool of `threads` threads (0 = all cores):
 /// every chunk of every table is one job, so small tables never leave cores
-/// idle. Put the biggest tables first. `store_sales` and `store_returns`
-/// with the same chunking are generated together, in one pass.
+/// idle. Put the biggest tables first. A sales table and its returns with
+/// the same chunking are generated together, in one pass.
 pub fn write_parquet_many<W: Write + Send>(
     tables: &[DsTable],
     writers: Vec<W>,
@@ -518,26 +514,38 @@ struct Unit<'a> {
     raw: bool,
 }
 
-/// Units for `tables`, in order; `store_sales` and `store_returns` with the
-/// same chunks and batch size become one unit at the first one's place.
+/// Units for `tables`, in order; a sales table and its returns with the
+/// same chunks and batch size become one unit (sales first) at the first
+/// one's place.
 fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
-    let find = |n| tables.iter().position(|t| t.name == n);
-    let pair = match (find(TableName::StoreSales), find(TableName::StoreReturns)) {
-        (Some(s), Some(r))
-            if tables[s].chunk_source_rows == tables[r].chunk_source_rows
-                && tables[s].source_rows == tables[r].source_rows
-                && tables[s].batch_size == tables[r].batch_size =>
-        {
-            Some((s, r))
+    // partner[i]: the table generated together with tables[i]
+    let mut partner = vec![None; tables.len()];
+    for (i, a) in tables.iter().enumerate() {
+        for (j, b) in tables.iter().enumerate() {
+            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
+                (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
+                _ => false,
+            };
+            if same_channel
+                && a.chunk_source_rows == b.chunk_source_rows
+                && a.source_rows == b.source_rows
+                && a.batch_size == b.batch_size
+            {
+                partner[i] = Some(j);
+            }
         }
-        _ => None,
-    };
+    }
+    // pair only tables that chose each other (a table listed twice pairs once)
+    let partner: Vec<Option<usize>> = (0..tables.len())
+        .map(|i| partner[i].filter(|&j| partner[j] == Some(i)))
+        .collect();
     let mut units = Vec::new();
-    for i in 0..tables.len() {
-        let idx = match pair {
-            Some((s, r)) if i == s.min(r) => vec![s, r],
-            Some((s, r)) if i == s.max(r) => continue,
-            _ => vec![i],
+    for (i, t) in tables.iter().enumerate() {
+        let idx = match partner[i] {
+            Some(j) if j < i => continue,
+            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
+            Some(j) => vec![j, i],
+            None => vec![i],
         };
         units.push(Unit { tables, idx, raw });
     }
@@ -557,20 +565,13 @@ impl MultiChunks for Unit<'_> {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
         if self.idx.len() == 2 {
-            // outputs in `idx` order; the channel emits sales as 0
-            let sales_first = t.name == TableName::StoreSales;
+            // `idx` is sales, returns: the channel's outputs 0 and 1
+            let (channel, _) = Channel::of(t.name).expect("a channel");
             let want = Want {
                 sales: true,
                 returns: true,
             };
-            return fused::store_channel(
-                &t.session,
-                first,
-                last,
-                t.batch_size,
-                want,
-                &mut |k, b| emit(if sales_first { k } else { 1 - k }, b),
-            );
+            return channel.run(&t.session, first, last, t.batch_size, want, emit);
         }
         if self.raw {
             t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
@@ -593,7 +594,7 @@ impl Chunks for DsTable {
     /// built from cache-sized generation batches.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        let direct = matches!(self.name, TableName::StoreSales | TableName::StoreReturns);
+        let direct = Channel::of(self.name).is_some();
         if direct || self.batch_size <= GEN_BATCH {
             return self.arrow_range(first, last, self.batch_size, emit);
         }

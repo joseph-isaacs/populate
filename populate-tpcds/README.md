@@ -114,41 +114,41 @@ command line.
 ## Performance
 
 SF 1 (19.6M rows, 24 tables) on a 4-core container, output to tmpfs. The
-container is noisy (±10% run to run), so these are bests of 2–3:
+container is noisy (±10% run to run, and it drifts), so both tools ran
+interleaved, best of 3:
 
 | output                   | threads | tpcgen-cli | populate-tpcds | speedup |
 |--------------------------|--------:|-----------:|---------------:|--------:|
-| `.dat`                   | 4       | 2.60 s     | 1.45 s         | 1.8x    |
-| Parquet (snappy)         | 4       | 2.51 s     | 1.36 s         | 1.8x    |
-| `.dat`                   | 1       | 8.25 s     | 4.18 s         | 2.0x    |
-| Parquet (snappy)         | 1       | 8.03 s     | 4.58 s         | 1.8x    |
-| Arrow only (`--format none`) | 4   |            | 0.71 s         |         |
+| `.dat`                   | 4       | 2.65 s     | 1.05 s         | 2.5x    |
+| Parquet (snappy)         | 4       | 3.41 s     | 1.23 s         | 2.8x    |
+| `.dat`                   | 1       | 8.70 s     | 3.62 s         | 2.4x    |
+| Parquet (snappy)         | 1       | 10.32 s    | 4.29 s         | 2.4x    |
+| Arrow only (`--format none`) | 4   |            | 0.72 s         |         |
 
-Parquet files: 376 MB vs tpcgen-cli's 399 MB. The Parquet rows predate
-direct integer encoding, which took 13–15% more off in interleaved runs
-(1 thread ~5.5 → ~4.8 s, 4 threads ~1.59 → ~1.37 s). SF 10 (192M rows), 4
-threads, output to disk, before the fused store channel: `.dat` 15.7 s vs
-23.3 s, Parquet 12.9 s vs 23.5 s.
+Parquet files: 376 MB vs tpcgen-cli's 399 MB. SF 10 (192M rows), 4
+threads, output to disk, measured before the fused channels and direct
+Parquet encoding: `.dat` 15.7 s vs 23.3 s, Parquet 12.9 s vs 23.5 s.
 
 ### Where the time goes
 
 `cargo run -p populate-tpcds --release --example stages` times each stage
 per table on one thread. Summed over the tables, at SF 1:
 
-| stage                                              | time   |
-|----------------------------------------------------|-------:|
-| tpcdsgen row generation (all but the store tables) | ~1.1 s |
-| tpcdsgen rows → Arrow (tpcdsgen-arrow)             | ~0.5 s |
-| store channel, generated straight into columns     | ~0.5 s |
-| Arrow → `.dat` text                                | ~1.5 s |
-| Arrow → Parquet                                    | ~2.4 s |
+| stage                                                     | time    |
+|-----------------------------------------------------------|--------:|
+| the six sales and returns tables, fused, into columns     | ~1.1 s  |
+| the other 18 tables: tpcdsgen row generation              | ~0.55 s |
+| the other 18 tables: rows → Arrow (tpcdsgen-arrow)        | ~0.3 s  |
+| Arrow → `.dat` text                                       | ~1.3 s  |
+| Arrow → Parquet                                           | ~2.2 s  |
 
 tpcdsgen is rows all the way down: each generator builds a row struct
 (text as owned `String`s), and tpcdsgen-arrow buffers 2Ki of them and
 walks the buffer once per column. Building columns directly is not much
 cheaper by itself: the store port fills `store_sales`' columns in about the
-time tpcdsgen-arrow converts them (~150 ms over 216 ms of generation). Its
-win came from not replaying sales for returns and from skipping seeds.
+time tpcdsgen-arrow converts them (~150 ms over 216 ms of generation). The
+fused channels win by not replaying sales for returns and by skipping
+seeds.
 
 tpcgen-cli runs the same row generation, so the difference is in the
 rest:
@@ -160,17 +160,18 @@ rest:
   and ids (~40% of encoding time, no smaller files).
 - **Cores:** it doesn't split tables under 1M source rows.
 
-### The store channel, fused
+### The sales channels, fused
 
-`store_sales` and `store_returns` come from one loop (`src/fused.rs`): a
-port of tpcdsgen's store sales and returns generators (Apache-2.0) built on
-its public stream and key helpers, pushing values straight into Arrow
-columns. tpcdsgen's returns generator replays every sales line item, so the
-two tables cost the sales work twice. Together they now take ~0.6x the time
-(tested equal to tpcdsgen-arrow for both tables). When only one is asked
-for, the same loop skips the other's work.
+Each sales table and its returns (`store_`, `catalog_`, `web_`) come from
+one loop (`src/fused.rs`): ports of tpcdsgen's sales and returns
+generators (Apache-2.0) built on its public stream and key helpers,
+pushing values straight into Arrow columns. tpcdsgen's returns generators
+replay every sales line item, so each pair cost the sales work twice.
+Each channel is tested equal to tpcdsgen-arrow for both tables, together
+and alone; when only one table is asked for, the loop skips the other's
+work. Fusing catalog and web took a further ~0.35 s off a one-thread run.
 
-That loop also skips dsdgen's end-of-row seed burning faster
+The loops also burn dsdgen's end-of-row seeds faster
 (`src/seeds.rs`). Every column gets a fixed budget of random draws per row,
 and tpcdsgen burns the unused ones one draw at a time: ~100 wasted draws per
 ticket. The stream is a Lehmer generator, so burning `k` draws is one
@@ -178,9 +179,6 @@ multiply by `16807^k mod (2^31 - 1)`.
 
 ### What's left
 
-- **The catalog and web channels.** They could be fused the same way:
-  `catalog_returns` and `web_returns` cost ~0.35 s of generation on one
-  thread.
 - **tpcdsgen's other generators.** They still burn seeds draw by draw.
 - **Parquet encoding.** Still the largest stage: text columns go through
   arrow-rs, and Snappy.

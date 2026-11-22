@@ -239,13 +239,22 @@ fn parquet_rows(path: &Path) -> u64 {
         .map_or(0, |r| r.metadata().file_metadata().num_rows() as u64)
 }
 
+/// `\n` bytes in `buf`. Summed in `u8` lanes, 255 bytes at a time, so it
+/// vectorizes (~10x `filter().count()`, which went a byte at a time and was
+/// 13% of a one-thread `.dat` run's instructions).
+fn newlines(buf: &[u8]) -> u64 {
+    buf.chunks(255)
+        .map(|c| c.iter().fold(0u8, |n, &b| n + u8::from(b == b'\n')) as u64)
+        .sum()
+}
+
 /// A writer that counts the lines written through it.
 struct Lines<W>(W, u64);
 
 impl<W: Write> Write for Lines<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.0.write(buf)?;
-        self.1 += buf[..n].iter().filter(|&&c| c == b'\n').count() as u64;
+        self.1 += newlines(&buf[..n]);
         Ok(n)
     }
 

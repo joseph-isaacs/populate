@@ -3,8 +3,10 @@
 //! includes the stages before it), in ms, best of 3.
 //!
 //! `cargo run -p populate-tpcds --release --example stages`
+use populate_table::Chunks;
 use populate_tpcds::{Encoding, TableName, Tpcds};
 use std::hint::black_box;
+use std::io::sink;
 use std::time::Instant;
 use tpcdsgen::config::{SessionBuilder, Table as T};
 use tpcdsgen::row::*;
@@ -74,13 +76,19 @@ fn main() {
         let tb = ds.table(t);
         let mut n = 0;
         tb.for_each_batch(1, |b| n += b.num_rows());
-        let a = best(|| tb.for_each_batch(1, |b| drop(black_box(b))));
-        let d = best(|| {
-            drop(black_box(
-                tb.write_dat(Vec::new(), 1, Encoding::Utf8).unwrap(),
-            ))
+        // Batches dropped as made: `for_each_batch` holds a whole chunk to
+        // hand it over in order, which costs page faults, not generation.
+        let a = best(|| {
+            for i in 0..tb.num_chunks() {
+                tb.chunk(i, &mut |b| drop(black_box(b)));
+            }
         });
-        let p = best(|| drop(black_box(tb.write_parquet(Vec::new(), 1, None).unwrap())));
+        let d = best(|| {
+            black_box(tb.write_dat(sink(), 1, Encoding::Utf8).unwrap());
+        });
+        let p = best(|| {
+            black_box(tb.write_parquet(sink(), 1, None).unwrap());
+        });
         for (x, v) in tot.iter_mut().zip([r, a, d, p]) {
             *x += v;
         }

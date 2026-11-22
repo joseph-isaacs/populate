@@ -117,12 +117,20 @@ threads, output to disk, before the fused store channel: `.dat` 15.7 s vs
 `cargo run -p populate-tpcds --release --example stages` times each stage
 per table on one thread. Summed over the tables, at SF 1:
 
-| stage                        | time   |
-|------------------------------|-------:|
-| tpcdsgen row generation      | ~1.7 s |
-| rows → Arrow                 | ~0.9 s |
-| Arrow → `.dat` text          | ~1.3 s |
-| Arrow → Parquet (arrow-rs)   | ~2.4 s |
+| stage                                              | time   |
+|----------------------------------------------------|-------:|
+| tpcdsgen row generation (all but the store tables) | ~1.1 s |
+| tpcdsgen rows → Arrow (tpcdsgen-arrow)             | ~0.5 s |
+| store channel, generated straight into columns     | ~0.5 s |
+| Arrow → `.dat` text                                | ~1.5 s |
+| Arrow → Parquet (arrow-rs)                         | ~2.7 s |
+
+tpcdsgen is rows all the way down: each generator builds a row struct
+(text as owned `String`s), and tpcdsgen-arrow buffers 2Ki of them and
+walks the buffer once per column. Building columns directly is not much
+cheaper by itself: the store port fills `store_sales`' columns in about the
+time tpcdsgen-arrow converts them (~150 ms over 216 ms of generation). Its
+win came from not replaying sales for returns and from skipping seeds.
 
 tpcgen-cli runs the same row generation, so the difference is in the
 rest:

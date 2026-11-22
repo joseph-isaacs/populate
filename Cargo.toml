@@ -5,10 +5,12 @@ members = [
     "populate-builtins",
     "populate-sink-arrow",
     "populate-sink-parquet",
+    "populate-table",
+    "populate-tpcds",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
-# (it pulls in a second arrow/parquet major version). Run it with
+# (benchmark-only dependencies). Run it with
 # `cargo bench -p populate-bench` or `cargo run -p populate-bench --release`.
 default-members = [
     "populate",
@@ -16,6 +18,8 @@ default-members = [
     "populate-builtins",
     "populate-sink-arrow",
     "populate-sink-parquet",
+    "populate-table",
+    "populate-tpcds",
 ]
 resolver = "2"
 
@@ -28,15 +32,18 @@ license = "MIT"
 [workspace.dependencies]
 divan = "0.1"
 rand = "0.9"
-arrow-array = "57"
-arrow-schema = "57"
-arrow-buffer = "57"
-parquet = { version = "57", default-features = false }
+arrow-array = "60"
+arrow-schema = "60"
+arrow-buffer = "60"
+arrow-cast = "60"
+parquet = { version = "60", default-features = false }
 populate = { path = "populate" }
 populate-core = { path = "populate-core" }
 populate-builtins = { path = "populate-builtins" }
 populate-sink-arrow = { path = "populate-sink-arrow" }
 populate-sink-parquet = { path = "populate-sink-parquet" }
+populate-table = { path = "populate-table" }
+populate-tpcds = { path = "populate-tpcds" }
 
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
 # (populate is generic, so everything is monomorphised into the bench crate

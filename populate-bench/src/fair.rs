@@ -12,6 +12,7 @@
 //!   3 tpchgen streams it needs, and the populate side computing the same
 //!   `price(partkey) * quantity` derivation.
 
+use crate::lanes::{A, LANES, M, mulmod, powmod};
 use crate::{
     BATCH, LINES_PER_ORDER, Output, Uniform, batch_bytes, batch_bytes_60, numeric_schema_60, rng,
     uniform,
@@ -369,12 +370,135 @@ where
         _rng: &mut impl Rng,
         n: usize,
     ) -> HCons<Vec<T>, HNil> {
-        sink.0.reserve(n);
-        for _ in 0..n {
-            sink.0.push(T::from(self.g.next_value()));
-        }
+        let g = &mut self.g;
+        sink.0.extend((0..n).map(|_| T::from(g.next_value())));
         sink
     }
+}
+
+/// [`Lcg`] with the stream split into [`LANES`] interleaved chains (lane
+/// `l` holds draw `i + l`, each steps by `16807^LANES`), so a column is
+/// `LANES` independent multiply chains instead of one serial one and the
+/// loop vectorises. The values are [`Lcg`]'s, in the same order (tested);
+/// the bounded mapping is tpchgen's own f64 formula, so it is exact for any
+/// range.
+pub struct LaneLcg<T> {
+    /// The next `LANES` draws.
+    lanes: [u64; LANES],
+    step: u64,
+    lo: i32,
+    range: f64,
+    /// Values made but not yet handed out (a batch that is not a multiple
+    /// of `LANES` leaves some).
+    spare: Vec<i32>,
+    _t: PhantomData<T>,
+}
+
+pub fn lane_lcg<T>(seed: i64, lo: i32, hi: i32) -> LaneLcg<T> {
+    let mut lanes = [0; LANES];
+    let mut x = seed as u64;
+    for l in &mut lanes {
+        x = mulmod(x, A);
+        *l = x;
+    }
+    LaneLcg {
+        lanes,
+        step: powmod(A, LANES as u64),
+        lo,
+        range: (hi - lo + 1) as f64,
+        spare: Vec::new(),
+        _t: PhantomData,
+    }
+}
+
+impl<T: From<i32>> LaneLcg<T> {
+    #[inline(always)]
+    fn chunk(&mut self) -> [i32; LANES] {
+        let (lo, range, step) = (self.lo, self.range, self.step);
+        let mut out = [0; LANES];
+        for (o, x) in out.iter_mut().zip(&mut self.lanes) {
+            // `RowRandomInt::next_int`
+            *o = lo + ((*x as i32 as f64 / M as f64) * range) as i32;
+            *x = mulmod(*x, step);
+        }
+        out
+    }
+
+    fn fill(&mut self, out: &mut Vec<T>, n: usize) {
+        let take = n.min(self.spare.len());
+        out.extend(self.spare.drain(..take).map(T::from));
+        let n = n - take;
+        for _ in 0..n / LANES {
+            let c = self.chunk();
+            out.extend(c.map(T::from));
+        }
+        if !n.is_multiple_of(LANES) {
+            let c = self.chunk();
+            out.extend(c[..n % LANES].iter().map(|&v| T::from(v)));
+            self.spare.extend_from_slice(&c[n % LANES..]);
+        }
+    }
+}
+
+impl<T> Distribution<ArrowBackend> for LaneLcg<T>
+where
+    T: From<i32> + DefaultSink<ArrowBackend, Sink = HCons<Vec<T>, HNil>>,
+{
+    type Item = T;
+    type RowIter = LcgIter<T>;
+
+    fn row_iter(&mut self) -> LcgIter<T> {
+        unimplemented!("LaneLcg is columnar only")
+    }
+
+    fn collect_into(
+        &mut self,
+        mut sink: HCons<Vec<T>, HNil>,
+        _rng: &mut impl Rng,
+        n: usize,
+    ) -> HCons<Vec<T>, HNil> {
+        sink.0.reserve(n);
+        self.fill(&mut sink.0, n);
+        sink
+    }
+}
+
+/// [`p2_uniform_tpch_rng`] with [`LaneLcg`] leaves: the same values.
+pub fn p2_uniform_tpch_rng_lanes(n: usize) -> Output {
+    let mut d = (
+        (
+            range(1i64, 1),
+            lane_lcg::<i64>(1808217256, 1, 200_000),
+            lane_lcg::<i64>(2095021727, 1, 10_000),
+            lane_lcg::<i32>(1434868289, 1, 7),
+        ),
+        (
+            lane_lcg::<i64>(209208115, 1, 50),
+            lane_lcg::<i64>(1, 90_100, 10_494_950),
+            lane_lcg::<i64>(554590007, 0, 10),
+            lane_lcg::<i64>(721958466, 0, 8),
+        ),
+        (
+            lane_lcg::<i32>(1769349045, D1992 + 1, D1992 + 2405),
+            lane_lcg::<i32>(904914315, D1992 + 30, D1992 + 2495),
+            lane_lcg::<i32>(373135028, D1992 + 2, D1992 + 2435),
+        ),
+    );
+    let mut r = rng();
+    let mut out = Output { rows: 0, bytes: 0 };
+    let mut schema = None;
+    for len in chunks(n) {
+        let b = match &schema {
+            None => d.collect_record_batch(&mut r, len),
+            Some(s) => d.collect_record_batch_with(s, &mut r, len),
+        };
+        let b = b.expect("batch");
+        schema.get_or_insert_with(|| b.schema());
+        out.rows += b.num_rows();
+        out.bytes += batch_bytes(&b);
+        black_box(b);
+    }
+    out
 }
 
 /// The benchmarked populate workload (10 independent uniform columns + key),
@@ -402,8 +526,14 @@ pub fn p2_uniform_tpch_rng(n: usize) -> Output {
     );
     let mut r = rng();
     let mut out = Output { rows: 0, bytes: 0 };
+    let mut schema = None;
     for len in chunks(n) {
-        let b = d.collect_record_batch(&mut r, len).expect("batch");
+        let b = match &schema {
+            None => d.collect_record_batch(&mut r, len),
+            Some(s) => d.collect_record_batch_with(s, &mut r, len),
+        };
+        let b = b.expect("batch");
+        schema.get_or_insert_with(|| b.schema());
         out.rows += b.num_rows();
         out.bytes += batch_bytes(&b);
         black_box(b);
@@ -434,6 +564,23 @@ mod tests {
         tpchgen_init();
         let n = 100_000;
         assert_eq!(tpch_list_direct_batch(n), tpch_list_batch(n));
+    }
+
+    #[test]
+    fn lane_lcg_matches_lcg() {
+        let mut r = rng();
+        for (lo, hi) in [(1, 7), (90_100, 10_494_950), (D1992 + 1, D1992 + 2405)] {
+            let (mut a, mut b) = (
+                lcg::<i64>(1808217256, lo, hi),
+                lane_lcg::<i64>(1808217256, lo, hi),
+            );
+            // uneven batches, so lanes straddle them
+            for n in [1, 15, 16, 17, 8192, 5, 1000, 33] {
+                let want = a.collect_into(HCons(Vec::new(), HNil), &mut r, n);
+                let got = b.collect_into(HCons(Vec::new(), HNil), &mut r, n);
+                assert_eq!(got, want, "{lo}..={hi}, batch {n}");
+            }
+        }
     }
 
     #[test]

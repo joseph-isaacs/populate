@@ -95,8 +95,8 @@ tpchgen uses its `part`/`part_count` support, which skips its RNGs ahead to
 the partition's first row. populate gives each thread a contiguous row range,
 starting the orderkey `range` at the partition's first row, plus its own RNG
 seed. populate generates exactly as many rows as tpchgen. tpchgen's
-partitioned runs return exactly the spec row counts (59,986,052 at SF10 and
-600,037,902 at SF100).
+partitioned runs return exactly the spec row counts (59,986,052 at SF10,
+600,037,902 at SF100 and 5,999,989,709 at SF1000).
 
 Same VM (4 vCPU, 15 GiB). Each row below is one process, run once. "Peak RSS"
 is the process's `VmHWM`, which for tpchgen includes its 300 MiB text pool.
@@ -113,6 +113,9 @@ Building the pool (~1.1 s) is excluded from the time.
 | populate (11 numeric cols) | 100 | 4 | 600,037,902 | 4.24 s | 141.7 M | 40.31 | 9744 | 5 |
 | tpchgen -> 11 numeric cols | 100 | 4 | 600,037,902 | 12.33 s | 48.7 M | 40.31 | 3347 | 310 |
 | tpchgen-arrow full lineitem | 100 | 4 | 600,037,902 | 40.93 s | 14.7 M | 127.52 | 3191 | 314 |
+| populate (11 numeric cols) | 1000 | 4 | 5,999,989,709 | 41.62 s | 144.2 M | 403.05 | 9917 | 5 |
+| tpchgen -> 11 numeric cols | 1000 | 4 | 5,999,989,709 | 127.45 s | 47.1 M | 403.05 | 3238 | 310 |
+| tpchgen-arrow full lineitem | 1000 | 4 | 5,999,989,709 | 426.62 s | 14.1 M | 1275.15 | 3061 | 314 |
 
 On the numeric columns, populate is ~3x faster than tpchgen at both scale
 factors. Both scale almost linearly to 4 threads. Peak memory doesn't depend

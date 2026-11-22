@@ -8,6 +8,7 @@ Arrow and Parquet output) against [tpchgen](https://crates.io/crates/tpchgen)
 cargo bench -p populate-bench            # divan: time, rows/s, bytes/s, allocs, max live heap
 cargo run -p populate-bench --release    # Markdown table incl. peak heap (args: [rows] [repeats])
 cargo test -p populate-bench             # sanity checks: shapes/sizes match on both sides
+cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|populate> <sf> [threads]
 ```
 
 The crate is not in the workspace `default-members` because tpchgen 4 pulls in
@@ -84,6 +85,38 @@ as the result, not the absolute numbers.
 |---|---:|---:|---:|---:|
 | tpchgen-arrow `LineItemArrow` -> Arrow | 221.8 ms | 4.7 M | 1030 (228 MiB) | 3.1 MB |
 | tpchgen-arrow `LineItemArrow` -> ArrowWriter | 418.6 ms | 2.5 M | 327 (137 MiB file) | 147.3 MB |
+
+## Full scale: SF10 and SF100, streamed
+
+`src/bin/scale.rs` generates the whole `lineitem` table as 8192-row Arrow
+batches and drops each batch once it's made, so memory stays flat at any
+scale factor. With several threads, each thread generates one partition.
+tpchgen uses its `part`/`part_count` support, which skips its RNGs ahead to
+the partition's first row. populate gives each thread a contiguous row range,
+starting the orderkey `range` at the partition's first row, plus its own RNG
+seed. populate generates exactly as many rows as tpchgen. tpchgen's
+partitioned runs return exactly the spec row counts (59,986,052 at SF10 and
+600,037,902 at SF100).
+
+Same VM (4 vCPU, 15 GiB). Each row below is one process, run once. "Peak RSS"
+is the process's `VmHWM`, which for tpchgen includes its 300 MiB text pool.
+Building the pool (~1.1 s) is excluded from the time.
+
+| workload | SF | threads | rows | time | rows/s | output GiB | MiB/s | peak RSS MiB |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| populate (11 numeric cols) | 10 | 1 | 59,986,052 | 1.58 s | 37.9 M | 4.03 | 2605 | 3 |
+| tpchgen -> 11 numeric cols | 10 | 1 | 59,986,052 | 4.78 s | 12.6 M | 4.03 | 864 | 304 |
+| tpchgen-arrow full lineitem | 10 | 1 | 59,986,052 | 14.74 s | 4.1 M | 12.75 | 886 | 305 |
+| populate (11 numeric cols) | 10 | 4 | 59,986,052 | 0.49 s | 121.3 M | 4.03 | 8346 | 5 |
+| tpchgen -> 11 numeric cols | 10 | 4 | 59,986,052 | 1.21 s | 49.4 M | 4.03 | 3397 | 309 |
+| tpchgen-arrow full lineitem | 10 | 4 | 59,986,052 | 3.79 s | 15.8 M | 12.75 | 3442 | 314 |
+| populate (11 numeric cols) | 100 | 4 | 600,037,902 | 4.24 s | 141.7 M | 40.31 | 9744 | 5 |
+| tpchgen -> 11 numeric cols | 100 | 4 | 600,037,902 | 12.33 s | 48.7 M | 40.31 | 3347 | 310 |
+| tpchgen-arrow full lineitem | 100 | 4 | 600,037,902 | 40.93 s | 14.7 M | 127.52 | 3191 | 314 |
+
+On the numeric columns, populate is ~3x faster than tpchgen at both scale
+factors. Both scale almost linearly to 4 threads. Peak memory doesn't depend
+on SF for either: about one batch per thread, plus tpchgen's text pool.
 
 ## Reading the numbers
 

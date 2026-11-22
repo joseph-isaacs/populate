@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+default-run = "populate-bench"
 
 [dependencies]
 populate = { workspace = true, features = ["parquet"] }

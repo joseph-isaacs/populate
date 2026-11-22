@@ -176,9 +176,18 @@ pub type LineItemNumeric = ((i64, i64, i64, i32), (i64, i64, i64, i64), (i32, i3
 
 /// The 11 numeric lineitem columns (see the module docs).
 pub fn lineitem_numeric() -> impl Distribution<ArrowBackend, Item = LineItemNumeric> {
+    lineitem_numeric_from(1)
+}
+
+/// [`lineitem_numeric`] with orderkeys starting at `first_key`. A partition
+/// that starts at row `k` skips ahead in O(1): only the key range moves, and
+/// the uniform columns just need their own RNG seed.
+pub fn lineitem_numeric_from(
+    first_key: i64,
+) -> impl Distribution<ArrowBackend, Item = LineItemNumeric> {
     (
         (
-            range(1i64, 1),
+            range(first_key, 1),
             uniform(1i64, 200_000),
             uniform(1i64, 10_000),
             uniform(1i32, 7),
@@ -210,11 +219,11 @@ pub fn rng() -> SmallRng {
     SmallRng::seed_from_u64(42)
 }
 
-fn batch_bytes(b: &RecordBatch) -> usize {
+pub fn batch_bytes(b: &RecordBatch) -> usize {
     b.columns().iter().map(|c| c.get_array_memory_size()).sum()
 }
 
-fn batch_bytes_60(b: &RecordBatch60) -> usize {
+pub fn batch_bytes_60(b: &RecordBatch60) -> usize {
     b.columns().iter().map(|c| c.get_array_memory_size()).sum()
 }
 
@@ -344,7 +353,7 @@ pub fn tpch_full_arrow(n: usize) -> Output {
     out
 }
 
-fn numeric_schema_60() -> SchemaRef60 {
+pub fn numeric_schema_60() -> SchemaRef60 {
     let i64f = |n: &str| Field60::new(n, DataType60::Int64, false);
     let i32f = |n: &str| Field60::new(n, DataType60::Int32, false);
     Arc::new(Schema60::new(vec![
@@ -364,7 +373,7 @@ fn numeric_schema_60() -> SchemaRef60 {
 
 /// tpchgen rows -> the same 11 numeric columns populate makes, written into
 /// exactly-sized `Vec`s and moved into Arrow (the cheapest row->column path).
-fn tpch_numeric_batch(rows: &[LineItem<'_>], schema: &SchemaRef60) -> RecordBatch60 {
+pub fn tpch_numeric_batch(rows: &[LineItem<'_>], schema: &SchemaRef60) -> RecordBatch60 {
     fn col64(rows: &[LineItem<'_>], f: impl Fn(&LineItem<'_>) -> i64) -> ArrayRef60 {
         Arc::new(Int64Array60::from(rows.iter().map(f).collect::<Vec<_>>()))
     }

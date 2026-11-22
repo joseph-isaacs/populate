@@ -30,6 +30,7 @@
 //! pays for them; that is the real cost of getting these columns from it.
 
 pub mod fair;
+pub mod lanes;
 
 use arrow_array::builder::{Int32Builder, Int64Builder};
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};

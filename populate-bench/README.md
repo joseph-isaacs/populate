@@ -45,6 +45,37 @@ After an adversarial review, the honest summary is:
   values over the same ranges. The `Uniform` leaf is defined in this crate,
   because populate doesn't ship a random leaf yet.
 
+## Vectorised TPC-H RNG: same bytes, ~1.8x faster
+
+[`lanes::tpch_lanes_numeric`](src/lanes.rs) generates the 11 numeric
+lineitem columns **byte-identical to tpchgen** (tested against
+`LineItemGenerator`), column by column. Every lineitem stream reserves 7
+draws per order, so a value's draw index depends only on (order, line), and
+the TPC-H LCG can jump to any index. The draws are split over 16 independent
+LCG chains that the compiler vectorises, with the modulo and the bounded-int
+mapping done with shifts and adds instead of divides. The integer mapping
+equals tpchgen's f64 one for every seed and every range used: checked
+exhaustively (`exhaustive_scale_matches_f64`, `--ignored`).
+
+Same VM, `numeric_arrow` group, median of 2 interleaved runs (ms):
+
+| workload | x86-64 (default) | x86-64-v3 (AVX2) |
+|---|---:|---:|
+| tpchgen rows -> Arrow (public API) | 91.9 | 79.0 |
+| tpchgen RNGs + row logic, numeric only | 45.5 | 41.8–67.3 |
+| **lane-parallel tpchgen RNG, same output** | **25.2** | **13.8–18.0** |
+| populate, xoshiro uniforms (not TPC-H values) | 24.6 | 24.2 |
+| hand-written row loop, xoshiro | 29.9 | 27.5 |
+
+So the RNG gap from the summary below can be closed without giving up
+spec-correct output: like-for-like it is now ~1.8x at the default target
+and ~2.5–3x with AVX2. This is where column-at-a-time generation actually
+pays: a row loop has to step each stream serially.
+
+Not done yet: the 4 string streams (their draw counts vary per row, so they
+need a prefix pass first), and it is a bench-crate prototype hard-wired to
+SF 10, not a populate API.
+
 ## Workloads
 
 All workloads live in `src/lib.rs`; each builds ~1M rows (`1 << 20`) from scratch.

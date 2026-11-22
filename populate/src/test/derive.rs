@@ -136,3 +136,20 @@ fn derive_as_list_elements() {
     assert_eq!(c.values.0, vec![0, 1, 2, 3]);
     assert_eq!(c.values.1.0, vec![0, 1, 4, 9]);
 }
+
+#[test]
+fn derive_rng_is_deterministic_for_a_seed() {
+    let collect = |seed| {
+        make_noisy().collect_flat(
+            (Vec::new(), Vec::new()),
+            &mut SmallRng::seed_from_u64(seed),
+            50,
+        )
+    };
+    let (a1, b1) = collect(7);
+    let (a2, b2) = collect(7);
+    let (_, b3) = collect(8);
+    assert_eq!(a1, a2);
+    assert_eq!(b1, b2);
+    assert_ne!(b1, b3);
+}

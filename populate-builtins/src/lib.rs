@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::ops::Add;
 
 mod derive;
-pub use derive::{Column, Derive, DeriveIter, ReadRows, WithColumn, derive};
+pub use derive::{Column, Derive, DeriveIter, DeriveRng, ReadRows, WithColumn, derive};
 
 pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
 // ============================================================================

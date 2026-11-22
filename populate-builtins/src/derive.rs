@@ -13,13 +13,17 @@
 //!                |(s, r), _| r - s > 14);       // Item = (i32, i32, bool)
 //! ```
 //!
+//! The closure's RNG is a concrete [`DeriveRng`] seeded from the caller's
+//! RNG, so draws inline instead of going through `dyn RngCore`.
+//!
 //! Parents must be made of scalar columns (up to 3 before the new one), so
 //! their rows can be read back from the sink.
 
 use populate_core::traits::{
     Backend, DefaultSink, Distribution, HAppend, HCons, HNil, SampleIter, Sink,
 };
-use rand::{Rng, RngCore};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use std::collections::VecDeque;
 
 // ============================================================================
@@ -146,6 +150,13 @@ pub struct Derive<P, F> {
     pub f: F,
 }
 
+/// The RNG a [`derive`] closure gets: a concrete, small, fast generator, so
+/// the closure's draws inline (no `dyn` call per value). It's seeded from the
+/// caller's RNG once per `collect_into` (or once per row iterator), so output
+/// stays deterministic for a seeded caller RNG, but the derived column draws
+/// from this child stream rather than the caller's RNG directly.
+pub type DeriveRng = SmallRng;
+
 /// Every column of `parent`, then `f(row, rng)` as one more column.
 /// See the module docs.
 ///
@@ -153,7 +164,7 @@ pub struct Derive<P, F> {
 /// a plain closure `|row, rng| ..` higher-ranked over the RNG borrow.
 pub fn derive<P, R, U, F>(parent: P, f: F) -> Derive<P, F>
 where
-    F: Fn(R, &mut dyn RngCore) -> U,
+    F: Fn(R, &mut DeriveRng) -> U,
 {
     Derive { parent, f }
 }
@@ -161,19 +172,21 @@ where
 pub struct DeriveIter<I, F> {
     parent: I,
     f: F,
+    rng: Option<DeriveRng>,
 }
 
 impl<I, F, U> SampleIter for DeriveIter<I, F>
 where
     I: SampleIter,
     I::Item: WithColumn<U> + Copy,
-    F: Fn(I::Item, &mut dyn RngCore) -> U,
+    F: Fn(I::Item, &mut DeriveRng) -> U,
 {
     type Item = <I::Item as WithColumn<U>>::Out;
 
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
         let row = self.parent.next(rng);
-        let u = (self.f)(row, rng);
+        let child = self.rng.get_or_insert_with(|| DeriveRng::from_rng(rng));
+        let u = (self.f)(row, child);
         row.with(u)
     }
 }
@@ -190,7 +203,7 @@ where
     SinkOf<B, P::Item>: ReadRows<Row = P::Item> + HAppend<SinkOf<B, U>>,
     <P::Item as WithColumn<U>>::Out:
         DefaultSink<B, Sink = <SinkOf<B, P::Item> as HAppend<SinkOf<B, U>>>::Output>,
-    F: Fn(P::Item, &mut dyn RngCore) -> U + Clone,
+    F: Fn(P::Item, &mut DeriveRng) -> U + Clone,
 {
     type Item = <P::Item as WithColumn<U>>::Out;
     type RowIter = DeriveIter<P::RowIter, F>;
@@ -199,6 +212,7 @@ where
         DeriveIter {
             parent: self.parent.row_iter(),
             f: self.f.clone(),
+            rng: None,
         }
     }
 
@@ -215,7 +229,8 @@ where
         // 2. one pass over what it just wrote
         col.reserve(n);
         let f = &self.f;
-        col.push_n(parent.rows_from(start).map(|row| f(row, rng)));
+        let mut child = DeriveRng::from_rng(rng);
+        col.push_n(parent.rows_from(start).map(|row| f(row, &mut child)));
         parent.append(col)
     }
 }

@@ -50,9 +50,11 @@ let receipt = derive(uniform(D1992, D1998), |ship, rng| ship + rng.random_range(
 derive(receipt, |(ship, receipt), _| receipt - ship > 14) // Item = (i32, i32, bool)
 ```
 
-Closures need no type annotations. Limits for now: the parent must be up to
-3 scalar columns (list parents can't be read back yet), and the RNG reaches
-the closure as `&mut dyn RngCore`.
+Closures need no type annotations. The closure's RNG is a concrete
+`DeriveRng` (`SmallRng`) seeded once per `collect_into` from the caller's
+RNG, so draws inline instead of costing a `dyn RngCore` call each. Limit for
+now: the parent must be up to 3 scalar columns (list parents can't be read
+back yet).
 
 A `map` returning nested rows such as `((ship, receipt), late)` still
 doesn't compile, because nested row tuples can't be pushed into the flat
@@ -65,10 +67,13 @@ column HList. `derive` avoids that by keeping rows flat.
 |---|---:|---:|---:|
 | 2 columns, `b = 3a + 1` | 48.5 µs | 74.0 µs | 73.7 µs |
 | 3 columns, chained | 74.7 µs | 108.1 µs | 108.9 µs |
-| 2 columns, `b = a + rng.random_range(0..8)` | 208.2 µs | 217.4 µs | n/a |
+| 2 columns, `b = a + rng.random_range(0..8)` | 97.1 µs | 108.1 µs | n/a |
 
-So `derive` is about 1.5x faster than row by row on arithmetic. With RNG
-draws it's only 4% faster, because the `dyn RngCore` call dominates. A first
+For the RNG case, hand-written loops into the same pre-allocated `Vec`s take
+70.0 µs with a concrete `SmallRng` and 168.7 µs through `&mut dyn RngCore`.
+`derive` with `dyn RngCore` took 208 µs before switching to `DeriveRng`.
+
+So `derive` is about 1.5x faster than row by row on arithmetic. A first
 naive version (index + `push` per row) was *slower* than row mode, so the
 slice-iterator + `extend` path matters. It needed one small core change:
 `HCons<S, HNil>` now forwards `push_n` to its sink.

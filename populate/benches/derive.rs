@@ -7,8 +7,8 @@ use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
 use populate::dist::{derive, map, range};
 use populate::traits::{Distribution, DistributionExt, SampleIter, Sink, VecBackend};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::{SmallRng, StdRng};
+use rand::{Rng, RngCore, SeedableRng};
 use std::mem::take;
 
 fn main() {
@@ -164,4 +164,33 @@ fn noisy_derive_columnar(b: Bencher) {
 #[divan::bench]
 fn noisy_derive_rows(b: Bencher) {
     rows::<_, V2>(b, d_noisy);
+}
+
+// Hand-written floors for the noisy case: one Vec pair, a plain loop.
+
+#[divan::bench]
+fn noisy_handwritten_concrete_rng(b: Bencher) {
+    b.counter(ItemsCount::new(N))
+        .with_inputs(|| (warm::<_, V2>(d_noisy), SmallRng::seed_from_u64(1)))
+        .bench_local_refs(|((xs, ys), rng)| {
+            let n = black_box(N);
+            xs.clear();
+            ys.clear();
+            xs.extend(0..n as i64);
+            ys.extend(xs.iter().map(|x| x + rng.random_range(0..8)));
+        });
+}
+
+#[divan::bench]
+fn noisy_handwritten_dyn_rng(b: Bencher) {
+    b.counter(ItemsCount::new(N))
+        .with_inputs(|| (warm::<_, V2>(d_noisy), SmallRng::seed_from_u64(1)))
+        .bench_local_refs(|((xs, ys), rng)| {
+            let n = black_box(N);
+            let rng: &mut dyn RngCore = black_box(rng);
+            xs.clear();
+            ys.clear();
+            xs.extend(0..n as i64);
+            ys.extend(xs.iter().map(|x| x + rng.random_range(0..8)));
+        });
 }

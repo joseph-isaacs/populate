@@ -9,6 +9,8 @@
 //! Workloads:
 //! - `tpch-full`: tpchgen-arrow `LineItemArrow`, all 16 columns.
 //! - `tpch-numeric`: tpchgen rows -> the 11 numeric columns.
+//! - `tpch-direct`: tpchgen's RNGs and row logic for just those columns,
+//!   straight into column `Vec`s (same values; one thread only).
 //! - `populate`: populate's 11 numeric columns (same row count as tpchgen).
 //!
 //! With `threads > 1` each thread generates one partition. tpchgen uses its
@@ -17,10 +19,10 @@
 //! (the orderkey `range` starts at the partition's first row) and its own RNG
 //! seed. Peak RSS (`VmHWM`) is per process, so run one workload per process.
 
-use populate::arrow::DistributionArrow;
+use populate_bench::fair::{Cols, SF, TpchDirect, cols_to_batch};
 use populate_bench::{
-    BATCH, batch_bytes, batch_bytes_60, lineitem_numeric_from, numeric_schema_60,
-    tpch_numeric_batch, tpchgen_init,
+    BATCH, batch_bytes, batch_bytes_60, numeric_schema_60, p2_numeric_batches, tpch_numeric_batch,
+    tpchgen_init,
 };
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -91,21 +93,37 @@ fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
     t
 }
 
+/// tpchgen's RNGs and row logic for the numeric columns only, straight into
+/// columns (same values as `tpch-numeric`). No partition support.
+fn tpch_direct(n: usize, batch: usize) -> Totals {
+    let mut t = Totals::default();
+    let mut g = TpchDirect::new(false);
+    let mut left = n;
+    while left > 0 {
+        let len = batch.min(left);
+        let mut c = Cols::default();
+        g.fill(len, &mut c);
+        let b = cols_to_batch(c);
+        t.add(Totals {
+            rows: b.num_rows(),
+            bytes: batch_bytes_60(&b),
+        });
+        drop(black_box(b));
+        left -= len;
+    }
+    t
+}
+
 fn populate_numeric(start: usize, end: usize, seed: u64, batch: usize) -> Totals {
     let mut t = Totals::default();
-    let mut d = lineitem_numeric_from(start as i64 + 1);
     let mut rng = SmallRng::seed_from_u64(seed);
-    let mut row = start;
-    while row < end {
-        let len = batch.min(end - row);
-        let b = d.collect_record_batch(&mut rng, len).expect("batch");
+    p2_numeric_batches(start as i64 + 1, end - start, batch, &mut rng, |b| {
         t.add(Totals {
             rows: b.num_rows(),
             bytes: batch_bytes(&b),
         });
         drop(black_box(b));
-        row += len;
-    }
+    });
     t
 }
 
@@ -122,7 +140,7 @@ fn peak_rss_mib() -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: scale <tpch-full|tpch-numeric|populate> <sf> [threads] [batch]";
+    let usage = "usage: scale <tpch-full|tpch-numeric|tpch-direct|populate> <sf> [threads] [batch]";
     let workload = args.first().expect(usage).clone();
     let sf: f64 = args.get(1).expect(usage).parse().expect("sf");
     let threads: usize = args.get(2).map_or(1, |a| a.parse().expect("threads"));
@@ -145,6 +163,11 @@ fn main() {
                     match workload {
                         "tpch-full" => tpch_full(sf, part, parts, batch),
                         "tpch-numeric" => tpch_numeric(sf, part, parts, batch),
+                        "tpch-direct" => {
+                            assert_eq!(threads, 1, "tpch-direct is single-threaded");
+                            assert_eq!(sf, SF, "tpch-direct is fixed at SF{SF}");
+                            tpch_direct(n, batch)
+                        }
                         "populate" => populate_numeric(
                             i * n / threads,
                             (i + 1) * n / threads,

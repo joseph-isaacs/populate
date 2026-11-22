@@ -29,7 +29,11 @@
 //! `lineitem` column, strings included, so its numeric-subset variant still
 //! pays for them; that is the real cost of getting these columns from it.
 
-use arrow_array::RecordBatch;
+pub mod fair;
+
+use arrow_array::builder::{Int32Builder, Int64Builder};
+use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use populate::arrow::{ArrowBackend, DistributionArrow};
@@ -248,11 +252,175 @@ pub fn p2_numeric_arrow(n: usize) -> Output {
 
 /// Same, streamed as `BATCH`-row batches (bounded memory, like tpchgen-arrow).
 pub fn p2_numeric_arrow_batched(n: usize) -> Output {
-    let mut d = lineitem_numeric();
+    let mut out = Output { rows: 0, bytes: 0 };
+    p2_numeric_batches(1, n, BATCH, &mut rng(), |batch| {
+        out.rows += batch.num_rows();
+        out.bytes += batch_bytes(&batch);
+        black_box(batch);
+    });
+    out
+}
+
+/// Stream `n` rows of [`lineitem_numeric`] as `batch`-row batches, orderkeys
+/// `first_key..first_key + n`. `collect_into` restarts a `range` from its
+/// start on every call, so the distribution is rebuilt per batch at the next
+/// key (cheap: it's a few `Copy` structs). The uniform columns carry on from
+/// the shared `rng`.
+pub fn p2_numeric_batches(
+    first_key: i64,
+    n: usize,
+    batch: usize,
+    rng: &mut SmallRng,
+    mut f: impl FnMut(RecordBatch),
+) {
+    let mut key = first_key;
+    let mut left = n;
+    while left > 0 {
+        let len = batch.min(left);
+        let mut d = lineitem_numeric_from(key);
+        f(d.collect_record_batch(rng, len).expect("batch"));
+        key += len as i64;
+        left -= len;
+    }
+}
+
+// ============================================================================
+// Hand-written Arrow baselines (no populate): same columns, ranges and RNG
+// ============================================================================
+
+/// The 11 columns' `(lo, hi)` ranges, in schema order, as populate uses them.
+struct NumericRanges {
+    i64s: [(i64, i64); 6],
+    i32s: [(i32, i32); 4],
+}
+
+const RANGES: NumericRanges = NumericRanges {
+    // partkey, suppkey, quantity, extendedprice, discount, tax
+    i64s: [
+        (1, 200_000),
+        (1, 10_000),
+        (1, 50),
+        (90_100, 10_494_950),
+        (0, 10),
+        (0, 8),
+    ],
+    // linenumber, shipdate, commitdate, receiptdate
+    i32s: [
+        (1, 7),
+        (D1992 + 1, D1998_END - 151),
+        (D1992 + 30, D1998_END - 61),
+        (D1992 + 2, D1998_END - 121),
+    ],
+};
+
+fn numeric_schema_57() -> Arc<Schema> {
+    let i64f = |n: &str| Field::new(n, DataType::Int64, false);
+    let i32f = |n: &str| Field::new(n, DataType::Int32, false);
+    Arc::new(Schema::new(vec![
+        i64f("orderkey"),
+        i64f("partkey"),
+        i64f("suppkey"),
+        i32f("linenumber"),
+        i64f("quantity"),
+        i64f("extendedprice"),
+        i64f("discount"),
+        i64f("tax"),
+        i32f("shipdate"),
+        i32f("commitdate"),
+        i32f("receiptdate"),
+    ]))
+}
+
+/// Hand-written column-at-a-time: one exactly-sized `Vec` per column, filled
+/// with a tight loop, moved into an Arrow array. The best you can do by hand;
+/// populate's columnar path should match it.
+pub fn raw_columnar_arrow_batched(n: usize) -> Output {
+    fn col<T: SampleUniform + Copy>(r: &mut SmallRng, (lo, hi): (T, T), len: usize) -> Vec<T> {
+        let u = RandUniform::new_inclusive(lo, hi).expect("range");
+        let mut v = Vec::with_capacity(len);
+        for _ in 0..len {
+            v.push(u.sample(r));
+        }
+        v
+    }
+    let schema = numeric_schema_57();
     let mut r = rng();
+    let mut key = 1i64;
+    let mut out = Output { rows: 0, bytes: 0 };
+    let [pk, sk, q, ep, d, t] = RANGES.i64s;
+    let [ln, sd, cd, rd] = RANGES.i32s;
+    for len in chunks(n) {
+        let keys: Vec<i64> = (key..key + len as i64).collect();
+        key += len as i64;
+        let i64c = |v: Vec<i64>| Arc::new(Int64Array::from(v)) as ArrayRef;
+        let i32c = |v: Vec<i32>| Arc::new(Int32Array::from(v)) as ArrayRef;
+        let cols = vec![
+            i64c(keys),
+            i64c(col(&mut r, pk, len)),
+            i64c(col(&mut r, sk, len)),
+            i32c(col(&mut r, ln, len)),
+            i64c(col(&mut r, q, len)),
+            i64c(col(&mut r, ep, len)),
+            i64c(col(&mut r, d, len)),
+            i64c(col(&mut r, t, len)),
+            i32c(col(&mut r, sd, len)),
+            i32c(col(&mut r, cd, len)),
+            i32c(col(&mut r, rd, len)),
+        ];
+        let batch = RecordBatch::try_new(schema.clone(), cols).expect("batch");
+        out.rows += batch.num_rows();
+        out.bytes += batch_bytes(&batch);
+        black_box(batch);
+    }
+    out
+}
+
+/// Hand-written row-at-a-time: draw all 11 values for a row, append each to
+/// a typed Arrow `PrimitiveBuilder` (the usual way to fill Arrow by hand).
+pub fn raw_row_builders_arrow_batched(n: usize) -> Output {
+    let schema = numeric_schema_57();
+    let u64s = RANGES
+        .i64s
+        .map(|(lo, hi)| RandUniform::new_inclusive(lo, hi).expect("range"));
+    let u32s = RANGES
+        .i32s
+        .map(|(lo, hi)| RandUniform::new_inclusive(lo, hi).expect("range"));
+    let mut r = rng();
+    let mut key = 1i64;
     let mut out = Output { rows: 0, bytes: 0 };
     for len in chunks(n) {
-        let batch = d.collect_record_batch(&mut r, len).expect("batch");
+        let mut b64: [Int64Builder; 7] = std::array::from_fn(|_| Int64Builder::with_capacity(len));
+        let mut b32: [Int32Builder; 4] = std::array::from_fn(|_| Int32Builder::with_capacity(len));
+        for _ in 0..len {
+            b64[0].append_value(key);
+            key += 1;
+            b64[1].append_value(u64s[0].sample(&mut r));
+            b64[2].append_value(u64s[1].sample(&mut r));
+            b32[0].append_value(u32s[0].sample(&mut r));
+            b64[3].append_value(u64s[2].sample(&mut r));
+            b64[4].append_value(u64s[3].sample(&mut r));
+            b64[5].append_value(u64s[4].sample(&mut r));
+            b64[6].append_value(u64s[5].sample(&mut r));
+            b32[1].append_value(u32s[1].sample(&mut r));
+            b32[2].append_value(u32s[2].sample(&mut r));
+            b32[3].append_value(u32s[3].sample(&mut r));
+        }
+        let [k, pk, sk, q, ep, d, t] = &mut b64;
+        let [ln, sd, cd, rd] = &mut b32;
+        let cols: Vec<ArrayRef> = vec![
+            Arc::new(k.finish()),
+            Arc::new(pk.finish()),
+            Arc::new(sk.finish()),
+            Arc::new(ln.finish()),
+            Arc::new(q.finish()),
+            Arc::new(ep.finish()),
+            Arc::new(d.finish()),
+            Arc::new(t.finish()),
+            Arc::new(sd.finish()),
+            Arc::new(cd.finish()),
+            Arc::new(rd.finish()),
+        ];
+        let batch = RecordBatch::try_new(schema.clone(), cols).expect("batch");
         out.rows += batch.num_rows();
         out.bytes += batch_bytes(&batch);
         black_box(batch);
@@ -460,7 +628,7 @@ pub fn tpch_numeric_parquet(n: usize) -> Output {
 /// tpchgen lineitems grouped by orderkey into `(orderkey, list<extendedprice>)`:
 /// how you get the nested shape from a row generator. Stops after the order
 /// that crosses `n` values (about `n / 4` orders), one Arrow batch.
-fn tpch_list_batch(n: usize) -> RecordBatch60 {
+pub fn tpch_list_batch(n: usize) -> RecordBatch60 {
     let mut keys = Vec::with_capacity(n / LINES_PER_ORDER + 8);
     let mut offsets = Vec::with_capacity(n / LINES_PER_ORDER + 9);
     let mut prices = Vec::with_capacity(n + 8);
@@ -556,14 +724,39 @@ pub const WORKLOADS: &[Workload] = &[
         run: p2_numeric_arrow_batched,
     },
     Workload {
+        name: "hand-written columnar Vec -> Arrow, no populate (8192-row batches)",
+        group: Group::NumericArrow,
+        run: raw_columnar_arrow_batched,
+    },
+    Workload {
+        name: "hand-written row loop -> Arrow builders, no populate (8192-row batches)",
+        group: Group::NumericArrow,
+        run: raw_row_builders_arrow_batched,
+    },
+    Workload {
         name: "tpchgen rows -> Vec -> Arrow (8192-row batches)",
         group: Group::NumericArrow,
         run: tpch_numeric_arrow,
     },
     Workload {
-        name: "tpchgen rows only, no output (floor)",
+        name: "tpchgen rows only, no output",
         group: Group::NumericArrow,
         run: tpch_rows,
+    },
+    Workload {
+        name: "tpchgen RNGs + row logic -> columns, + string RNG draws",
+        group: Group::NumericArrow,
+        run: fair::tpch_direct_with_string_draws,
+    },
+    Workload {
+        name: "tpchgen RNGs + row logic -> columns, numeric only (same output)",
+        group: Group::NumericArrow,
+        run: fair::tpch_direct_numeric,
+    },
+    Workload {
+        name: "populate, every draw from tpchgen's RNG",
+        group: Group::NumericArrow,
+        run: fair::p2_uniform_tpch_rng,
     },
     Workload {
         name: "populate zero-copy writer",
@@ -589,6 +782,16 @@ pub const WORKLOADS: &[Workload] = &[
         name: "tpchgen rows grouped by orderkey",
         group: Group::ListArrow,
         run: tpch_list_arrow,
+    },
+    Workload {
+        name: "populate, price(partkey) * quantity",
+        group: Group::ListArrow,
+        run: fair::p2_list_fair,
+    },
+    Workload {
+        name: "tpchgen, only the 3 RNG streams needed (same output)",
+        group: Group::ListArrow,
+        run: fair::tpch_list_direct,
     },
     Workload {
         name: "populate zero-copy writer",
@@ -633,6 +836,21 @@ mod tests {
     }
 
     #[test]
+    fn batched_orderkeys_continue_across_batches() {
+        let mut keys = Vec::new();
+        p2_numeric_batches(101, 3 * BATCH + 5, BATCH, &mut rng(), |b| {
+            let c = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("i64");
+            keys.extend_from_slice(c.values());
+        });
+        let want: Vec<i64> = (101..101 + 3 * BATCH as i64 + 5).collect();
+        assert_eq!(keys, want);
+    }
+
+    #[test]
     fn parquet_files_are_comparable() {
         tpchgen_init();
         let zc = p2_numeric_parquet(N);
@@ -668,7 +886,7 @@ mod tests {
         let c = b
             .column(0)
             .as_any()
-            .downcast_ref::<arrow_array::Int32Array>()
+            .downcast_ref::<Int32Array>()
             .expect("i32");
         assert!(c.values().iter().all(|v| (3..=9).contains(v)));
         assert_eq!(c.len(), 1000);

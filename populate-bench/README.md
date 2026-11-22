@@ -8,11 +8,42 @@ Arrow and Parquet output) against [tpchgen](https://crates.io/crates/tpchgen)
 cargo bench -p populate-bench            # divan: time, rows/s, bytes/s, allocs, max live heap
 cargo run -p populate-bench --release    # Markdown table incl. peak heap (args: [rows] [repeats])
 cargo test -p populate-bench             # sanity checks: shapes/sizes match on both sides
-cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|populate> <sf> [threads]
+cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|tpch-direct|populate> <sf> [threads]
 ```
 
 The crate is not in the workspace `default-members` because tpchgen 4 pulls in
 arrow/parquet 60 next to populate's arrow 57.
+
+## Summary
+
+After an adversarial review, the honest summary is:
+
+- **Getting these columns through tpchgen's public API: populate is ~3x faster.**
+  About 40% of that is tpchgen work the benchmark throws away. tpchgen always
+  draws the 4 string columns' random values and builds a `LineItem` struct per
+  row, which then gets copied into columns.
+- **Like-for-like, populate is ~1.5–2.5x faster.** The baseline here is
+  tpchgen's own random generators and row logic for just the numeric columns
+  ([`fair::tpch_direct_numeric`](src/fair.rs)). Its output is identical to
+  tpchgen's (tested).
+- **All of that gap is the random number generator, not populate's engine.**
+  populate's side uses xoshiro (`SmallRng`) plus rand's integer range
+  reduction. tpchgen must use the TPC-H generator: a multiply, a modulo by
+  2^31 - 1 and an f64 divide per value, plus a per-order skip-ahead that makes
+  partitions reproducible. Give populate tpchgen's generator
+  ([`fair::p2_uniform_tpch_rng`](src/fair.rs)) and it is no faster than
+  tpchgen.
+- **populate adds a little overhead over a hand-written loop.** It is about 7%
+  slower than a hand-written column loop and about 30% slower than a
+  hand-written row loop into Arrow builders, using the same random generator.
+- **Lists: ~2.7x like-for-like, not 16x.** The 16x compared generating full
+  lineitem rows against one column. Generating only the 3 tpchgen streams the
+  list needs is far cheaper.
+- **What the populate side doesn't do:** tpchgen's values are spec-correct and
+  correlated (for example `extendedprice` is derived from the part price, and
+  the dates from the order date). populate's side draws independent uniform
+  values over the same ranges. The `Uniform` leaf is defined in this crate,
+  because populate doesn't ship a random leaf yet.
 
 ## Workloads
 
@@ -48,43 +79,54 @@ Intel Xeon @ 2.10 GHz (4 vCPU cloud VM), rustc 1.97, `cargo bench` (divan,
 is noisy: the same benchmark moves by ±20–30% between runs. Treat the ratios
 as the result, not the absolute numbers.
 
-**lineitem, 11 numeric columns -> Arrow** (1,048,576 rows, 72 MiB)
+**lineitem, 11 numeric columns -> Arrow** (1,048,576 rows, 72 MiB, 8192-row
+batches unless noted)
 
-| workload | median | rows/s | MiB/s | peak heap |
-|---|---:|---:|---:|---:|
-| populate, one batch | 58.0 ms | 18.1 M | 1240 | 75.5 MB |
-| populate, 8192-row batches | 30.8 ms | 34.0 M | 2340 | 0.6 MB |
-| tpchgen rows -> Arrow, 8192-row batches | 96.8 ms | 10.8 M | 744 | 1.8 MB |
-| tpchgen rows only, no output (floor) | 75.8 ms | 13.8 M | – | 0 |
+| workload | median | rows/s |
+|---|---:|---:|
+| hand-written row loop -> Arrow builders, no populate | 19.6 ms | 53.5 M |
+| hand-written column loop -> `Vec` -> Arrow, no populate | 24.0 ms | 43.8 M |
+| **populate** | 25.6 ms | 40.9 M |
+| populate, one 1M-row batch | 59.4 ms | 17.7 M |
+| populate, every draw from tpchgen's RNG | 59.8 ms | 17.5 M |
+| **tpchgen RNGs + row logic, numeric columns only** (same output as below) | 63.7 ms | 16.5 M |
+| tpchgen RNGs + row logic, plus the 4 string streams (values discarded) | 82.3 ms | 12.7 M |
+| tpchgen rows only, no output | 105.6 ms | 9.9 M |
+| **tpchgen rows -> `Vec` -> Arrow** (as tpchgen-arrow does it) | 98.7 ms | 10.6 M |
+
+"tpchgen rows only" is not a floor: it black-boxes a ~200-byte `LineItem` by
+value per row, and comes out no faster than the full path.
 
 **lineitem, 11 numeric columns -> Parquet** (72 MiB file)
 
-| workload | median | rows/s | MiB/s | peak heap |
-|---|---:|---:|---:|---:|
-| populate, zero-copy writer | 55.0 ms | 19.1 M | 1310 | 76.0 MB |
-| populate, RecordBatch -> ArrowWriter | 98.7 ms | 10.6 M | 729 | 160.2 MB |
-| tpchgen -> ArrowWriter | 127.3 ms | 8.2 M | 566 | 78.3 MB |
+| workload | median | rows/s | peak heap |
+|---|---:|---:|---:|
+| populate, zero-copy writer | 63.2 ms | 16.6 M | 76.0 MB |
+| populate, RecordBatch -> ArrowWriter | 108.5 ms | 9.7 M | 160.2 MB |
+| tpchgen -> ArrowWriter | 139.6 ms | 7.5 M | 78.3 MB |
 
 **orders with list\<line price\> -> Arrow** (262k orders, ~1M values, 11 MiB)
 
-| workload | median | orders/s | MiB/s | peak heap |
-|---|---:|---:|---:|---:|
-| populate | 4.4 ms | 59.6 M | 2500 | 11.5 MB |
-| tpchgen rows grouped by orderkey | 72.2 ms | 3.6 M | 152 | 11.5 MB |
+| workload | median | orders/s |
+|---|---:|---:|
+| populate, independent uniform prices | 5.6 ms | 47.1 M |
+| **populate, `price(partkey) * quantity`** | 6.2 ms | 42.2 M |
+| **tpchgen, only the 3 RNG streams needed** (same output as below) | 16.6 ms | 15.8 M |
+| tpchgen full rows grouped by orderkey | 75.9 ms | 3.5 M |
 
 **orders with list\<line price\> -> Parquet** (10.1 MiB file)
 
-| workload | median | orders/s | MiB/s | peak heap |
-|---|---:|---:|---:|---:|
-| populate, zero-copy writer | 16.6 ms | 15.8 M | 608 | 13.8 MB |
-| tpchgen grouped -> ArrowWriter | 91.2 ms | 2.9 M | 111 | 33.7 MB |
+| workload | median | orders/s | peak heap |
+|---|---:|---:|---:|
+| populate, zero-copy writer | 25.2 ms | 10.4 M | 13.8 MB |
+| tpchgen full rows grouped -> ArrowWriter | 93.1 ms | 2.8 M | 33.7 MB |
 
 **tpchgen full lineitem** (16 columns, strings included)
 
-| workload | median | rows/s | MiB/s | peak heap |
-|---|---:|---:|---:|---:|
-| tpchgen-arrow `LineItemArrow` -> Arrow | 221.8 ms | 4.7 M | 1030 (228 MiB) | 3.1 MB |
-| tpchgen-arrow `LineItemArrow` -> ArrowWriter | 418.6 ms | 2.5 M | 327 (137 MiB file) | 147.3 MB |
+| workload | median | rows/s | peak heap |
+|---|---:|---:|---:|
+| tpchgen-arrow `LineItemArrow` -> Arrow | 219.0 ms | 4.8 M | 3.1 MB |
+| tpchgen-arrow `LineItemArrow` -> ArrowWriter | 440.0 ms | 2.4 M | 147.3 MB |
 
 ## Full scale: SF10 and SF100, streamed
 
@@ -92,9 +134,9 @@ as the result, not the absolute numbers.
 batches and drops each batch once it's made, so memory stays flat at any
 scale factor. With several threads, each thread generates one partition.
 tpchgen uses its `part`/`part_count` support, which skips its RNGs ahead to
-the partition's first row. populate gives each thread a contiguous row range,
-starting the orderkey `range` at the partition's first row, plus its own RNG
-seed. populate generates exactly as many rows as tpchgen. tpchgen's
+the partition's first row. populate gives each thread a contiguous row range
+and its own RNG seed. Unlike tpchgen, that makes populate's random columns
+depend on the thread count. populate generates exactly as many rows as tpchgen. tpchgen's
 partitioned runs return exactly the spec row counts (59,986,052 at SF10,
 600,037,902 at SF100 and 5,999,989,709 at SF1000).
 
@@ -117,31 +159,43 @@ Building the pool (~1.1 s) is excluded from the time.
 | tpchgen -> 11 numeric cols | 1000 | 4 | 5,999,989,709 | 127.45 s | 47.1 M | 403.05 | 3238 | 310 |
 | tpchgen-arrow full lineitem | 1000 | 4 | 5,999,989,709 | 426.62 s | 14.1 M | 1275.15 | 3061 | 314 |
 
-On the numeric columns, populate is ~3x faster than tpchgen at both scale
-factors. Both scale almost linearly to 4 threads. Peak memory doesn't depend
-on SF for either: about one batch per thread, plus tpchgen's text pool.
+The populate rows in this table were recorded before a bench bug was fixed.
+`collect_into` restarts a `range` on every call, so each 8192-row batch
+restarted the orderkeys at the partition's first key. Performance is
+unaffected, but the keys repeated. Batches now rebuild the distribution at the
+next key (`p2_numeric_batches`, tested).
 
-## Reading the numbers
+A rerun of SF10 on one thread after the fix, 3 interleaved runs, was on a
+slower day for the VM:
 
-- **Numeric columns: about 3x faster to Arrow and 2.3x faster to Parquet.**
-  tpchgen's row generator is the limit on its side: just producing the rows
-  (75.8 ms) takes longer than populate takes to make the Arrow batches.
-  tpchgen also builds every column, strings included, even when you only
-  need the numeric ones.
-- **Lists: about 16x faster to Arrow and 5.5x faster to Parquet.** populate
-  writes offsets and values straight into the two final buffers. Parquet
-  then spends most of its time on the def/rep levels and encoding.
-- **One big batch is slower than streamed batches** (58 ms vs 31 ms). The
+| workload | time | rows/s |
+|---|---:|---:|
+| populate | 2.11–2.35 s | 25.5–28.4 M |
+| tpchgen RNGs + row logic, numeric only (`tpch-direct`) | 3.21–3.85 s | 15.6–18.7 M |
+| tpchgen rows -> numeric cols (`tpch-numeric`) | 5.63–6.41 s | 9.4–10.6 M |
+
+That is ~2.7x against the tpchgen public-API path and ~1.6x like-for-like,
+matching the 1M-row results. Both sides scale almost linearly to 4 threads.
+Peak memory doesn't depend on SF for either: about one batch per thread, plus
+tpchgen's text pool.
+
+## Other observations
+
+- **One big batch is slower than streamed batches** (59 ms vs 26 ms). The
   generation work is the same, so the gap is most likely page faults on the
   first touch of ~72 MB of freshly mapped memory each run (not profiled).
-  Streamed 8192-row batches keep reusing the same warm memory.
-- **The zero-copy Parquet writer is ~1.8x faster than `ArrowWriter` on the same
-  populate data and peaks at half the memory** (76 MB, which is the
-  generated data itself, vs 160 MB). `collect_parquet` still holds all `n`
-  rows before writing. A streaming version that generates one row group at a
-  time would cut the peak to about one row group.
-- **Not like-for-like:** tpchgen produces spec-correct correlated values
-  (for example `extendedprice` derived from the part price, dates derived from
-  the order date). These populate distributions are independent uniform
-  draws over the same ranges. The comparison is generation-engine throughput
-  for the same output shape, not a TPC-H-compliant populate generator.
+- **The zero-copy Parquet writer is ~1.7x faster than `ArrowWriter` on the same
+  populate data, and peaks at half the memory** (76 MB, which is the generated
+  data itself, vs 160 MB). `collect_parquet` still holds all `n` rows and
+  writes a single row group. A streaming version that generates one row group
+  at a time would cut the peak to about one row group.
+- **Parquet versions differ:** populate writes with parquet 57 and tpchgen
+  with parquet 60. The settings match (uncompressed, no dictionary, default
+  page and row-group sizes).
+- **Expressiveness gaps found while building fair baselines:**
+  - A flat table can't share per-order state across lines.
+  - `list` elements can't see their parent's values.
+  - `map` output is limited to flat tuples of up to 4, and falls back to the
+    row-at-a-time path.
+  - Leaves restart on every `collect_into`, so streaming in batches needs
+    care.

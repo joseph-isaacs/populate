@@ -7,11 +7,15 @@
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{AllocProfiler, Bencher, black_box};
+use populate_bench::fair::{
+    p2_list_fair, p2_uniform_tpch_rng, tpch_direct_numeric, tpch_direct_with_string_draws,
+    tpch_list_direct,
+};
 use populate_bench::{
     Output, p2_list_arrow, p2_list_parquet, p2_numeric_arrow, p2_numeric_arrow_batched,
-    p2_numeric_parquet, p2_numeric_parquet_arrow_writer, tpch_full_arrow, tpch_full_parquet,
-    tpch_list_arrow, tpch_list_parquet, tpch_numeric_arrow, tpch_numeric_parquet, tpch_rows,
-    tpchgen_init,
+    p2_numeric_parquet, p2_numeric_parquet_arrow_writer, raw_columnar_arrow_batched,
+    raw_row_builders_arrow_batched, tpch_full_arrow, tpch_full_parquet, tpch_list_arrow,
+    tpch_list_parquet, tpch_numeric_arrow, tpch_numeric_parquet, tpch_rows, tpchgen_init,
 };
 
 #[global_allocator]
@@ -52,8 +56,13 @@ benches! {
     numeric_arrow {
         populate2 => p2_numeric_arrow,
         populate2_batched => p2_numeric_arrow_batched,
+        hand_columnar => raw_columnar_arrow_batched,
+        hand_row_builders => raw_row_builders_arrow_batched,
         tpchgen => tpch_numeric_arrow,
         tpchgen_rows_only => tpch_rows,
+        tpchgen_direct_with_string_draws => tpch_direct_with_string_draws,
+        tpchgen_direct_numeric => tpch_direct_numeric,
+        populate2_tpchgen_rng => p2_uniform_tpch_rng,
     }
     numeric_parquet {
         populate2_zero_copy => p2_numeric_parquet,
@@ -63,6 +72,8 @@ benches! {
     list_arrow {
         populate2 => p2_list_arrow,
         tpchgen_grouped => tpch_list_arrow,
+        populate2_derived_price => p2_list_fair,
+        tpchgen_direct => tpch_list_direct,
     }
     list_parquet {
         populate2_zero_copy => p2_list_parquet,

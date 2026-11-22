@@ -1,0 +1,25 @@
+[package]
+name = "populate-bench"
+description = "Throughput comparison: populate vs tpchgen (Arrow and Parquet output)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+default-run = "populate-bench"
+
+[dependencies]
+populate = { workspace = true, features = ["parquet"] }
+rand = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, features = ["arrow"] }
+# tpchgen 4 targets arrow 60, the same arrow and parquet as populate.
+tpchgen = "4.0"
+tpchgen-arrow = "4.0"
+
+[dev-dependencies]
+divan = { workspace = true }
+
+[[bench]]
+name = "vs_tpchgen"
+harness = false

@@ -688,6 +688,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-bench"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "divan",
+ "parquet",
+ "populate",
+ "rand",
+ "tpchgen",
+ "tpchgen-arrow",
+]
+
+[[package]]
 name = "populate-builtins"
 version = "0.1.0"
 dependencies = [
@@ -975,6 +989,22 @@ checksum = "efe811ce4c7cf7877d6ed51e057fe6e89bb3f7d53eae8cf3a43bce9ba4c70d6c"
 dependencies = [
  "arrow",
  "tpcdsgen",
+]
+
+[[package]]
+name = "tpchgen"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc60dc766636c350180e7df4f430673b6ebd95ad4bc2ce298315e6f9eac73bcc"
+
+[[package]]
+name = "tpchgen-arrow"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04ff3310b8912141795ea51adbabb4f790ec5a389157acfc494b6f50aff1d402"
+dependencies = [
+ "arrow",
+ "tpchgen",
 ]
 
 [[package]]

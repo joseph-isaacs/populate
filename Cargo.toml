@@ -7,6 +7,19 @@ members = [
     "populate-sink-parquet",
     "populate-table",
     "populate-tpcds",
+    "populate-bench",
+]
+# `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
+# (benchmark-only dependencies). Run it with
+# `cargo bench -p populate-bench` or `cargo run -p populate-bench --release`.
+default-members = [
+    "populate",
+    "populate-core",
+    "populate-builtins",
+    "populate-sink-arrow",
+    "populate-sink-parquet",
+    "populate-table",
+    "populate-tpcds",
 ]
 resolver = "2"
 

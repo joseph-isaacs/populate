@@ -30,6 +30,7 @@
 //! pays for them; that is the real cost of getting these columns from it.
 
 pub mod fair;
+pub mod lanes;
 
 use arrow_array::builder::{Int32Builder, Int64Builder};
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
@@ -276,10 +277,18 @@ pub fn p2_numeric_batches(
 ) {
     let mut key = first_key;
     let mut left = n;
+    // made by the first batch, then shared by the rest
+    let mut schema = None;
     while left > 0 {
         let len = batch.min(left);
         let mut d = lineitem_numeric_from(key);
-        f(d.collect_record_batch(rng, len).expect("batch"));
+        let b = match &schema {
+            None => d.collect_record_batch(rng, len),
+            Some(s) => d.collect_record_batch_with(s, rng, len),
+        };
+        let b = b.expect("batch");
+        schema.get_or_insert_with(|| b.schema());
+        f(b);
         key += len as i64;
         left -= len;
     }
@@ -758,6 +767,11 @@ pub const WORKLOADS: &[Workload] = &[
         name: "populate, every draw from tpchgen's RNG",
         group: Group::NumericArrow,
         run: fair::p2_uniform_tpch_rng,
+    },
+    Workload {
+        name: "populate, tpchgen's RNG as lane-parallel leaves (same values)",
+        group: Group::NumericArrow,
+        run: fair::p2_uniform_tpch_rng_lanes,
     },
     Workload {
         name: "populate zero-copy writer",

@@ -1,48 +1,33 @@
 # populate
 
-Composable distribution combinators for generating test data, designed for columnar data structures.
-
-Inspired by parser combinators (like nom), populate provides small, focused distribution primitives that can be combined to generate complex, realistic datasets with controllable statistical properties—from simple uniform ranges to clustered runs, nullable columns, and weighted selections.
-
-## Example
+Composable distribution combinators for generating tabular test data,
+column by column, straight into Arrow (and optionally Parquet).
 
 ```rust
-use populate::{Range, OneOf, Constant};
+use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::dist::{constant, list, map, range};
 
-let mut dist = (
-    Range::new(0i32, 100),           // id
-    OneOf::new(vec!["a", "b", "c"]), // category
-    Constant::new(true),             // active
+// id: i64, tags: list<i64> with lengths cycling 0..8
+let mut table = (
+    range(0i64, 1),
+    list(map(range(0usize, 1), |i| i % 8), range(0i64, 1)),
 );
-
-let (ids, categories, actives): (Vec<_>, Vec<_>, Vec<_>) =
-    dist.sample().take(1000).collect();
+let batch = DistributionArrow::<ArrowBackend>::collect_record_batch(&mut table, &mut rand::rng(), 1_000)?;
 ```
 
-## Arrow Integration
+With `ArrowBackend` every numeric column, including list offsets and values,
+is generated into one exactly-sized buffer that becomes the Arrow array
+without a copy. The optional `parquet` feature writes those buffers to Parquet
+in place (`collect_parquet`).
 
-Generate Arrow `RecordBatch` directly:
+## Crates
 
-```rust
-use populate::{Range, Bernoulli};
+| crate                   | contents                                            |
+|-------------------------|-----------------------------------------------------|
+| `populate`              | facade: re-exports everything below                 |
+| `populate-core`         | `Distribution`, `SampleIter`, `Sink`, `Backend`, HLists, tuples |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `flatten`       |
+| `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output                |
+| `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 
-let mut dist = (
-    Range::new(0i64, 1_000_000),  // id
-    Range::new(0.0f64, 100.0),    // price
-    Bernoulli::new(0.9),          // active
-);
-
-let batch: RecordBatch = dist.collect(&mut rng, 10_000);
-// batch.num_rows() == 10_000
-// batch.num_columns() == 3
-```
-
-## License
-
-MIT
-
-## Documentation
-
-- [DESIGN.md](DESIGN.md) - Core design and API
-- [EXAMPLES.md](EXAMPLES.md) - Real world examples (TPC-H tables)
-- [FUTURE.md](FUTURE.md) - Planned features
+See `populate/DESIGN.md` for the design.

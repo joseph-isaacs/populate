@@ -15,6 +15,7 @@
 //! instead of collecting row structs and converting them column by column.
 
 use crate::TableName;
+use crate::dat;
 use crate::seeds;
 use arrow_array::types::{Decimal128Type, Int32Type, Int64Type};
 use arrow_array::{ArrayRef, PrimitiveArray, RecordBatch};
@@ -68,7 +69,7 @@ impl<T: arrow_buffer::ArrowNativeType> Col<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, v: T, valid: bool) {
         self.values.push(v);
         self.valid.append(valid);
@@ -99,6 +100,8 @@ struct Builder {
     decs: Vec<Col<i128>>,
     rows: usize,
     cap: usize,
+    /// The next column of each kind in the row being pushed.
+    next: [usize; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +128,7 @@ impl Builder {
                 .collect(),
             rows: 0,
             cap,
+            next: [0; 3],
         }
     }
 
@@ -162,6 +166,151 @@ impl Builder {
 
 use Kind::{D, I, L};
 
+/// Where a channel's rows go: one row's values in schema order, then
+/// [`Row::end`]. [`Builder`] makes Arrow columns of them, [`Text`] dsdgen's
+/// `.dat` lines.
+pub(crate) trait Row {
+    /// An Int32 key, NULL by bit `pos` of `nbm` or by being negative.
+    fn sk(&mut self, nbm: i64, pos: u32, v: i64);
+    fn int(&mut self, v: i32, valid: bool);
+    fn long(&mut self, v: i64, valid: bool);
+    /// A decimal(7,2), NULL by bit `pos` of `nbm`.
+    fn dec(&mut self, nbm: i64, pos: u32, v: Decimal);
+    fn end(&mut self);
+}
+
+impl Row for Builder {
+    #[inline(always)]
+    fn sk(&mut self, nbm: i64, pos: u32, v: i64) {
+        self.int(v as i32, bit(nbm, pos) && v >= 0);
+    }
+
+    #[inline(always)]
+    fn int(&mut self, v: i32, valid: bool) {
+        let c = &mut self.i32s[self.next[0]];
+        self.next[0] += 1;
+        c.push(v, valid);
+    }
+
+    #[inline(always)]
+    fn long(&mut self, v: i64, valid: bool) {
+        let c = &mut self.i64s[self.next[1]];
+        self.next[1] += 1;
+        c.push(v, valid);
+    }
+
+    #[inline(always)]
+    fn dec(&mut self, nbm: i64, pos: u32, v: Decimal) {
+        let c = &mut self.decs[self.next[2]];
+        self.next[2] += 1;
+        c.push(v.get_number() as i128, bit(nbm, pos));
+    }
+
+    #[inline(always)]
+    fn end(&mut self) {
+        self.next = [0; 3];
+        self.rows += 1;
+    }
+}
+
+/// `.dat` lines, as [`dat::write_batch`] writes the same columns.
+struct Text<'a>(&'a mut Vec<u8>);
+
+impl Row for Text<'_> {
+    #[inline(always)]
+    fn sk(&mut self, nbm: i64, pos: u32, v: i64) {
+        self.int(v as i32, bit(nbm, pos) && v >= 0);
+    }
+
+    #[inline(always)]
+    fn int(&mut self, v: i32, valid: bool) {
+        self.long(v as i64, valid);
+    }
+
+    #[inline(always)]
+    fn long(&mut self, v: i64, valid: bool) {
+        if valid {
+            dat::int_field(self.0, v);
+        } else {
+            self.0.push(b'|');
+        }
+    }
+
+    #[inline(always)]
+    fn dec(&mut self, nbm: i64, pos: u32, v: Decimal) {
+        if bit(nbm, pos) {
+            dat::decimal2_field(self.0, v.get_number());
+        } else {
+            self.0.push(b'|');
+        }
+    }
+
+    #[inline(always)]
+    fn end(&mut self) {
+        self.0.push(b'\n');
+    }
+}
+
+/// A channel's two outputs, sales (0) and returns (1).
+pub(crate) trait Out {
+    type R: Row;
+    fn row(&mut self, k: usize) -> &mut Self::R;
+    /// A row of output `k` is complete.
+    fn done(&mut self, k: usize);
+    /// The chunk is complete.
+    fn finish(&mut self);
+}
+
+/// Arrow batches of up to `batch` rows, passed to `emit` as they fill.
+struct ArrowOut<'a> {
+    b: [Builder; 2],
+    batch: usize,
+    emit: &'a mut dyn FnMut(usize, RecordBatch),
+}
+
+impl Out for ArrowOut<'_> {
+    type R = Builder;
+
+    #[inline]
+    fn row(&mut self, k: usize) -> &mut Builder {
+        &mut self.b[k]
+    }
+
+    #[inline]
+    fn done(&mut self, k: usize) {
+        if self.b[k].rows == self.batch {
+            let b = self.b[k].finish();
+            (self.emit)(k, b);
+        }
+    }
+
+    fn finish(&mut self) {
+        for k in 0..2 {
+            if self.b[k].rows > 0 {
+                let b = self.b[k].finish();
+                (self.emit)(k, b);
+            }
+        }
+    }
+}
+
+/// `.dat` text appended to two buffers.
+struct TextOut<'a>([Text<'a>; 2]);
+
+impl<'a> Out for TextOut<'a> {
+    type R = Text<'a>;
+
+    #[inline]
+    fn row(&mut self, k: usize) -> &mut Text<'a> {
+        &mut self.0[k]
+    }
+
+    #[inline]
+    fn done(&mut self, _: usize) {}
+
+    fn finish(&mut self) {}
+}
+
 const SALES: &[Kind] = &[
     I, I, I, I, I, I, I, I, I, L, I, D, D, D, D, D, D, D, D, D, D, D, D,
 ];
@@ -177,17 +326,6 @@ const WEB_RETURNS: &[Kind] = &[
 const CATALOG_RETURNS: &[Kind] = &[
     I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, L, I, D, D, D, D, D, D, D, D, D,
 ];
-
-/// Keys, nullable by bit `pos` or by being negative.
-#[inline]
-fn sk(c: &mut Col<i32>, nbm: i64, pos: u32, v: i64) {
-    c.push(v as i32, bit(nbm, pos) && v >= 0);
-}
-
-#[inline]
-fn dec(c: &mut Col<i128>, nbm: i64, pos: u32, v: Decimal) {
-    c.push(v.get_number() as i128, bit(nbm, pos));
-}
 
 /// The order-level values shared by a ticket's line items.
 #[derive(Default, Clone, Copy)]
@@ -236,12 +374,56 @@ impl Channel {
         want: Want,
         emit: &mut dyn FnMut(usize, RecordBatch),
     ) {
-        let f = match self {
-            Channel::Store => store_channel,
-            Channel::Catalog => catalog_channel,
-            Channel::Web => web_channel,
+        let (s, sl, r, rl) = match self {
+            Channel::Store => (
+                StoreSalesArrow::schema_ref(),
+                SALES,
+                StoreReturnsArrow::schema_ref(),
+                RETURNS,
+            ),
+            Channel::Catalog => (
+                CatalogSalesArrow::schema_ref(),
+                CATALOG_SALES,
+                CatalogReturnsArrow::schema_ref(),
+                CATALOG_RETURNS,
+            ),
+            Channel::Web => (
+                WebSalesArrow::schema_ref(),
+                WEB_SALES,
+                WebReturnsArrow::schema_ref(),
+                WEB_RETURNS,
+            ),
         };
-        f(session, first, last, batch, want, emit)
+        let mut out = ArrowOut {
+            b: [Builder::new(s, sl, batch), Builder::new(r, rl, batch)],
+            batch,
+            emit,
+        };
+        self.run_into(session, first, last, want, &mut out);
+    }
+
+    /// [`Self::run`] as `.dat` text, appended to `sales` and `returns`:
+    /// the bytes [`dat::write_batch`] makes of its batches, without
+    /// building them.
+    pub(crate) fn run_dat(
+        self,
+        session: &Session,
+        first: u64,
+        last: u64,
+        want: Want,
+        sales: &mut Vec<u8>,
+        returns: &mut Vec<u8>,
+    ) {
+        let mut out = TextOut([Text(sales), Text(returns)]);
+        self.run_into(session, first, last, want, &mut out);
+    }
+
+    fn run_into(self, session: &Session, first: u64, last: u64, want: Want, out: &mut impl Out) {
+        match self {
+            Channel::Store => store_channel(session, first, last, want, out),
+            Channel::Catalog => catalog_channel(session, first, last, want, out),
+            Channel::Web => web_channel(session, first, last, want, out),
+        }
     }
 }
 
@@ -254,14 +436,7 @@ pub(crate) struct Want {
 
 /// Generate `store_sales` (output 0) and/or `store_returns` (output 1) for
 /// tickets `first..=last` (1-based), in batches of up to `batch` rows each.
-pub(crate) fn store_channel(
-    session: &Session,
-    first: u64,
-    last: u64,
-    batch: usize,
-    want: Want,
-    emit: &mut dyn FnMut(usize, RecordBatch),
-) {
+fn store_channel(session: &Session, first: u64, last: u64, want: Want, out: &mut impl Out) {
     let scaling = session.get_scaling();
     let tickets = scaling.get_row_count(Ds::StoreSales);
     let mut sg = AbstractRowGenerator::<S>::new(tickets);
@@ -272,9 +447,6 @@ pub(crate) fn store_channel(
     let item_count = scaling.get_id_count(Ds::Item) as usize;
     let limits = get_store_sales_pricing_limits();
     let permutation = make_permutation(item_count, sg.get_random_number_stream(&S::SsPermutation));
-
-    let mut sb = Builder::new(StoreSalesArrow::schema_ref(), SALES, batch);
-    let mut rb = Builder::new(StoreReturnsArrow::schema_ref(), RETURNS, batch);
 
     for row in first..=last.min(tickets) {
         let o = Order {
@@ -350,16 +522,12 @@ pub(crate) fn store_channel(
                 sg.get_random_number_stream(&S::SsPricing),
             );
             if want.sales {
-                push_sale(&mut sb, nbm, &o, item, promo, &pricing);
-                if sb.rows == batch {
-                    emit(0, sb.finish());
-                }
+                push_sale(out.row(0), nbm, &o, item, promo, &pricing);
+                out.done(0);
             }
             if returned && want.returns {
-                push_return(&mut rb, &mut rg, scaling, &o, item, &pricing);
-                if rb.rows == batch {
-                    emit(1, rb.finish());
-                }
+                push_return(out.row(1), &mut rg, scaling, &o, item, &pricing);
+                out.done(1);
             }
         }
         seeds::finish_row(&mut sg);
@@ -367,47 +535,40 @@ pub(crate) fn store_channel(
             seeds::finish_row(&mut rg);
         }
     }
-    if sb.rows > 0 {
-        emit(0, sb.finish());
-    }
-    if rb.rows > 0 {
-        emit(1, rb.finish());
-    }
+    out.finish();
 }
 
-fn push_sale(b: &mut Builder, nbm: i64, o: &Order, item: i64, promo: i64, p: &Pricing) {
-    let i = &mut b.i32s;
-    sk(&mut i[0], nbm, 0, o.date);
-    sk(&mut i[1], nbm, 1, o.time);
-    sk(&mut i[2], nbm, 2, item);
-    sk(&mut i[3], nbm, 3, o.customer);
-    sk(&mut i[4], nbm, 4, o.cdemo);
-    sk(&mut i[5], nbm, 5, o.hdemo);
-    sk(&mut i[6], nbm, 6, o.addr);
-    sk(&mut i[7], nbm, 7, o.store);
-    sk(&mut i[8], nbm, 8, promo);
-    b.i64s[0].push(o.ticket, bit(nbm, 9) && o.ticket >= 0);
-    i[9].push(p.get_quantity(), bit(nbm, 10));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 11, p.get_wholesale_cost());
-    dec(&mut d[1], nbm, 12, p.get_list_price());
-    dec(&mut d[2], nbm, 13, p.get_sales_price());
+fn push_sale(b: &mut impl Row, nbm: i64, o: &Order, item: i64, promo: i64, p: &Pricing) {
+    b.sk(nbm, 0, o.date);
+    b.sk(nbm, 1, o.time);
+    b.sk(nbm, 2, item);
+    b.sk(nbm, 3, o.customer);
+    b.sk(nbm, 4, o.cdemo);
+    b.sk(nbm, 5, o.hdemo);
+    b.sk(nbm, 6, o.addr);
+    b.sk(nbm, 7, o.store);
+    b.sk(nbm, 8, promo);
+    b.long(o.ticket, bit(nbm, 9) && o.ticket >= 0);
+    b.int(p.get_quantity(), bit(nbm, 10));
+    b.dec(nbm, 11, p.get_wholesale_cost());
+    b.dec(nbm, 12, p.get_list_price());
+    b.dec(nbm, 13, p.get_sales_price());
     // dsdgen prints the coupon amount as ss_ext_discount_amt (a bug kept for
     // compatibility), and again as ss_coupon_amt
-    dec(&mut d[3], nbm, 14, p.get_coupon_amount());
-    dec(&mut d[4], nbm, 15, p.get_ext_sales_price());
-    dec(&mut d[5], nbm, 16, p.get_ext_wholesale_cost());
-    dec(&mut d[6], nbm, 17, p.get_ext_list_price());
-    dec(&mut d[7], nbm, 18, p.get_ext_tax());
-    dec(&mut d[8], nbm, 14, p.get_coupon_amount());
-    dec(&mut d[9], nbm, 19, p.get_net_paid());
-    dec(&mut d[10], nbm, 20, p.get_net_paid_including_tax());
-    dec(&mut d[11], nbm, 21, p.get_net_profit());
-    b.rows += 1;
+    b.dec(nbm, 14, p.get_coupon_amount());
+    b.dec(nbm, 15, p.get_ext_sales_price());
+    b.dec(nbm, 16, p.get_ext_wholesale_cost());
+    b.dec(nbm, 17, p.get_ext_list_price());
+    b.dec(nbm, 18, p.get_ext_tax());
+    b.dec(nbm, 14, p.get_coupon_amount());
+    b.dec(nbm, 19, p.get_net_paid());
+    b.dec(nbm, 20, p.get_net_paid_including_tax());
+    b.dec(nbm, 21, p.get_net_profit());
+    b.end();
 }
 
 fn push_return(
-    b: &mut Builder,
+    b: &mut impl Row,
     rg: &mut AbstractRowGenerator<R>,
     scaling: &tpcdsgen::config::Scaling,
     o: &Order,
@@ -479,29 +640,27 @@ fn push_return(
         sale,
     );
 
-    let i = &mut b.i32s;
-    sk(&mut i[0], nbm, 0, date);
-    sk(&mut i[1], nbm, 1, time);
-    sk(&mut i[2], nbm, 2, item);
-    sk(&mut i[3], nbm, 3, customer);
-    sk(&mut i[4], nbm, 4, cdemo);
-    sk(&mut i[5], nbm, 5, hdemo);
-    sk(&mut i[6], nbm, 6, addr);
-    sk(&mut i[7], nbm, 7, store);
-    sk(&mut i[8], nbm, 8, reason);
-    b.i64s[0].push(o.ticket, bit(nbm, 9) && o.ticket >= 0);
-    i[9].push(p.get_quantity(), bit(nbm, 10));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 11, p.get_net_paid());
-    dec(&mut d[1], nbm, 12, p.get_ext_tax());
-    dec(&mut d[2], nbm, 13, p.get_net_paid_including_tax());
-    dec(&mut d[3], nbm, 14, p.get_fee());
-    dec(&mut d[4], nbm, 15, p.get_ext_ship_cost());
-    dec(&mut d[5], nbm, 16, p.get_refunded_cash());
-    dec(&mut d[6], nbm, 17, p.get_reversed_charge());
-    dec(&mut d[7], nbm, 18, p.get_store_credit());
-    dec(&mut d[8], nbm, 19, p.get_net_loss());
-    b.rows += 1;
+    b.sk(nbm, 0, date);
+    b.sk(nbm, 1, time);
+    b.sk(nbm, 2, item);
+    b.sk(nbm, 3, customer);
+    b.sk(nbm, 4, cdemo);
+    b.sk(nbm, 5, hdemo);
+    b.sk(nbm, 6, addr);
+    b.sk(nbm, 7, store);
+    b.sk(nbm, 8, reason);
+    b.long(o.ticket, bit(nbm, 9) && o.ticket >= 0);
+    b.int(p.get_quantity(), bit(nbm, 10));
+    b.dec(nbm, 11, p.get_net_paid());
+    b.dec(nbm, 12, p.get_ext_tax());
+    b.dec(nbm, 13, p.get_net_paid_including_tax());
+    b.dec(nbm, 14, p.get_fee());
+    b.dec(nbm, 15, p.get_ext_ship_cost());
+    b.dec(nbm, 16, p.get_refunded_cash());
+    b.dec(nbm, 17, p.get_reversed_charge());
+    b.dec(nbm, 18, p.get_store_credit());
+    b.dec(nbm, 19, p.get_net_loss());
+    b.end();
 }
 
 /// Percentage of catalog orders shipped to another customer.
@@ -533,14 +692,7 @@ struct LineSale {
 /// for orders `first..=last` (1-based): a port of tpcdsgen's
 /// `CatalogSalesRowGenerator` and `CatalogReturnsRowGenerator`, which
 /// replays every sales line item to find the returned ones.
-pub(crate) fn catalog_channel(
-    session: &Session,
-    first: u64,
-    last: u64,
-    batch: usize,
-    want: Want,
-    emit: &mut dyn FnMut(usize, RecordBatch),
-) {
+fn catalog_channel(session: &Session, first: u64, last: u64, want: Want, out: &mut impl Out) {
     let scaling = session.get_scaling();
     let orders = scaling.get_row_count(Ds::CatalogSales);
     let mut sg = AbstractRowGenerator::<CS>::new(orders);
@@ -554,9 +706,6 @@ pub(crate) fn catalog_channel(
     // the sold date advances with the row number, from the start of the data
     let mut julian = Date::JULIAN_DATA_START_DATE;
     let mut next_date = scaling.get_row_count_for_date(Ds::CatalogSales, julian) + 1;
-
-    let mut sb = Builder::new(CatalogSalesArrow::schema_ref(), CATALOG_SALES, batch);
-    let mut rb = Builder::new(CatalogReturnsArrow::schema_ref(), CATALOG_RETURNS, batch);
 
     for row in first..=last.min(orders) {
         while row > next_date {
@@ -670,16 +819,12 @@ pub(crate) fn catalog_channel(
                 pricing,
             };
             if want.sales {
-                push_catalog_sale(&mut sb, nbm, &o, &sale, ship_mode, warehouse, promo);
-                if sb.rows == batch {
-                    emit(0, sb.finish());
-                }
+                push_catalog_sale(out.row(0), nbm, &o, &sale, ship_mode, warehouse, promo);
+                out.done(0);
             }
             if returned && want.returns {
-                push_catalog_return(&mut rb, &mut rg, scaling, &o, &sale);
-                if rb.rows == batch {
-                    emit(1, rb.finish());
-                }
+                push_catalog_return(out.row(1), &mut rg, scaling, &o, &sale);
+                out.done(1);
             }
         }
         seeds::finish_row(&mut sg);
@@ -687,16 +832,11 @@ pub(crate) fn catalog_channel(
             seeds::finish_row(&mut rg);
         }
     }
-    if sb.rows > 0 {
-        emit(0, sb.finish());
-    }
-    if rb.rows > 0 {
-        emit(1, rb.finish());
-    }
+    out.finish();
 }
 
 fn push_catalog_sale(
-    b: &mut Builder,
+    b: &mut impl Row,
     nbm: i64,
     o: &ChannelOrder,
     s: &LineSale,
@@ -704,7 +844,6 @@ fn push_catalog_sale(
     warehouse: i64,
     promo: i64,
 ) {
-    let i = &mut b.i32s;
     let keys = [
         o.date,
         o.time,
@@ -725,37 +864,31 @@ fn push_catalog_sale(
         promo,
     ];
     for (pos, k) in keys.into_iter().enumerate() {
-        sk(&mut i[pos], nbm, pos as u32, k);
+        b.sk(nbm, pos as u32, k);
     }
-    b.i64s[0].push(o.number, bit(nbm, 17));
+    b.long(o.number, bit(nbm, 17));
     let p = &s.pricing;
-    i[17].push(p.get_quantity(), bit(nbm, 18));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 19, p.get_wholesale_cost());
-    dec(&mut d[1], nbm, 20, p.get_list_price());
-    dec(&mut d[2], nbm, 21, p.get_sales_price());
-    dec(&mut d[3], nbm, 24, p.get_ext_discount_amount());
-    dec(&mut d[4], nbm, 23, p.get_ext_sales_price());
-    dec(&mut d[5], nbm, 25, p.get_ext_wholesale_cost());
-    dec(&mut d[6], nbm, 26, p.get_ext_list_price());
-    dec(&mut d[7], nbm, 27, p.get_ext_tax());
-    dec(&mut d[8], nbm, 22, p.get_coupon_amount());
-    dec(&mut d[9], nbm, 28, p.get_ext_ship_cost());
-    dec(&mut d[10], nbm, 29, p.get_net_paid());
-    dec(&mut d[11], nbm, 30, p.get_net_paid_including_tax());
-    dec(&mut d[12], nbm, 31, p.get_net_paid_including_shipping());
-    dec(
-        &mut d[13],
-        nbm,
-        32,
-        p.get_net_paid_including_shipping_and_tax(),
-    );
-    dec(&mut d[14], nbm, 33, p.get_net_profit());
-    b.rows += 1;
+    b.int(p.get_quantity(), bit(nbm, 18));
+    b.dec(nbm, 19, p.get_wholesale_cost());
+    b.dec(nbm, 20, p.get_list_price());
+    b.dec(nbm, 21, p.get_sales_price());
+    b.dec(nbm, 24, p.get_ext_discount_amount());
+    b.dec(nbm, 23, p.get_ext_sales_price());
+    b.dec(nbm, 25, p.get_ext_wholesale_cost());
+    b.dec(nbm, 26, p.get_ext_list_price());
+    b.dec(nbm, 27, p.get_ext_tax());
+    b.dec(nbm, 22, p.get_coupon_amount());
+    b.dec(nbm, 28, p.get_ext_ship_cost());
+    b.dec(nbm, 29, p.get_net_paid());
+    b.dec(nbm, 30, p.get_net_paid_including_tax());
+    b.dec(nbm, 31, p.get_net_paid_including_shipping());
+    b.dec(nbm, 32, p.get_net_paid_including_shipping_and_tax());
+    b.dec(nbm, 33, p.get_net_profit());
+    b.end();
 }
 
 fn push_catalog_return(
-    b: &mut Builder,
+    b: &mut impl Row,
     rg: &mut AbstractRowGenerator<CR>,
     scaling: &tpcdsgen::config::Scaling,
     o: &ChannelOrder,
@@ -814,7 +947,6 @@ fn push_catalog_return(
     let warehouse = uniform(Ds::Warehouse, &CR::CrWarehouseSk, rg);
     let reason = uniform(Ds::Reason, &CR::CrReasonSk, rg);
 
-    let i = &mut b.i32s;
     let keys = [
         date,
         time,
@@ -834,21 +966,20 @@ fn push_catalog_return(
         reason,
     ];
     for (pos, k) in keys.into_iter().enumerate() {
-        sk(&mut i[pos], nbm, pos as u32, k);
+        b.sk(nbm, pos as u32, k);
     }
-    b.i64s[0].push(o.number, bit(nbm, 16));
-    i[16].push(p.get_quantity(), bit(nbm, 17));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 18, p.get_net_paid());
-    dec(&mut d[1], nbm, 19, p.get_ext_tax());
-    dec(&mut d[2], nbm, 20, p.get_net_paid_including_tax());
-    dec(&mut d[3], nbm, 21, p.get_fee());
-    dec(&mut d[4], nbm, 22, p.get_ext_ship_cost());
-    dec(&mut d[5], nbm, 23, p.get_refunded_cash());
-    dec(&mut d[6], nbm, 24, p.get_reversed_charge());
-    dec(&mut d[7], nbm, 25, p.get_store_credit());
-    dec(&mut d[8], nbm, 26, p.get_net_loss());
-    b.rows += 1;
+    b.long(o.number, bit(nbm, 16));
+    b.int(p.get_quantity(), bit(nbm, 17));
+    b.dec(nbm, 18, p.get_net_paid());
+    b.dec(nbm, 19, p.get_ext_tax());
+    b.dec(nbm, 20, p.get_net_paid_including_tax());
+    b.dec(nbm, 21, p.get_fee());
+    b.dec(nbm, 22, p.get_ext_ship_cost());
+    b.dec(nbm, 23, p.get_refunded_cash());
+    b.dec(nbm, 24, p.get_reversed_charge());
+    b.dec(nbm, 25, p.get_store_credit());
+    b.dec(nbm, 26, p.get_net_loss());
+    b.end();
 }
 
 /// Web orders shipped to the billed customer: those drawing at most this
@@ -858,14 +989,7 @@ const WEB_GIFT_PCT: i32 = 7;
 /// Generate `web_sales` (output 0) and/or `web_returns` (output 1) for
 /// orders `first..=last` (1-based): a port of tpcdsgen's
 /// `WebSalesRowGenerator` and `WebReturnsRowGenerator`.
-pub(crate) fn web_channel(
-    session: &Session,
-    first: u64,
-    last: u64,
-    batch: usize,
-    want: Want,
-    emit: &mut dyn FnMut(usize, RecordBatch),
-) {
+fn web_channel(session: &Session, first: u64, last: u64, want: Want, out: &mut impl Out) {
     let scaling = session.get_scaling();
     let orders = scaling.get_row_count(Ds::WebSales);
     let mut sg = AbstractRowGenerator::<WS>::new(orders);
@@ -877,8 +1001,6 @@ pub(crate) fn web_channel(
     let limits = get_web_sales_pricing_limits();
     let permutation = make_permutation(item_count, sg.get_random_number_stream(&WS::WsPermutation));
 
-    let mut sb = Builder::new(WebSalesArrow::schema_ref(), WEB_SALES, batch);
-    let mut rb = Builder::new(WebReturnsArrow::schema_ref(), WEB_RETURNS, batch);
     let uniform = |t, c: &WS, sg: &mut AbstractRowGenerator<WS>| {
         generate_uniform_join_key(t, sg.get_random_number_stream(c), scaling)
     };
@@ -978,21 +1100,17 @@ pub(crate) fn web_channel(
             };
             if want.sales {
                 push_web_sale(
-                    &mut sb,
+                    out.row(0),
                     nbm,
                     &o,
                     &sale,
                     [web_site, ship_mode, warehouse, promo],
                 );
-                if sb.rows == batch {
-                    emit(0, sb.finish());
-                }
+                out.done(0);
             }
             if returned && want.returns {
-                push_web_return(&mut rb, &mut rg, scaling, &o, &sale);
-                if rb.rows == batch {
-                    emit(1, rb.finish());
-                }
+                push_web_return(out.row(1), &mut rg, scaling, &o, &sale);
+                out.done(1);
             }
         }
         seeds::finish_row(&mut sg);
@@ -1000,17 +1118,11 @@ pub(crate) fn web_channel(
             seeds::finish_row(&mut rg);
         }
     }
-    if sb.rows > 0 {
-        emit(0, sb.finish());
-    }
-    if rb.rows > 0 {
-        emit(1, rb.finish());
-    }
+    out.finish();
 }
 
 /// `rest`: web site, ship mode, warehouse, promotion.
-fn push_web_sale(b: &mut Builder, nbm: i64, o: &ChannelOrder, s: &LineSale, rest: [i64; 4]) {
-    let i = &mut b.i32s;
+fn push_web_sale(b: &mut impl Row, nbm: i64, o: &ChannelOrder, s: &LineSale, rest: [i64; 4]) {
     let keys = [
         o.date,
         o.time,
@@ -1031,37 +1143,31 @@ fn push_web_sale(b: &mut Builder, nbm: i64, o: &ChannelOrder, s: &LineSale, rest
         rest[3],
     ];
     for (pos, k) in keys.into_iter().enumerate() {
-        sk(&mut i[pos], nbm, pos as u32, k);
+        b.sk(nbm, pos as u32, k);
     }
-    b.i64s[0].push(o.number, bit(nbm, 17));
+    b.long(o.number, bit(nbm, 17));
     let p = &s.pricing;
-    i[17].push(p.get_quantity(), bit(nbm, 18));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 19, p.get_wholesale_cost());
-    dec(&mut d[1], nbm, 20, p.get_list_price());
-    dec(&mut d[2], nbm, 21, p.get_sales_price());
-    dec(&mut d[3], nbm, 22, p.get_ext_discount_amount());
-    dec(&mut d[4], nbm, 23, p.get_ext_sales_price());
-    dec(&mut d[5], nbm, 24, p.get_ext_wholesale_cost());
-    dec(&mut d[6], nbm, 25, p.get_ext_list_price());
-    dec(&mut d[7], nbm, 26, p.get_ext_tax());
-    dec(&mut d[8], nbm, 27, p.get_coupon_amount());
-    dec(&mut d[9], nbm, 28, p.get_ext_ship_cost());
-    dec(&mut d[10], nbm, 29, p.get_net_paid());
-    dec(&mut d[11], nbm, 30, p.get_net_paid_including_tax());
-    dec(&mut d[12], nbm, 31, p.get_net_paid_including_shipping());
-    dec(
-        &mut d[13],
-        nbm,
-        32,
-        p.get_net_paid_including_shipping_and_tax(),
-    );
-    dec(&mut d[14], nbm, 33, p.get_net_profit());
-    b.rows += 1;
+    b.int(p.get_quantity(), bit(nbm, 18));
+    b.dec(nbm, 19, p.get_wholesale_cost());
+    b.dec(nbm, 20, p.get_list_price());
+    b.dec(nbm, 21, p.get_sales_price());
+    b.dec(nbm, 22, p.get_ext_discount_amount());
+    b.dec(nbm, 23, p.get_ext_sales_price());
+    b.dec(nbm, 24, p.get_ext_wholesale_cost());
+    b.dec(nbm, 25, p.get_ext_list_price());
+    b.dec(nbm, 26, p.get_ext_tax());
+    b.dec(nbm, 27, p.get_coupon_amount());
+    b.dec(nbm, 28, p.get_ext_ship_cost());
+    b.dec(nbm, 29, p.get_net_paid());
+    b.dec(nbm, 30, p.get_net_paid_including_tax());
+    b.dec(nbm, 31, p.get_net_paid_including_shipping());
+    b.dec(nbm, 32, p.get_net_paid_including_shipping_and_tax());
+    b.dec(nbm, 33, p.get_net_profit());
+    b.end();
 }
 
 fn push_web_return(
-    b: &mut Builder,
+    b: &mut impl Row,
     rg: &mut AbstractRowGenerator<WR>,
     scaling: &tpcdsgen::config::Scaling,
     o: &ChannelOrder,
@@ -1110,7 +1216,6 @@ fn push_web_return(
         &s.pricing,
     );
 
-    let i = &mut b.i32s;
     // the returning customer is the refunded one
     let keys = [
         date,
@@ -1128,21 +1233,20 @@ fn push_web_return(
         reason,
     ];
     for (pos, k) in keys.into_iter().enumerate() {
-        sk(&mut i[pos], nbm, pos as u32, k);
+        b.sk(nbm, pos as u32, k);
     }
-    b.i64s[0].push(o.number, bit(nbm, 13));
-    i[13].push(p.get_quantity(), bit(nbm, 14));
-    let d = &mut b.decs;
-    dec(&mut d[0], nbm, 15, p.get_net_paid());
-    dec(&mut d[1], nbm, 16, p.get_ext_tax());
-    dec(&mut d[2], nbm, 17, p.get_net_paid_including_tax());
-    dec(&mut d[3], nbm, 18, p.get_fee());
-    dec(&mut d[4], nbm, 19, p.get_ext_ship_cost());
-    dec(&mut d[5], nbm, 20, p.get_refunded_cash());
-    dec(&mut d[6], nbm, 21, p.get_reversed_charge());
-    dec(&mut d[7], nbm, 22, p.get_store_credit());
-    dec(&mut d[8], nbm, 23, p.get_net_loss());
-    b.rows += 1;
+    b.long(o.number, bit(nbm, 13));
+    b.int(p.get_quantity(), bit(nbm, 14));
+    b.dec(nbm, 15, p.get_net_paid());
+    b.dec(nbm, 16, p.get_ext_tax());
+    b.dec(nbm, 17, p.get_net_paid_including_tax());
+    b.dec(nbm, 18, p.get_fee());
+    b.dec(nbm, 19, p.get_ext_ship_cost());
+    b.dec(nbm, 20, p.get_refunded_cash());
+    b.dec(nbm, 21, p.get_reversed_charge());
+    b.dec(nbm, 22, p.get_store_credit());
+    b.dec(nbm, 23, p.get_net_loss());
+    b.end();
 }
 
 #[cfg(test)]
@@ -1157,9 +1261,8 @@ mod tests {
         v
     }
 
-    type Channel = fn(&Session, u64, u64, usize, Want, &mut dyn FnMut(usize, RecordBatch));
-
-    /// `channel` gives tpcdsgen-arrow's sales and returns, together or alone.
+    /// `channel` gives tpcdsgen-arrow's sales and returns, together or
+    /// alone, and the `.dat` text of them.
     fn check(
         s: &Session,
         channel: Channel,
@@ -1174,26 +1277,43 @@ mod tests {
             sales: true,
             returns: true,
         };
-        channel(s, first, last, 777, both, &mut |k, b| {
+        channel.run(s, first, last, 777, both, &mut |k, b| {
             if k == 0 { got_s.push(b) } else { got_r.push(b) }
         });
         assert_eq!(cat(&got_s), cat(want_s));
         assert_eq!(cat(&got_r), cat(want_r));
-        let one = |want| collect(|e| channel(s, first, last, 777, want, &mut |_, b| e(b)));
-        assert_eq!(
-            cat(&one(Want {
-                sales: false,
-                returns: true
-            })),
-            cat(want_r)
-        );
-        assert_eq!(
-            cat(&one(Want {
+        let one = |want| collect(|e| channel.run(s, first, last, 777, want, &mut |_, b| e(b)));
+        let (sales, returns) = (
+            Want {
                 sales: true,
-                returns: false
-            })),
-            cat(want_s)
+                returns: false,
+            },
+            Want {
+                sales: false,
+                returns: true,
+            },
         );
+        assert_eq!(cat(&one(returns)), cat(want_r));
+        assert_eq!(cat(&one(sales)), cat(want_s));
+
+        // text straight from the channel = text of the Arrow batches
+        let text = |v: &[RecordBatch]| {
+            let mut out = Vec::new();
+            dat::write_batch(&cat(v), dat::Encoding::Latin1, &mut out);
+            String::from_utf8(out).unwrap()
+        };
+        let run = |want| {
+            let (mut s_out, mut r_out) = (Vec::new(), Vec::new());
+            channel.run_dat(s, first, last, want, &mut s_out, &mut r_out);
+            (
+                String::from_utf8(s_out).unwrap(),
+                String::from_utf8(r_out).unwrap(),
+            )
+        };
+        let (ts, tr) = (text(want_s), text(want_r));
+        assert_eq!(run(both), (ts.clone(), tr.clone()));
+        assert_eq!(run(sales).0, ts);
+        assert_eq!(run(returns).1, tr);
     }
 
     #[test]
@@ -1213,7 +1333,7 @@ mod tests {
                     .with_source_row_range(first, last)
                     .for_each(|b| e(b.unwrap()))
             });
-            check(&s, catalog_channel, &want_s, &want_r, first, last);
+            check(&s, Channel::Catalog, &want_s, &want_r, first, last);
         }
     }
 
@@ -1234,7 +1354,7 @@ mod tests {
                     .with_source_row_range(first, last)
                     .for_each(|b| e(b.unwrap()))
             });
-            check(&s, web_channel, &want_s, &want_r, first, last);
+            check(&s, Channel::Web, &want_s, &want_r, first, last);
         }
     }
 
@@ -1255,34 +1375,7 @@ mod tests {
                     .with_source_row_range(first, last)
                     .for_each(|b| e(b.unwrap()))
             });
-            let (mut got_s, mut got_r) = (Vec::new(), Vec::new());
-            let both = Want {
-                sales: true,
-                returns: true,
-            };
-            store_channel(&s, first, last, 777, both, &mut |k, b| {
-                if k == 0 { got_s.push(b) } else { got_r.push(b) }
-            });
-            let cat = |v: &[RecordBatch]| concat_batches(&v[0].schema(), v).unwrap();
-            assert_eq!(cat(&got_s), cat(&want_s));
-            assert_eq!(cat(&got_r), cat(&want_r));
-            // one table alone gives the same rows
-            let one =
-                |want| collect(|e| store_channel(&s, first, last, 777, want, &mut |_, b| e(b)));
-            assert_eq!(
-                cat(&one(Want {
-                    sales: false,
-                    returns: true
-                })),
-                cat(&want_r)
-            );
-            assert_eq!(
-                cat(&one(Want {
-                    sales: true,
-                    returns: false
-                })),
-                cat(&want_s)
-            );
+            check(&s, Channel::Store, &want_s, &want_r, first, last);
         }
     }
 }

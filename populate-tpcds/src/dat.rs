@@ -111,6 +111,37 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
     }
 }
 
+/// Append `v` and its `|`, as [`write_batch`] writes an integer field.
+#[inline]
+pub(crate) fn int_field(out: &mut Vec<u8>, v: i64) {
+    field(out, |w| unsafe { w.int(v) });
+}
+
+/// Append the decimal `v / 100` and its `|`, as [`write_batch`] writes a
+/// decimal(_, 2) field.
+#[inline]
+pub(crate) fn decimal2_field(out: &mut Vec<u8>, v: i64) {
+    field(out, |w| unsafe { w.decimal2(v) });
+}
+
+/// Run `f` (which writes at most one number) on a cursor at the end of
+/// `out`, then append `|`.
+#[inline(always)]
+fn field(out: &mut Vec<u8>, f: impl FnOnce(&mut Cursor)) {
+    out.reserve(MAX_NUMBER + 1);
+    let len = out.len();
+    // SAFETY: `f` writes at most `MAX_NUMBER` bytes (with the 8-byte stores
+    // of `uint`, which fit in it too), then one `|`, into reserved
+    // capacity; all of it is initialised before `set_len`.
+    unsafe {
+        let mut w = Cursor(out.as_mut_ptr().add(len));
+        f(&mut w);
+        w.byte(b'|');
+        let n = w.0.offset_from(out.as_ptr()) as usize;
+        out.set_len(n);
+    }
+}
+
 /// A validity bitmap as a raw pointer and bit offset: `NullBuffer::is_valid`
 /// bounds-checks and re-derives both on every call, which was a quarter of
 /// the formatting time.

@@ -180,8 +180,13 @@ one loop (`src/fused.rs`): ports of tpcdsgen's sales and returns
 generators (Apache-2.0) built on its public stream and key helpers,
 pushing values straight into Arrow columns. tpcdsgen's returns generators
 replay every sales line item, so each pair cost the sales work twice.
+The loops push each row's values, in schema order, into a `Row`: the
+Arrow `Builder` appends them to columns, and for `.dat` output `Text`
+formats them straight into the chunk's text, so the sales and returns
+tables (~75% of the `.dat` bytes) never become Arrow batches. That cut a
+one-thread `.dat` run's instructions by another 20% (SF 0.2, callgrind).
 Each channel is tested equal to tpcdsgen-arrow for both tables, together
-and alone; when only one table is asked for, the loop skips the other's
+and alone, and its text equal to the text of its Arrow batches; when only one table is asked for, the loop skips the other's
 work. Fusing catalog and web took a further ~0.35 s off a one-thread run.
 
 The loops also burn dsdgen's end-of-row seeds faster
@@ -193,8 +198,7 @@ multiply by `16807^k mod (2^31 - 1)`.
 ### What's left
 
 - **tpcdsgen's other generators.** They still burn seeds draw by draw.
-- **`.dat` formatting.** Still ~50 instructions per cell, of which the
-  per-cell type dispatch is ~10%; the sales channels could write text
-  directly and skip their Arrow columns.
+- **`.dat` formatting.** Still ~50 instructions per cell for the tables
+  that go through Arrow, of which the per-cell type dispatch is ~10%.
 - **Parquet encoding.** Still the largest stage: text columns go through
   arrow-rs, and Snappy.

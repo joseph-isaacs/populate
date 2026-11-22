@@ -386,7 +386,7 @@ pub fn write_dat_many<W: Write + Send>(
                 .iter()
                 .map(|_| pool.lock().expect("pool").pop().unwrap_or_default())
                 .collect();
-            unit.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
+            unit.chunk_dat(i, encoding, &mut bufs);
             for (&t, buf) in unit.idx.iter().zip(bufs) {
                 *queued.0.lock().expect("queued") += 1;
                 let written = DatFile::push(&files[t], i, buf, |b| {
@@ -560,6 +560,42 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
         units.push(Unit { tables, idx, raw });
     }
     units
+}
+
+impl Unit<'_> {
+    /// Chunk `i` as `.dat` text, appended to `bufs` (one per output). The
+    /// sales channels write their text directly, without Arrow columns.
+    fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        let t = &self.tables[self.idx[0]];
+        let Some((channel, sales)) = Channel::of(t.name) else {
+            return self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
+        };
+        let (first, last) = t.range(i);
+        match bufs {
+            // `idx` is sales, returns
+            [s, r] => {
+                let both = Want {
+                    sales: true,
+                    returns: true,
+                };
+                channel.run_dat(&t.session, first, last, both, s, r);
+            }
+            [one] => {
+                let want = Want {
+                    sales,
+                    returns: !sales,
+                };
+                let mut none = Vec::new();
+                let (s, r) = if sales {
+                    (one, &mut none)
+                } else {
+                    (&mut none, one)
+                };
+                channel.run_dat(&t.session, first, last, want, s, r);
+            }
+            _ => unreachable!("a unit has one or two outputs"),
+        }
+    }
 }
 
 impl MultiChunks for Unit<'_> {

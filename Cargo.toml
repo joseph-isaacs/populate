@@ -17,15 +17,10 @@ license = "MIT"
 [workspace.dependencies]
 divan = "0.1"
 rand = "0.9"
-arrow = { version = "57.2.0" }
 arrow-array = "57"
 arrow-schema = "57"
 arrow-buffer = "57"
-arrow-cast = "57"
 parquet = { version = "57", default-features = false }
-serde_json = "1"
-tpchgen = "2.0"
-tpchgen-arrow = "2.0"
 populate = { path = "populate" }
 populate-core = { path = "populate-core" }
 populate-builtins = { path = "populate-builtins" }

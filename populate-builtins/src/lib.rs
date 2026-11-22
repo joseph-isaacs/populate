@@ -4,6 +4,7 @@
 
 use populate_core::traits::{
     Backend, DefaultSink, Distribution, Flatten, HCons, HNil, ListCol, SampleIter, Sink,
+    collect_rows,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -47,16 +48,11 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <T as DefaultSink<B>>::Sink,
+        sink: <T as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
-        sink.reserve(n);
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+        collect_rows(self.row_iter(), sink, rng, n)
     }
 }
 
@@ -104,16 +100,11 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <T as DefaultSink<B>>::Sink,
+        sink: <T as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
-        sink.reserve(n);
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+        collect_rows(self.row_iter(), sink, rng, n)
     }
 }
 
@@ -173,16 +164,11 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <Out as DefaultSink<B>>::Sink,
+        sink: <Out as DefaultSink<B>>::Sink,
         rng: &mut impl Rng,
         n: usize,
     ) -> <Out as DefaultSink<B>>::Sink {
-        sink.reserve(n);
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+        collect_rows(self.row_iter(), sink, rng, n)
     }
 }
 

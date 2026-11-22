@@ -1,4 +1,4 @@
-use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink};
+use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink, collect_rows};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -53,15 +53,11 @@ where
 
     fn collect_into(
         &mut self,
-        mut sink: <D::Item as DefaultSink<B>>::Sink,
+        sink: <D::Item as DefaultSink<B>>::Sink,
         rng: &mut impl rand::Rng,
         n: usize,
     ) -> <D::Item as DefaultSink<B>>::Sink {
-        let mut iter = self.row_iter();
-        for _ in 0..n {
-            sink.push(iter.next(rng));
-        }
-        sink
+        collect_rows(self.row_iter(), sink, rng, n)
     }
 }
 

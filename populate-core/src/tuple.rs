@@ -5,18 +5,30 @@ use crate::traits::{Backend, DefaultSink, Distribution, HAppend, SampleIter};
 use rand::Rng;
 
 // ============================================================================
-// Tuple (D1, D2) — col-by-col using HAppend
+// Row iterators: one struct per arity, generated
 // ============================================================================
 
-pub struct TupleIter2<I1, I2>(pub I1, pub I2);
+macro_rules! tuple_iter {
+    ($name:ident; $($i:ident $idx:tt),+) => {
+        pub struct $name<$($i),+>($(pub $i),+);
 
-impl<I1: SampleIter, I2: SampleIter> SampleIter for TupleIter2<I1, I2> {
-    type Item = (I1::Item, I2::Item);
+        impl<$($i: SampleIter),+> SampleIter for $name<$($i),+> {
+            type Item = ($($i::Item),+);
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        (self.0.next(rng), self.1.next(rng))
-    }
+            fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
+                ($(self.$idx.next(rng)),+)
+            }
+        }
+    };
 }
+
+tuple_iter!(TupleIter2; I1 0, I2 1);
+tuple_iter!(TupleIter3; I1 0, I2 1, I3 2);
+tuple_iter!(TupleIter4; I1 0, I2 1, I3 2, I4 3);
+
+// ============================================================================
+// Tuple (D1, D2) — col-by-col using HAppend
+// ============================================================================
 
 impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>> Distribution<B> for (D1, D2)
 where
@@ -47,16 +59,6 @@ where
 // ============================================================================
 // Tuple (D1, D2, D3) — col-by-col
 // ============================================================================
-
-pub struct TupleIter3<I1, I2, I3>(pub I1, pub I2, pub I3);
-
-impl<I1: SampleIter, I2: SampleIter, I3: SampleIter> SampleIter for TupleIter3<I1, I2, I3> {
-    type Item = (I1::Item, I2::Item, I3::Item);
-
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        (self.0.next(rng), self.1.next(rng), self.2.next(rng))
-    }
-}
 
 impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>, D3: Distribution<B>> Distribution<B>
     for (D1, D2, D3)
@@ -94,23 +96,6 @@ where
 // ============================================================================
 // Tuple (D1, D2, D3, D4) — col-by-col
 // ============================================================================
-
-pub struct TupleIter4<I1, I2, I3, I4>(pub I1, pub I2, pub I3, pub I4);
-
-impl<I1: SampleIter, I2: SampleIter, I3: SampleIter, I4: SampleIter> SampleIter
-    for TupleIter4<I1, I2, I3, I4>
-{
-    type Item = (I1::Item, I2::Item, I3::Item, I4::Item);
-
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        (
-            self.0.next(rng),
-            self.1.next(rng),
-            self.2.next(rng),
-            self.3.next(rng),
-        )
-    }
-}
 
 impl<
         B: Backend,

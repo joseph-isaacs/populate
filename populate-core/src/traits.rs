@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 
 // Re-export HList types so existing `use crate::traits::{HCons, ...}` keeps working
 pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
+use crate::hlist::{hlist_ty, hlist_val};
 
 // ============================================================================
 // Backend — selects concrete sink types for each column kind
@@ -146,6 +147,21 @@ pub trait SampleIter {
     fn next(&mut self, rng: &mut impl Rng) -> Self::Item;
 }
 
+/// Row-at-a-time collection: pull `n` items from `iter` and push them into
+/// `sink`. The `collect_into` of every leaf (and of `Map`) is this.
+pub fn collect_rows<I: SampleIter, S: Sink<I::Item>>(
+    mut iter: I,
+    mut sink: S,
+    rng: &mut impl Rng,
+    n: usize,
+) -> S {
+    sink.reserve(n);
+    for _ in 0..n {
+        sink.push(iter.next(rng));
+    }
+    sink
+}
+
 pub trait Distribution<B: Backend> {
     type Item: DefaultSink<B>;
     type RowIter: SampleIter<Item = Self::Item>;
@@ -216,81 +232,38 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
     }
 }
 
-// 2-tuple into 2-element HList
-impl<A, B, SA: Sink<A>, SB: Sink<B>> Sink<(A, B)> for HCons<SA, HCons<SB, HNil>> {
-    fn push(&mut self, (a, b): (A, B)) {
-        self.0.push(a);
-        self.1.0.push(b);
-    }
+// Tuples into an HList of sinks (columnar) or a tuple of sinks (row tests).
+macro_rules! impl_tuple_sinks {
+    ($($T:ident $S:ident $v:ident $s:ident),+) => {
+        impl<$($T, $S: Sink<$T>),+> Sink<($($T,)+)> for hlist_ty!($($S),+) {
+            fn push(&mut self, ($($v,)+): ($($T,)+)) {
+                let hlist_val!($($s),+) = self;
+                $($s.push($v);)+
+            }
 
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n);
-        self.1.0.reserve(n);
-    }
+            fn reserve(&mut self, n: usize) {
+                let hlist_val!($($s),+) = self;
+                $($s.reserve(n);)+
+            }
+        }
+
+        impl<$($T, $S: Sink<$T>),+> Sink<($($T,)+)> for ($($S,)+) {
+            fn push(&mut self, ($($v,)+): ($($T,)+)) {
+                let ($($s,)+) = self;
+                $($s.push($v);)+
+            }
+
+            fn reserve(&mut self, n: usize) {
+                let ($($s,)+) = self;
+                $($s.reserve(n);)+
+            }
+        }
+    };
 }
 
-// 3-tuple into 3-element HList
-impl<A, B, C, SA: Sink<A>, SB: Sink<B>, SC: Sink<C>> Sink<(A, B, C)>
-    for HCons<SA, HCons<SB, HCons<SC, HNil>>>
-{
-    fn push(&mut self, (a, b, c): (A, B, C)) {
-        self.0.push(a);
-        self.1.0.push(b);
-        self.1.1.0.push(c);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n);
-        self.1.0.reserve(n);
-        self.1.1.0.reserve(n);
-    }
-}
-
-// 4-tuple into 4-element HList
-impl<A, B, C, D, SA: Sink<A>, SB: Sink<B>, SC: Sink<C>, SD: Sink<D>> Sink<(A, B, C, D)>
-    for HCons<SA, HCons<SB, HCons<SC, HCons<SD, HNil>>>>
-{
-    fn push(&mut self, (a, b, c, d): (A, B, C, D)) {
-        self.0.push(a);
-        self.1.0.push(b);
-        self.1.1.0.push(c);
-        self.1.1.1.0.push(d);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n);
-        self.1.0.reserve(n);
-        self.1.1.0.reserve(n);
-        self.1.1.1.0.reserve(n);
-    }
-}
-
-// Tuple sinks — for row-by-row collection (collect helper in tests uses these)
-impl<T1, T2, S1: Sink<T1>, S2: Sink<T2>> Sink<(T1, T2)> for (S1, S2) {
-    fn push(&mut self, (a, b): (T1, T2)) {
-        self.0.push(a);
-        self.1.push(b);
-    }
-}
-
-impl<T1, T2, T3, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>> Sink<(T1, T2, T3)> for (S1, S2, S3) {
-    fn push(&mut self, (a, b, c): (T1, T2, T3)) {
-        self.0.push(a);
-        self.1.push(b);
-        self.2.push(c);
-    }
-}
-
-impl<T1, T2, T3, T4, S1: Sink<T1>, S2: Sink<T2>, S3: Sink<T3>, S4: Sink<T4>> Sink<(T1, T2, T3, T4)>
-    for (S1, S2, S3, S4)
-{
-    fn push(&mut self, (a, b, c, d): (T1, T2, T3, T4)) {
-        self.0.push(a);
-        self.1.push(b);
-        self.2.push(c);
-        self.3.push(d);
-    }
-}
+impl_tuple_sinks!(A SA a sa, B SB b sb);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd);
 
 // ============================================================================
 // DistributionExt — ergonomic methods (collect_flat, flatten)

@@ -58,93 +58,48 @@ pub trait IntoTuple {
     fn into_tuple(self) -> Self::Tuple;
 }
 
-// 1-tuple
-impl<A> IntoHList for (A,) {
-    type HList = HCons<A, HNil>;
-
-    fn into_hlist(self) -> Self::HList {
-        HCons(self.0, HNil)
-    }
+// `hlist_ty!(A, B)` = `HCons<A, HCons<B, HNil>>`; `hlist_val!(a, b)` is the
+// matching value / pattern. Used to generate the per-arity impls below and the
+// tuple sink impls in `traits`.
+macro_rules! hlist_ty {
+    () => { HNil };
+    ($h:ident $(, $t:ident)*) => { HCons<$h, hlist_ty!($($t),*)> };
 }
 
-impl<A> IntoTuple for HCons<A, HNil> {
-    type Tuple = (A,);
-
-    fn into_tuple(self) -> (A,) {
-        (self.0,)
-    }
+macro_rules! hlist_val {
+    () => { HNil };
+    ($h:ident $(, $t:ident)*) => { HCons($h, hlist_val!($($t),*)) };
 }
 
-// 2-tuple
-impl<A, B> IntoHList for (A, B) {
-    type HList = HCons<A, HCons<B, HNil>>;
+pub(crate) use {hlist_ty, hlist_val};
 
-    fn into_hlist(self) -> Self::HList {
-        HCons(self.0, HCons(self.1, HNil))
-    }
+macro_rules! impl_tuple_hlist {
+    ($($T:ident $v:ident),+) => {
+        impl<$($T),+> IntoHList for ($($T,)+) {
+            type HList = hlist_ty!($($T),+);
+
+            fn into_hlist(self) -> Self::HList {
+                let ($($v,)+) = self;
+                hlist_val!($($v),+)
+            }
+        }
+
+        impl<$($T),+> IntoTuple for hlist_ty!($($T),+) {
+            type Tuple = ($($T,)+);
+
+            fn into_tuple(self) -> Self::Tuple {
+                let hlist_val!($($v),+) = self;
+                ($($v,)+)
+            }
+        }
+    };
 }
 
-impl<A, B> IntoTuple for HCons<A, HCons<B, HNil>> {
-    type Tuple = (A, B);
-
-    fn into_tuple(self) -> (A, B) {
-        (self.0, self.1.0)
-    }
-}
-
-// 3-tuple
-impl<A, B, C> IntoHList for (A, B, C) {
-    type HList = HCons<A, HCons<B, HCons<C, HNil>>>;
-
-    fn into_hlist(self) -> Self::HList {
-        HCons(self.0, HCons(self.1, HCons(self.2, HNil)))
-    }
-}
-
-impl<A, B, C> IntoTuple for HCons<A, HCons<B, HCons<C, HNil>>> {
-    type Tuple = (A, B, C);
-
-    fn into_tuple(self) -> (A, B, C) {
-        (self.0, self.1.0, self.1.1.0)
-    }
-}
-
-// 4-tuple
-impl<A, B, C, D> IntoHList for (A, B, C, D) {
-    type HList = HCons<A, HCons<B, HCons<C, HCons<D, HNil>>>>;
-
-    fn into_hlist(self) -> Self::HList {
-        HCons(self.0, HCons(self.1, HCons(self.2, HCons(self.3, HNil))))
-    }
-}
-
-impl<A, B, C, D> IntoTuple for HCons<A, HCons<B, HCons<C, HCons<D, HNil>>>> {
-    type Tuple = (A, B, C, D);
-
-    fn into_tuple(self) -> (A, B, C, D) {
-        (self.0, self.1.0, self.1.1.0, self.1.1.1.0)
-    }
-}
-
-// 5-tuple
-impl<A, B, C, D, E> IntoHList for (A, B, C, D, E) {
-    type HList = HCons<A, HCons<B, HCons<C, HCons<D, HCons<E, HNil>>>>>;
-
-    fn into_hlist(self) -> Self::HList {
-        HCons(
-            self.0,
-            HCons(self.1, HCons(self.2, HCons(self.3, HCons(self.4, HNil)))),
-        )
-    }
-}
-
-impl<A, B, C, D, E> IntoTuple for HCons<A, HCons<B, HCons<C, HCons<D, HCons<E, HNil>>>>> {
-    type Tuple = (A, B, C, D, E);
-
-    fn into_tuple(self) -> (A, B, C, D, E) {
-        (self.0, self.1.0, self.1.1.0, self.1.1.1.0, self.1.1.1.1.0)
-    }
-}
+impl_tuple_hlist!(A a);
+impl_tuple_hlist!(A a, B b);
+impl_tuple_hlist!(A a, B b, C c);
+impl_tuple_hlist!(A a, B b, C c, D d);
+impl_tuple_hlist!(A a, B b, C c, D d, E e);
 
 // ============================================================================
 // ValueHList — recursive value-to-HList (mirrors DefaultSink but for values)

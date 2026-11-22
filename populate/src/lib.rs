@@ -1,52 +1,38 @@
 //! Sampling combinators for columnar data generation.
 //!
-//! This crate provides a trait-based system for generating test data with composable
-//! distributions that can output to various storage formats.
-//!
-//! # Architecture
-//!
-//! The library is split into three main components:
-//!
-//! - **Core traits** (`populate-core`): `Distribution`, `SampleIter`, `Sink`, `ListSink`
-//! - **Built-in combinators** (`populate-builtins`): `Constant`, `Range`, `List`, tuples
-//! - **Sink implementations**: `populate-sink-vec` (Vec), `populate-sink-json` (JSON)
-//!
-//! # Example
+//! This is the facade crate: it re-exports the pieces that live in their own
+//! crates so users only depend on `populate`.
 //!
 //! ```
-//! use populate::{Distribution, collect_into, range, VecSink};
-//! use rand::SeedableRng;
+//! # #[cfg(feature = "arrow")] {
+//! use populate::arrow::{ArrowBackend, DistributionArrow};
+//! use populate::dist::{constant, list, range};
 //!
-//! let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-//! let mut dist = range(0i32, 100);
+//! // id: i64, tags: list<i64> (every row has 3 tags)
+//! let mut dist = (range(0i64, 1), list(constant(3usize), range(0i64, 1)));
 //!
-//! let data: Vec<i32> = collect_into(dist.sample(), &mut rng, 10, VecSink::new());
-//! assert_eq!(data.len(), 10);
+//! let batch = DistributionArrow::<ArrowBackend>::collect_record_batch(&mut dist, &mut rand::rng(), 1_000)
+//!     .unwrap();
+//! assert_eq!(batch.num_rows(), 1_000);
+//! assert_eq!(batch.num_columns(), 2);
+//! # }
 //! ```
+//!
+//! | module      | crate                   | contents                                    |
+//! |-------------|-------------------------|---------------------------------------------|
+//! | [`traits`]  | `populate-core`         | `Distribution`, `SampleIter`, `Sink`, ...   |
+//! | [`hlist`]   | `populate-core`         | HList sink plumbing                         |
+//! | [`tuple`]   | `populate-core`         | tuple-of-distributions combinators          |
+//! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `map`, `list`, ...     |
+//! | [`arrow`]   | `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output        |
+//! | [`parquet`] | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)|
 
-// Re-export core traits
-pub use populate_core::{
-    CollectExt, Collector, Distribution, ListSink, SampleIter, Sink, TupleIter2, TupleIter3,
-    collect_into, collect_into_column, collect_list_into, collect_struct2_into,
-    collect_struct3_into,
-};
+pub use populate_builtins as dist;
+pub use populate_core::{hlist, traits, tuple};
+#[cfg(feature = "arrow")]
+pub use populate_sink_arrow as arrow;
+#[cfg(feature = "parquet")]
+pub use populate_sink_parquet as parquet;
 
-// Re-export built-in combinators
-pub use populate_builtins::{
-    Constant, ConstantIter, List, ListIter, Range, RangeIter, constant, list, range,
-};
-
-// Re-export Vec collectors and sinks
-pub use populate_sink_vec::{Col, Cols, ListCol, Rows, VecListSink, VecSink};
-
-// Also expose the sub-crates as modules for direct access
-pub use populate_builtins as builtins;
-pub use populate_core as core;
-pub use populate_sink_vec as sink_vec;
-
-// Re-export JSON collectors and sinks when feature is enabled
-#[cfg(feature = "json")]
-pub use populate_sink_json::{JsonRows, ToJsonValue, pretty_print};
-
-#[cfg(feature = "json")]
-pub use populate_sink_json as sink_json;
+#[cfg(test)]
+mod test;

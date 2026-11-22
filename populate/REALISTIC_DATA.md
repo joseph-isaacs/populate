@@ -34,7 +34,7 @@ both sides (a `const NAMES` line today, `.named()` calls proposed).
 
 \* `n_lines` isn't possible as shipped.
 
-**Your point holds: most of the gap was missing combinators.** With them,
+**Most of the gap is missing combinators.** With them,
 today's core gets to 57 lines vs 40 proposed, and the remaining 17 lines
 aren't the real issue. What combinators **can't** fix, because it's in
 `populate-core`:

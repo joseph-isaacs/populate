@@ -7,6 +7,7 @@ mod arrow;
 mod col;
 mod deque;
 mod dist;
+mod random;
 mod row;
 mod scalar;
 

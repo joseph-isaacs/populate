@@ -53,6 +53,24 @@ fn scalar_tuple_to_record_batch() {
 }
 
 #[test]
+fn record_batches_share_a_schema() {
+    let mut d = make_4tuple();
+    let first = d.collect_record_batch(&mut rng(), 3).unwrap();
+    let schema = first.schema();
+    let rb = d.collect_record_batch_with(&schema, &mut rng(), 2).unwrap();
+    // the same `Arc`, not a rebuilt schema
+    assert!(Arc::ptr_eq(&rb.schema(), &schema));
+    assert_eq!(rb.num_rows(), 2);
+    assert_eq!(i32s(rb.column(0)), vec![1, 1]);
+    assert_eq!(i64s(rb.column(1)), vec![0, 10]);
+    assert_eq!(rb.column(2).as_boolean().true_count(), 2);
+    assert_eq!(
+        rb.column(3).as_primitive::<Float64Type>().values().to_vec(),
+        vec![2.5; 2]
+    );
+}
+
+#[test]
 fn list_to_list_array() {
     let mut d = gen_list();
     let rb = d.collect_record_batch(&mut rng(), 4).unwrap();

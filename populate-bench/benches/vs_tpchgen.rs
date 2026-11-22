@@ -8,9 +8,10 @@
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{AllocProfiler, Bencher, black_box};
 use populate_bench::fair::{
-    p2_list_fair, p2_uniform_tpch_rng, tpch_direct_numeric, tpch_direct_with_string_draws,
-    tpch_list_direct,
+    p2_list_fair, p2_uniform_tpch_rng, p2_uniform_tpch_rng_lanes, tpch_direct_numeric,
+    tpch_direct_with_string_draws, tpch_list_direct,
 };
+use populate_bench::lanes::tpch_lanes_numeric;
 use populate_bench::{
     Output, p2_list_arrow, p2_list_parquet, p2_numeric_arrow, p2_numeric_arrow_batched,
     p2_numeric_parquet, p2_numeric_parquet_arrow_writer, raw_columnar_arrow_batched,
@@ -63,6 +64,8 @@ benches! {
         tpchgen_direct_with_string_draws => tpch_direct_with_string_draws,
         tpchgen_direct_numeric => tpch_direct_numeric,
         populate2_tpchgen_rng => p2_uniform_tpch_rng,
+        populate2_tpchgen_rng_lanes => p2_uniform_tpch_rng_lanes,
+        tpchgen_lanes_numeric => tpch_lanes_numeric,
     }
     numeric_parquet {
         populate2_zero_copy => p2_numeric_parquet,

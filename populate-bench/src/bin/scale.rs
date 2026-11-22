@@ -15,10 +15,15 @@
 //!
 //! With `threads > 1` each thread generates one partition. tpchgen uses its
 //! own `part`/`part_count` support, which skips its RNGs ahead to the
-//! partition's first row. populate gives each thread a contiguous row range
-//! (the orderkey `range` starts at the partition's first row) and its own RNG
-//! seed. Peak RSS (`VmHWM`) is per process, so run one workload per process.
+//! partition's first row. populate cuts the rows into fixed chunks of
+//! 2^18, each seeded by its index (the orderkey `range` starts at the
+//! chunk's first row), and deals them out to the threads, so its output does
+//! not depend on the thread count: `SCALE_CHECK=1` prints a checksum to
+//! show it. Peak RSS (`VmHWM`) is per process, so run one workload per process.
 
+use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Int32Type, Int64Type};
 use populate_bench::fair::{Cols, SF, TpchDirect, cols_to_batch};
 use populate_bench::{
     BATCH, batch_bytes, batch_bytes_60, numeric_schema_60, p2_numeric_batches, tpch_numeric_batch,
@@ -26,6 +31,7 @@ use populate_bench::{
 };
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use std::env::var_os;
 use std::fs::read_to_string;
 use std::hint::black_box;
 use std::thread::scope;
@@ -37,12 +43,15 @@ use tpchgen_arrow::LineItemArrow;
 struct Totals {
     rows: usize,
     bytes: usize,
+    /// populate only, with `SCALE_CHECK=1`: see [`chunk_hash`].
+    hash: u64,
 }
 
 impl Totals {
     fn add(&mut self, o: Totals) {
         self.rows += o.rows;
         self.bytes += o.bytes;
+        self.hash = self.hash.wrapping_add(o.hash);
     }
 }
 
@@ -66,6 +75,7 @@ fn tpch_full(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
         t.add(Totals {
             rows: b.num_rows(),
             bytes: batch_bytes_60(&b),
+            hash: 0,
         });
         drop(black_box(b));
     }
@@ -87,6 +97,7 @@ fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
         t.add(Totals {
             rows: b.num_rows(),
             bytes: batch_bytes_60(&b),
+            hash: 0,
         });
         drop(black_box(b));
     }
@@ -107,6 +118,7 @@ fn tpch_direct(n: usize, batch: usize) -> Totals {
         t.add(Totals {
             rows: b.num_rows(),
             bytes: batch_bytes_60(&b),
+            hash: 0,
         });
         drop(black_box(b));
         left -= len;
@@ -114,16 +126,50 @@ fn tpch_direct(n: usize, batch: usize) -> Totals {
     t
 }
 
-fn populate_numeric(start: usize, end: usize, seed: u64, batch: usize) -> Totals {
+/// populate's rows are cut into fixed [`CHUNK`]s, each with its own RNG
+/// seeded by the chunk's index, and thread `i` of `threads` takes chunks
+/// `i, i + threads, ...`. So the output (each chunk's batches) is the same
+/// whatever the thread count; only which thread makes a chunk changes.
+const CHUNK: usize = 1 << 18;
+
+/// An order-independent checksum of populate's output: each chunk's values
+/// are folded in order (FNV-style), then the chunks are summed, so threads
+/// can finish in any order. Set `SCALE_CHECK=1` to compute it (one extra
+/// pass over the data, so off by default).
+fn chunk_hash(b: &RecordBatch, mut h: u64) -> u64 {
+    for c in b.columns() {
+        let mut fold = |v: i64| h = (h ^ v as u64).wrapping_mul(0x100_0000_01b3);
+        if let Some(a) = c.as_primitive_opt::<Int64Type>() {
+            a.values().iter().for_each(|&v| fold(v));
+        } else {
+            c.as_primitive::<Int32Type>()
+                .values()
+                .iter()
+                .for_each(|&v| fold(v as i64));
+        }
+    }
+    h
+}
+
+fn populate_numeric(n: usize, thread: usize, threads: usize, batch: usize, check: bool) -> Totals {
     let mut t = Totals::default();
-    let mut rng = SmallRng::seed_from_u64(seed);
-    p2_numeric_batches(start as i64 + 1, end - start, batch, &mut rng, |b| {
-        t.add(Totals {
-            rows: b.num_rows(),
-            bytes: batch_bytes(&b),
+    for c in (thread..n.div_ceil(CHUNK)).step_by(threads) {
+        let (start, end) = (c * CHUNK, ((c + 1) * CHUNK).min(n));
+        let mut rng = SmallRng::seed_from_u64(c as u64);
+        let mut h = 0xcbf2_9ce4_8422_2325;
+        p2_numeric_batches(start as i64 + 1, end - start, batch, &mut rng, |b| {
+            t.add(Totals {
+                rows: b.num_rows(),
+                bytes: batch_bytes(&b),
+                hash: 0,
+            });
+            if check {
+                h = chunk_hash(&b, h);
+            }
+            drop(black_box(b));
         });
-        drop(black_box(b));
-    });
+        t.hash = t.hash.wrapping_add(h);
+    }
     t
 }
 
@@ -153,6 +199,7 @@ fn main() {
     let init = init.elapsed();
 
     let n = lineitem_rows(sf);
+    let check = var_os("SCALE_CHECK").is_some_and(|v| v == "1");
     let t0 = Instant::now();
     let total = scope(|s| {
         let handles: Vec<_> = (0..threads)
@@ -168,12 +215,7 @@ fn main() {
                             assert_eq!(sf, SF, "tpch-direct is fixed at SF{SF}");
                             tpch_direct(n, batch)
                         }
-                        "populate" => populate_numeric(
-                            i * n / threads,
-                            (i + 1) * n / threads,
-                            i as u64,
-                            batch,
-                        ),
+                        "populate" => populate_numeric(n, i, threads, batch, check),
                         other => panic!("unknown workload {other}; {usage}"),
                     }
                 })
@@ -196,4 +238,7 @@ fn main() {
         init.as_secs_f64() * 1e3,
         peak_rss_mib(),
     );
+    if check {
+        println!("checksum {:016x}", total.hash);
+    }
 }

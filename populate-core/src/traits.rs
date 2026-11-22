@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 // Re-export HList types so existing `use crate::traits::{HCons, ...}` keeps working
 pub use crate::hlist::{HAppend, HCons, HNil, IntoHList, IntoTuple, ValueHList};
 use crate::hlist::{hlist_ty, hlist_val};
+pub use crate::string::{StrBuf, StrCol};
 
 // ============================================================================
 // Backend — selects concrete sink types for each column kind
@@ -39,7 +40,7 @@ pub trait DefaultSink<B: Backend> {
 
 macro_rules! for_all_primitives {
     ($macro:ident) => {
-        $macro!(i16, i32, i64, f64, bool, usize);
+        $macro!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
     };
 }
 
@@ -156,9 +157,9 @@ pub fn collect_rows<I: SampleIter, S: Sink<I::Item>>(
     n: usize,
 ) -> S {
     sink.reserve(n);
-    for _ in 0..n {
-        sink.push(iter.next(rng));
-    }
+    // `push_n` over a `Range`-driven iterator: a `Vec` sink turns this into
+    // `extend`, which knows the exact length (no per-value capacity check).
+    sink.push_n((0..n).map(|_| iter.next(rng)));
     sink
 }
 
@@ -217,6 +218,10 @@ impl<T> Sink<T> for VecDeque<T> {
     fn reserve(&mut self, additional: usize) {
         VecDeque::reserve(self, additional);
     }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        VecDeque::extend(self, value)
+    }
 }
 
 // HList Sink impls — bridge between leaf distributions and HList sinks
@@ -229,6 +234,10 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
 
     fn reserve(&mut self, additional: usize) {
         self.0.reserve(additional);
+    }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        self.0.push_n(value);
     }
 }
 
@@ -311,6 +320,7 @@ impl<B: Backend, D: Distribution<B>> DistributionScalar<B> for D {}
 // Flatten<D> — distribution wrapper that flattens nested Item types
 // ============================================================================
 
+#[derive(Clone)]
 pub struct Flatten<D>(pub D);
 
 pub struct FlattenIter<I>(pub I);

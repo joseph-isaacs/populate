@@ -71,7 +71,7 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
                     }
                     _ => MAX_NUMBER + 1,
                 };
-            (c, a.nulls())
+            (c, a.nulls().filter(|n| n.null_count() > 0))
         })
         .collect();
     out.reserve(bound);
@@ -84,13 +84,16 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
                 // SAFETY: `bound` reserved room for the widest number and the
                 // full bytes of every string (Latin-1 never needs more bytes
                 // than UTF-8), plus every separator and newline.
+                // Every column has `rows` values, so `r` is in bounds.
                 unsafe {
                     match c {
-                        Col::I32(v) => w.int(v[r] as i64),
-                        Col::I64(v) => w.int(v[r]),
-                        Col::Dec(v, 2, 2) => w.decimal2(v[r] as i64),
-                        Col::Dec(v, s, p) => w.decimal(v[r] as i64 / 10i64.pow(s - p), *p),
-                        Col::Date(v) => w.date(v[r]),
+                        Col::I32(v) => w.int(*v.get_unchecked(r) as i64),
+                        Col::I64(v) => w.int(*v.get_unchecked(r)),
+                        Col::Dec(v, 2, 2) => w.decimal2(*v.get_unchecked(r) as i64),
+                        Col::Dec(v, s, p) => {
+                            w.decimal(*v.get_unchecked(r) as i64 / 10i64.pow(s - p), *p)
+                        }
+                        Col::Date(v) => w.date(*v.get_unchecked(r)),
                         Col::Str(a) => w.view(a, r, encoding),
                     }
                 }
@@ -116,6 +119,24 @@ const DIGITS: &[u8; 200] = b"\
 4041424344454647484950515253545556575859\
 6061626364656667686970717273747576777879\
 8081828384858687888990919293949596979899";
+
+/// Number of decimal digits of `v` (1 for 0): log2 from the leading zeros,
+/// times log10(2) (1233 / 4096), corrected by one table lookup.
+#[inline(always)]
+fn digits(v: u64) -> usize {
+    const POW10: [u64; 20] = {
+        let mut p = [1u64; 20];
+        let mut i = 1;
+        while i < 20 {
+            p[i] = p[i - 1] * 10;
+            i += 1;
+        }
+        p
+    };
+    let bits = 64 - (v | 1).leading_zeros() as usize;
+    let t = (bits * 1233) >> 12;
+    t + 1 - ((v | 1) < POW10[t]) as usize
+}
 
 /// Write cursor into reserved capacity. Every method is `unsafe`: the
 /// caller guarantees room for what it writes.
@@ -149,12 +170,7 @@ impl Cursor {
     /// Decimal digits of `v`, written in place back to front.
     #[inline]
     unsafe fn uint(&mut self, mut v: u64) {
-        let mut n = 1;
-        let mut t = v;
-        while t >= 10 {
-            t /= 10;
-            n += 1;
-        }
+        let n = digits(v);
         unsafe {
             let mut end = self.0.add(n);
             self.0 = end;
@@ -248,7 +264,8 @@ impl Cursor {
     /// has 12 bytes of slack per string for this).
     #[inline]
     unsafe fn view(&mut self, a: &StringViewArray, r: usize, encoding: Encoding) {
-        let v = a.views()[r];
+        // SAFETY: the caller passes a row of `a`.
+        let v = unsafe { *a.views().get_unchecked(r) };
         let len = v as u32 as usize;
         unsafe {
             if len <= 12 {
@@ -289,6 +306,18 @@ mod tests {
         let n = unsafe { c.0.offset_from(v.as_ptr()) } as usize;
         v.truncate(n);
         String::from_utf8(v).unwrap()
+    }
+
+    #[test]
+    fn digit_counts() {
+        for v in [0, 1, 9, 10, 99, 100, 12345, u64::MAX / 10, u64::MAX] {
+            assert_eq!(digits(v), v.to_string().len(), "{v}");
+        }
+        for p in 0..20 {
+            let v = 10u64.pow(p);
+            assert_eq!(digits(v), p as usize + 1);
+            assert_eq!(digits(v - 1), (p as usize).max(1));
+        }
     }
 
     #[test]

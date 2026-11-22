@@ -16,6 +16,7 @@ use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::sync::Mutex;
+use std::thread;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::row::*;
 use tpcdsgen_arrow::*;
@@ -301,7 +302,10 @@ pub fn write_parquet_many<W: Write + Send>(
 }
 
 /// [`DsTable::write_dat`] for several tables on one shared pool, like
-/// [`write_parquet_many`].
+/// [`write_parquet_many`]. `threads: 0` means one worker per core but one:
+/// the calling thread writes ~1 GB of text per scale factor, and with a
+/// worker on every core it falls behind (SF 1 on 4 cores: 1.43 s with 3
+/// workers, 1.66 s with 4).
 pub fn write_dat_many<W: Write>(
     tables: &[DsTable],
     mut writers: Vec<W>,
@@ -309,6 +313,10 @@ pub fn write_dat_many<W: Write>(
     encoding: Encoding,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
+    let threads = match threads {
+        0 => thread::available_parallelism().map_or(1, |t| t.get().saturating_sub(1).max(1)),
+        t => t,
+    };
     let jobs = Jobs::new(tables.iter().map(DsTable::num_chunks));
     // Text buffers go back to a pool once written: a fresh multi-MB buffer
     // per chunk costs more in page faults than formatting it.

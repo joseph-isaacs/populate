@@ -1,5 +1,6 @@
 //! Built-in distributions: [`constant`], [`range`], [`map`], [`list`],
-//! [`derive`] and [`flatten`]. Tuples of distributions are implemented in `populate-core`
+//! [`with_column`], [`flatten`], and the random leaves in [`random`] ([`uniform`], [`choose`],
+//! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in `populate-core`
 //! (orphan rule); their iterator types are re-exported here.
 
 use populate_core::traits::{
@@ -10,14 +11,21 @@ use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
 
-mod derive;
-pub use derive::{Column, Derive, DeriveIter, DeriveRng, ReadRows, WithColumn, derive};
+mod with_column;
+pub use with_column::{
+    Column, ColumnRng, ReadRows, RowAppend, WithColumn, WithColumnIter, with_column,
+};
 
 pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
+
+pub mod random;
+pub use random::{Chars, Choose, Text, Uniform, Weighted, chars, choose, text, uniform, weighted};
+
 // ============================================================================
 // Constant
 // ============================================================================
 
+#[derive(Clone)]
 pub struct Constant<T> {
     pub value: T,
 }
@@ -63,6 +71,7 @@ where
 // Range
 // ============================================================================
 
+#[derive(Clone)]
 pub struct Range<T> {
     pub start: T,
     pub step: T,
@@ -119,6 +128,16 @@ pub struct Map<D, F, In, Out> {
     pub source: D,
     pub f: F,
     pub _phantom: PhantomData<(In, Out)>,
+}
+
+impl<D: Clone, F: Clone, In, Out> Clone for Map<D, F, In, Out> {
+    fn clone(&self) -> Self {
+        Map {
+            source: self.source.clone(),
+            f: self.f.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 pub fn map<D, F, In, Out>(source: D, f: F) -> Map<D, F, In, Out>
@@ -179,6 +198,7 @@ where
 // List<L, E> — list/array column distribution
 // ============================================================================
 
+#[derive(Clone)]
 pub struct List<L, E> {
     pub lengths: L,
     pub elements: E,

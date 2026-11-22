@@ -11,8 +11,9 @@ cargo test -p populate-bench             # sanity checks: shapes/sizes match on 
 cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|tpch-direct|populate> <sf> [threads]
 ```
 
-The crate is not in the workspace `default-members` because tpchgen 4 pulls in
-arrow/parquet 60 next to populate's arrow 57.
+The crate is not in the workspace `default-members`, so root `cargo build` /
+`cargo test` skip the tpchgen comparison. (It was added when populate was on
+arrow 57 and tpchgen on 60; both are on arrow/parquet 60 now.)
 
 ## Summary
 
@@ -44,6 +45,37 @@ After an adversarial review, the honest summary is:
   the dates from the order date). populate's side draws independent uniform
   values over the same ranges. The `Uniform` leaf is defined in this crate,
   because populate doesn't ship a random leaf yet.
+
+## Vectorised TPC-H RNG: same bytes, ~1.8x faster
+
+[`lanes::tpch_lanes_numeric`](src/lanes.rs) generates the 11 numeric
+lineitem columns **byte-identical to tpchgen** (tested against
+`LineItemGenerator`), column by column. Every lineitem stream reserves 7
+draws per order, so a value's draw index depends only on (order, line), and
+the TPC-H LCG can jump to any index. The draws are split over 16 independent
+LCG chains that the compiler vectorises, with the modulo and the bounded-int
+mapping done with shifts and adds instead of divides. The integer mapping
+equals tpchgen's f64 one for every seed and every range used: checked
+exhaustively (`exhaustive_scale_matches_f64`, `--ignored`).
+
+Same VM, `numeric_arrow` group, median of 2 interleaved runs (ms):
+
+| workload | x86-64 (default) | x86-64-v3 (AVX2) |
+|---|---:|---:|
+| tpchgen rows -> Arrow (public API) | 91.9 | 79.0 |
+| tpchgen RNGs + row logic, numeric only | 45.5 | 41.8–67.3 |
+| **lane-parallel tpchgen RNG, same output** | **25.2** | **13.8–18.0** |
+| populate, xoshiro uniforms (not TPC-H values) | 24.6 | 24.2 |
+| hand-written row loop, xoshiro | 29.9 | 27.5 |
+
+So the RNG gap from the summary below can be closed without giving up
+spec-correct output: like-for-like it is now ~1.8x at the default target
+and ~2.5–3x with AVX2. This is where column-at-a-time generation actually
+pays: a row loop has to step each stream serially.
+
+Not done yet: the 4 string streams (their draw counts vary per row, so they
+need a prefix pass first), and it is a bench-crate prototype hard-wired to
+SF 10, not a populate API.
 
 ## Workloads
 
@@ -89,10 +121,19 @@ batches unless noted)
 | **populate** | 25.6 ms | 40.9 M |
 | populate, one 1M-row batch | 59.4 ms | 17.7 M |
 | populate, every draw from tpchgen's RNG | 59.8 ms | 17.5 M |
+| populate, tpchgen's RNG as lane-parallel leaves (same values) | see ¹ | |
 | **tpchgen RNGs + row logic, numeric columns only** (same output as below) | 63.7 ms | 16.5 M |
 | tpchgen RNGs + row logic, plus the 4 string streams (values discarded) | 82.3 ms | 12.7 M |
 | tpchgen rows only, no output | 105.6 ms | 9.9 M |
 | **tpchgen rows -> `Vec` -> Arrow** (as tpchgen-arrow does it) | 98.7 ms | 10.6 M |
+
+¹ Measured later, on a separate run of the same machine: lane-parallel
+leaves 20.8 ms, against 40.3 ms for the serial leaves and 71.1 ms for
+tpchgen (`cargo bench -- numeric_arrow`). `LaneLcg` in `src/fair.rs` runs
+16 chains stepping by `16807^16`, and is tested value-for-value against the
+serial leaf. Batches after the first also reuse the first one's schema
+(`collect_record_batch_with`), which brings populate down to the
+hand-written loop's allocation count (4,376 against 7,424 before).
 
 "tpchgen rows only" is not a floor: it black-boxes a ~200-byte `LineItem` by
 value per row, and comes out no faster than the full path.
@@ -134,9 +175,10 @@ value per row, and comes out no faster than the full path.
 batches and drops each batch once it's made, so memory stays flat at any
 scale factor. With several threads, each thread generates one partition.
 tpchgen uses its `part`/`part_count` support, which skips its RNGs ahead to
-the partition's first row. populate gives each thread a contiguous row range
-and its own RNG seed. Unlike tpchgen, that makes populate's random columns
-depend on the thread count. populate generates exactly as many rows as tpchgen. tpchgen's
+the partition's first row. populate cuts the rows into fixed 2^18-row
+chunks, each with an RNG seeded by its index, and deals them out to the
+threads, so its output is the same at any thread count (`SCALE_CHECK=1`
+prints a checksum: SF1 gives the same one on 1, 2 and 4 threads). populate generates exactly as many rows as tpchgen. tpchgen's
 partitioned runs return exactly the spec row counts (59,986,052 at SF10,
 600,037,902 at SF100 and 5,999,989,709 at SF1000).
 
@@ -189,8 +231,8 @@ tpchgen's text pool.
   data itself, vs 160 MB). `collect_parquet` still holds all `n` rows and
   writes a single row group. A streaming version that generates one row group
   at a time would cut the peak to about one row group.
-- **Parquet versions differ:** populate writes with parquet 57 and tpchgen
-  with parquet 60. The settings match (uncompressed, no dictionary, default
+- **Parquet versions differed** when these numbers were taken: populate
+  wrote with parquet 57 and tpchgen with parquet 60 (both are on 60 now). The settings match (uncompressed, no dictionary, default
   page and row-group sizes).
 - **Expressiveness gaps found while building fair baselines:**
   - A flat table can't share per-order state across lines.

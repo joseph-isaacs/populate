@@ -10,11 +10,13 @@ populate-core = { workspace = true }
 populate-builtins = { workspace = true }
 populate-sink-arrow = { workspace = true, optional = true }
 populate-sink-parquet = { workspace = true, optional = true }
+populate-table = { workspace = true, optional = true }
 
 [features]
-default = ["arrow"]
+default = ["arrow", "table"]
 arrow = ["dep:populate-sink-arrow"]
-parquet = ["arrow", "dep:populate-sink-parquet"]
+parquet = ["arrow", "dep:populate-sink-parquet", "populate-table?/parquet"]
+table = ["arrow", "dep:populate-table"]
 
 [dev-dependencies]
 rand = { workspace = true }
@@ -23,9 +25,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 bytes = "1"
-rand_distr = "0.5"
-arrow-cast = { version = "57", features = ["prettyprint"] }
-arrow-buffer = "57"
+arrow-cast = { workspace = true, features = ["prettyprint"] }
 
 [[test]]
 name = "zero_copy"
@@ -41,5 +41,5 @@ harness = false
 required-features = ["arrow"]
 
 [[bench]]
-name = "derive"
+name = "with_column"
 harness = false

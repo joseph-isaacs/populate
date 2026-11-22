@@ -6,10 +6,11 @@ use std::rc::Rc;
 mod arrow;
 mod col;
 mod deque;
-mod derive;
 mod dist;
+mod random;
 mod row;
 mod scalar;
+mod with_column;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 

@@ -30,6 +30,7 @@
 //! pays for them; that is the real cost of getting these columns from it.
 
 pub mod fair;
+pub mod lanes;
 
 use arrow_array::builder::{Int32Builder, Int64Builder};
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
@@ -101,9 +102,9 @@ pub fn parquet_props() -> WriterProperties {
         .build()
 }
 
-fn parquet_props_60() -> parquet_60::file::properties::WriterProperties {
-    parquet_60::file::properties::WriterProperties::builder()
-        .set_compression(parquet_60::basic::Compression::UNCOMPRESSED)
+fn parquet_props_60() -> parquet::file::properties::WriterProperties {
+    parquet::file::properties::WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .build()
 }
@@ -161,9 +162,10 @@ where
         n: usize,
     ) -> <T as DefaultSink<ArrowBackend>>::Sink {
         sink.reserve(n);
-        for _ in 0..n {
-            sink.push(self.dist.sample(rng));
-        }
+        // as populate's own `uniform`: one `extend` of a `TrustedLen`
+        // iterator, no capacity check per value
+        let dist = &self.dist;
+        sink.push_n((0..n).map(|_| dist.sample(rng)));
         sink
     }
 }
@@ -275,10 +277,18 @@ pub fn p2_numeric_batches(
 ) {
     let mut key = first_key;
     let mut left = n;
+    // made by the first batch, then shared by the rest
+    let mut schema = None;
     while left > 0 {
         let len = batch.min(left);
         let mut d = lineitem_numeric_from(key);
-        f(d.collect_record_batch(rng, len).expect("batch"));
+        let b = match &schema {
+            None => d.collect_record_batch(rng, len),
+            Some(s) => d.collect_record_batch_with(s, rng, len),
+        };
+        let b = b.expect("batch");
+        schema.get_or_insert_with(|| b.schema());
+        f(b);
         key += len as i64;
         left -= len;
     }
@@ -592,7 +602,7 @@ pub fn tpch_numeric_arrow(n: usize) -> Output {
 
 /// tpchgen-arrow full lineitem -> `ArrowWriter` (what `tpchgen-cli` does).
 pub fn tpch_full_parquet(n: usize) -> Output {
-    let mut w = parquet_60::arrow::ArrowWriter::try_new(
+    let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
         LineItemArrow::schema_ref(),
         Some(parquet_props_60()),
@@ -611,7 +621,7 @@ pub fn tpch_full_parquet(n: usize) -> Output {
 
 /// tpchgen numeric subset -> `ArrowWriter`.
 pub fn tpch_numeric_parquet(n: usize) -> Output {
-    let mut w = parquet_60::arrow::ArrowWriter::try_new(
+    let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
         numeric_schema_60(),
         Some(parquet_props_60()),
@@ -674,7 +684,7 @@ pub fn tpch_list_arrow(n: usize) -> Output {
 
 pub fn tpch_list_parquet(n: usize) -> Output {
     let b = tpch_list_batch(n);
-    let mut w = parquet_60::arrow::ArrowWriter::try_new(
+    let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
         b.schema(),
         Some(parquet_props_60()),
@@ -757,6 +767,11 @@ pub const WORKLOADS: &[Workload] = &[
         name: "populate, every draw from tpchgen's RNG",
         group: Group::NumericArrow,
         run: fair::p2_uniform_tpch_rng,
+    },
+    Workload {
+        name: "populate, tpchgen's RNG as lane-parallel leaves (same values)",
+        group: Group::NumericArrow,
+        run: fair::p2_uniform_tpch_rng_lanes,
     },
     Workload {
         name: "populate zero-copy writer",

@@ -1,11 +1,11 @@
-//! `derive` collected column by column (`collect_into`) vs the same
+//! `with_column` collected column by column (`collect_into`) vs the same
 //! distribution row by row (`row_iter` + `Sink::push`), which is what a
 //! `map` over a tuple does. Same values either way when the parent and the
 //! closure don't draw from the RNG.
 
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
-use populate::dist::{derive, map, range};
+use populate::dist::{map, range, with_column};
 use populate::traits::{Distribution, DistributionExt, SampleIter, Sink, VecBackend};
 use rand::rngs::{SmallRng, StdRng};
 use rand::{Rng, RngCore, SeedableRng};
@@ -18,7 +18,7 @@ fn main() {
 const N: usize = 1 << 16;
 
 fn d_pair() -> impl Distribution<VecBackend, Item = (i64, i64)> {
-    derive(range(black_box(0i64), black_box(3)), |x: i64, _| 3 * x + 1)
+    with_column(range(black_box(0i64), black_box(3)), |x: i64, _| 3 * x + 1)
 }
 
 fn d_map_pair() -> impl Distribution<VecBackend, Item = (i64, i64)> {
@@ -28,8 +28,8 @@ fn d_map_pair() -> impl Distribution<VecBackend, Item = (i64, i64)> {
 }
 
 fn d_chain3() -> impl Distribution<VecBackend, Item = (i64, i64, bool)> {
-    derive(
-        derive(range(black_box(0i64), black_box(3)), |x: i64, _| 3 * x + 1),
+    with_column(
+        with_column(range(black_box(0i64), black_box(3)), |x: i64, _| 3 * x + 1),
         |(a, b): (i64, i64), _| (a ^ b) & 1 == 0,
     )
 }
@@ -42,7 +42,7 @@ fn d_map_chain3() -> impl Distribution<VecBackend, Item = (i64, i64, bool)> {
 }
 
 fn d_noisy() -> impl Distribution<VecBackend, Item = (i64, i64)> {
-    derive(range(black_box(0i64), black_box(3)), |x: i64, rng| {
+    with_column(range(black_box(0i64), black_box(3)), |x: i64, rng| {
         x + rng.random_range(0..8)
     })
 }

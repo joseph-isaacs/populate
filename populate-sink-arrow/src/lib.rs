@@ -9,6 +9,7 @@
 //! | `Vec<T>` (numeric)       | `PrimitiveArray`, buffer moved, no copy      |
 //! | `Vec<bool>`              | `BooleanArray` (bit-packed)                  |
 //! | `Vec<usize>`             | `UInt64Array`                                |
+//! | `StrCol` (strings)       | `StringArray`, both buffers moved, no copy   |
 //! | `ListCol<offsets, V>`    | `ListArray` with V's columns as its values;  |
 //! |                          | several columns become a `StructArray`       |
 //! | top-level HList          | `RecordBatch` (columns `c0`, `c1`, ...)      |
@@ -32,11 +33,12 @@ use arrow_array::types::{
 };
 use arrow_array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, ListArray, PrimitiveArray, RecordBatch,
-    StructArray, UInt64Array,
+    StringArray, StructArray, UInt64Array,
 };
-use arrow_buffer::{ArrowNativeType, OffsetBuffer};
-use arrow_schema::{ArrowError, Field, Fields, Schema};
+use arrow_buffer::{ArrowNativeType, Buffer, OffsetBuffer, ScalarBuffer};
+use arrow_schema::{ArrowError, Field, Fields, Schema, SchemaRef};
 use populate_core::hlist::{HCons, HNil};
+use populate_core::string::StrCol;
 use populate_core::traits::{Backend, DefaultSink, Distribution, ListCol, Sink};
 use rand::Rng;
 use std::sync::Arc;
@@ -145,6 +147,18 @@ impl IntoArrowArray for Vec<usize> {
     }
 }
 
+/// `StrCol` -> `StringArray`: offsets and bytes are moved, not copied.
+impl IntoArrowArray for StrCol {
+    fn into_array(self) -> ArrayRef {
+        let (offsets, data) = self.into_parts();
+        // SAFETY: `StrCol` only accepts UTF-8 (`&str`, `char`, checked ASCII)
+        // and its offsets start at 0 and never decrease.
+        let offsets = unsafe { OffsetBuffer::new_unchecked(ScalarBuffer::from(offsets)) };
+        let array = unsafe { StringArray::new_unchecked(offsets, Buffer::from_vec(data), None) };
+        Arc::new(array)
+    }
+}
+
 /// `ListCol` -> `ListArray`. Offsets are stored as end offsets (`n` entries);
 /// Arrow wants `n + 1` starting at 0, as i32.
 impl<V: IntoArrowColumns> IntoArrowArray for ListCol<Vec<usize>, V> {
@@ -177,10 +191,10 @@ fn list_array<V: IntoArrowColumns>(offsets: Vec<i32>, values: V) -> ArrayRef {
     ))
 }
 
-/// One column is the list's values directly; several columns (a tuple element)
-/// become a `StructArray`.
-fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
-    let mut cols = Vec::new();
+/// A sink HList as one array: a single column is returned as is; several
+/// columns (a tuple) become a `StructArray` with fields `c0, c1, ...`.
+pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
+    let mut cols = Vec::with_capacity(V::LEN);
     values.into_arrays(&mut cols);
     if cols.len() == 1 {
         return cols.pop().expect("one column");
@@ -202,14 +216,18 @@ fn column_fields(cols: &[ArrayRef]) -> Fields {
 
 /// A sink HList that becomes a sequence of Arrow arrays, one per column.
 pub trait IntoArrowColumns {
+    /// The number of columns, so the column `Vec` is allocated once.
+    const LEN: usize;
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
 impl IntoArrowColumns for HNil {
+    const LEN: usize = 0;
     fn into_arrays(self, _out: &mut Vec<ArrayRef>) {}
 }
 
 impl<H: IntoArrowArray, T: IntoArrowColumns> IntoArrowColumns for HCons<H, T> {
+    const LEN: usize = 1 + T::LEN;
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         out.push(self.0.into_array());
         self.1.into_arrays(out);
@@ -218,10 +236,23 @@ impl<H: IntoArrowArray, T: IntoArrowColumns> IntoArrowColumns for HCons<H, T> {
 
 /// Top-level sink HList -> `RecordBatch` with columns `c0, c1, ...`.
 pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, ArrowError> {
-    let mut cols = Vec::new();
+    let mut cols = Vec::with_capacity(S::LEN);
     sink.into_arrays(&mut cols);
     let schema = Schema::new(column_fields(&cols));
     RecordBatch::try_new(Arc::new(schema), cols)
+}
+
+/// [`into_record_batch`] against a schema made once (for example the first
+/// batch's `schema()`), so a stream of batches shares one `Arc<Schema>`
+/// instead of building names and fields per batch. The columns are checked
+/// against it as by `RecordBatch::try_new`.
+pub fn into_record_batch_with<S: IntoArrowColumns>(
+    schema: &SchemaRef,
+    sink: S,
+) -> Result<RecordBatch, ArrowError> {
+    let mut cols = Vec::with_capacity(S::LEN);
+    sink.into_arrays(&mut cols);
+    RecordBatch::try_new(schema.clone(), cols)
 }
 
 // ============================================================================
@@ -241,6 +272,21 @@ pub trait DistributionArrow<B: Backend>: Distribution<B> {
     {
         let sink = self.collect_into(Default::default(), rng, n);
         into_record_batch(sink)
+    }
+
+    /// [`collect_record_batch`](Self::collect_record_batch) with a schema
+    /// reused across batches: see [`into_record_batch_with`].
+    fn collect_record_batch_with(
+        &mut self,
+        schema: &SchemaRef,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> Result<RecordBatch, ArrowError>
+    where
+        <Self::Item as DefaultSink<B>>::Sink: Default + IntoArrowColumns,
+    {
+        let sink = self.collect_into(Default::default(), rng, n);
+        into_record_batch_with(schema, sink)
     }
 }
 

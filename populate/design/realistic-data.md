@@ -1,10 +1,19 @@
 # Realistic data: today's API vs a proposed one
 
+> **Design note, written before #16 landed.** Since then `main` has random
+> leaves (`uniform`, `choose`, `weighted`, `text`, `chars`), string columns,
+> more primitive types, and `populate-table`'s `Table` (names, `nullable`,
+> `derive*`). The comparison examples it refers to were removed when this
+> was merged; they're at commit `6e3a7d9` (`populate/examples/realistic_today.rs`,
+> `populate/examples/realistic_combinators.rs`). The `derive` combinator
+> described here shipped as `with_column`; see `populate/examples/realistic.rs`
+> and `cargo bench -p populate --bench with_column`.
+
 Eight "interesting data" scenarios, each written three ways:
 
-- **Today, as shipped**: [`examples/realistic_today.rs`](examples/realistic_today.rs).
+- **Today, as shipped**: [`examples/realistic_today.rs`](https://github.com/joseph-isaacs/data-comb/blob/6e3a7d9/populate/examples/realistic_today.rs).
   Only what's on `main`; the user writes every leaf and helper.
-- **Today + general combinators**: [`examples/realistic_combinators.rs`](examples/realistic_combinators.rs).
+- **Today + general combinators**: [`examples/realistic_combinators.rs`](https://github.com/joseph-isaacs/data-comb/blob/6e3a7d9/populate/examples/realistic_combinators.rs).
   Today's traits plus general-purpose combinators: `derive` (now in
   `populate-builtins`), and `uniform`, `normal`, `zipf`, `geometric`,
   `bernoulli`, `walk`, `list_with_len`, `named` / `with_nulls`
@@ -60,7 +69,7 @@ A `map` returning nested rows such as `((ship, receipt), late)` still
 doesn't compile, because nested row tuples can't be pushed into the flat
 column HList. `derive` avoids that by keeping rows flat.
 
-`cargo bench -p populate --bench derive`, 65,536 rows, sinks pre-allocated
+`cargo bench -p populate --bench with_column`, 65,536 rows, sinks pre-allocated
 (median, one run on a shared machine; compare within a column set):
 
 | case | `derive` columnar | same, row by row | `map` to a tuple | hand-written loop |

@@ -16,6 +16,8 @@ pub mod table;
 
 #[cfg(feature = "parquet")]
 mod parquet;
+#[cfg(feature = "parquet")]
+mod parquet_direct;
 
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]

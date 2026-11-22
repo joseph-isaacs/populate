@@ -14,15 +14,22 @@ arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"], optional = true }
+bytes = { version = "1", optional = true }
+snap = { version = "1", optional = true }
 
 [features]
-parquet = ["dep:parquet"]
+parquet = ["dep:parquet", "dep:bytes", "dep:snap"]
 
 [dev-dependencies]
 populate-builtins = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 bytes = "1"
+arrow-select = "60"
 
 [[test]]
 name = "table"
+required-features = ["parquet"]
+
+[[test]]
+name = "parquet_direct"
 required-features = ["parquet"]

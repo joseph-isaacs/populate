@@ -62,6 +62,16 @@ adds the engine around it:
   dates and quantities and off for decimals and 64-bit ids, where it never
   pays: that cuts encoding time by ~40% and the files come out slightly
   smaller (`parquet_props`).
+- **Integer columns encoded directly.** Keys, dates, quantities and
+  decimals (all but the text) are encoded by `populate-table` instead of
+  arrow-rs's column writer: definition levels come straight from the null
+  bitmap, values are copied 64 rows at a time, and the dictionary is a
+  table indexed by value where the values span a small range. The chunks
+  are what arrow-rs writes (same encodings, statistics and level
+  histograms, plus page indexes). That cut Parquet encoding from ~2.75 s
+  to ~2.4 s on one thread, and the files from 385 MB to 376 MB. Checked
+  with DuckDB on all 24 SF 1 tables: the same rows as arrow-rs's files and
+  the same statistics in all 1,515 column chunks.
 - **`.dat` written from Arrow.** Formatting tpcdsgen's rows with `Display`
   costs 10x their generation. `.dat` lines are instead written straight
   from the Arrow batches into a reserved buffer (~800 MB/s per core),
@@ -108,7 +118,9 @@ container is noisy (±10% run to run), so these are bests of 2–3:
 | Parquet (snappy)         | 1       | 8.03 s     | 4.58 s         | 1.8x    |
 | Arrow only (`--format none`) | 4   |            | 0.71 s         |         |
 
-Parquet files: 385 MB vs tpcgen-cli's 399 MB. SF 10 (192M rows), 4
+Parquet files: 376 MB vs tpcgen-cli's 399 MB. The Parquet rows predate
+direct integer encoding, which took 13–15% more off in interleaved runs
+(1 thread ~5.5 → ~4.8 s, 4 threads ~1.59 → ~1.37 s). SF 10 (192M rows), 4
 threads, output to disk, before the fused store channel: `.dat` 15.7 s vs
 23.3 s, Parquet 12.9 s vs 23.5 s.
 
@@ -123,7 +135,7 @@ per table on one thread. Summed over the tables, at SF 1:
 | tpcdsgen rows → Arrow (tpcdsgen-arrow)             | ~0.5 s |
 | store channel, generated straight into columns     | ~0.5 s |
 | Arrow → `.dat` text                                | ~1.5 s |
-| Arrow → Parquet (arrow-rs)                         | ~2.7 s |
+| Arrow → Parquet                                    | ~2.4 s |
 
 tpcdsgen is rows all the way down: each generator builds a row struct
 (text as owned `String`s), and tpcdsgen-arrow buffers 2Ki of them and
@@ -164,4 +176,5 @@ multiply by `16807^k mod (2^31 - 1)`.
   `catalog_returns` and `web_returns` cost ~0.35 s of generation on one
   thread.
 - **tpcdsgen's other generators.** They still burn seeds draw by draw.
-- **Parquet encoding.** This is arrow-rs, now the largest stage.
+- **Parquet encoding.** Still the largest stage: text columns go through
+  arrow-rs, and Snappy.

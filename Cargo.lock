@@ -732,12 +732,14 @@ dependencies = [
  "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
+ "arrow-select",
  "bytes",
  "parquet",
  "populate-builtins",
  "populate-core",
  "populate-sink-arrow",
  "rand",
+ "snap",
 ]
 
 [[package]]

@@ -163,6 +163,7 @@ impl TpchTable {
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
     /// batch, in table order, on the calling thread.
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
+        Text::init(threads);
         chunks::for_each_batch(self, threads, f)
     }
 
@@ -288,6 +289,7 @@ pub fn write_parquet_many<W: Write + Send>(
 ) -> Result<Vec<W>, ParquetError> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
     let props = props.unwrap_or_else(|| parquet_props().build());
+    Text::init(threads);
     let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
     populate_table::write_parquet_many(&srcs, writers, threads, Some(props))
 }
@@ -301,6 +303,7 @@ pub fn write_tbl_many<W: Write + Send>(
     threads: usize,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
+    Text::init(threads);
     let srcs: Vec<&dyn TextChunks> = tables.iter().map(|t| t as &dyn TextChunks).collect();
     write_text_many(&srcs, writers, threads)
 }
@@ -312,6 +315,7 @@ pub fn for_each_batch_many(
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
+    Text::init(threads);
     let jobs = Jobs::new(tables.iter().map(TpchTable::num_chunks));
     let r: Result<(), Infallible> = par_ordered(
         jobs.total(),

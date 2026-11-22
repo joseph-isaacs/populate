@@ -367,7 +367,7 @@ pub(crate) fn part(t: &Text, first: u64, n: u64) -> RecordBatch {
     let mut sizes = Vec::with_capacity(rows);
     let mut containers = Vec::with_capacity(rows);
     let mut prices = Vec::with_capacity(rows);
-    let mut comments = Vec::with_capacity(rows);
+    let mut comment_x = Vec::with_capacity(rows);
     let mut order: Vec<u8> = (0..colors.values.len() as u8).collect();
     for i in first..first + n {
         let key = i as i64 + 1;
@@ -407,9 +407,7 @@ pub(crate) fn part(t: &Text, first: u64, n: u64) -> RecordBatch {
         sizes.push(size_r.next_int(1, 50));
         containers.push(t.containers.views[t.containers.pick(&mut cont_r)]);
         prices.push(part_price(key) as i128);
-        let x0 = comment_r.next_rand();
-        let x1 = comment_r.next_rand();
-        comments.push(comment.view(t, x0, x1));
+        comment_x.push((comment_r.next_rand(), comment_r.next_rand()));
         for r in [
             &mut name_r,
             &mut mfgr_r,
@@ -433,8 +431,17 @@ pub(crate) fn part(t: &Text, first: u64, n: u64) -> RecordBatch {
             i32s(sizes),
             strs(t.array(containers, Vec::new())),
             decimals(prices),
-            strs(t.array(comments, Vec::new())),
+            strs(comment_views(t, &comment, &comment_x)),
         ],
+    )
+}
+
+/// Views of the comments the draw pairs `x` make, in a pass of their own
+/// (see `lineitem`).
+fn comment_views(t: &Text, c: &Comment, x: &[(u32, u32)]) -> StringViewArray {
+    t.array(
+        x.iter().map(|&(a, b)| c.view(t, a, b)).collect(),
+        Vec::new(),
     )
 }
 
@@ -552,7 +559,7 @@ pub(crate) fn customer(t: &Text, first: u64, n: u64) -> RecordBatch {
     let mut phones = Views::with_capacity(rows, rows * 15);
     let mut bals = Vec::with_capacity(rows);
     let mut segs = Vec::with_capacity(rows);
-    let mut comments = Vec::with_capacity(rows);
+    let mut comment_x = Vec::with_capacity(rows);
     for i in first..first + n {
         let key = i as i64 + 1;
         keys.push(key);
@@ -563,9 +570,7 @@ pub(crate) fn customer(t: &Text, first: u64, n: u64) -> RecordBatch {
         phone(&mut phones, &mut phone_r, nation);
         bals.push(bal_r.next_int(-99_999, 999_999) as i128);
         segs.push(t.segments.views[t.segments.pick(&mut seg_r)]);
-        let x0 = comment_r.next_rand();
-        let x1 = comment_r.next_rand();
-        comments.push(comment.view(t, x0, x1));
+        comment_x.push((comment_r.next_rand(), comment_r.next_rand()));
         for r in [
             &mut addr_r,
             &mut nation_r,
@@ -587,7 +592,7 @@ pub(crate) fn customer(t: &Text, first: u64, n: u64) -> RecordBatch {
             strs(phones.finish(t)),
             decimals(bals),
             strs(t.array(segs, Vec::new())),
-            strs(t.array(comments, Vec::new())),
+            strs(comment_views(t, &comment, &comment_x)),
         ],
     )
 }
@@ -826,7 +831,7 @@ pub(crate) fn lineitem(t: &Text, s: &Scale, first: u64, n: u64) -> RecordBatch {
     let mut receipts = Vec::with_capacity(rows);
     let mut instrs = Vec::with_capacity(rows);
     let mut modes = Vec::with_capacity(rows);
-    let mut comments = Vec::with_capacity(rows);
+    let mut slots = Vec::with_capacity(rows);
     let (n_view, f_view, o_view) = (
         crate::text::view(b"N", 0, 0),
         crate::text::view(b"F", 0, 0),
@@ -866,8 +871,14 @@ pub(crate) fn lineitem(t: &Text, s: &Scale, first: u64, n: u64) -> RecordBatch {
         receipts.push(receipt - MIN_GENERATE_DATE + EPOCH);
         instrs.push(t.instructions.views[t.instructions.pick_draw(instr_x[k])]);
         modes.push(t.modes.views[t.modes.pick_draw(mode_x[k])]);
-        comments.push(comment.view(t, cx[2 * k], cx[2 * k + 1]));
+        slots.push(k as u32);
     }
+    // the comment views read the pool at random offsets, a cache miss
+    // each: in their own pass the loads are independent and overlap
+    let comments = slots
+        .iter()
+        .map(|&k| comment.view(t, cx[2 * k as usize], cx[2 * k as usize + 1]))
+        .collect();
     batch(
         &LINEITEM,
         vec![

@@ -152,6 +152,13 @@ impl Tpch {
         TpchTable::new(t, self.scale, self.source_rows(t))
     }
 
+    /// Build the text pool every table's comments are cut from (300 MiB,
+    /// ~0.4 s on 4 cores), on `threads` threads (0 = all cores). It is
+    /// built once per process, on first use otherwise.
+    pub fn prepare(threads: usize) {
+        text::Text::init(threads);
+    }
+
     /// Every table, in [`TableName::ALL`] order.
     pub fn tables(&self) -> impl Iterator<Item = TpchTable> + '_ {
         TableName::ALL.into_iter().map(|t| self.table(t))

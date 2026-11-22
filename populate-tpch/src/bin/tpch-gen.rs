@@ -17,6 +17,8 @@
 //! (default: all cores). Chunks (= Parquet row groups) hold about
 //! `--row-group` rows (default 256Ki); the data is the same for any value.
 
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, RecordBatch};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -166,6 +168,8 @@ fn main() {
     let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
 
     let start = Instant::now();
+    Tpch::prepare(a.threads);
+    let pool = start.elapsed().as_secs_f64();
     let (rows, bytes): (Vec<u64>, Vec<u64>) = match a.format {
         Format::Parquet => {
             let props = parquet_props()
@@ -191,7 +195,7 @@ fn main() {
             let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
             for_each_batch_many(&tables, a.threads, |t, b| {
                 rows[t] += b.num_rows() as u64;
-                bytes[t] += b.get_array_memory_size() as u64;
+                bytes[t] += batch_bytes(&b);
             });
             (rows, bytes)
         }
@@ -209,7 +213,7 @@ fn main() {
     let (r, b): (u64, u64) = (rows.iter().sum(), bytes.iter().sum());
     println!("| **total** | {r} | {:.0} |", mib(b));
     println!(
-        "\n{secs:.2} s: {:.1} M rows/s, {:.0} MiB/s",
+        "\n{secs:.2} s ({pool:.2} s text pool): {:.1} M rows/s, {:.0} MiB/s",
         r as f64 / secs / 1e6,
         mib(b) / secs
     );
@@ -224,6 +228,18 @@ fn no_dictionary(mut p: WriterPropertiesBuilder) -> WriterPropertiesBuilder {
         }
     }
     p
+}
+
+/// Arrow bytes of `b`, without the text pool and dictionary every string
+/// column shares: views and the column's own string bytes.
+fn batch_bytes(b: &RecordBatch) -> u64 {
+    b.columns()
+        .iter()
+        .map(|c| match c.as_string_view_opt() {
+            Some(s) => s.len() * 16 + s.data_buffers().first().map_or(0, |d| d.len()),
+            None => c.get_array_memory_size(),
+        } as u64)
+        .sum()
 }
 
 /// Rows in a Parquet file, from its footer.

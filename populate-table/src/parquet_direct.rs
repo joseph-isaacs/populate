@@ -108,7 +108,6 @@ impl DirectColumn {
 /// The physical value types handled here.
 trait Native: Copy + Ord + Default + Send + 'static {
     const SIZE: usize;
-    const TYPE: PhysicalType;
     const MIN: Self;
     const MAX: Self;
     /// Order-preserving: `a <= b` iff `a.key() <= b.key()`.
@@ -119,7 +118,6 @@ trait Native: Copy + Ord + Default + Send + 'static {
 
 impl Native for i32 {
     const SIZE: usize = 4;
-    const TYPE: PhysicalType = PhysicalType::INT32;
     const MIN: Self = i32::MIN;
     const MAX: Self = i32::MAX;
     fn key(self) -> u64 {
@@ -135,7 +133,6 @@ impl Native for i32 {
 
 impl Native for i64 {
     const SIZE: usize = 8;
-    const TYPE: PhysicalType = PhysicalType::INT64;
     const MIN: Self = i64::MIN;
     const MAX: Self = i64::MAX;
     fn key(self) -> u64 {
@@ -236,31 +233,64 @@ fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     Some((lo, hi))
 }
 
-fn encode<T: Native>(
-    descr: &ColumnDescPtr,
-    props: &WriterProperties,
-    v: &Values<T>,
-) -> Result<(Bytes, ColumnCloseResult)> {
-    let path = descr.path();
-    let compression = props.compression(path);
-    let stats_level = props.statistics_enabled(path);
-    let has_levels = descr.max_def_level() > 0;
-    let rows = v.rows;
-    let nulls = (rows - v.vals.len()) as u64;
-    let valid = v.valid.as_ref();
+/// Writes one column chunk's pages and gathers its metadata: the parts
+/// that don't depend on the value type.
+struct ChunkWriter<'a> {
+    descr: &'a ColumnDescPtr,
+    props: &'a WriterProperties,
+    compression: Compression,
+    snappy: snap::raw::Encoder,
+    pages: SerializedPageWriter<'a, Vec<u8>>,
+    has_levels: bool,
+    histograms: bool,
+    encodings: Vec<Encoding>,
+    compressed: i64,
+    uncompressed: i64,
+    written: u64,
+    dictionary_offset: Option<i64>,
+    data_offset: Option<i64>,
+    column_index: ColumnIndexBuilder,
+    offset_index: OffsetIndexBuilder,
+}
 
-    let (lo, hi) = match min_max(&v.vals) {
-        Some((lo, hi)) => (Some(lo), Some(hi)),
-        None => (None, None),
-    };
-    let plan = plan(v, props, path, lo.zip(hi));
-    let mut snappy = snap::raw::Encoder::new();
-    let mut compress = |body: Vec<u8>| -> Result<(Bytes, usize)> {
+impl<'a> ChunkWriter<'a> {
+    fn new(
+        descr: &'a ColumnDescPtr,
+        props: &'a WriterProperties,
+        sink: &'a mut TrackedWrite<Vec<u8>>,
+    ) -> Self {
+        let has_levels = descr.max_def_level() > 0;
+        let stats = props.statistics_enabled(descr.path());
+        ChunkWriter {
+            descr,
+            props,
+            compression: props.compression(descr.path()),
+            snappy: snap::raw::Encoder::new(),
+            pages: SerializedPageWriter::new(sink),
+            has_levels,
+            // as arrow-rs: level histograms whenever statistics are on
+            histograms: has_levels && stats != EnabledStatistics::None,
+            encodings: if has_levels {
+                vec![Encoding::RLE]
+            } else {
+                Vec::new()
+            },
+            compressed: 0,
+            uncompressed: 0,
+            written: 0,
+            dictionary_offset: None,
+            data_offset: None,
+            column_index: ColumnIndexBuilder::new(descr.physical_type()),
+            offset_index: OffsetIndexBuilder::new(),
+        }
+    }
+
+    fn compress(&mut self, body: Vec<u8>) -> Result<(Bytes, usize)> {
         let n = body.len();
-        Ok(match compression {
+        Ok(match self.compression {
             Compression::SNAPPY => (
                 Bytes::from(
-                    snappy
+                    self.snappy
                         .compress_vec(&body)
                         .map_err(|e| ParquetError::External(Box::new(e)))?,
                 ),
@@ -268,49 +298,42 @@ fn encode<T: Native>(
             ),
             _ => (Bytes::from(body), n),
         })
-    };
-
-    let mut sink = TrackedWrite::new(Vec::new());
-    let mut pages = SerializedPageWriter::new(&mut sink);
-    let mut encodings = Vec::new();
-    if has_levels {
-        encodings.push(Encoding::RLE);
     }
-    let (mut compressed, mut uncompressed) = (0i64, 0i64);
-    let mut dictionary_offset = None;
-    if let Some(entries) = &plan.entries {
-        let mut body = Vec::with_capacity(entries.len() * T::SIZE);
-        entries.iter().for_each(|e| e.put(&mut body));
-        let (buf, n) = compress(body)?;
+
+    /// The PLAIN dictionary page of `entries` entries.
+    fn dictionary(&mut self, body: Vec<u8>, entries: usize) -> Result<()> {
+        let (buf, n) = self.compress(body)?;
         let page = Page::DictionaryPage {
             buf,
-            num_values: entries.len() as u32,
+            num_values: entries as u32,
             encoding: Encoding::PLAIN,
             is_sorted: false,
         };
-        let spec = pages.write_page(CompressedPage::new(page, n))?;
-        dictionary_offset = Some(spec.offset as i64);
-        compressed += spec.compressed_size as i64;
-        uncompressed += spec.uncompressed_size as i64;
-        encodings.extend([Encoding::PLAIN, Encoding::RLE_DICTIONARY]);
-    }
-    if plan.pages.iter().any(|p| p.entries.is_none()) && !encodings.contains(&Encoding::PLAIN) {
-        encodings.push(Encoding::PLAIN);
+        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        self.dictionary_offset = Some(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.encodings
+            .extend([Encoding::PLAIN, Encoding::RLE_DICTIONARY]);
+        Ok(())
     }
 
-    let mut column_index = ColumnIndexBuilder::new(T::TYPE);
-    let mut offset_index = OffsetIndexBuilder::new();
-    let mut data_offset = None;
-    // as arrow-rs: page min/max boundary order, and level histograms
-    // whenever statistics are on
-    let (mut ascending, mut descending, mut last) = (true, true, None);
-    let histograms = has_levels && stats_level != EnabledStatistics::None;
-    for p in &plan.pages {
-        let (r0, r1, v0, v1) = (p.rows.start, p.rows.end, p.vals.start, p.vals.end);
-        let vals = &v.vals[v0..v1];
-        let page_min_max = min_max(vals);
-        let mut body = Vec::with_capacity(16 + vals.len() * T::SIZE);
-        if has_levels {
+    /// A v1 data page of rows `rows` (`vals` of them valid): definition
+    /// levels from `valid`, then the values `put` writes in `encoding`.
+    /// `min_max` is the page's (column index bytes).
+    fn data_page(
+        &mut self,
+        rows: Range<usize>,
+        vals: usize,
+        valid: Option<&BooleanBuffer>,
+        encoding: Encoding,
+        put: impl FnOnce(&mut Vec<u8>),
+        min_max: Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        let (r0, r1) = (rows.start, rows.end);
+        let mut body = Vec::new();
+        if self.has_levels {
             body.extend_from_slice(&[0; 4]);
             match valid {
                 // `sliced` copies only if the page starts mid-byte
@@ -320,21 +343,11 @@ fn encode<T: Native>(
             let len = (body.len() - 4) as u32;
             body[..4].copy_from_slice(&len.to_le_bytes());
         }
-        let encoding = match p.entries {
-            Some(n) => {
-                // as arrow-rs: the width of the dictionary when the page
-                // was flushed
-                let w = 64 - (n.saturating_sub(1) as u64).leading_zeros();
-                body.push(w as u8);
-                hybrid(&plan.idx[v0..v1], w, &mut body);
-                Encoding::RLE_DICTIONARY
-            }
-            None => {
-                vals.iter().for_each(|x| x.put(&mut body));
-                Encoding::PLAIN
-            }
-        };
-        let (buf, n) = compress(body)?;
+        put(&mut body);
+        if encoding == Encoding::PLAIN && !self.encodings.contains(&Encoding::PLAIN) {
+            self.encodings.push(Encoding::PLAIN);
+        }
+        let (buf, n) = self.compress(body)?;
         let page = Page::DataPage {
             buf,
             num_values: (r1 - r0) as u32,
@@ -343,67 +356,145 @@ fn encode<T: Native>(
             rep_level_encoding: Encoding::RLE,
             statistics: None,
         };
-        let spec = pages.write_page(CompressedPage::new(page, n))?;
-        data_offset.get_or_insert(spec.offset as i64);
-        compressed += spec.compressed_size as i64;
-        uncompressed += spec.uncompressed_size as i64;
-        offset_index.append_row_count((r1 - r0) as i64);
-        offset_index.append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
-        let bytes = |x: Option<T>| {
-            let mut b = Vec::new();
-            if let Some(x) = x {
-                x.put(&mut b);
+        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        self.data_offset.get_or_insert(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.offset_index.append_row_count((r1 - r0) as i64);
+        self.offset_index
+            .append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
+        let page_nulls = ((r1 - r0) - vals) as i64;
+        let (lo, hi) = min_max.unwrap_or_default();
+        self.column_index
+            .append(vals == 0, lo, hi, page_nulls, None);
+        if self.histograms {
+            let h = LevelHistogram::from(vec![page_nulls, vals as i64]);
+            self.column_index.append_histograms(&None, &Some(h));
+        }
+        Ok(())
+    }
+
+    /// Finish the chunk: `rows` rows, `vals` valid, chunk statistics
+    /// `stats` and the pages' `order`.
+    fn finish(
+        mut self,
+        rows: usize,
+        vals: usize,
+        stats: Statistics,
+        order: BoundaryOrder,
+    ) -> Result<ColumnCloseResult> {
+        self.column_index.set_boundary_order(order);
+        self.pages.close()?;
+        let stats_level = self.props.statistics_enabled(self.descr.path());
+        let nulls = (rows - vals) as i64;
+        let mut meta = ColumnChunkMetaData::builder(self.descr.clone())
+            .set_compression(self.compression)
+            .set_encodings(self.encodings)
+            .set_num_values(rows as i64)
+            .set_total_compressed_size(self.compressed)
+            .set_total_uncompressed_size(self.uncompressed)
+            .set_data_page_offset(self.data_offset.unwrap_or(0))
+            .set_dictionary_page_offset(self.dictionary_offset);
+        if stats_level != EnabledStatistics::None {
+            meta = meta.set_statistics(stats);
+            if self.histograms {
+                let h = vec![nulls, vals as i64];
+                meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
             }
-            b
-        };
-        if let (Some((lo, hi)), Some((last_lo, last_hi))) = (page_min_max, last) {
+        }
+        Ok(ColumnCloseResult {
+            bytes_written: self.written,
+            rows_written: rows as u64,
+            metadata: meta.build()?,
+            bloom_filter: None,
+            column_index: match stats_level {
+                EnabledStatistics::Page => Some(self.column_index.build()?),
+                _ => None,
+            },
+            offset_index: (!self.props.offset_index_disabled()).then(|| self.offset_index.build()),
+        })
+    }
+}
+
+/// Pages' boundary order, from each page's `(min, max)` in order (`None`
+/// for all-null pages), as arrow-rs computes it.
+fn boundary_order<K: PartialOrd>(pages: impl Iterator<Item = Option<(K, K)>>) -> BoundaryOrder {
+    let (mut ascending, mut descending, mut last) = (true, true, None::<(K, K)>);
+    for m in pages {
+        if let (Some((lo, hi)), Some((last_lo, last_hi))) = (&m, &last) {
             ascending &= last_lo <= lo && last_hi <= hi;
             descending &= lo <= last_lo && hi <= last_hi;
         }
-        last = page_min_max.or(last);
-        let (lo, hi) = (page_min_max.map(|m| m.0), page_min_max.map(|m| m.1));
-        let page_nulls = ((r1 - r0) - vals.len()) as i64;
-        column_index.append(vals.is_empty(), bytes(lo), bytes(hi), page_nulls, None);
-        if histograms {
-            let h = LevelHistogram::from(vec![page_nulls, vals.len() as i64]);
-            column_index.append_histograms(&None, &Some(h));
+        if m.is_some() {
+            last = m;
         }
     }
-    column_index.set_boundary_order(match (ascending, descending) {
+    match (ascending, descending) {
         (true, _) => BoundaryOrder::ASCENDING,
         (false, true) => BoundaryOrder::DESCENDING,
         (false, false) => BoundaryOrder::UNORDERED,
-    });
-    pages.close()?;
-    let buf = sink.into_inner()?;
-
-    let mut meta = ColumnChunkMetaData::builder(descr.clone())
-        .set_compression(compression)
-        .set_encodings(encodings)
-        .set_num_values(rows as i64)
-        .set_total_compressed_size(compressed)
-        .set_total_uncompressed_size(uncompressed)
-        .set_data_page_offset(data_offset.unwrap_or(0))
-        .set_dictionary_page_offset(dictionary_offset);
-    if stats_level != EnabledStatistics::None {
-        meta = meta.set_statistics(T::stats(lo, hi, nulls));
-        if histograms {
-            let h = vec![nulls as i64, v.vals.len() as i64];
-            meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
-        }
     }
-    let close = ColumnCloseResult {
-        bytes_written: buf.len() as u64,
-        rows_written: rows as u64,
-        metadata: meta.build()?,
-        bloom_filter: None,
-        column_index: match stats_level {
-            EnabledStatistics::Page => Some(column_index.build()?),
-            _ => None,
-        },
-        offset_index: (!props.offset_index_disabled()).then(|| offset_index.build()),
+}
+
+fn encode<T: Native>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &Values<T>,
+) -> Result<(Bytes, ColumnCloseResult)> {
+    let path = descr.path();
+    let (lo, hi) = match min_max(&v.vals) {
+        Some((lo, hi)) => (Some(lo), Some(hi)),
+        None => (None, None),
     };
-    Ok((Bytes::from(buf), close))
+    let plan = plan(v, props, path, lo.zip(hi));
+    let mut sink = TrackedWrite::new(Vec::new());
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    if let Some(entries) = &plan.entries {
+        let mut body = Vec::with_capacity(entries.len() * T::SIZE);
+        entries.iter().for_each(|e| e.put(&mut body));
+        w.dictionary(body, entries.len())?;
+    }
+    let bytes = |x: T| {
+        let mut b = Vec::new();
+        x.put(&mut b);
+        b
+    };
+    let mut page_ranges = Vec::with_capacity(plan.pages.len());
+    for p in &plan.pages {
+        let (v0, v1) = (p.vals.start, p.vals.end);
+        let vals = &v.vals[v0..v1];
+        let mm = min_max(vals);
+        page_ranges.push(mm);
+        let (encoding, idx) = match p.entries {
+            Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &plan.idx[v0..v1]))),
+            None => (Encoding::PLAIN, None),
+        };
+        w.data_page(
+            p.rows.clone(),
+            vals.len(),
+            v.valid.as_ref(),
+            encoding,
+            |body| match idx {
+                Some((n, idx)) => {
+                    // as arrow-rs: the width of the dictionary when the
+                    // page was flushed
+                    let bits = 64 - (n.saturating_sub(1) as u64).leading_zeros();
+                    body.push(bits as u8);
+                    hybrid(idx, bits, body);
+                }
+                None => {
+                    body.reserve(vals.len() * T::SIZE);
+                    vals.iter().for_each(|x| x.put(body));
+                }
+            },
+            mm.map(|(lo, hi)| (bytes(lo), bytes(hi))),
+        )?;
+    }
+    let order = boundary_order(page_ranges.into_iter());
+    let nulls = (v.rows - v.vals.len()) as u64;
+    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls), order)?;
+    Ok((Bytes::from(sink.into_inner()?), close))
 }
 
 /// A data page: its rows and values, and the number of dictionary entries

@@ -3,6 +3,7 @@
 
 use crate::TableName;
 use crate::dat::{self, Encoding};
+use crate::direct;
 use crate::fused::{Channel, Want};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
@@ -91,6 +92,15 @@ macro_rules! tables {
                 if let Some((channel, sales)) = Channel::of(self.name) {
                     let want = Want { sales, returns: !sales };
                     return channel.run(&self.session, first, last, batch, want, &mut |_, b| emit(b));
+                }
+                match self.name {
+                    TableName::Inventory => {
+                        return direct::inventory(&self.session, first, last, batch, emit)
+                    }
+                    TableName::CustomerDemographics if direct::demographics_direct() => {
+                        return direct::customer_demographics(&self.session, first, last, batch, emit)
+                    }
+                    _ => {}
                 }
                 match self.name {
                     $(TableName::$t => {
@@ -594,7 +604,11 @@ impl Chunks for DsTable {
     /// built from cache-sized generation batches.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        let direct = Channel::of(self.name).is_some();
+        let direct = Channel::of(self.name).is_some()
+            || matches!(
+                self.name,
+                TableName::Inventory | TableName::CustomerDemographics
+            );
         if direct || self.batch_size <= GEN_BATCH {
             return self.arrow_range(first, last, self.batch_size, emit);
         }

@@ -32,6 +32,7 @@
 //! ```
 
 pub mod dat;
+mod direct;
 mod fused;
 mod gen_tables;
 mod seeds;

@@ -82,6 +82,19 @@ adds the engine around it:
   file and whichever worker finds the file idle writes the queue in order,
   so files are written in parallel and every core generates. 4 threads:
   ~1.6 → ~1.25 s (interleaved runs, all 24 files `cmp`-identical).
+- **Inventory and demographics into columns.** `inventory` (11.7M rows
+  at SF 1) and `customer_demographics` (1.9M) are cross products of keys,
+  plus one random quantity and a null bitmap for inventory. `src/direct.rs`
+  fills their columns directly instead of building a tpcdsgen row struct
+  per row and converting (both tested equal to tpcdsgen-arrow).
+- **Cheaper `.dat` numbers.** Up to 8 digits are made at once in one
+  `u64` (multiply-shift divisions on 4-, 2- and 1-digit lanes), the length
+  is the count of leading zero bytes, and null bits are read straight from
+  the bitmap (`NullBuffer::is_valid` was a quarter of formatting time).
+  `--example datbench` times formatting alone.
+  Together with the two tables above: 28% fewer instructions for a
+  one-thread `.dat` run and 27% for Parquet (callgrind, SF 0.2), ~9% less
+  wall time at 1 thread and 6–9% at 4 (interleaved, best of 3).
 - **Cache-sized conversion.** tpcdsgen-arrow converts rows to columns one
   column at a time over the buffered rows; at 8Ki rows a `catalog_sales`
   batch (~3 MB) falls out of L2 and conversion is 5x slower. Batches are
@@ -180,5 +193,8 @@ multiply by `16807^k mod (2^31 - 1)`.
 ### What's left
 
 - **tpcdsgen's other generators.** They still burn seeds draw by draw.
+- **`.dat` formatting.** Still ~50 instructions per cell, of which the
+  per-cell type dispatch is ~10%; the sales channels could write text
+  directly and skip their Arrow columns.
 - **Parquet encoding.** Still the largest stage: text columns go through
   arrow-rs, and Snappy.

@@ -37,7 +37,7 @@ enum Col<'a> {
 pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
     let rows = batch.num_rows();
     let mut bound = rows; // newlines
-    let cols: Vec<(Col<'_>, Option<&NullBuffer>)> = batch
+    let cols: Vec<(Col<'_>, Option<Valid>)> = batch
         .columns()
         .iter()
         .zip(batch.schema_ref().fields())
@@ -71,7 +71,7 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
                     }
                     _ => MAX_NUMBER + 1,
                 };
-            (c, a.nulls().filter(|n| n.null_count() > 0))
+            (c, a.nulls().filter(|n| n.null_count() > 0).map(Valid::new))
         })
         .collect();
     out.reserve(bound);
@@ -80,7 +80,8 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
     let base = w.0;
     for r in 0..rows {
         for (c, nulls) in &cols {
-            if nulls.is_none_or(|n| n.is_valid(r)) {
+            // SAFETY: `r` is a row of the batch.
+            if nulls.as_ref().is_none_or(|n| unsafe { n.get(r) }) {
                 // SAFETY: `bound` reserved room for the widest number and the
                 // full bytes of every string (Latin-1 never needs more bytes
                 // than UTF-8), plus every separator and newline.
@@ -110,6 +111,25 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
     }
 }
 
+/// A validity bitmap as a raw pointer and bit offset: `NullBuffer::is_valid`
+/// bounds-checks and re-derives both on every call, which was a quarter of
+/// the formatting time.
+struct Valid(*const u8, usize);
+
+impl Valid {
+    fn new(n: &NullBuffer) -> Self {
+        Valid(n.inner().values().as_ptr(), n.offset())
+    }
+
+    /// # Safety
+    /// `r` must be below the bitmap's length.
+    #[inline(always)]
+    unsafe fn get(&self, r: usize) -> bool {
+        let i = r + self.1;
+        unsafe { *self.0.add(i / 8) >> (i % 8) & 1 != 0 }
+    }
+}
+
 /// Widest number we print: `-` and 19 digits, `.`, scale digits.
 const MAX_NUMBER: usize = 24;
 
@@ -120,23 +140,22 @@ const DIGITS: &[u8; 200] = b"\
 6061626364656667686970717273747576777879\
 8081828384858687888990919293949596979899";
 
-/// Number of decimal digits of `v` (1 for 0): log2 from the leading zeros,
-/// times log10(2) (1233 / 4096), corrected by one table lookup.
+/// The 8 decimal digits of `x < 10^8`, with leading zeros, as ASCII bytes
+/// of a little-endian `u64` (most significant digit first). Splits into
+/// 4-digit, 2-digit and 1-digit lanes with multiply-shift divisions that
+/// are exact in those ranges, all lanes at once.
 #[inline(always)]
-fn digits(v: u64) -> usize {
-    const POW10: [u64; 20] = {
-        let mut p = [1u64; 20];
-        let mut i = 1;
-        while i < 20 {
-            p[i] = p[i - 1] * 10;
-            i += 1;
-        }
-        p
-    };
-    let bits = 64 - (v | 1).leading_zeros() as usize;
-    let t = (bits * 1233) >> 12;
-    t + 1 - ((v | 1) < POW10[t]) as usize
+fn eight(x: u32) -> u64 {
+    let v = (x / 10_000) as u64 | (((x % 10_000) as u64) << 32);
+    let hi = ((v * 10_486) >> 20) & 0x0000_007F_0000_007F; // lane / 100
+    let v = hi | ((v - hi * 100) << 16);
+    let hi = ((v * 103) >> 10) & 0x000F_000F_000F_000F; // lane / 10
+    let v = hi | ((v - hi * 10) << 8);
+    v + ZEROS
 }
+
+/// `"00000000"` as a `u64`.
+const ZEROS: u64 = 0x3030_3030_3030_3030;
 
 /// Write cursor into reserved capacity. Every method is `unsafe`: the
 /// caller guarantees room for what it writes.
@@ -167,25 +186,35 @@ impl Cursor {
         }
     }
 
-    /// Decimal digits of `v`, written in place back to front.
+    /// Decimal digits of `v`. Up to 8 digits are made at once in one
+    /// `u64` ([`eight`]) and stored as 8 bytes, of which all but the leading
+    /// zeros are kept (the reservation has room for 8 per number).
     #[inline]
-    unsafe fn uint(&mut self, mut v: u64) {
-        let n = digits(v);
+    unsafe fn uint(&mut self, v: u64) {
         unsafe {
-            let mut end = self.0.add(n);
-            self.0 = end;
-            while v >= 100 {
-                let d = (v % 100) as usize * 2;
-                v /= 100;
-                end = end.sub(2);
-                std::ptr::copy_nonoverlapping(DIGITS.as_ptr().add(d), end, 2);
-            }
-            if v >= 10 {
-                end = end.sub(2);
-                std::ptr::copy_nonoverlapping(DIGITS.as_ptr().add(v as usize * 2), end, 2);
+            if v < 100_000_000 {
+                // leading zero digits are the low zero bytes (at most 7)
+                let d = eight(v as u32);
+                let zeros = ((d - ZEROS) | (1 << 56)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 8]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(8 - zeros as usize);
             } else {
-                end.sub(1).write(b'0' + v as u8);
+                self.big(v);
             }
+        }
+    }
+
+    /// [`Self::uint`] of `v >= 10^8`: the high digits, then the low 8.
+    #[cold]
+    #[inline(never)]
+    unsafe fn big(&mut self, v: u64) {
+        unsafe {
+            self.uint(v / 100_000_000);
+            let d = eight((v % 100_000_000) as u32);
+            self.0.cast::<[u8; 8]>().write_unaligned(d.to_le_bytes());
+            self.0 = self.0.add(8);
         }
     }
 
@@ -309,14 +338,23 @@ mod tests {
     }
 
     #[test]
-    fn digit_counts() {
-        for v in [0, 1, 9, 10, 99, 100, 12345, u64::MAX / 10, u64::MAX] {
-            assert_eq!(digits(v), v.to_string().len(), "{v}");
+    fn eight_digits() {
+        for x in (0..100_000_000u32)
+            .step_by(9_973)
+            .chain([0, 9, 10, 99_999_999, 12_345_678])
+        {
+            assert_eq!(eight(x).to_le_bytes(), *format!("{x:08}").as_bytes(), "{x}");
         }
-        for p in 0..20 {
-            let v = 10u64.pow(p);
-            assert_eq!(digits(v), p as usize + 1);
-            assert_eq!(digits(v - 1), (p as usize).max(1));
+        for v in [
+            0u64,
+            7,
+            10,
+            99_999_999,
+            100_000_000,
+            123_456_789_012,
+            u64::MAX,
+        ] {
+            assert_eq!(fmt(|o| unsafe { o.uint(v) }), v.to_string());
         }
     }
 

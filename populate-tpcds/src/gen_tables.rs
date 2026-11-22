@@ -13,10 +13,13 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::sync::Mutex;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::row::*;
@@ -278,7 +281,7 @@ impl DsTable {
     /// Write the table in dsdgen's `.dat` format (`|`-separated fields, a
     /// trailing `|`, one row per line), byte-identical to `dsdgen -TABLE`.
     /// Chunks are formatted on `threads` threads and written in order.
-    pub fn write_dat<W: Write>(
+    pub fn write_dat<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
@@ -335,54 +338,147 @@ pub fn write_parquet_many<W: Write + Send>(
 }
 
 /// [`DsTable::write_dat`] for several tables on one shared pool, like
-/// [`write_parquet_many`]. `threads: 0` means one worker per core but one:
-/// the calling thread writes ~1 GB of text per scale factor, and with a
-/// worker on every core it falls behind.
-pub fn write_dat_many<W: Write>(
+/// [`write_parquet_many`] (`threads: 0` = all cores). The workers write the
+/// files themselves: a finished chunk is queued on its file, and whichever
+/// worker finds the file idle writes everything queued in order, so
+/// different files are written in parallel and no thread only writes.
+pub fn write_dat_many<W: Write + Send>(
     tables: &[DsTable],
-    mut writers: Vec<W>,
+    writers: Vec<W>,
     threads: usize,
     encoding: Encoding,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
     let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get().saturating_sub(1).max(1)),
+        0 => thread::available_parallelism().map_or(1, |t| t.get()),
         t => t,
     };
     let units = plan(tables, true);
     let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
+    let files: Vec<Mutex<DatFile<W>>> = writers
+        .into_iter()
+        .map(|w| Mutex::new(DatFile::new(w)))
+        .collect();
     // Text buffers go back to a pool once written: a fresh multi-MB buffer
     // per chunk costs more in page faults than formatting it.
     let pool = Mutex::new(Vec::<Vec<u8>>::new());
-    par_ordered(
-        jobs.total(),
-        threads,
-        |j| {
+    // Chunks formatted but not yet written. Past `2 * threads` a worker
+    // waits for the writers instead of formatting more.
+    let queued = (Mutex::new(0usize), Condvar::new());
+    let next = AtomicU64::new(0);
+    let failed = AtomicBool::new(false);
+    let work = || {
+        while !failed.load(Relaxed) {
+            let j = next.fetch_add(1, Relaxed);
+            if j >= jobs.total() {
+                break;
+            }
             let (u, i) = jobs.locate(j);
             let unit = &units[u];
-            let mut outs: Vec<(usize, Vec<u8>)> = unit
+            let mut bufs: Vec<Vec<u8>> = unit
                 .idx
                 .iter()
-                .map(|&t| (t, pool.lock().expect("pool").pop().unwrap_or_default()))
+                .map(|_| pool.lock().expect("pool").pop().unwrap_or_default())
                 .collect();
-            unit.chunk(i, &mut |k, b| {
-                dat::write_batch(&b, encoding, &mut outs[k].1)
-            });
-            outs
-        },
-        |outs| {
-            for (t, mut s) in outs {
-                writers[t].write_all(&s)?;
-                s.clear();
-                pool.lock().expect("pool").push(s);
+            unit.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
+            for (&t, buf) in unit.idx.iter().zip(bufs) {
+                *queued.0.lock().expect("queued") += 1;
+                let written = DatFile::push(&files[t], i, buf, |b| {
+                    pool.lock().expect("pool").push(b);
+                    *queued.0.lock().expect("queued") -= 1;
+                    queued.1.notify_all();
+                });
+                if written.is_err() {
+                    failed.store(true, Relaxed);
+                    queued.1.notify_all();
+                }
             }
-            Ok::<(), io::Error>(())
-        },
-    )?;
-    for w in &mut writers {
-        w.flush()?;
+            let mut q = queued.0.lock().expect("queued");
+            while *q > 2 * threads && !failed.load(Relaxed) {
+                q = queued.1.wait(q).expect("queued");
+            }
+        }
+    };
+    if threads <= 1 {
+        work();
+    } else {
+        thread::scope(|s| {
+            for _ in 0..threads.min(jobs.total() as usize) {
+                s.spawn(work);
+            }
+        });
     }
-    Ok(writers)
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let f = f.into_inner().expect("file");
+        if let Some(e) = f.err {
+            return Err(e);
+        }
+        let mut w = f.w.expect("writer");
+        w.flush()?;
+        out.push(w);
+    }
+    Ok(out)
+}
+
+/// One `.dat` output: its writer, the chunks queued for it, and whether a
+/// worker is writing them.
+struct DatFile<W> {
+    /// `None` while a worker writes to it.
+    w: Option<W>,
+    next: u64,
+    queue: BTreeMap<u64, Vec<u8>>,
+    writing: bool,
+    err: Option<io::Error>,
+}
+
+impl<W: Write> DatFile<W> {
+    fn new(w: W) -> Self {
+        Self {
+            w: Some(w),
+            next: 0,
+            queue: BTreeMap::new(),
+            writing: false,
+            err: None,
+        }
+    }
+
+    /// Queue chunk `i` of `file`; if no one is writing it, write every
+    /// chunk that is next in order, without holding the lock while writing.
+    /// `done` gets each written buffer back.
+    fn push(
+        file: &Mutex<Self>,
+        i: u64,
+        buf: Vec<u8>,
+        mut done: impl FnMut(Vec<u8>),
+    ) -> io::Result<()> {
+        let mut f = file.lock().expect("file");
+        f.queue.insert(i, buf);
+        if f.writing {
+            return Ok(());
+        }
+        f.writing = true;
+        loop {
+            let at = f.next;
+            let Some(mut b) = f.queue.remove(&at) else {
+                f.writing = false;
+                return Ok(());
+            };
+            f.next += 1;
+            let mut w = f.w.take().expect("idle writer");
+            drop(f);
+            let r = w.write_all(&b);
+            b.clear();
+            done(b);
+            f = file.lock().expect("file");
+            f.w = Some(w);
+            if let Err(e) = r {
+                f.err.get_or_insert(e);
+                f.writing = false;
+                return Err(io::Error::other("write failed"));
+            }
+        }
+    }
 }
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with

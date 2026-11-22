@@ -7,6 +7,7 @@ use populate_tpcds::Encoding::{Latin1, Utf8};
 use populate_tpcds::TableName::{self, *};
 use populate_tpcds::Tpcds;
 use std::fmt::Write as _;
+use std::io::{self, Write};
 use tpcdsgen::config::{SessionBuilder, Table as Ds};
 use tpcdsgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
 
@@ -255,4 +256,32 @@ fn fused_store_channel_in_many() {
             table.name()
         );
     }
+}
+
+/// A writer that fails once it is given more than `.0` bytes.
+struct Failing(usize);
+
+impl Write for Failing {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() > self.0 {
+            return Err(io::Error::other("disk full"));
+        }
+        self.0 -= buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The workers write the `.dat` files: a write error stops them and is
+/// returned, it does not hang the pool.
+#[test]
+fn dat_write_error_is_returned() {
+    let ds = Tpcds::new(1.0);
+    let t = |n| ds.table(n).limit_source_rows(3_000).chunk_source_rows(100);
+    let tables = [t(StoreSales), t(Customer)];
+    let writers = vec![Failing(100_000), Failing(usize::MAX)];
+    let err = populate_tpcds::write_dat_many(&tables, writers, 4, Utf8).err();
+    assert_eq!(err.map(|e| e.to_string()), Some("disk full".into()));
 }

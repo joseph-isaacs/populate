@@ -76,6 +76,12 @@ adds the engine around it:
   costs 10x their generation. `.dat` lines are instead written straight
   from the Arrow batches into a reserved buffer (~800 MB/s per core),
   matching tpcdsgen's text on every table (tested).
+- **The workers write the `.dat` files.** SF 1 is 1.2 GB of text. Written
+  by one thread it took ~1.6 s with the other cores busy, the whole run,
+  and workers sat blocked on it. Now a finished chunk is queued on its
+  file and whichever worker finds the file idle writes the queue in order,
+  so files are written in parallel and every core generates. 4 threads:
+  ~1.6 → ~1.25 s (interleaved runs, all 24 files `cmp`-identical).
 - **Cache-sized conversion.** tpcdsgen-arrow converts rows to columns one
   column at a time over the buffered rows; at 8Ki rows a `catalog_sales`
   batch (~3 MB) falls out of L2 and conversion is 5x slower. Batches are

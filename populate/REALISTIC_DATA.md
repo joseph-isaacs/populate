@@ -61,22 +61,36 @@ doesn't compile, because nested row tuples can't be pushed into the flat
 column HList. `derive` avoids that by keeping rows flat.
 
 `cargo bench -p populate --bench derive`, 65,536 rows, sinks pre-allocated
-(median):
+(median, one run on a shared machine; compare within a column set):
 
-| case | `derive` columnar | same, row by row | `map` to a tuple |
-|---|---:|---:|---:|
-| 2 columns, `b = 3a + 1` | 48.5 µs | 74.0 µs | 73.7 µs |
-| 3 columns, chained | 74.7 µs | 108.1 µs | 108.9 µs |
-| 2 columns, `b = a + rng.random_range(0..8)` | 97.1 µs | 108.1 µs | n/a |
+| case | `derive` columnar | same, row by row | `map` to a tuple | hand-written loop |
+|---|---:|---:|---:|---:|
+| 2 columns, `b = 3a + 1` | 22.5 µs | 89.0 µs | 88.1 µs | |
+| 3 columns, chained | 49.9 µs | 133.0 µs | 129.3 µs | |
+| 2 columns, `b = a + rng.random_range(0..8)` | 80.1 µs | 127.7 µs | n/a | 79.9 µs (`SmallRng`), 148.8 µs (`dyn RngCore`) |
 
-For the RNG case, hand-written loops into the same pre-allocated `Vec`s take
-70.0 µs with a concrete `SmallRng` and 168.7 µs through `&mut dyn RngCore`.
-`derive` with `dyn RngCore` took 208 µs before switching to `DeriveRng`.
+`derive` is 2.5 to 4x faster than row by row, and with RNG draws it matches
+a hand-written loop. Three things got it there:
 
-So `derive` is about 1.5x faster than row by row on arithmetic. A first
-naive version (index + `push` per row) was *slower* than row mode, so the
-slice-iterator + `extend` path matters. It needed one small core change:
-`HCons<S, HNil>` now forwards `push_n` to its sink.
+1. Reading the parent back as zipped slice iterators into `Vec::extend`
+   (a first version that indexed and `push`ed per row was slower than row
+   mode).
+2. A concrete `DeriveRng` for the closure instead of `&mut dyn RngCore`
+   (noisy case 208 µs -> 97 µs).
+3. Core: `collect_rows` now feeds `push_n` from a `0..n` iterator, and
+   `HCons<S, HNil>` / `VecDeque` forward `push_n`, so `Vec` sinks `extend`
+   with a known length instead of a capacity check per `push`. This speeds
+   up every leaf, not just `derive` (`collect` bench, 65,536 rows):
+
+   | bench | before | after |
+   |---|---:|---:|
+   | `scalar/columnar` | 42.6 µs | 9.8 µs |
+   | `tuple4/columnar` | 285.5 µs | 55.9 µs |
+   | `list_i64/columnar` | 428.7 µs | 246.6 µs |
+   | `list_tuple3/columnar` | 1.212 ms | 373.8 µs |
+   | `nested/columnar` | 1.016 ms | 583.3 µs |
+
+   Row-mode benches are unchanged (they don't go through `collect_rows`).
 
 ### Still needs core changes
 

@@ -185,12 +185,15 @@ fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     if cols.len() == 1 {
         return cols.pop().expect("one column");
     }
-    let fields: Fields = cols
-        .iter()
+    Arc::new(StructArray::new(column_fields(&cols), cols, None))
+}
+
+/// Non-nullable fields `c0, c1, ...` typed after `cols`.
+fn column_fields(cols: &[ArrayRef]) -> Fields {
+    cols.iter()
         .enumerate()
         .map(|(i, a)| Field::new(format!("c{i}"), a.data_type().clone(), false))
-        .collect();
-    Arc::new(StructArray::new(fields, cols, None))
+        .collect()
 }
 
 // ============================================================================
@@ -217,12 +220,8 @@ impl<H: IntoArrowArray, T: IntoArrowColumns> IntoArrowColumns for HCons<H, T> {
 pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, ArrowError> {
     let mut cols = Vec::new();
     sink.into_arrays(&mut cols);
-    let fields: Vec<Field> = cols
-        .iter()
-        .enumerate()
-        .map(|(i, a)| Field::new(format!("c{i}"), a.data_type().clone(), false))
-        .collect();
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), cols)
+    let schema = Schema::new(column_fields(&cols));
+    RecordBatch::try_new(Arc::new(schema), cols)
 }
 
 // ============================================================================

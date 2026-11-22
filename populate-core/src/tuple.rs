@@ -27,122 +27,83 @@ tuple_iter!(TupleIter3; I1 0, I2 1, I3 2);
 tuple_iter!(TupleIter4; I1 0, I2 1, I3 2, I4 3);
 
 // ============================================================================
-// Tuple (D1, D2) — col-by-col using HAppend
+// Distribution for tuples — col-by-col, one macro for every arity
 // ============================================================================
 
-impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>> Distribution<B> for (D1, D2)
+/// One step of tuple collection: split `sink` into the columns of the first
+/// k-1 distributions and those of the k-th, fill the prefix with `prefix`,
+/// then the last part with `last`, and append them back together.
+pub fn collect_split<B, P, D, F, R>(
+    sink: P::Output,
+    rng: &mut R,
+    n: usize,
+    prefix: F,
+    last: &mut D,
+) -> P::Output
 where
-    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
+    B: Backend,
+    D: Distribution<B>,
+    P: HAppend<<D::Item as DefaultSink<B>>::Sink>,
+    F: FnOnce(P, &mut R) -> P,
+    R: Rng,
 {
-    type Item = (D1::Item, D2::Item);
-    type RowIter = TupleIter2<D1::RowIter, D2::RowIter>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        TupleIter2(self.0.row_iter(), self.1.row_iter())
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: <(D1::Item, D2::Item) as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <(D1::Item, D2::Item) as DefaultSink<B>>::Sink {
-        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(sink);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        s1.append(s2)
-    }
+    let (p, s) = P::unappend(sink);
+    let p = prefix(p, rng);
+    let s = last.collect_into(s, rng, n);
+    p.append(s)
 }
 
-// ============================================================================
-// Tuple (D1, D2, D3) — col-by-col
-// ============================================================================
+type SinkOf<B, D> = <<D as Distribution<B>>::Item as DefaultSink<B>>::Sink;
 
-impl<B: Backend, D1: Distribution<B>, D2: Distribution<B>, D3: Distribution<B>> Distribution<B>
-    for (D1, D2, D3)
-where
-    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
-    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
-        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
-{
-    type Item = (D1::Item, D2::Item, D3::Item);
-    type RowIter = TupleIter3<D1::RowIter, D2::RowIter, D3::RowIter>;
+macro_rules! impl_tuple_distribution {
+    // All distributions folded in: emit the impl.
+    (@emit $iter:ident [$($d:ident $i:ident $idx:tt),+] [$($bounds:tt)*]
+        $self:ident $sink:ident $rng:ident $n:ident $body:expr) => {
+        impl<B: Backend, $($d: Distribution<B>),+> Distribution<B> for ($($d),+)
+        where $($bounds)*
+        {
+            type Item = ($($d::Item),+);
+            type RowIter = $iter<$($d::RowIter),+>;
 
-    fn row_iter(&mut self) -> Self::RowIter {
-        TupleIter3(self.0.row_iter(), self.1.row_iter(), self.2.row_iter())
-    }
+            fn row_iter(&mut self) -> Self::RowIter {
+                $iter($(self.$idx.row_iter()),+)
+            }
 
-    fn collect_into(
-        &mut self,
-        sink: <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <(D1::Item, D2::Item, D3::Item) as DefaultSink<B>>::Sink {
-        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
-        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(sink);
-        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        let s3 = self.2.collect_into(s3, rng, n);
-        s1.append(s2).append(s3)
-    }
+            fn collect_into(
+                &mut $self,
+                $sink: <Self::Item as DefaultSink<B>>::Sink,
+                $rng: &mut impl Rng,
+                $n: usize,
+            ) -> <Self::Item as DefaultSink<B>>::Sink {
+                $body
+            }
+        }
+    };
+    // Fold in the next distribution: its sink is appended to the prefix's.
+    (@fold $iter:ident $all:tt $acc:ty; [$($bounds:tt)*] [$self:ident $sink:ident $rng:ident $n:ident]
+        $prev:expr; $next:ident $idx:tt $(, $rest:ident $ridx:tt)*) => {
+        impl_tuple_distribution!(@fold $iter $all
+            <$acc as HAppend<SinkOf<B, $next>>>::Output;
+            [$($bounds)* $acc: HAppend<SinkOf<B, $next>>,]
+            [$self $sink $rng $n]
+            |s, rng| collect_split::<B, $acc, $next, _, _>(s, rng, $n, $prev, &mut $self.$idx);
+            $($rest $ridx),*
+        );
+    };
+    (@fold $iter:ident $all:tt $acc:ty; $bounds:tt [$self:ident $sink:ident $rng:ident $n:ident]
+        $prev:expr;) => {
+        impl_tuple_distribution!(@emit $iter $all $bounds $self $sink $rng $n ($prev)($sink, $rng));
+    };
+    // Entry: `TupleIterN; D1 I1 0, D2 I2 1, ...`
+    ($iter:ident; $d1:ident $i1:ident $idx1:tt $(, $d:ident $i:ident $idx:tt)+) => {
+        impl_tuple_distribution!(@fold $iter [$d1 $i1 $idx1 $(, $d $i $idx)+]
+            SinkOf<B, $d1>; [] [self sink rng n]
+            |s, rng| self.$idx1.collect_into(s, rng, n);
+            $($d $idx),+
+        );
+    };
 }
 
-// ============================================================================
-// Tuple (D1, D2, D3, D4) — col-by-col
-// ============================================================================
-
-impl<
-        B: Backend,
-        D1: Distribution<B>,
-        D2: Distribution<B>,
-        D3: Distribution<B>,
-        D4: Distribution<B>,
-    > Distribution<B> for (D1, D2, D3, D4)
-where
-    <D1::Item as DefaultSink<B>>::Sink: HAppend<<D2::Item as DefaultSink<B>>::Sink>,
-    <<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output:
-        HAppend<<D3::Item as DefaultSink<B>>::Sink>,
-    <<<D1::Item as DefaultSink<B>>::Sink as HAppend<<D2::Item as DefaultSink<B>>::Sink>>::Output
-        as HAppend<<D3::Item as DefaultSink<B>>::Sink>>::Output:
-        HAppend<<D4::Item as DefaultSink<B>>::Sink>,
-{
-    type Item = (D1::Item, D2::Item, D3::Item, D4::Item);
-    type RowIter = TupleIter4<D1::RowIter, D2::RowIter, D3::RowIter, D4::RowIter>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        TupleIter4(
-            self.0.row_iter(),
-            self.1.row_iter(),
-            self.2.row_iter(),
-            self.3.row_iter(),
-        )
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <(D1::Item, D2::Item, D3::Item, D4::Item) as DefaultSink<B>>::Sink {
-        type S1<B, D1> = <<D1 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S2<B, D2> = <<D2 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S3<B, D3> = <<D3 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S4<B, D4> = <<D4 as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-        type S12<B, D1, D2> = <S1<B, D1> as HAppend<S2<B, D2>>>::Output;
-        type S123<B, D1, D2, D3> = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::Output;
-        let (s123, s4) = <S123<B, D1, D2, D3> as HAppend<S4<B, D4>>>::unappend(sink);
-        let (s12, s3) = <S12<B, D1, D2> as HAppend<S3<B, D3>>>::unappend(s123);
-        let (s1, s2) = <S1<B, D1> as HAppend<S2<B, D2>>>::unappend(s12);
-        let s1 = self.0.collect_into(s1, rng, n);
-        let s2 = self.1.collect_into(s2, rng, n);
-        let s3 = self.2.collect_into(s3, rng, n);
-        let s4 = self.3.collect_into(s4, rng, n);
-        s1.append(s2).append(s3).append(s4)
-    }
-}
+impl_tuple_distribution!(TupleIter2; D1 I1 0, D2 I2 1);
+impl_tuple_distribution!(TupleIter3; D1 I1 0, D2 I2 1, D3 I3 2);
+impl_tuple_distribution!(TupleIter4; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3);

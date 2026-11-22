@@ -1,35 +1,77 @@
 # Realistic data: today's API vs a proposed one
 
-Eight "interesting data" scenarios, each written twice:
+Eight "interesting data" scenarios, each written three ways:
 
-- **Today**: runnable, in [`examples/realistic_today.rs`](examples/realistic_today.rs)
-  (`cargo run -p populate --example realistic_today`).
-- **Proposed**: the same scenario in the API sketched below. It doesn't
-  compile yet; it's what we'd build.
+- **Today, as shipped**: [`examples/realistic_today.rs`](examples/realistic_today.rs).
+  Only what's on `main`; the user writes every leaf and helper.
+- **Today + general combinators**: [`examples/realistic_combinators.rs`](examples/realistic_combinators.rs).
+  Today's `populate-core` unchanged, plus every general-purpose combinator
+  we'd add anyway (`uniform`, `normal`, `zipf`, `geometric`, `bernoulli`,
+  `map_rng`, `walk`, `list_with_len`, and `named` / `with_nulls`
+  post-processing). Those live in `mod general` and **aren't counted**. All of
+  them compile against today's traits.
+- **Proposed**: the API sketched below. Doesn't compile yet.
 
-Line counts are user-side code lines (no blanks, no comments), counted
-between the `// == scenario` markers.
+Both examples run: `cargo run -p populate --example realistic_combinators`.
+
+Line counts are scenario code lines only (no blanks, comments, or general
+combinators), between the `// == scenario` markers. Column names count on
+both sides (a `const NAMES` line today, `.named()` calls proposed).
 
 ## Summary
 
-| scenario | what it shows | today LOC | proposed LOC | today: what the reader has to understand |
-|---|---|---:|---:|---|
-| leaf | any random column | **40** | 0 (built in), 1 for a custom `rand` dist | `Distribution<B>`, `SampleIter`, `DefaultSink`, `Sink`, `collect_rows`, `PhantomData`, why `row_iter` needs `Clone` |
-| skewed | Zipf ids, log-normal prices | 11 | 7 | `map` over an `f64` leaf to get an int column |
-| correlated | weight depends on height + noise | 9 | 5 | `map` has no RNG, so noise is a hidden input column; the whole thing drops to row mode |
-| dependent | receipt = ship + lag; late flag | 6 | 5 | same hidden-input trick |
-| conditional | country drawn given region | 14 | 5 | hidden `u ~ U(0,1)` column inverted by hand; no strings, so countries are int codes |
-| nulls | 20% null score | **25** | 6 | not expressible; generate a value and a `present` column, then rebuild a nullable Arrow array and schema by hand |
-| nested | orders with list<struct<product, qty>> and `n_lines` | 21 (and `n_lines` missing) | 9 | a newtype because `map`'s *input* must be a column type (`u64` isn't); `n_lines` = list length can't be done columnar |
-| names | real column names | 10 | 0 | columns are `c0, c1, ...`; rename by rebuilding the schema |
-| random walk | stateful column | **43** | 3 | a full leaf type (struct, iterator, `Distribution` impl) |
-| **total** | | **179** | **40** | |
+| scenario | as shipped | + combinators | proposed | what's still awkward with combinators |
+|---|---:|---:|---:|---|
+| skewed (Zipf ids, log-normal prices) | 11 | 8 | 7 | names live apart from the columns |
+| correlated (weight from height + noise) | 9 | 9 | 5 | `map_rng` is row-at-a-time; must re-emit the parent in the closure |
+| dependent (receipt = ship + lag; late) | 6 | 7 | 5 | can't chain two dependent steps (see below); one closure emits every column |
+| conditional (country given region) | 14 | 11 | 5 | no strings: countries are int codes + side tables |
+| nulls (20% null score) | 25 | 7 | 6 | a `present` column plus batch post-processing; top level only |
+| nested (list<struct> + `n_lines`) | 21* | 11 | 9 | struct fields stay `c0, c1`; nested `Item` type needs an alias for clippy |
+| random walk | 43 | 4 | 3 | nothing |
+| leaf / names (setup) | 50 | 0 | 0 | |
+| **total** | **179** | **57** | **40** | |
 
-The structural code (tuples, `range`, `list`) is already short and reads well.
-Nearly all of today's cost is in three places: **there are no random leaves**,
-**`map` can't see the RNG**, and **there are no nulls, strings or names**.
+\* `n_lines` isn't possible as shipped.
 
-## Findings from writing the examples
+**Your point holds: most of the gap was missing combinators.** With them,
+today's core gets to 57 lines vs 40 proposed, and the remaining 17 lines
+aren't the real issue. What combinators **can't** fix, because it's in
+`populate-core`:
+
+1. **Dependent columns don't compose.** A `map_rng` that returns
+   `((ship, receipt), late)` doesn't compile: a nested row tuple can't be
+   pushed into the flat column HList (`HCons<Vec<i32>, HCons<Vec<i32>,
+   HCons<Vec<bool>, HNil>>>: Sink<((i32, i32), bool)>` is not satisfied).
+   So `derive(..).derive(..)` can't be built; everything dependent goes into
+   one closure. Fix: flattening tuple sinks in the core.
+2. **Dependent columns are row-at-a-time.** `map_rng` collects with
+   `collect_rows`. A columnar `derive` (fill the parent, then walk its
+   buffer) needs a way to read back what a sink just wrote. Fix: a row/slice
+   view on sinks.
+3. **No nullable columns.** Needs an `Option<T>` `DefaultSink` (values +
+   validity) so nulls work anywhere, including inside lists and structs.
+   Post-processing only reaches top-level columns.
+4. **No names.** Post-hoc renaming can't reach struct fields inside lists,
+   and the names live away from the columns they describe. Fix: names carried
+   by the distribution into the Arrow schema.
+5. **No strings.** No `String`/`&str` `DefaultSink`, so no Utf8 or Dictionary
+   columns.
+6. **Every intermediate must be a column type.** `map(.., |k: u64| ..)`
+   fails because `u64` has no sink, even when it's never stored. The
+   combinators work around it by converting inside the leaf.
+7. **Backend in every signature**: `impl Distribution<B, Item = ..>`.
+
+Ease of understanding: with combinators, today's scenario code reads fine.
+The proposed version mostly reads better because names, nulls and dependent
+columns sit next to the column they describe (`uniform(..).nullable(0.2).named("score")`)
+instead of being split between the distribution, a `const` and a
+post-processing call.
+
+The rest of this note is the original analysis of the as-shipped API,
+followed by the proposal.
+
+## Findings: the API as shipped
 
 1. **No random leaves.** `populate-builtins` has `constant`, `range`, `map`,
    `list`. The bench crate already hand-rolls `Uniform`; every user will write
@@ -188,15 +230,13 @@ fn random_walk() -> impl Distribution<Item = (i64, f64)> {
 
 ## Suggested order
 
-1. Random leaves + `sample()` (builtins only, small).
-2. `.named()`, wider tuples, default backend (small).
-3. `.derive()` and `.list()` (needs a row view over sinks; medium).
-4. `.nullable()` (new sink + Arrow validity; medium).
-5. Move `Item: DefaultSink` off the trait (core change; larger, touches every impl).
-6. Strings / dictionary columns.
-
-Steps 1 and 2 alone remove the 40-line leaf adapter, the 43-line random walk
-and the 10-line rename (179 to about 90 lines); 3 and 4 get it to about 40.
+1. Ship the general combinators from `realistic_combinators.rs` in
+   `populate-builtins` (no core change; they already compile).
+2. Core: flattening tuple sinks, so dependent steps compose (`derive` chains).
+3. Core: `Option<T>` sinks with Arrow validity (`nullable`).
+4. Core: names carried into the schema (`named`), including struct fields.
+5. Core: read-back on sinks, so `derive` stays columnar.
+6. Core: string columns; move `Item: DefaultSink` off the trait.
 
 ## Open questions
 

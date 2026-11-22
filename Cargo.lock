@@ -882,6 +882,7 @@ name = "populate"
 version = "0.1.0"
 dependencies = [
  "arrow-array 57.3.2",
+ "arrow-buffer 57.3.2",
  "arrow-cast 57.3.2",
  "arrow-schema 57.3.2",
  "bytes",

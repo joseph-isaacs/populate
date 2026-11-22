@@ -610,15 +610,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
-name = "populate-2"
+name = "populate"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "bytes",
+ "divan",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-sink-parquet",
+ "rand",
+]
+
+[[package]]
+name = "populate-builtins"
+version = "0.1.0"
+dependencies = [
+ "populate-core",
+ "rand",
+]
+
+[[package]]
+name = "populate-core"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-arrow"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-schema",
- "bytes",
- "divan",
+ "populate-core",
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
  "parquet",
+ "populate-core",
+ "populate-sink-arrow",
  "rand",
 ]
 

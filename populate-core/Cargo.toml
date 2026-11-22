@@ -1,9 +1,9 @@
 [package]
 name = "populate-core"
-description = "Core traits for populate sampling combinators"
+description = "Core traits for populate: Distribution, SampleIter, Sink, Backend and HLists"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rand.workspace = true
+rand = { workspace = true }

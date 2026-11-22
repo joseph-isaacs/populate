@@ -1,15 +1,10 @@
 [workspace]
 members = [
-    #    "populate",
-    "populate-2",
-    #    "populate-core",
-    #    "populate-builtins",
-    #    "populate-builtins-tpch",
-    #    "populate-derive",
-    #    "populate-sink-vec",
-    #    "populate-sink-json",
-    #    "examples",
-    #    "tpch",
+    "populate",
+    "populate-core",
+    "populate-builtins",
+    "populate-sink-arrow",
+    "populate-sink-parquet",
 ]
 resolver = "2"
 
@@ -31,17 +26,14 @@ parquet = { version = "57", default-features = false }
 serde_json = "1"
 tpchgen = "2.0"
 tpchgen-arrow = "2.0"
-populate-2 = { path = "populate-2" }
+populate = { path = "populate" }
+populate-core = { path = "populate-core" }
+populate-builtins = { path = "populate-builtins" }
+populate-sink-arrow = { path = "populate-sink-arrow" }
+populate-sink-parquet = { path = "populate-sink-parquet" }
 
-#populate-core = { path = "populate-core" }
-#populate-derive = { path = "populate-derive" }
-#populate-builtins = { path = "populate-builtins" }
-#populate-builtins-tpch = { path = "populate-builtins-tpch" }
-#populate-sink-vec = { path = "populate-sink-vec" }
-#populate-sink-json = { path = "populate-sink-json" }
-#
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
-# (populate-2 is generic, so everything is monomorphised into the bench crate
+# (populate is generic, so everything is monomorphised into the bench crate
 # anyway). Debug info is for `perf`/flamegraphs and doesn't change codegen.
 [profile.bench]
 codegen-units = 1

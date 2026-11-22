@@ -2,40 +2,35 @@
 
 Composable distribution combinators for generating test data, designed for columnar data structures.
 
-Inspired by parser combinators (like nom), populate provides small, focused distribution primitives that can be combined to generate complex, realistic datasets with controllable statistical properties—from simple uniform ranges to clustered runs, nullable columns, and weighted selections.
+Small distribution primitives are combined into larger ones that describe a whole table. Collection is
+column by column: each column is generated in full into its own buffer before the next, and with
+`ArrowBackend` those buffers are moved into Arrow arrays without copying.
 
 ## Example
 
 ```rust
-use populate::{Range, OneOf, Constant};
+use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::dist::{constant, list, range};
 
-let mut dist = (
-    Range::new(0i32, 100),           // id
-    OneOf::new(vec!["a", "b", "c"]), // category
-    Constant::new(true),             // active
-);
+// id: i64, tags: list<i64> (every row has 3 tags)
+let mut dist = (range(0i64, 1), list(constant(3usize), range(0i64, 1)));
 
-let (ids, categories, actives): (Vec<_>, Vec<_>, Vec<_>) =
-    dist.sample().take(1000).collect();
+let batch = DistributionArrow::<ArrowBackend>::collect_record_batch(&mut dist, &mut rand::rng(), 1_000).unwrap();
+assert_eq!(batch.num_rows(), 1_000);
 ```
 
-## Arrow Integration
+## Crates
 
-Generate Arrow `RecordBatch` directly:
+| crate                   | contents                                                       |
+|-------------------------|----------------------------------------------------------------|
+| `populate`              | facade: re-exports everything below (`arrow` default, `parquet` optional features) |
+| `populate-core`         | `Distribution`, `SampleIter`, `Sink`, `Backend`, HLists, tuple combinators |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `flatten`                  |
+| `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` conversion                       |
+| `populate-sink-parquet` | zero-copy Parquet writer                                       |
 
-```rust
-use populate::{Range, Bernoulli};
-
-let mut dist = (
-    Range::new(0i64, 1_000_000),  // id
-    Range::new(0.0f64, 100.0),    // price
-    Bernoulli::new(0.9),          // active
-);
-
-let batch: RecordBatch = dist.collect(&mut rng, 10_000);
-// batch.num_rows() == 10_000
-// batch.num_columns() == 3
-```
+`populate/tests/zero_copy.rs` checks that generation really is columnar and zero-copy: it counts
+allocations during generation and checks that Arrow (and Parquet) output reuses the generated buffers.
 
 ## License
 
@@ -43,6 +38,4 @@ MIT
 
 ## Documentation
 
-- [DESIGN.md](DESIGN.md) - Core design and API
-- [EXAMPLES.md](EXAMPLES.md) - Real world examples (TPC-H tables)
-- [FUTURE.md](FUTURE.md) - Planned features
+- [populate/DESIGN.md](populate/DESIGN.md) - Core design

@@ -71,9 +71,8 @@ where
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
         sink.reserve(n);
-        for _ in 0..n {
-            sink.push(self.dist.sample(rng));
-        }
+        let dist = &self.dist;
+        sink.push_n((0..n).map(|_| dist.sample(rng)));
         sink
     }
 }
@@ -126,9 +125,7 @@ where
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
         sink.reserve(n);
-        for _ in 0..n {
-            sink.push(self.next(rng));
-        }
+        sink.push_n((0..n).map(|_| self.next(rng)));
         sink
     }
 }
@@ -196,9 +193,7 @@ where
         n: usize,
     ) -> <T as DefaultSink<B>>::Sink {
         sink.reserve(n);
-        for _ in 0..n {
-            sink.push(self.next(rng));
-        }
+        sink.push_n((0..n).map(|_| self.next(rng)));
         sink
     }
 }

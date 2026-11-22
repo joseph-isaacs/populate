@@ -157,9 +157,9 @@ pub fn collect_rows<I: SampleIter, S: Sink<I::Item>>(
     n: usize,
 ) -> S {
     sink.reserve(n);
-    for _ in 0..n {
-        sink.push(iter.next(rng));
-    }
+    // `push_n` of a `TrustedLen` iterator: a `Vec` column `extend`s with no
+    // capacity check per value
+    sink.push_n((0..n).map(|_| iter.next(rng)));
     sink
 }
 
@@ -230,6 +230,12 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
 
     fn reserve(&mut self, additional: usize) {
         self.0.reserve(additional);
+    }
+
+    // forwarded so a `Vec` column gets `extend`, which writes a `TrustedLen`
+    // iterator with no capacity check per value, instead of a push per value
+    fn push_n(&mut self, values: impl Iterator<Item = T>) {
+        self.0.push_n(values);
     }
 }
 

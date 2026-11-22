@@ -369,10 +369,8 @@ where
         _rng: &mut impl Rng,
         n: usize,
     ) -> HCons<Vec<T>, HNil> {
-        sink.0.reserve(n);
-        for _ in 0..n {
-            sink.0.push(T::from(self.g.next_value()));
-        }
+        let g = &mut self.g;
+        sink.0.extend((0..n).map(|_| T::from(g.next_value())));
         sink
     }
 }

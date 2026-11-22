@@ -161,9 +161,10 @@ where
         n: usize,
     ) -> <T as DefaultSink<ArrowBackend>>::Sink {
         sink.reserve(n);
-        for _ in 0..n {
-            sink.push(self.dist.sample(rng));
-        }
+        // as populate's own `uniform`: one `extend` of a `TrustedLen`
+        // iterator, no capacity check per value
+        let dist = &self.dist;
+        sink.push_n((0..n).map(|_| dist.sample(rng)));
         sink
     }
 }

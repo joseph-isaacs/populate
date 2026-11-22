@@ -67,11 +67,13 @@ impl StrBuf<'_> {
         self.0.extend_from_slice(&b[i..]);
     }
 
-    /// Bytes written so far for this value.
+    /// Bytes in the whole column's buffer so far: every earlier value's
+    /// and this one's (not this value's alone).
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Whether the column's buffer is still empty (see [`Self::len`]).
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

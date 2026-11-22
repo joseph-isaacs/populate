@@ -45,7 +45,7 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
             let c = match a.data_type() {
                 DataType::Int32 => Col::I32(a.as_primitive::<Int32Type>().values()),
                 DataType::Int64 => Col::I64(a.as_primitive::<Int64Type>().values()),
-                DataType::Decimal128(_, s) => {
+                DataType::Decimal128(_, s) if *s >= 0 => {
                     // dsdgen keeps GMT offsets as decimal(5,2) but prints them
                     // with no decimals (`-5`)
                     let print = if f.name().ends_with("gmt_offset") {
@@ -69,6 +69,8 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
                         bound += a.views().iter().map(|v| *v as u32 as usize).sum::<usize>();
                         1 + 12 // separator, inline-copy slack
                     }
+                    // up to 39 digits, sign and point for a wide decimal
+                    Col::Dec(..) => MAX_DECIMAL + 1,
                     _ => MAX_NUMBER + 1,
                 };
             (c, a.nulls().filter(|n| n.null_count() > 0).map(Valid::new))
@@ -90,10 +92,7 @@ pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
                     match c {
                         Col::I32(v) => w.int(*v.get_unchecked(r) as i64),
                         Col::I64(v) => w.int(*v.get_unchecked(r)),
-                        Col::Dec(v, 2, 2) => w.decimal2(*v.get_unchecked(r) as i64),
-                        Col::Dec(v, s, p) => {
-                            w.decimal(*v.get_unchecked(r) as i64 / 10i64.pow(s - p), *p)
-                        }
+                        Col::Dec(v, s, p) => w.decimal128(*v.get_unchecked(r), *s, *p),
                         Col::Date(v) => w.date(*v.get_unchecked(r)),
                         Col::Str(a) => w.view(a, r, encoding),
                     }
@@ -161,8 +160,11 @@ impl Valid {
     }
 }
 
-/// Widest number we print: `-` and 19 digits, `.`, scale digits.
+/// Widest integer or date we print: `-` and 19 digits (and the 8-byte
+/// stores of `Cursor::uint`, which fit in it).
 const MAX_NUMBER: usize = 24;
+/// Widest decimal we print: `-`, 39 digits, `.`, plus 8 bytes of store slack.
+const MAX_DECIMAL: usize = 49;
 
 const DIGITS: &[u8; 200] = b"\
 0001020304050607080910111213141516171819\
@@ -283,6 +285,41 @@ impl Cursor {
         }
     }
 
+    /// A `Decimal128` of scale `scale` printed with `print <= scale`
+    /// decimals: [`Self::decimal2`] or [`Self::decimal`] when it fits in an
+    /// `i64` (every TPC-DS value), else [`Self::wide_decimal`].
+    #[inline]
+    unsafe fn decimal128(&mut self, v: i128, scale: u32, print: u32) {
+        unsafe {
+            match i64::try_from(v) {
+                Ok(v) if scale == 2 && print == 2 => self.decimal2(v),
+                Ok(v) if scale <= 18 => self.decimal(v / 10i64.pow(scale - print), print),
+                _ => self.wide_decimal(v / 10i128.pow(scale - print), print),
+            }
+        }
+    }
+
+    /// [`Self::decimal`] for any `i128` (up to 39 digits).
+    #[cold]
+    #[inline(never)]
+    unsafe fn wide_decimal(&mut self, v: i128, scale: u32) {
+        let a = v.unsigned_abs();
+        let p = 10u128.pow(scale);
+        let mut text = (a / p).to_string();
+        if scale > 0 {
+            text.push('.');
+            let frac = (a % p).to_string();
+            text.extend(std::iter::repeat_n('0', scale as usize - frac.len()));
+            text.push_str(&frac);
+        }
+        unsafe {
+            if v < 0 {
+                self.byte(b'-');
+            }
+            self.bytes(text.as_bytes());
+        }
+    }
+
     /// [`Self::decimal`] at scale 2, with constant divisors.
     #[inline]
     unsafe fn decimal2(&mut self, v: i64) {
@@ -308,10 +345,17 @@ impl Cursor {
         let mp = (5 * doy + 2) / 153;
         let d = (doy - (153 * mp + 2) / 5 + 1) as usize;
         let m = if mp < 10 { mp + 3 } else { mp - 9 } as usize;
-        let y = (yoe + era * 400 + (m <= 2) as i64) as usize;
+        let y = yoe + era * 400 + (m <= 2) as i64;
         unsafe {
-            self.pair(y / 100);
-            self.pair(y % 100);
+            if (0..10_000).contains(&y) {
+                let y = y as usize;
+                self.pair(y / 100);
+                self.pair(y % 100);
+            } else {
+                // outside dsdgen's range (Date32 spans about +-5.8M years):
+                // the year in full, at most `-5877641`
+                self.int(y);
+            }
             self.byte(b'-');
             self.pair(m);
             self.byte(b'-');
@@ -408,6 +452,62 @@ mod tests {
             assert_eq!(fmt(|o| o.date(-25567)), "1900-01-01");
             assert_eq!(fmt(|o| o.date(47482)), "2100-01-01");
             assert_eq!(fmt(|o| o.date(11016)), "2000-02-29");
+            // outside years 0..=9999: the year in full, no table overrun
+            assert_eq!(fmt(|o| o.date(2_932_897)), "10000-01-01");
+            assert_eq!(fmt(|o| o.date(-719_529)), "-1-12-31");
+            assert_eq!(fmt(|o| o.date(i32::MIN)), "-5877641-06-23");
+            assert_eq!(fmt(|o| o.date(i32::MAX)), "5881580-07-11");
+            for (v, s, p, want) in [
+                (-5i128, 2, 2, "-0.05"),
+                (123_456, 3, 3, "123.456"),
+                (-1_234_567, 2, 0, "-12345"),
+                (
+                    i128::from(i64::MAX) * 1000 + 7,
+                    2,
+                    2,
+                    "92233720368547758070.07",
+                ),
+                (
+                    -(10i128.pow(37)) - 3,
+                    20,
+                    20,
+                    "-100000000000000000.00000000000000000003",
+                ),
+                (
+                    i128::MAX,
+                    38,
+                    38,
+                    "1.70141183460469231731687303715884105727",
+                ),
+                (i128::MIN, 0, 0, "-170141183460469231731687303715884105728"),
+            ] {
+                assert_eq!(fmt(|o| o.decimal128(v, s, p)), want, "{v} {s} {p}");
+            }
         }
+    }
+
+    #[test]
+    fn wide_values_through_write_batch() {
+        use arrow_array::{Date32Array, Decimal128Array};
+        use arrow_schema::{Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("d", DataType::Date32, true),
+            Field::new("x", DataType::Decimal128(38, 4), true),
+        ]));
+        let days = Date32Array::from(vec![Some(i32::MIN), Some(0), None, Some(i32::MAX)]);
+        let x = Decimal128Array::from(vec![Some(i128::MIN), Some(-1), Some(i128::MAX), None])
+            .with_precision_and_scale(38, 4)
+            .unwrap();
+        let b = RecordBatch::try_new(schema, vec![Arc::new(days), Arc::new(x)]).unwrap();
+        let mut out = Vec::new();
+        write_batch(&b, Encoding::Utf8, &mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "-5877641-06-23|-17014118346046923173168730371588410.5728|\n\
+             1970-01-01|-0.0001|\n\
+             |17014118346046923173168730371588410.5727|\n\
+             5881580-07-11||\n"
+        );
     }
 }

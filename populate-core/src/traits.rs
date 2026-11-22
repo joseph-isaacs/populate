@@ -157,8 +157,8 @@ pub fn collect_rows<I: SampleIter, S: Sink<I::Item>>(
     n: usize,
 ) -> S {
     sink.reserve(n);
-    // `push_n` of a `TrustedLen` iterator: a `Vec` column `extend`s with no
-    // capacity check per value
+    // `push_n` over a `Range`-driven iterator: a `Vec` sink turns this into
+    // `extend`, which knows the exact length (no per-value capacity check).
     sink.push_n((0..n).map(|_| iter.next(rng)));
     sink
 }
@@ -218,6 +218,10 @@ impl<T> Sink<T> for VecDeque<T> {
     fn reserve(&mut self, additional: usize) {
         VecDeque::reserve(self, additional);
     }
+
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        VecDeque::extend(self, value)
+    }
 }
 
 // HList Sink impls — bridge between leaf distributions and HList sinks
@@ -232,10 +236,8 @@ impl<T, S: Sink<T>> Sink<T> for HCons<S, HNil> {
         self.0.reserve(additional);
     }
 
-    // forwarded so a `Vec` column gets `extend`, which writes a `TrustedLen`
-    // iterator with no capacity check per value, instead of a push per value
-    fn push_n(&mut self, values: impl Iterator<Item = T>) {
-        self.0.push_n(values);
+    fn push_n(&mut self, value: impl Iterator<Item = T>) {
+        self.0.push_n(value);
     }
 }
 

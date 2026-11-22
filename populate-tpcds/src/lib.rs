@@ -32,7 +32,9 @@
 //! ```
 
 pub mod dat;
+mod fused;
 mod gen_tables;
+mod seeds;
 
 pub use dat::Encoding;
 pub use gen_tables::{

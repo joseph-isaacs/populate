@@ -17,7 +17,7 @@ pub mod table;
 #[cfg(feature = "parquet")]
 mod parquet;
 
-pub use chunks::{Chunks, Jobs};
+pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
 pub use stream::{Stream, hash_str, mix64};

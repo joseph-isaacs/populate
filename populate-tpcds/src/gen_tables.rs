@@ -3,6 +3,7 @@
 
 use crate::TableName;
 use crate::dat::{self, Encoding};
+use crate::fused::{self, Want};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
@@ -11,7 +12,7 @@ use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
-use populate_table::{Chunks, Jobs, chunks, par_ordered};
+use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -84,6 +85,14 @@ macro_rules! tables {
                 batch: usize,
                 emit: &mut dyn FnMut(RecordBatch),
             ) {
+                let want = match self.name {
+                    TableName::StoreSales => Some(Want { sales: true, returns: false }),
+                    TableName::StoreReturns => Some(Want { sales: false, returns: true }),
+                    _ => None,
+                };
+                if let Some(want) = want {
+                    return fused::store_channel(&self.session, first, last, batch, want, &mut |_, b| emit(b));
+                }
                 match self.name {
                     $(TableName::$t => {
                         $arrow::new(self.session.clone())
@@ -91,6 +100,18 @@ macro_rules! tables {
                             .with_batch_size(batch)
                             .for_each(|b| emit(b.expect("tpcdsgen-arrow batch")));
                     })*
+                }
+            }
+
+            /// The table as tpcdsgen-arrow generates it, sequentially: the
+            /// reference the parallel and fused paths are tested against.
+            #[doc(hidden)]
+            pub fn reference_arrow(&self) -> Vec<RecordBatch> {
+                match self.name {
+                    $(TableName::$t => $arrow::new(self.session.clone())
+                        .with_source_row_range(1, self.source_rows)
+                        .map(|b| b.expect("tpcdsgen-arrow batch"))
+                        .collect(),)*
                 }
             }
 
@@ -288,24 +309,35 @@ pub fn parquet_props() -> WriterPropertiesBuilder {
 /// [`DsTable::write_parquet`] for several tables, `tables[i]` to
 /// `writers[i]`, on one shared pool of `threads` threads (0 = all cores):
 /// every chunk of every table is one job, so small tables never leave cores
-/// idle. Put the biggest tables first.
+/// idle. Put the biggest tables first. `store_sales` and `store_returns`
+/// with the same chunking are generated together, in one pass.
 pub fn write_parquet_many<W: Write + Send>(
     tables: &[DsTable],
     writers: Vec<W>,
     threads: usize,
     props: Option<WriterProperties>,
 ) -> Result<Vec<W>, ParquetError> {
+    assert_eq!(tables.len(), writers.len(), "one writer per table");
     let props = props.unwrap_or_else(|| parquet_props().build());
-    let raw: Vec<Uncoalesced<'_>> = tables.iter().map(Uncoalesced).collect();
-    let srcs: Vec<&dyn Chunks> = raw.iter().map(|r| r as &dyn Chunks).collect();
-    populate_table::write_parquet_many(&srcs, writers, threads, Some(props))
+    let units = plan(tables, true);
+    let srcs: Vec<&dyn MultiChunks> = units.iter().map(|u| u as &dyn MultiChunks).collect();
+    // writers in output order (units' tables, in order), and back
+    let mut by_table: Vec<Option<W>> = writers.into_iter().map(Some).collect();
+    let order: Vec<usize> = units.iter().flat_map(|u| u.idx.iter().copied()).collect();
+    let ordered = order
+        .iter()
+        .map(|&t| by_table[t].take().expect("one writer per table"));
+    let done = populate_table::write_parquet_many(&srcs, ordered.collect(), threads, Some(props))?;
+    for (t, w) in order.into_iter().zip(done) {
+        by_table[t] = Some(w);
+    }
+    Ok(by_table.into_iter().map(|w| w.expect("written")).collect())
 }
 
 /// [`DsTable::write_dat`] for several tables on one shared pool, like
 /// [`write_parquet_many`]. `threads: 0` means one worker per core but one:
 /// the calling thread writes ~1 GB of text per scale factor, and with a
-/// worker on every core it falls behind (SF 1 on 4 cores: 1.43 s with 3
-/// workers, 1.66 s with 4).
+/// worker on every core it falls behind.
 pub fn write_dat_many<W: Write>(
     tables: &[DsTable],
     mut writers: Vec<W>,
@@ -317,7 +349,8 @@ pub fn write_dat_many<W: Write>(
         0 => thread::available_parallelism().map_or(1, |t| t.get().saturating_sub(1).max(1)),
         t => t,
     };
-    let jobs = Jobs::new(tables.iter().map(DsTable::num_chunks));
+    let units = plan(tables, true);
+    let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
     // Text buffers go back to a pool once written: a fresh multi-MB buffer
     // per chunk costs more in page faults than formatting it.
     let pool = Mutex::new(Vec::<Vec<u8>>::new());
@@ -325,18 +358,24 @@ pub fn write_dat_many<W: Write>(
         jobs.total(),
         threads,
         |j| {
-            let (t, i) = jobs.locate(j);
-            let (first, last) = tables[t].range(i);
-            let mut out = pool.lock().expect("pool").pop().unwrap_or_default();
-            tables[t].arrow_range(first, last, GEN_BATCH, &mut |b| {
-                dat::write_batch(&b, encoding, &mut out)
+            let (u, i) = jobs.locate(j);
+            let unit = &units[u];
+            let mut outs: Vec<(usize, Vec<u8>)> = unit
+                .idx
+                .iter()
+                .map(|&t| (t, pool.lock().expect("pool").pop().unwrap_or_default()))
+                .collect();
+            unit.chunk(i, &mut |k, b| {
+                dat::write_batch(&b, encoding, &mut outs[k].1)
             });
-            (t, out)
+            outs
         },
-        |(t, mut s)| {
-            writers[t].write_all(&s)?;
-            s.clear();
-            pool.lock().expect("pool").push(s);
+        |outs| {
+            for (t, mut s) in outs {
+                writers[t].write_all(&s)?;
+                s.clear();
+                pool.lock().expect("pool").push(s);
+            }
             Ok::<(), io::Error>(())
         },
     )?;
@@ -353,39 +392,95 @@ pub fn for_each_batch_many(
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let jobs = Jobs::new(tables.iter().map(DsTable::num_chunks));
+    let units = plan(tables, false);
+    let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
     let r: Result<(), Infallible> = par_ordered(
         jobs.total(),
         threads,
         |j| {
-            let (t, i) = jobs.locate(j);
+            let (u, i) = jobs.locate(j);
             let mut v = Vec::new();
-            tables[t].chunk(i, &mut |b| v.push(b));
-            (t, v)
+            units[u].chunk(i, &mut |k, b| v.push((units[u].idx[k], b)));
+            v
         },
-        |(t, v)| {
-            v.into_iter().for_each(|b| f(t, b));
+        |v| {
+            v.into_iter().for_each(|(t, b)| f(t, b));
             Ok(())
         },
     );
     r.unwrap_or_else(|e| match e {});
 }
 
-/// Parquet takes the small generation batches as they are.
-struct Uncoalesced<'a>(&'a DsTable);
+/// One job source: a table, or a sales table and its returns generated
+/// together.
+struct Unit<'a> {
+    tables: &'a [DsTable],
+    /// Indexes into `tables` of this unit's outputs.
+    idx: Vec<usize>,
+    /// Pass generation batches on as made (Parquet, `.dat`) instead of
+    /// building `batch_size`-row batches.
+    raw: bool,
+}
 
-impl Chunks for Uncoalesced<'_> {
-    fn schema(&self) -> SchemaRef {
-        self.0.schema()
+/// Units for `tables`, in order; `store_sales` and `store_returns` with the
+/// same chunks and batch size become one unit at the first one's place.
+fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
+    let find = |n| tables.iter().position(|t| t.name == n);
+    let pair = match (find(TableName::StoreSales), find(TableName::StoreReturns)) {
+        (Some(s), Some(r))
+            if tables[s].chunk_source_rows == tables[r].chunk_source_rows
+                && tables[s].source_rows == tables[r].source_rows
+                && tables[s].batch_size == tables[r].batch_size =>
+        {
+            Some((s, r))
+        }
+        _ => None,
+    };
+    let mut units = Vec::new();
+    for i in 0..tables.len() {
+        let idx = match pair {
+            Some((s, r)) if i == s.min(r) => vec![s, r],
+            Some((s, r)) if i == s.max(r) => continue,
+            _ => vec![i],
+        };
+        units.push(Unit { tables, idx, raw });
+    }
+    units
+}
+
+impl MultiChunks for Unit<'_> {
+    fn schemas(&self) -> Vec<SchemaRef> {
+        self.idx.iter().map(|&t| self.tables[t].schema()).collect()
     }
 
     fn num_chunks(&self) -> u64 {
-        self.0.num_chunks()
+        self.tables[self.idx[0]].num_chunks()
     }
 
-    fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, last) = self.0.range(i);
-        self.0.arrow_range(first, last, GEN_BATCH, emit);
+    fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
+        let t = &self.tables[self.idx[0]];
+        let (first, last) = t.range(i);
+        if self.idx.len() == 2 {
+            // outputs in `idx` order; the channel emits sales as 0
+            let sales_first = t.name == TableName::StoreSales;
+            let want = Want {
+                sales: true,
+                returns: true,
+            };
+            return fused::store_channel(
+                &t.session,
+                first,
+                last,
+                t.batch_size,
+                want,
+                &mut |k, b| emit(if sales_first { k } else { 1 - k }, b),
+            );
+        }
+        if self.raw {
+            t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
+        } else {
+            Chunks::chunk(t, i, &mut |b| emit(0, b));
+        }
     }
 }
 
@@ -402,7 +497,8 @@ impl Chunks for DsTable {
     /// built from cache-sized generation batches.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        if self.batch_size <= GEN_BATCH {
+        let direct = matches!(self.name, TableName::StoreSales | TableName::StoreReturns);
+        if direct || self.batch_size <= GEN_BATCH {
             return self.arrow_range(first, last, self.batch_size, emit);
         }
         let schema = self.schema();

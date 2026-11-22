@@ -25,6 +25,35 @@ pub trait Chunks: Sync {
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch));
 }
 
+/// A source whose chunks produce rows for several tables at once (say, a
+/// sales table and its returns, generated in one pass). Every [`Chunks`] is
+/// a `MultiChunks` with one output.
+pub trait MultiChunks: Sync {
+    /// Schema of each output table.
+    fn schemas(&self) -> Vec<SchemaRef>;
+
+    /// Number of chunks.
+    fn num_chunks(&self) -> u64;
+
+    /// Generate chunk `i`, passing `(output, batch)` to `emit`, in order
+    /// within each output.
+    fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch));
+}
+
+impl<T: Chunks> MultiChunks for T {
+    fn schemas(&self) -> Vec<SchemaRef> {
+        vec![Chunks::schema(self)]
+    }
+
+    fn num_chunks(&self) -> u64 {
+        Chunks::num_chunks(self)
+    }
+
+    fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
+        Chunks::chunk(self, i, &mut |b| emit(0, b))
+    }
+}
+
 /// Generate every chunk on `threads` threads (0 = all cores) and call `f`
 /// with each batch, in order, on the calling thread.
 pub fn for_each_batch(src: &impl Chunks, threads: usize, mut f: impl FnMut(RecordBatch)) {

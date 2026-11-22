@@ -5,7 +5,7 @@
 //! and the calling thread appends finished row groups to the file in order.
 //! The file's contents are the same for any thread count.
 
-use crate::chunks::{Chunks, Jobs};
+use crate::chunks::{Chunks, Jobs, MultiChunks};
 use crate::table::{Table, par_ordered};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -23,25 +23,34 @@ pub fn write_parquet<W: Write + Send>(
     threads: usize,
     props: Option<WriterProperties>,
 ) -> Result<W, ParquetError> {
-    let mut w = write_parquet_many(&[src as &dyn Chunks], vec![writer], threads, props)?;
+    let mut w = write_parquet_many(&[src as &dyn MultiChunks], vec![writer], threads, props)?;
     Ok(w.pop().expect("one writer"))
 }
 
-/// Write several sources, `srcs[i]` to `writers[i]`, on one shared pool of
-/// `threads` threads: every chunk of every source is a job, so small and
-/// large tables keep all cores busy together. Jobs run in `srcs` order (put
-/// the biggest first). Returns the writers in order.
+/// Write several sources on one shared pool of `threads` threads: every
+/// chunk of every source is a job, so small and large tables keep all cores
+/// busy together. A source may produce several tables ([`MultiChunks`]);
+/// `writers` has one writer per output, sources in order, each source's
+/// outputs in order. Each chunk becomes one row group in each output it
+/// produced rows for. Jobs run in `srcs` order (put the biggest first).
+/// Returns the writers in order.
 pub fn write_parquet_many<W: Write + Send>(
-    srcs: &[&dyn Chunks],
+    srcs: &[&dyn MultiChunks],
     writers: Vec<W>,
     threads: usize,
     props: Option<WriterProperties>,
 ) -> Result<Vec<W>, ParquetError> {
-    assert_eq!(srcs.len(), writers.len(), "one writer per source");
     let props = props.unwrap_or_default();
-    let schemas: Vec<SchemaRef> = srcs.iter().map(|s| s.schema()).collect();
-    let mut files = Vec::with_capacity(srcs.len());
-    let mut factories = Vec::with_capacity(srcs.len());
+    // output `first[s] + k` is output `k` of source `s`
+    let mut first = Vec::with_capacity(srcs.len());
+    let mut schemas: Vec<SchemaRef> = Vec::new();
+    for s in srcs {
+        first.push(schemas.len());
+        schemas.extend(s.schemas());
+    }
+    assert_eq!(schemas.len(), writers.len(), "one writer per output");
+    let mut files = Vec::with_capacity(schemas.len());
+    let mut factories = Vec::with_capacity(schemas.len());
     for (w, schema) in writers.into_iter().zip(&schemas) {
         let (file, factory) = ArrowWriter::try_new(w, schema.clone(), Some(props.clone()))?
             .into_serialized_writer()?;
@@ -50,27 +59,44 @@ pub fn write_parquet_many<W: Write + Send>(
     }
     let jobs = Jobs::new(srcs.iter().map(|s| s.num_chunks()));
 
-    let encode = |j: u64| -> (usize, Result<Vec<ArrowColumnChunk>, ParquetError>) {
+    type Encoded = Vec<(usize, Vec<ArrowColumnChunk>)>;
+    let encode = |j: u64| -> Result<Encoded, ParquetError> {
         let (s, g) = jobs.locate(j);
-        let run = || {
-            let mut cols = factories[s].create_column_writers(g as usize)?;
-            let mut err = Ok(());
-            srcs[s].chunk(g, &mut |batch| {
-                if err.is_ok() {
-                    err = write_batch(&schemas[s], &batch, &mut cols);
-                }
-            });
-            err?;
-            cols.into_iter().map(|c| c.close()).collect()
-        };
-        (s, run())
-    };
-    par_ordered(jobs.total(), threads, encode, |(s, chunks)| {
-        let mut rg = files[s].next_row_group()?;
-        for c in chunks? {
-            c.append_to_row_group(&mut rg)?;
+        let mut cols: Vec<Option<Vec<ArrowColumnWriter>>> =
+            (0..srcs[s].schemas().len()).map(|_| None).collect();
+        let mut err = Ok(());
+        srcs[s].chunk(g, &mut |k, batch| {
+            if err.is_err() || batch.num_rows() == 0 {
+                return;
+            }
+            let o = first[s] + k;
+            err = (|| {
+                let w = match &mut cols[k] {
+                    Some(w) => w,
+                    c => c.insert(factories[o].create_column_writers(g as usize)?),
+                };
+                write_batch(&schemas[o], &batch, w)
+            })();
+        });
+        err?;
+        let mut out = Vec::new();
+        for (k, c) in cols.into_iter().enumerate() {
+            if let Some(c) = c {
+                let chunks = c.into_iter().map(|c| c.close()).collect::<Result<_, _>>()?;
+                out.push((first[s] + k, chunks));
+            }
         }
-        rg.close().map(drop)
+        Ok(out)
+    };
+    par_ordered(jobs.total(), threads, encode, |groups| {
+        for (o, chunks) in groups? {
+            let mut rg = files[o].next_row_group()?;
+            for c in chunks {
+                c.append_to_row_group(&mut rg)?;
+            }
+            rg.close()?;
+        }
+        Ok::<(), ParquetError>(())
     })?;
     files.into_iter().map(|f| f.into_inner()).collect()
 }

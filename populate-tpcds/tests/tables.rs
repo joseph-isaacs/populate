@@ -220,3 +220,39 @@ fn parquet_round_trips_and_is_thread_independent() {
         assert_eq!(g.as_ref(), w.as_ref());
     }
 }
+
+/// `store_sales` and `store_returns` requested together run as one fused
+/// pass; the output must not change.
+#[test]
+fn fused_store_channel_in_many() {
+    let ds = Tpcds::new(1.0);
+    let t = |n| ds.table(n).limit_source_rows(1_500).chunk_source_rows(211);
+    let tables = [t(StoreReturns), t(Customer), t(StoreSales)];
+    let mut got: Vec<Vec<RecordBatch>> = vec![Vec::new(); 3];
+    populate_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
+    for (i, table) in tables.iter().enumerate() {
+        let want = populate_tpcds::DsTable::reference_arrow(table);
+        assert_eq!(concat(&got[i]), concat(&want), "{}", table.name());
+    }
+    let dats = populate_tpcds::write_dat_many(&tables, vec![Vec::new(); 3], 3, Utf8).unwrap();
+    for (dat, table) in dats.iter().zip(&tables) {
+        assert_eq!(dat, &table.reference_dat(Utf8), "{}", table.name());
+    }
+    let pq = populate_tpcds::write_parquet_many(&tables, vec![Vec::new(); 3], 4, None).unwrap();
+    for (file, table) in pq.into_iter().zip(&tables) {
+        let back: Vec<RecordBatch> =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReader::try_new(
+                bytes::Bytes::from(file),
+                4096,
+            )
+            .unwrap()
+            .map(|b| b.unwrap())
+            .collect();
+        assert_eq!(
+            rows(&back),
+            rows(&table.reference_arrow()),
+            "{}",
+            table.name()
+        );
+    }
+}

@@ -10,11 +10,13 @@ populate-core = { workspace = true }
 populate-builtins = { workspace = true }
 populate-sink-arrow = { workspace = true, optional = true }
 populate-sink-parquet = { workspace = true, optional = true }
+populate-table = { workspace = true, optional = true }
 
 [features]
-default = ["arrow"]
+default = ["arrow", "table"]
 arrow = ["dep:populate-sink-arrow"]
-parquet = ["arrow", "dep:populate-sink-parquet"]
+parquet = ["arrow", "dep:populate-sink-parquet", "populate-table?/parquet"]
+table = ["arrow", "dep:populate-table"]
 
 [dev-dependencies]
 rand = { workspace = true }

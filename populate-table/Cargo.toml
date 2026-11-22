@@ -1,0 +1,28 @@
+[package]
+name = "populate-table"
+description = "Named, typed, any-width tables from populate distributions, generated as Arrow batches in parallel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-core = { workspace = true }
+populate-sink-arrow = { workspace = true }
+rand = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, features = ["arrow"], optional = true }
+
+[features]
+parquet = ["dep:parquet"]
+
+[dev-dependencies]
+populate-builtins = { workspace = true }
+parquet = { workspace = true, features = ["arrow"] }
+bytes = "1"
+
+[[test]]
+name = "table"
+required-features = ["parquet"]

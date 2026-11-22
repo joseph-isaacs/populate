@@ -26,6 +26,7 @@
 //! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `map`, `list`, ...     |
 //! | [`arrow`]   | `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output        |
 //! | [`parquet`] | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)|
+//! | [`table`]   | `populate-table`        | named, typed tables; parallel batches       |
 
 pub use populate_builtins as dist;
 pub use populate_core::{hlist, traits, tuple};
@@ -33,6 +34,8 @@ pub use populate_core::{hlist, traits, tuple};
 pub use populate_sink_arrow as arrow;
 #[cfg(feature = "parquet")]
 pub use populate_sink_parquet as parquet;
+#[cfg(feature = "table")]
+pub use populate_table as table;
 
 #[cfg(test)]
 mod test;

@@ -1,0 +1,30 @@
+[package]
+name = "populate-tpcds"
+description = "TPC-DS data byte-identical to dsdgen, on all cores: Arrow, Parquet or .dat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-select = "60"
+parquet = { workspace = true, features = ["arrow", "snap"] }
+# dsdgen's logic, ported to Rust (Apache-2.0, tpchgen-rs project)
+tpcdsgen = "4.0"
+tpcdsgen-arrow = "4.0"
+
+[dev-dependencies]
+divan = { workspace = true }
+arrow-cast = { workspace = true }
+bytes = "1"
+
+[[bin]]
+name = "tpcds-gen"
+path = "src/bin/tpcds-gen.rs"
+
+[[bench]]
+name = "tpcds"
+harness = false

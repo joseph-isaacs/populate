@@ -1,0 +1,315 @@
+//! dsdgen's `.dat` text format, written straight from Arrow batches.
+//!
+//! One line per row: every field followed by `|`, NULL as an empty field,
+//! decimals with exactly `scale` digits (`-0.05`), dates as `YYYY-MM-DD`.
+//! This is ~10x faster than formatting tpcdsgen's rows with `Display`, and
+//! the test suite checks it against that `Display` output for every table.
+
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
+use arrow_array::{Array, RecordBatch, StringViewArray};
+use arrow_buffer::NullBuffer;
+use arrow_schema::DataType;
+
+/// Text encoding of `.dat` output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Encoding {
+    /// ISO-8859-1, one byte per character: what dsdgen writes, since it
+    /// copies its (Latin-1) distribution files byte for byte. Only
+    /// `customer.c_birth_country` has non-ASCII values (`CÔTE D'IVOIRE`,
+    /// `RÉUNION`).
+    #[default]
+    Latin1,
+    /// UTF-8, as `tpcgen-cli` writes.
+    Utf8,
+}
+
+enum Col<'a> {
+    I32(&'a [i32]),
+    I64(&'a [i64]),
+    /// Values, their scale, and the scale dsdgen prints.
+    Dec(&'a [i128], u32, u32),
+    Date(&'a [i32]),
+    Str(&'a StringViewArray),
+}
+
+/// Append `batch` to `out` as `.dat` lines.
+pub fn write_batch(batch: &RecordBatch, encoding: Encoding, out: &mut Vec<u8>) {
+    let rows = batch.num_rows();
+    let mut bound = rows; // newlines
+    let cols: Vec<(Col<'_>, Option<&NullBuffer>)> = batch
+        .columns()
+        .iter()
+        .zip(batch.schema_ref().fields())
+        .map(|(a, f)| {
+            let c = match a.data_type() {
+                DataType::Int32 => Col::I32(a.as_primitive::<Int32Type>().values()),
+                DataType::Int64 => Col::I64(a.as_primitive::<Int64Type>().values()),
+                DataType::Decimal128(_, s) => {
+                    // dsdgen keeps GMT offsets as decimal(5,2) but prints them
+                    // with no decimals (`-5`)
+                    let print = if f.name().ends_with("gmt_offset") {
+                        0
+                    } else {
+                        *s as u32
+                    };
+                    Col::Dec(
+                        a.as_primitive::<Decimal128Type>().values(),
+                        *s as u32,
+                        print,
+                    )
+                }
+                DataType::Date32 => Col::Date(a.as_primitive::<Date32Type>().values()),
+                DataType::Utf8View => Col::Str(a.as_string_view()),
+                t => panic!("no .dat format for {t}"),
+            };
+            bound += rows
+                * match &c {
+                    Col::Str(a) => {
+                        bound += a.views().iter().map(|v| *v as u32 as usize).sum::<usize>();
+                        1 + 12 // separator, inline-copy slack
+                    }
+                    _ => MAX_NUMBER + 1,
+                };
+            (c, a.nulls())
+        })
+        .collect();
+    out.reserve(bound);
+    let start = out.len();
+    let mut w = Cursor(out.spare_capacity_mut().as_mut_ptr().cast::<u8>());
+    let base = w.0;
+    for r in 0..rows {
+        for (c, nulls) in &cols {
+            if nulls.is_none_or(|n| n.is_valid(r)) {
+                // SAFETY: `bound` reserved room for the widest number and the
+                // full bytes of every string (Latin-1 never needs more bytes
+                // than UTF-8), plus every separator and newline.
+                unsafe {
+                    match c {
+                        Col::I32(v) => w.int(v[r] as i64),
+                        Col::I64(v) => w.int(v[r]),
+                        Col::Dec(v, 2, 2) => w.decimal2(v[r] as i64),
+                        Col::Dec(v, s, p) => w.decimal(v[r] as i64 / 10i64.pow(s - p), *p),
+                        Col::Date(v) => w.date(v[r]),
+                        Col::Str(a) => w.view(a, r, encoding),
+                    }
+                }
+            }
+            unsafe { w.byte(b'|') };
+        }
+        unsafe { w.byte(b'\n') };
+    }
+    // SAFETY: every byte in `start..start + written` was initialised above.
+    unsafe {
+        let written = w.0.offset_from(base) as usize;
+        debug_assert!(written <= bound);
+        out.set_len(start + written);
+    }
+}
+
+/// Widest number we print: `-` and 19 digits, `.`, scale digits.
+const MAX_NUMBER: usize = 24;
+
+const DIGITS: &[u8; 200] = b"\
+0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
+/// Write cursor into reserved capacity. Every method is `unsafe`: the
+/// caller guarantees room for what it writes.
+struct Cursor(*mut u8);
+
+impl Cursor {
+    #[inline(always)]
+    unsafe fn byte(&mut self, b: u8) {
+        unsafe {
+            self.0.write(b);
+            self.0 = self.0.add(1);
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn bytes(&mut self, b: &[u8]) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), self.0, b.len());
+            self.0 = self.0.add(b.len());
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn pair(&mut self, d: usize) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(DIGITS.as_ptr().add(d * 2), self.0, 2);
+            self.0 = self.0.add(2);
+        }
+    }
+
+    /// Decimal digits of `v`, written in place back to front.
+    #[inline]
+    unsafe fn uint(&mut self, mut v: u64) {
+        let mut n = 1;
+        let mut t = v;
+        while t >= 10 {
+            t /= 10;
+            n += 1;
+        }
+        unsafe {
+            let mut end = self.0.add(n);
+            self.0 = end;
+            while v >= 100 {
+                let d = (v % 100) as usize * 2;
+                v /= 100;
+                end = end.sub(2);
+                std::ptr::copy_nonoverlapping(DIGITS.as_ptr().add(d), end, 2);
+            }
+            if v >= 10 {
+                end = end.sub(2);
+                std::ptr::copy_nonoverlapping(DIGITS.as_ptr().add(v as usize * 2), end, 2);
+            } else {
+                end.sub(1).write(b'0' + v as u8);
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn int(&mut self, v: i64) {
+        unsafe {
+            if v < 0 {
+                self.byte(b'-');
+            }
+            self.uint(v.unsigned_abs());
+        }
+    }
+
+    /// `%.{scale}f` of `v / 10^scale` (what dsdgen's `print_decimal`
+    /// prints; `-0.05` keeps its sign).
+    unsafe fn decimal(&mut self, v: i64, scale: u32) {
+        unsafe {
+            if scale == 0 {
+                return self.int(v);
+            }
+            if v < 0 {
+                self.byte(b'-');
+            }
+            let p = 10u64.pow(scale);
+            let a = v.unsigned_abs();
+            self.uint(a / p);
+            self.byte(b'.');
+            let mut digits = [0u8; 19];
+            let mut frac = a % p;
+            for d in digits[..scale as usize].iter_mut().rev() {
+                *d = b'0' + (frac % 10) as u8;
+                frac /= 10;
+            }
+            self.bytes(&digits[..scale as usize]);
+        }
+    }
+
+    /// [`Self::decimal`] at scale 2, with constant divisors.
+    #[inline]
+    unsafe fn decimal2(&mut self, v: i64) {
+        unsafe {
+            if v < 0 {
+                self.byte(b'-');
+            }
+            let a = v.unsigned_abs();
+            self.uint(a / 100);
+            self.byte(b'.');
+            self.pair((a % 100) as usize);
+        }
+    }
+
+    /// Days since 1970-01-01 as `YYYY-MM-DD` (Hinnant's civil_from_days).
+    #[inline]
+    unsafe fn date(&mut self, days: i32) {
+        let z = days as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as usize;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as usize;
+        let y = (yoe + era * 400 + (m <= 2) as i64) as usize;
+        unsafe {
+            self.pair(y / 100);
+            self.pair(y % 100);
+            self.byte(b'-');
+            self.pair(m);
+            self.byte(b'-');
+            self.pair(d);
+        }
+    }
+
+    /// String `r` of a view array. Strings of up to 12 bytes live in the
+    /// view itself: copy all 12 and advance by the length (the reservation
+    /// has 12 bytes of slack per string for this).
+    #[inline]
+    unsafe fn view(&mut self, a: &StringViewArray, r: usize, encoding: Encoding) {
+        let v = a.views()[r];
+        let len = v as u32 as usize;
+        unsafe {
+            if len <= 12 {
+                let inline = (v >> 32).to_le_bytes();
+                if encoding == Encoding::Utf8 || inline.is_ascii() {
+                    std::ptr::copy_nonoverlapping(inline.as_ptr(), self.0, 12);
+                    self.0 = self.0.add(len);
+                    return;
+                }
+            }
+            self.text(a.value(r), encoding)
+        }
+    }
+
+    #[inline]
+    unsafe fn text(&mut self, s: &str, encoding: Encoding) {
+        unsafe {
+            if encoding == Encoding::Utf8 || s.is_ascii() {
+                self.bytes(s.as_bytes());
+            } else {
+                // every TPC-DS character is in Latin-1
+                for c in s.chars() {
+                    self.byte(u8::try_from(c).unwrap_or(b'?'));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt(f: impl Fn(&mut Cursor)) -> String {
+        let mut v = vec![0u8; 64];
+        let mut c = Cursor(v.as_mut_ptr());
+        f(&mut c);
+        let n = unsafe { c.0.offset_from(v.as_ptr()) } as usize;
+        v.truncate(n);
+        String::from_utf8(v).unwrap()
+    }
+
+    #[test]
+    fn numbers_and_dates() {
+        unsafe {
+            assert_eq!(fmt(|o| o.int(0)), "0");
+            assert_eq!(fmt(|o| o.int(-12345)), "-12345");
+            assert_eq!(fmt(|o| o.int(i64::MIN)), i64::MIN.to_string());
+            assert_eq!(fmt(|o| o.decimal(-5, 2)), "-0.05");
+            assert_eq!(fmt(|o| o.decimal(0, 2)), "0.00");
+            assert_eq!(fmt(|o| o.decimal(123456, 2)), "1234.56");
+            assert_eq!(fmt(|o| o.decimal(-77973, 2)), "-779.73");
+            assert_eq!(fmt(|o| o.decimal(-77973, 3)), "-77.973");
+            assert_eq!(fmt(|o| o.decimal(-500, 0)), "-500");
+            for v in [-100_001, -77973, -5, 0, 7, 99, 100, 123_456_789] {
+                assert_eq!(fmt(|o| o.decimal2(v)), fmt(|o| o.decimal(v, 2)));
+            }
+            assert_eq!(fmt(|o| o.date(0)), "1970-01-01");
+            assert_eq!(fmt(|o| o.date(-25567)), "1900-01-01");
+            assert_eq!(fmt(|o| o.date(47482)), "2100-01-01");
+            assert_eq!(fmt(|o| o.date(11016)), "2000-02-29");
+        }
+    }
+}

@@ -9,6 +9,7 @@
 //! | `Vec<T>` (numeric)       | `PrimitiveArray`, buffer moved, no copy      |
 //! | `Vec<bool>`              | `BooleanArray` (bit-packed)                  |
 //! | `Vec<usize>`             | `UInt64Array`                                |
+//! | `StrCol` (strings)       | `StringArray`, both buffers moved, no copy   |
 //! | `ListCol<offsets, V>`    | `ListArray` with V's columns as its values;  |
 //! |                          | several columns become a `StructArray`       |
 //! | top-level HList          | `RecordBatch` (columns `c0`, `c1`, ...)      |
@@ -32,11 +33,12 @@ use arrow_array::types::{
 };
 use arrow_array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, ListArray, PrimitiveArray, RecordBatch,
-    StructArray, UInt64Array,
+    StringArray, StructArray, UInt64Array,
 };
-use arrow_buffer::{ArrowNativeType, OffsetBuffer};
+use arrow_buffer::{ArrowNativeType, Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{ArrowError, Field, Fields, Schema};
 use populate_core::hlist::{HCons, HNil};
+use populate_core::string::StrCol;
 use populate_core::traits::{Backend, DefaultSink, Distribution, ListCol, Sink};
 use rand::Rng;
 use std::sync::Arc;
@@ -145,6 +147,18 @@ impl IntoArrowArray for Vec<usize> {
     }
 }
 
+/// `StrCol` -> `StringArray`: offsets and bytes are moved, not copied.
+impl IntoArrowArray for StrCol {
+    fn into_array(self) -> ArrayRef {
+        let (offsets, data) = self.into_parts();
+        // SAFETY: `StrCol` only accepts UTF-8 (`&str`, `char`, checked ASCII)
+        // and its offsets start at 0 and never decrease.
+        let offsets = unsafe { OffsetBuffer::new_unchecked(ScalarBuffer::from(offsets)) };
+        let array = unsafe { StringArray::new_unchecked(offsets, Buffer::from_vec(data), None) };
+        Arc::new(array)
+    }
+}
+
 /// `ListCol` -> `ListArray`. Offsets are stored as end offsets (`n` entries);
 /// Arrow wants `n + 1` starting at 0, as i32.
 impl<V: IntoArrowColumns> IntoArrowArray for ListCol<Vec<usize>, V> {
@@ -177,9 +191,9 @@ fn list_array<V: IntoArrowColumns>(offsets: Vec<i32>, values: V) -> ArrayRef {
     ))
 }
 
-/// One column is the list's values directly; several columns (a tuple element)
-/// become a `StructArray`.
-fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
+/// A sink HList as one array: a single column is returned as is; several
+/// columns (a tuple) become a `StructArray` with fields `c0, c1, ...`.
+pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     let mut cols = Vec::new();
     values.into_arrays(&mut cols);
     if cols.len() == 1 {

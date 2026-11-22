@@ -5,6 +5,17 @@ members = [
     "populate-builtins",
     "populate-sink-arrow",
     "populate-sink-parquet",
+    "populate-bench",
+]
+# `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
+# (it pulls in a second arrow/parquet major version). Run it with
+# `cargo bench -p populate-bench` or `cargo run -p populate-bench --release`.
+default-members = [
+    "populate",
+    "populate-core",
+    "populate-builtins",
+    "populate-sink-arrow",
+    "populate-sink-parquet",
 ]
 resolver = "2"
 

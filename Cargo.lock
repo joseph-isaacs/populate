@@ -774,6 +774,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-tpch"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "parquet",
+ "populate-table",
+ "tpchgen",
+ "tpchgen-arrow",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

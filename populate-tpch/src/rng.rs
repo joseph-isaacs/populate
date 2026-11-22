@@ -1,0 +1,231 @@
+//! dbgen's random number generator, positioned anywhere in O(log n).
+//!
+//! Every TPC-H column has its own stream: the Park–Miller LCG
+//! `x' = 16807 * x mod (2^31 - 1)` from a fixed seed. A stream reserves a
+//! fixed number of draws per row (`per_row`) and skips the ones a row
+//! doesn't use, so draw `k` of row `r` is always draw `r * per_row + k + 1`
+//! of the stream: `seed * 16807^(r * per_row + k + 1) mod m`. That is what
+//! lets any chunk of rows start exactly where the sequential generator
+//! would be ([`Rng::at`]), and what lets [`draws`] generate a stream with
+//! independent lanes.
+
+/// The LCG multiplier.
+pub(crate) const A: u64 = 16807;
+/// The LCG modulus, `2^31 - 1`.
+pub(crate) const M: u64 = 2_147_483_647;
+/// Independent chains [`draws`] runs at once.
+pub(crate) const LANES: usize = 16;
+
+/// `a * b mod (2^31 - 1)` for `a, b` in `[1, m)`, with no division and no
+/// compare (so it vectorises).
+///
+/// `2^31 = 1 (mod m)`, so folding the high bits onto the low ones keeps the
+/// residue. The first fold leaves `r <= m + 2^31 - 2`, the second `r < m`
+/// or `r = m`, and `r = m` would mean `a * b = 0 (mod m)`, impossible for a
+/// prime `m`.
+#[inline(always)]
+pub(crate) fn mulmod(a: u64, b: u64) -> u64 {
+    let p = a * b;
+    let r = (p & M) + (p >> 31);
+    (r & M) + (r >> 31)
+}
+
+/// `base^exp mod m`.
+pub(crate) fn powmod(mut base: u64, mut exp: u64) -> u64 {
+    let mut acc = 1;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            acc = mulmod(acc, base);
+        }
+        base = mulmod(base, base);
+        exp >>= 1;
+    }
+    acc
+}
+
+/// dbgen's bounded value of draw `x`: `lo + (x / m * range)` in `f64`,
+/// truncated, with the range computed in wrapping `i32` as dbgen does
+/// (`RandomAlphaNumeric` asks for `0..=i32::MAX`, a range of `-2^31`).
+#[inline(always)]
+pub(crate) fn bounded(x: u32, lo: i32, hi: i32) -> i32 {
+    let range = (hi.wrapping_sub(lo)).wrapping_add(1) as f64;
+    lo.wrapping_add(((x as f64 / M as f64) * range) as i32)
+}
+
+/// Ranges below this map a draw exactly with integers ([`scale`]).
+pub(crate) const INT_RANGE: u32 = 1 << 21;
+
+/// `floor(x * range / m)` without a division: equal to the `f64` formula
+/// of [`bounded`] for every `x` in `[1, m)` when `range < 2^21`.
+///
+/// Why: `x * range` is never a multiple of the prime `m`, so the exact
+/// quotient is at least `1/m` away from an integer on both sides. The two
+/// `f64` roundings (the divide, then the multiply) are off by at most
+/// `range * 2^-52 < 2^-31 < 1/m`, so they never cross an integer and the
+/// truncation is the floor. (`exhaustive_scale_matches_f64` checks some
+/// ranges draw by draw.)
+///
+/// The floor itself: `p = q0 * 2^31 + r0 = q0 * m + t` with
+/// `t = q0 + r0 < 2m` (`p < 2^52`), so it is `q0 + (t >= m)`, and
+/// `t >= m` is `(t + 1) >> 31`.
+#[inline(always)]
+pub(crate) fn scale(x: u32, range: u32) -> u32 {
+    let p = x as u64 * range as u64;
+    let q0 = p >> 31;
+    let t = (p & M) + q0;
+    (q0 + ((t + 1) >> 31)) as u32
+}
+
+/// The `n` draws `start + 1 ..= start + n` of the stream seeded `seed`, as
+/// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
+/// so the multiply chain vectorises.
+pub(crate) fn draws(seed: i64, start: u64, out: &mut [u32]) {
+    let mut lanes = [0u64; LANES];
+    let mut x = mulmod(seed as u64, powmod(A, start));
+    for l in &mut lanes {
+        x = mulmod(x, A);
+        *l = x;
+    }
+    let step = powmod(A, LANES as u64);
+    let mut chunks = out.chunks_exact_mut(LANES);
+    for c in &mut chunks {
+        for (o, x) in c.iter_mut().zip(&mut lanes) {
+            *o = *x as u32;
+            *x = mulmod(*x, step);
+        }
+    }
+    for (o, x) in chunks.into_remainder().iter_mut().zip(&lanes) {
+        *o = *x as u32;
+    }
+}
+
+/// Map draws to dbgen's bounded values in `lo..=hi`, in place.
+pub(crate) fn bound_all(v: &mut [u32], lo: i32, hi: i32) {
+    let range = (hi as i64 - lo as i64 + 1) as u64;
+    if range < INT_RANGE as u64 {
+        let range = range as u32;
+        for x in v {
+            *x = (lo + scale(*x, range) as i32) as u32;
+        }
+    } else {
+        for x in v {
+            *x = bounded(*x, lo, hi) as u32;
+        }
+    }
+}
+
+/// One dbgen stream (tpchgen's `RowRandomInt`), drawn serially.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rng {
+    seed: u64,
+    usage: u32,
+    per_row: u32,
+}
+
+impl Rng {
+    /// The stream seeded `seed` with `per_row` draws per row, at the start
+    /// of row `row`.
+    pub(crate) fn at(seed: i64, per_row: u32, row: u64) -> Self {
+        Rng {
+            seed: mulmod(seed as u64, powmod(A, per_row as u64 * row)),
+            usage: 0,
+            per_row,
+        }
+    }
+
+    /// The next raw draw, in `[1, m)`.
+    #[inline(always)]
+    pub(crate) fn next_rand(&mut self) -> u32 {
+        self.seed = mulmod(self.seed, A);
+        self.usage += 1;
+        self.seed as u32
+    }
+
+    /// The next value in `lo..=hi`, as dbgen maps it.
+    #[inline(always)]
+    pub(crate) fn next_int(&mut self, lo: i32, hi: i32) -> i32 {
+        let x = self.next_rand();
+        bounded(x, lo, hi)
+    }
+
+    /// Skip to the start of the next row.
+    #[inline(always)]
+    pub(crate) fn row_finished(&mut self) {
+        if self.usage < self.per_row {
+            self.seed = mulmod(self.seed, powmod(A, (self.per_row - self.usage) as u64));
+        }
+        self.usage = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tpchgen::random::RowRandomInt;
+
+    #[test]
+    fn mulmod_matches_modulo() {
+        for (a, b) in [(1u64, 1u64), (M - 1, M - 1), (A, 123_456_789), (M - 1, 2)] {
+            assert_eq!(mulmod(a, b), (a * b) % M);
+        }
+    }
+
+    #[test]
+    fn rng_matches_tpchgen_anywhere() {
+        for (seed, per_row) in [(1i64, 1u32), (933588178, 7), (1095462486, 14)] {
+            let mut want = RowRandomInt::new(seed, per_row as i32);
+            for row in 0..200u64 {
+                let mut got = Rng::at(seed, per_row, row);
+                let used = (row % per_row as u64) as u32 + 1;
+                for _ in 0..used {
+                    assert_eq!(got.next_int(3, 99), want.next_int(3, 99));
+                }
+                // and through `row_finished` from an earlier row
+                want.row_finished();
+            }
+        }
+        // wrapping range, as RandomAlphaNumeric uses
+        let mut a = Rng::at(77, 9, 0);
+        let mut b = RowRandomInt::new(77, 9);
+        for _ in 0..9 {
+            assert_eq!(a.next_int(0, i32::MAX), b.next_int(0, i32::MAX));
+        }
+    }
+
+    #[test]
+    fn draws_match_serial() {
+        for start in [0u64, 1, 17, 1_000_003] {
+            for n in [0usize, 1, 15, 16, 17, 100] {
+                let mut v = vec![0; n];
+                draws(1808217256, start, &mut v);
+                let mut r = Rng::at(1808217256, 1, start);
+                for &x in &v {
+                    assert_eq!(x, r.next_rand());
+                }
+            }
+        }
+    }
+
+    fn f64_scale(x: u32, range: u32) -> u32 {
+        ((x as f64 / M as f64) * range as f64) as i32 as u32
+    }
+
+    #[test]
+    fn scale_matches_f64_sampled() {
+        for r in [1, 2, 7, 25, 2406, 9999, 99_901, 1_100_000, INT_RANGE - 1] {
+            for x in (1..M as u32).step_by(9973).chain([1, M as u32 - 1]) {
+                assert_eq!(scale(x, r), f64_scale(x, r), "x {x} range {r}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "exhaustive, ~2^31 values per range; run with --release --ignored"]
+    fn exhaustive_scale_matches_f64() {
+        for r in [7, 50, 2406, 200_000, 2_000_000] {
+            for x in 1..M as u32 {
+                assert_eq!(scale(x, r), f64_scale(x, r), "x {x} range {r}");
+            }
+        }
+    }
+}

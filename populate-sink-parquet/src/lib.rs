@@ -185,15 +185,21 @@ impl<T: ParquetNative> ParquetColumn for ListCol<ArrowOffsets, HCons<Vec<T>, HNi
 
 /// HList of columns, named `c0, c1, ...` like the Arrow output.
 pub trait ParquetColumns {
+    /// Number of columns in the HList.
+    const COLUMNS: usize;
     fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()>;
     fn write_columns<W: Write + Send>(
         &self,
         rg: &mut SerializedRowGroupWriter<'_, W>,
     ) -> Result<()>;
+    /// The common row count of every column, or `None` if they differ (or
+    /// there are no columns).
     fn num_rows(&self) -> Option<usize>;
 }
 
 impl ParquetColumns for HNil {
+    const COLUMNS: usize = 0;
+
     fn parquet_types(_idx: usize, _out: &mut Vec<TypePtr>) -> Result<()> {
         Ok(())
     }
@@ -211,6 +217,8 @@ impl ParquetColumns for HNil {
 }
 
 impl<H: ParquetColumn, T: ParquetColumns> ParquetColumns for HCons<H, T> {
+    const COLUMNS: usize = 1 + T::COLUMNS;
+
     fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
         out.push(H::parquet_type(&format!("c{idx}"))?);
         T::parquet_types(idx + 1, out)
@@ -226,10 +234,11 @@ impl<H: ParquetColumn, T: ParquetColumns> ParquetColumns for HCons<H, T> {
 
     fn num_rows(&self) -> Option<usize> {
         let n = self.0.num_rows();
-        match self.1.num_rows() {
-            Some(m) if m != n => None,
-            _ => Some(n),
+        if T::COLUMNS == 0 {
+            return Some(n);
         }
+        // A mismatch further down the list must not be masked here.
+        self.1.num_rows().filter(|&m| m == n)
     }
 }
 
@@ -248,6 +257,9 @@ pub fn write_columns<S: ParquetColumns, W: Write + Send>(
     writer: W,
     props: Option<WriterProperties>,
 ) -> Result<W> {
+    if S::COLUMNS == 0 {
+        return Err(ParquetError::General("sink has no columns".into()));
+    }
     if sink.num_rows().is_none() {
         return Err(ParquetError::General(
             "columns have different row counts".into(),
@@ -291,3 +303,33 @@ pub trait DistributionParquet: Distribution<ArrowBackend> {
 }
 
 impl<D: Distribution<ArrowBackend>> DistributionParquet for D {}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParquetColumns, write_columns};
+    use populate_core::hlist::{HCons, HNil};
+
+    #[test]
+    fn num_rows_matching() {
+        let sink = HCons(vec![1i64; 3], HCons(vec![2i32; 3], HNil));
+        assert_eq!(sink.num_rows(), Some(3));
+    }
+
+    #[test]
+    fn num_rows_detects_mismatch_past_the_first_pair() {
+        // The 5-row middle column used to be masked by the 10-row first one.
+        let sink = HCons(
+            vec![1i64; 10],
+            HCons(vec![1i64; 5], HCons(vec![1i64; 10], HNil)),
+        );
+        assert_eq!(sink.num_rows(), None);
+        let err = write_columns(&sink, Vec::new(), None).unwrap_err();
+        assert!(err.to_string().contains("different row counts"), "{err}");
+    }
+
+    #[test]
+    fn empty_sink_is_rejected() {
+        let err = write_columns(&HNil, Vec::new(), None).unwrap_err();
+        assert!(err.to_string().contains("no columns"), "{err}");
+    }
+}

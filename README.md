@@ -64,6 +64,20 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --fo
 
 See [`populate-tpcds/README.md`](populate-tpcds/README.md).
 
+## TPC-H
+
+`populate-tpch` generates all 8 TPC-H tables byte-identical to `dbgen` (and
+`tpchgen-cli`), as Arrow, Parquet or dbgen's `.tbl` text, on all cores, at
+any scale factor up to 10,000. Its generators are its own, column at a
+time, with dbgen's random streams skipped straight to any row.
+
+```sh
+cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet
+cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl # dbgen text
+```
+
+See [`populate-tpch/README.md`](populate-tpch/README.md).
+
 ## Crates
 
 | crate                   | contents                                            |
@@ -75,5 +89,6 @@ See [`populate-tpcds/README.md`](populate-tpcds/README.md).
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
+| `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
 
 See `populate/DESIGN.md` for the design.

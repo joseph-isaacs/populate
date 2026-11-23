@@ -11,12 +11,11 @@ use crate::seeds;
 use arrow_array::builder::make_view;
 use arrow_array::{ArrayRef, Int32Array, RecordBatch, StringViewArray};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use std::iter::repeat_n;
 use std::sync::Arc;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::distribution::DemographicsDistributions as Demo;
 use tpcdsgen::generator::InventoryGeneratorColumn as Inv;
-use tpcdsgen::nulls::create_null_bit_map;
-use tpcdsgen::random::RandomValueGenerator;
 use tpcdsgen::row::AbstractRowGenerator;
 use tpcdsgen::slowly_changing_dimension_utils::match_surrogate_key;
 use tpcdsgen::table::Table as NullTable;
@@ -49,31 +48,64 @@ pub(crate) fn inventory(
         (index / items) % warehouses,
         index / items / warehouses,
     );
+    // Each row takes one quantity draw and two null-bitmap draws, exactly
+    // its budget (1 and 2 seeds), and the other streams are never read, so
+    // the two streams just step on: read their first draws here and run
+    // the Lehmer steps inline instead of through the generator per row.
+    let mut q = g
+        .get_random_number_stream(&Inv::InvQuantityOnHand)
+        .next_random() as u64;
+    let nulls_stream = g.get_random_number_stream(&Inv::InvNulls);
+    let mut n1 = nulls_stream.next_random() as u64;
+    let mut n2 = nulls_stream.next_random() as u64;
+    let basis = NullTable::Inventory.get_null_basis_points();
+    let not_null = NullTable::Inventory.get_not_null_bit_map();
+    // item surrogate keys of the current week
+    let mut keys: Vec<i32> = Vec::new();
+    let mut keys_week = u64::MAX;
     let schema = InventoryArrow::schema_ref();
     let mut row = first;
     while row <= last {
         let n = batch.min((last - row + 1) as usize);
-        let (mut date, mut item_sk, mut wh) = (vec![0; n], vec![0; n], vec![0; n]);
-        let mut qty = vec![0; n];
-        let mut valid = vec![true; n];
-        for i in 0..n {
-            let nbm = create_null_bit_map(
-                NullTable::Inventory,
-                g.get_random_number_stream(&Inv::InvNulls),
-            );
+        let mut date = Vec::with_capacity(n);
+        let mut item_sk = Vec::with_capacity(n);
+        let mut wh = Vec::with_capacity(n);
+        let mut qty = Vec::with_capacity(n);
+        let mut valid = Vec::with_capacity(n);
+        let mut left = n;
+        while left > 0 {
             let d = Date::JULIAN_DATE_MINIMUM as i64 + week as i64 * 7;
-            date[i] = d as i32;
-            item_sk[i] = match_surrogate_key(item as i64 + 1, d, Ds::Item, scaling) as i32;
-            wh[i] = warehouse as i32 + 1;
-            qty[i] = RandomValueGenerator::generate_uniform_random_int(
-                0,
-                1000,
-                g.get_random_number_stream(&Inv::InvQuantityOnHand),
-            );
-            // the date, item and warehouse are NOT NULL
-            valid[i] = nbm & (1 << 3) == 0;
-            seeds::finish_row(&mut g);
-            item += 1;
+            if keys_week != week {
+                keys.clear();
+                keys.extend(
+                    (0..items)
+                        .map(|i| match_surrogate_key(i as i64 + 1, d, Ds::Item, scaling) as i32),
+                );
+                keys_week = week;
+            }
+            // the rest of this warehouse's items, at most `left`
+            let run = ((items - item) as usize).min(left);
+            let from = item as usize;
+            date.extend(repeat_n(d as i32, run));
+            wh.extend(repeat_n(warehouse as i32 + 1, run));
+            item_sk.extend_from_slice(&keys[from..from + run]);
+            for _ in 0..run {
+                // generate_uniform_random_int(0, 1000)
+                qty.push((q as i32) % 1001);
+                // create_null_bit_map: a threshold in 0..10000, then a bitmap
+                // in 1..=i32::MAX; the date, item and warehouse are NOT NULL
+                let nbm = if (n1 as i32) % 10000 < basis {
+                    ((n2 as i32) % i32::MAX + 1) as i64 & !not_null
+                } else {
+                    0
+                };
+                valid.push(nbm & (1 << 3) == 0);
+                q = seeds::lehmer(q);
+                n1 = seeds::lehmer2(n1);
+                n2 = seeds::lehmer2(n2);
+            }
+            left -= run;
+            item += run as u64;
             if item == items {
                 item = 0;
                 warehouse += 1;

@@ -6,13 +6,13 @@ follow the `populate-tpcds` pattern: a crate on top of `populate-table`'s
 `Chunks` engine, Arrow / Parquet / text output, and tests that chunked,
 multi-threaded output equals one sequential run.
 
-- [ ] **TPC-H, byte-identical to dbgen** (`populate-tpch`)
-  - Wrap `tpchgen` 4.0's per-table generators (`part`/`part_count`,
-    `advance_rows`) in `Chunks`.
-  - Test: `.tbl` output equals `tpchgen-cli` byte for byte at SF 1.
-  - Benchmark against `tpchgen-cli` (`.tbl` and Parquet, 1 and N threads), and
-    switch `populate-bench` to real TPC-H data.
-  - First check whether `tpchgen-cli` already splits one table across cores.
+- [x] **TPC-H, byte-identical to dbgen** (`populate-tpch`)
+  - Done with its own column-at-a-time generators on dbgen's skip-ahead
+    streams (tpchgen 4.0 for distributions and tests). All 8 SF 1 `.tbl`
+    files equal `tpchgen-cli`'s; 1.4–2.6x faster than `tpcgen-cli` (see
+    [`populate-tpch/README.md`](populate-tpch/README.md)). `tpcgen-cli`
+    splits a table into at most `--num-threads` parts.
+  - [ ] Switch `populate-bench` to real TPC-H data.
 - [ ] **SSB** (`populate-ssb`)
   - `lineorder`, `customer`, `supplier`, `part`, `date`, plus an optional
     flattened SSB-flat table.

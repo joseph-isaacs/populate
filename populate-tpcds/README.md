@@ -62,8 +62,8 @@ adds the engine around it:
   dates and quantities and off for decimals and 64-bit ids, where it never
   pays: that cuts encoding time by ~40% and the files come out slightly
   smaller (`parquet_props`).
-- **Integer columns encoded directly.** Keys, dates, quantities and
-  decimals (all but the text) are encoded by `populate-table` instead of
+- **Columns encoded directly.** Keys, dates, quantities, decimals and
+  (since the TPC-H work) `Utf8View` text are encoded by `populate-table` instead of
   arrow-rs's column writer: definition levels come straight from the null
   bitmap, values are copied 64 rows at a time, and the dictionary is a
   table indexed by value where the values span a small range. The chunks
@@ -126,21 +126,26 @@ command line.
 
 ## Performance
 
-SF 1 (19.6M rows, 24 tables) on a 4-core container, output to tmpfs. The
-container is noisy (±10% run to run, and it drifts), so both tools ran
-interleaved, best of 3:
+SF 1 (19.6M rows, 24 tables) and SF 10 (192M rows) on a 4-core container,
+`scripts/e2e-bench.sh --suite tpcds` against `tpcgen-cli tpcds`. The
+container is noisy (±10% run to run, and it drifts), so both tools run
+interleaved and each keeps its best time: best of 3 at SF 1 (output to
+tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
+`--encoding utf8`, so the files are `cmp`-identical to tpcgen-cli's.
 
-| output                   | threads | tpcgen-cli | populate-tpcds | speedup |
-|--------------------------|--------:|-----------:|---------------:|--------:|
-| `.dat`                   | 4       | 2.65 s     | 1.05 s         | 2.5x    |
-| Parquet (snappy)         | 4       | 3.41 s     | 1.23 s         | 2.8x    |
-| `.dat`                   | 1       | 8.70 s     | 3.62 s         | 2.4x    |
-| Parquet (snappy)         | 1       | 10.32 s    | 4.29 s         | 2.4x    |
-| Arrow only (`--format none`) | 4   |            | 0.72 s         |         |
+| SF | output           | threads | tpcgen-cli | populate-tpcds | speedup |
+|---:|------------------|--------:|-----------:|---------------:|--------:|
+| 1  | `.dat`           | 1       | 9.51 s     | 3.04 s         | 3.1x    |
+| 1  | `.dat`           | 4       | 3.05 s     | 0.92 s         | 3.3x    |
+| 1  | Parquet (snappy) | 1       | 10.50 s    | 4.47 s         | 2.3x    |
+| 1  | Parquet (snappy) | 4       | 3.38 s     | 1.21 s         | 2.8x    |
+| 10 | `.dat`           | 1       | 92.4 s     | 30.1 s         | 3.1x    |
+| 10 | `.dat`           | 4       | 28.6 s     | 11.5 s         | 2.5x    |
+| 10 | Parquet (snappy) | 1       | 102.0 s    | 43.5 s         | 2.3x    |
+| 10 | Parquet (snappy) | 4       | 27.9 s     | 11.6 s         | 2.4x    |
 
-Parquet files: 376 MB vs tpcgen-cli's 399 MB. SF 10 (192M rows), 4
-threads, output to disk, measured before the fused channels and direct
-Parquet encoding: `.dat` 15.7 s vs 23.3 s, Parquet 12.9 s vs 23.5 s.
+Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
+4,199 MB at SF 10.
 
 ### Where the time goes
 
@@ -200,5 +205,5 @@ multiply by `16807^k mod (2^31 - 1)`.
 - **tpcdsgen's other generators.** They still burn seeds draw by draw.
 - **`.dat` formatting.** Still ~50 instructions per cell for the tables
   that go through Arrow, of which the per-cell type dispatch is ~10%.
-- **Parquet encoding.** Still the largest stage: text columns go through
-  arrow-rs, and Snappy.
+- **Parquet encoding.** Still the largest stage, mostly Snappy and the
+  text columns' dictionary hashing.

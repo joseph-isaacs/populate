@@ -6,11 +6,13 @@
 //! - [`Stream`]: stateless per-row randomness, for values that several
 //!   tables must agree on (a return and the sale it refers to).
 //! - [`Chunks`]: any generator split into independent chunks gets the same
-//!   multi-core drivers ([`chunks::for_each_batch`], [`par_ordered`]).
+//!   multi-core drivers ([`chunks::for_each_batch`], [`par_ordered`], and
+//!   [`par_sources`] for several sources on one pool, biggest work first).
 //! - `write_parquet` / `Table::write_parquet` (feature `parquet`): parallel
 //!   generation *and* encoding streamed into one Parquet file.
 
 pub mod chunks;
+pub mod sched;
 pub mod stream;
 pub mod table;
 
@@ -22,5 +24,6 @@ mod parquet_direct;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
+pub use sched::{Schedule, par_sources};
 pub use stream::{Stream, hash_str, mix64};
 pub use table::{BatchCtx, DecimalRepr, Table, par_ordered};

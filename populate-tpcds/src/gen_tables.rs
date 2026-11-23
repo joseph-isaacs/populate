@@ -13,15 +13,16 @@ use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
-use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
+use populate_table::{Chunks, MultiChunks, Schedule, chunks, par_sources};
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Condvar, Mutex};
 use std::thread;
+use std::time::Instant;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::row::*;
 use tpcdsgen_arrow::*;
@@ -360,7 +361,9 @@ pub fn write_dat_many<W: Write + Send>(
         t => t,
     };
     let units = plan(tables, true);
-    let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
+    let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
+    let jobs: u64 = chunks.iter().sum();
+    let schedule = Mutex::new(Schedule::new(&chunks));
     let files: Vec<Mutex<DatFile<W>>> = writers
         .into_iter()
         .map(|w| Mutex::new(DatFile::new(w)))
@@ -371,15 +374,13 @@ pub fn write_dat_many<W: Write + Send>(
     // Chunks formatted but not yet written. Past `2 * threads` a worker
     // waits for the writers instead of formatting more.
     let queued = (Mutex::new(0usize), Condvar::new());
-    let next = AtomicU64::new(0);
     let failed = AtomicBool::new(false);
     let work = || {
         while !failed.load(Relaxed) {
-            let j = next.fetch_add(1, Relaxed);
-            if j >= jobs.total() {
+            let Some((u, i)) = schedule.lock().expect("schedule").pick() else {
                 break;
-            }
-            let (u, i) = jobs.locate(j);
+            };
+            let t0 = Instant::now();
             let unit = &units[u];
             let mut bufs: Vec<Vec<u8>> = unit
                 .idx
@@ -387,6 +388,8 @@ pub fn write_dat_many<W: Write + Send>(
                 .map(|_| pool.lock().expect("pool").pop().unwrap_or_default())
                 .collect();
             unit.chunk_dat(i, encoding, &mut bufs);
+            let secs = t0.elapsed().as_secs_f64();
+            schedule.lock().expect("schedule").finished(u, secs);
             for (&t, buf) in unit.idx.iter().zip(bufs) {
                 *queued.0.lock().expect("queued") += 1;
                 let written = DatFile::push(&files[t], i, buf, |b| {
@@ -409,7 +412,7 @@ pub fn write_dat_many<W: Write + Send>(
         work();
     } else {
         thread::scope(|s| {
-            for _ in 0..threads.min(jobs.total() as usize) {
+            for _ in 0..threads.min(jobs as usize) {
                 s.spawn(work);
             }
         });
@@ -495,17 +498,16 @@ pub fn for_each_batch_many(
     mut f: impl FnMut(usize, RecordBatch),
 ) {
     let units = plan(tables, false);
-    let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
-    let r: Result<(), Infallible> = par_ordered(
-        jobs.total(),
+    let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
+    let r: Result<(), Infallible> = par_sources(
+        &chunks,
         threads,
-        |j| {
-            let (u, i) = jobs.locate(j);
+        |u, i| {
             let mut v = Vec::new();
             units[u].chunk(i, &mut |k, b| v.push((units[u].idx[k], b)));
             v
         },
-        |v| {
+        |_, v| {
             v.into_iter().for_each(|(t, b)| f(t, b));
             Ok(())
         },

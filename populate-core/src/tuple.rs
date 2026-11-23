@@ -25,6 +25,14 @@ macro_rules! tuple_iter {
 tuple_iter!(TupleIter2; I1 0, I2 1);
 tuple_iter!(TupleIter3; I1 0, I2 1, I3 2);
 tuple_iter!(TupleIter4; I1 0, I2 1, I3 2, I4 3);
+tuple_iter!(TupleIter5; I1 0, I2 1, I3 2, I4 3, I5 4);
+tuple_iter!(TupleIter6; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5);
+tuple_iter!(TupleIter7; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6);
+tuple_iter!(TupleIter8; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7);
+tuple_iter!(TupleIter9; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8);
+tuple_iter!(TupleIter10; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9);
+tuple_iter!(TupleIter11; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9, I11 10);
+tuple_iter!(TupleIter12; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9, I11 10, I12 11);
 
 // ============================================================================
 // Distribution for tuples — col-by-col, one macro for every arity
@@ -107,3 +115,11 @@ macro_rules! impl_tuple_distribution {
 impl_tuple_distribution!(TupleIter2; D1 I1 0, D2 I2 1);
 impl_tuple_distribution!(TupleIter3; D1 I1 0, D2 I2 1, D3 I3 2);
 impl_tuple_distribution!(TupleIter4; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3);
+impl_tuple_distribution!(TupleIter5; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4);
+impl_tuple_distribution!(TupleIter6; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5);
+impl_tuple_distribution!(TupleIter7; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6);
+impl_tuple_distribution!(TupleIter8; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7);
+impl_tuple_distribution!(TupleIter9; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8);
+impl_tuple_distribution!(TupleIter10; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9);
+impl_tuple_distribution!(TupleIter11; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9, D11 I11 10);
+impl_tuple_distribution!(TupleIter12; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9, D11 I11 10, D12 I12 11);

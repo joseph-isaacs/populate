@@ -156,3 +156,56 @@ fn with_column_rng_is_deterministic_for_a_seed() {
     assert_eq!(b1, b2);
     assert_ne!(b1, b3);
 }
+
+type Wide = (i64, i64, i64, i64, i64, i64);
+
+fn make_wide_chain() -> impl Distribution<VecBackend, Item = Wide> {
+    let b = with_column(range(1i64, 1), |a: i64, _| a * 2);
+    let c = with_column(b, |(a, b): (i64, i64), _| a + b);
+    let d = with_column(c, |(_, _, c): (i64, i64, i64), _| c * 10);
+    let e = with_column(d, |(a, _, _, d): (i64, i64, i64, i64), _| d - a);
+    with_column(e, |(a, b, c, d, e): (i64, i64, i64, i64, i64), _| {
+        a + b + c + d + e
+    })
+}
+
+fn make_two_string_columns()
+-> impl Distribution<VecBackend, Item = (i64, (&'static str, &'static str))> {
+    with_column(range(0i64, 1), |x: i64, _| {
+        (
+            if x % 2 == 0 { "even" } else { "odd" },
+            if x < 2 { "lo" } else { "hi" },
+        )
+    })
+}
+
+#[test]
+fn with_column_wide_parent() {
+    let mut d = make_wide_chain();
+    let (a, b, c, dd, e, f) = d.collect_flat(Default::default(), &mut rng(), 3);
+    assert_eq!(a, vec![1, 2, 3]);
+    assert_eq!(b, vec![2, 4, 6]);
+    assert_eq!(c, vec![3, 6, 9]);
+    assert_eq!(dd, vec![30, 60, 90]);
+    assert_eq!(e, vec![29, 58, 87]);
+    assert_eq!(f, vec![65, 130, 195]);
+}
+
+#[test]
+fn with_column_returns_several_string_columns() {
+    use crate::traits::HCons;
+    let mut d = make_two_string_columns();
+    let HCons(x, HCons(parity, HCons(size, HNil))) =
+        d.collect_into(Default::default(), &mut rng(), 3);
+    assert_eq!(x, vec![0, 1, 2]);
+    assert_eq!(
+        (0..3)
+            .map(|i| parity.get(i).to_string())
+            .collect::<Vec<_>>(),
+        ["even", "odd", "even"]
+    );
+    assert_eq!(
+        (0..3).map(|i| size.get(i).to_string()).collect::<Vec<_>>(),
+        ["lo", "lo", "hi"]
+    );
+}

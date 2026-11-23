@@ -32,7 +32,7 @@
 //! The closure's RNG is a concrete [`ColumnRng`] seeded from the caller's
 //! RNG, so draws inline instead of going through `dyn RngCore`.
 //!
-//! Parents must be made of scalar columns (up to 3 before the new one), so
+//! Parents must be made of scalar columns (up to 11 before the new one), so
 //! their rows can be read back from the sink.
 
 use populate_core::traits::{
@@ -95,29 +95,56 @@ impl<A: Column> ReadRows for HCons<A, HNil> {
     }
 }
 
-impl<A: Column, B: Column> ReadRows for HCons<A, HCons<B, HNil>> {
-    type Row = (A::Elem, B::Elem);
-    fn rows(&self) -> usize {
-        self.0.count()
-    }
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-        self.0.iter_from(start).zip(self.1.0.iter_from(start))
-    }
+macro_rules! hlist_ty {
+    () => { HNil };
+    ($h:ident $(, $t:ident)*) => { HCons<$h, hlist_ty!($($t),*)> };
 }
 
-impl<A: Column, B: Column, C: Column> ReadRows for HCons<A, HCons<B, HCons<C, HNil>>> {
-    type Row = (A::Elem, B::Elem, C::Elem);
-    fn rows(&self) -> usize {
-        self.0.count()
-    }
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-        self.0
-            .iter_from(start)
-            .zip(self.1.0.iter_from(start))
-            .zip(self.1.1.0.iter_from(start))
-            .map(|((a, b), c)| (a, b, c))
-    }
+macro_rules! hlist_pat {
+    () => { HNil };
+    ($h:ident $(, $t:ident)*) => { HCons($h, hlist_pat!($($t),*)) };
 }
+
+// `a.iter_from(s).zip(b.iter_from(s)).zip(..).map(|((a, b), ..)| (a, b, ..))`:
+// nested zips stay `TrustedLen`, so `Vec::extend` still knows the length.
+macro_rules! zip_rows {
+    (@acc $start:ident, $iter:expr, $pat:pat, [$($done:ident),*];) => {
+        $iter.map(|$pat| ($($done,)*))
+    };
+    (@acc $start:ident, $iter:expr, $pat:pat, [$($done:ident),*]; $next:ident $(, $rest:ident)*) => {
+        zip_rows!(@acc $start, $iter.zip($next.iter_from($start)), ($pat, $next),
+            [$($done,)* $next]; $($rest),*)
+    };
+    ($start:ident; $first:ident $(, $rest:ident)*) => {
+        zip_rows!(@acc $start, $first.iter_from($start), $first, [$first]; $($rest),*)
+    };
+}
+
+macro_rules! read_rows {
+    ($($T:ident $v:ident),+) => {
+        impl<$($T: Column),+> ReadRows for hlist_ty!($($T),+) {
+            type Row = ($($T::Elem,)+);
+            fn rows(&self) -> usize {
+                self.0.count()
+            }
+            fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+                let hlist_pat!($($v),+) = self;
+                zip_rows!(start; $($v),+)
+            }
+        }
+    };
+}
+
+read_rows!(A a, B b);
+read_rows!(A a, B b, C c);
+read_rows!(A a, B b, C c, D d);
+read_rows!(A a, B b, C c, D d, E e);
+read_rows!(A a, B b, C c, D d, E e, F f);
+read_rows!(A a, B b, C c, D d, E e, F f, G g);
+read_rows!(A a, B b, C c, D d, E e, F f, G g, H h);
+read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
+read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
+read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
 
 // ============================================================================
 // Flat row + one more value
@@ -143,19 +170,28 @@ macro_rules! impl_row_append_scalar {
 
 impl_row_append_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
 
-impl<A, B, U> RowAppend<U> for (A, B) {
-    type Out = (A, B, U);
-    fn with(self, u: U) -> Self::Out {
-        (self.0, self.1, u)
-    }
+macro_rules! row_append_tuple {
+    ($($T:ident $v:ident),+) => {
+        impl<$($T,)+ U> RowAppend<U> for ($($T,)+) {
+            type Out = ($($T,)+ U);
+            fn with(self, u: U) -> Self::Out {
+                let ($($v,)+) = self;
+                ($($v,)+ u)
+            }
+        }
+    };
 }
 
-impl<A, B, C, U> RowAppend<U> for (A, B, C) {
-    type Out = (A, B, C, U);
-    fn with(self, u: U) -> Self::Out {
-        (self.0, self.1, self.2, u)
-    }
-}
+row_append_tuple!(A a, B b);
+row_append_tuple!(A a, B b, C c);
+row_append_tuple!(A a, B b, C c, D d);
+row_append_tuple!(A a, B b, C c, D d, E e);
+row_append_tuple!(A a, B b, C c, D d, E e, F f);
+row_append_tuple!(A a, B b, C c, D d, E e, F f, G g);
+row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h);
+row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
+row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
+row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
 
 // ============================================================================
 // WithColumn

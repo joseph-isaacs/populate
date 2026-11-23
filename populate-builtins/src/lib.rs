@@ -16,7 +16,10 @@ pub use with_column::{
     Column, ColumnRng, ReadRows, RowAppend, WithColumn, WithColumnIter, with_column,
 };
 
-pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
+pub use populate_core::tuple::{
+    TupleIter2, TupleIter3, TupleIter4, TupleIter5, TupleIter6, TupleIter7, TupleIter8, TupleIter9,
+    TupleIter10, TupleIter11, TupleIter12,
+};
 
 pub mod random;
 pub use random::{Chars, Choose, Text, Uniform, Weighted, chars, choose, text, uniform, weighted};

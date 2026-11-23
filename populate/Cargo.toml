@@ -38,3 +38,7 @@ harness = false
 name = "arrow"
 harness = false
 required-features = ["arrow"]
+
+[[bench]]
+name = "leaves"
+harness = false

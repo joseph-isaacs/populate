@@ -13,8 +13,11 @@ use std::ops::Add;
 
 pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
 
+pub mod bounded;
 pub mod random;
-pub use random::{Chars, Choose, Text, Uniform, Weighted, chars, choose, text, uniform, weighted};
+pub use random::{
+    Chars, Choose, Text, Uniform, UniformValue, Weighted, chars, choose, text, uniform, weighted,
+};
 
 // ============================================================================
 // Constant
@@ -258,10 +261,11 @@ where
         offsets.reserve(n);
         let mut lengths = self.lengths.row_iter();
         let start = len;
-        for _ in 0..n {
+        // one `extend` (no capacity check per row), as the leaves do
+        offsets.push_n((0..n).map(|_| {
             len += lengths.next(rng);
-            offsets.push(len);
-        }
+            len
+        }));
         let values = self.elements.collect_into(values, rng, len - start);
         HCons(
             ListCol {

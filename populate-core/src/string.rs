@@ -21,13 +21,47 @@ pub struct StrCol {
     data: Vec<u8>,
 }
 
+/// `v.extend_from_slice(s)`, with strings up to 16 bytes copied by two
+/// overlapping fixed-size loads into a 16-byte block (no `memcpy` call,
+/// which dominates for short values like category names).
+#[inline(always)]
+fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
+    let n = s.len();
+    if n > 16 {
+        v.extend_from_slice(s);
+        return;
+    }
+    let mut b = [0u8; 16];
+    if n >= 8 {
+        b[..8].copy_from_slice(&s[..8]);
+        b[n - 8..n].copy_from_slice(&s[n - 8..]);
+    } else if n >= 4 {
+        b[..4].copy_from_slice(&s[..4]);
+        b[n - 4..n].copy_from_slice(&s[n - 4..]);
+    } else if n > 0 {
+        b[0] = s[0];
+        b[n / 2] = s[n / 2];
+        b[n - 1] = s[n - 1];
+    }
+    let start = v.len();
+    v.extend_from_slice(&b);
+    v.truncate(start + n);
+}
+
+/// A byte length as an `i32` offset.
+#[inline]
+fn offset(len: usize) -> i32 {
+    i32::try_from(len)
+        .expect("string column exceeds i32 offsets (2 GiB per batch); use smaller batches")
+}
+
 /// Write access to the value being appended by [`StrCol::push_with`].
-pub struct StrBuf<'a>(&'a mut Vec<u8>);
+pub struct StrBuf<'a>(&'a mut Vec<u8>, usize);
 
 impl StrBuf<'_> {
     #[inline]
     pub fn push_str(&mut self, s: &str) {
-        self.0.extend_from_slice(s.as_bytes());
+        extend_small(self.0, s.as_bytes());
     }
 
     #[inline]
@@ -49,6 +83,44 @@ impl StrBuf<'_> {
     pub fn push_ascii_bytes(&mut self, bytes: &[u8]) {
         assert!(bytes.is_ascii(), "push_ascii_bytes: input is not ASCII");
         self.0.extend_from_slice(bytes);
+    }
+
+    /// Append ASCII bytes from an iterator of known length (a `map` over a
+    /// `Range`, say): one capacity check for the lot instead of one per
+    /// byte, then one vectorised ASCII check of what was written. Panics,
+    /// with the buffer as it was, if any byte is not ASCII.
+    #[inline]
+    pub fn extend_ascii(&mut self, bytes: impl Iterator<Item = u8>) {
+        let start = self.0.len();
+        self.0.extend(bytes);
+        if !self.0[start..].is_ascii() {
+            self.0.truncate(start);
+            panic!("extend_ascii: input is not ASCII");
+        }
+    }
+
+    /// Append the first `len` bytes of `padded`, a fixed-size block: the
+    /// copy is a fixed-size move, not a `memcpy` call. The whole block is
+    /// written and the tail cut off again, so it must be valid UTF-8 up to
+    /// `len` and at every byte after it (pad with ASCII). Panics if `len`
+    /// is past the block, or the bytes are not valid UTF-8 at `len`.
+    #[inline]
+    pub fn push_padded<const W: usize>(&mut self, padded: &[u8; W], len: usize) {
+        assert!(len <= W, "push_padded: length past the block");
+        let start = self.0.len();
+        self.0.extend_from_slice(padded);
+        self.0.truncate(start + len);
+        debug_assert!(std::str::from_utf8(&self.0[start..]).is_ok());
+    }
+
+    /// Remove the last byte of this value if it is ASCII (so the buffer
+    /// stays valid UTF-8), and return it. Earlier values are never touched.
+    #[inline]
+    pub fn pop_ascii(&mut self) -> Option<u8> {
+        match self.0.last() {
+            Some(&b) if b.is_ascii() && self.0.len() > self.1 => self.0.pop(),
+            _ => None,
+        }
     }
 
     /// Append `v` in decimal.
@@ -102,8 +174,7 @@ impl StrCol {
 
     #[inline]
     fn end_value(&mut self) {
-        let end = i32::try_from(self.data.len())
-            .expect("string column exceeds i32 offsets (2 GiB per batch); use smaller batches");
+        let end = offset(self.data.len());
         self.offsets.push(end);
     }
 
@@ -115,7 +186,7 @@ impl StrCol {
     #[inline]
     pub fn push_str(&mut self, s: &str) {
         self.start();
-        self.data.extend_from_slice(s.as_bytes());
+        extend_small(&mut self.data, s.as_bytes());
         self.end_value();
     }
 
@@ -124,8 +195,28 @@ impl StrCol {
     #[inline]
     pub fn push_with(&mut self, f: impl FnOnce(&mut StrBuf<'_>)) {
         self.start();
-        f(&mut StrBuf(&mut self.data));
+        let start = self.data.len();
+        f(&mut StrBuf(&mut self.data, start));
         self.end_value();
+    }
+
+    /// Append `n` values, each written by `f` straight into the buffer.
+    /// The same as `n` calls of [`Self::push_with`], but the buffers are
+    /// held in locals for the loop, so the compiler can keep their lengths
+    /// in registers instead of reloading them after every byte written.
+    #[inline]
+    pub fn push_n_with(&mut self, n: usize, mut f: impl FnMut(&mut StrBuf<'_>)) {
+        self.start();
+        let mut data = std::mem::take(&mut self.data);
+        let mut offsets = std::mem::take(&mut self.offsets);
+        offsets.reserve(n);
+        offsets.extend((0..n).map(|_| {
+            let start = data.len();
+            f(&mut StrBuf(&mut data, start));
+            offset(data.len())
+        }));
+        self.data = data;
+        self.offsets = offsets;
     }
 
     /// Offsets so far (`len() + 1` entries once anything is written).
@@ -161,6 +252,13 @@ impl Sink<String> for StrCol {
         self.push_str(&value);
     }
 
+    fn push_n(&mut self, values: impl Iterator<Item = String>) {
+        let (lo, _) = values.size_hint();
+        let mut values = values;
+        self.push_n_with(lo, |b| b.push_str(&values.next().expect("size_hint")));
+        values.for_each(|v| self.push_str(&v));
+    }
+
     fn reserve(&mut self, additional: usize) {
         self.start();
         self.offsets.reserve(additional);
@@ -171,6 +269,13 @@ impl<'a> Sink<&'a str> for StrCol {
     #[inline]
     fn push(&mut self, value: &'a str) {
         self.push_str(value);
+    }
+
+    fn push_n(&mut self, values: impl Iterator<Item = &'a str>) {
+        let (lo, _) = values.size_hint();
+        let mut values = values;
+        self.push_n_with(lo, |b| b.push_str(values.next().expect("size_hint")));
+        values.for_each(|v| self.push_str(v));
     }
 
     fn reserve(&mut self, additional: usize) {
@@ -221,6 +326,51 @@ mod tests {
         let (o, d) = c.into_parts();
         assert_eq!(o, vec![0, 2, 9, 9]);
         assert_eq!(std::str::from_utf8(&d).unwrap(), "abx1024é");
+    }
+
+    #[test]
+    fn small_copies_every_length() {
+        let text = "abcdefghijklmnopqrstuvwxyzé0123";
+        let mut c = StrCol::new();
+        for n in 0..=text.len() {
+            if text.is_char_boundary(n) {
+                c.push_str(&text[..n]);
+                c.push_with(|b| b.push_str(&text[..n]));
+            }
+        }
+        let want: Vec<&str> = (0..=text.len())
+            .filter(|&n| text.is_char_boundary(n))
+            .flat_map(|n| [&text[..n], &text[..n]])
+            .collect();
+        assert_eq!((0..c.len()).map(|i| c.get(i)).collect::<Vec<_>>(), want);
+    }
+
+    #[test]
+    fn push_n_and_block_writes() {
+        let mut c = StrCol::new();
+        Sink::<&str>::push_n(&mut c, ["red", "", "green"].into_iter());
+        Sink::<String>::push_n(&mut c, ["blue".to_string()].into_iter());
+        let mut block = [b' '; 8];
+        block[..3].copy_from_slice(b"one");
+        c.push_n_with(2, |b| {
+            b.push_padded(&block, 4);
+            b.push_padded(&block, 3);
+            b.extend_ascii(b"xy".iter().copied());
+            assert_eq!(b.pop_ascii(), Some(b'y'));
+        });
+        // pop_ascii never reaches into an earlier value
+        c.push_with(|b| assert_eq!(b.pop_ascii(), None));
+        let got: Vec<&str> = (0..c.len()).map(|i| c.get(i)).collect();
+        assert_eq!(
+            got,
+            ["red", "", "green", "blue", "one onex", "one onex", ""]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not ASCII")]
+    fn extend_ascii_checks() {
+        StrCol::new().push_with(|b| b.extend_ascii([b'a', 0xc3].into_iter()));
     }
 
     #[test]

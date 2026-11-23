@@ -13,12 +13,9 @@
 //!   `price(partkey) * quantity` derivation.
 
 use crate::lanes::{A, LANES, M, mulmod, powmod};
-use crate::{
-    BATCH, LINES_PER_ORDER, Output, Uniform, batch_bytes, batch_bytes_60, numeric_schema_60, rng,
-    uniform,
-};
+use crate::{BATCH, LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, numeric_schema_60, rng};
 use populate::arrow::{ArrowBackend, DistributionArrow};
-use populate::dist::{list, map, range};
+use populate::dist::{Uniform, list, map, range, uniform};
 use populate::hlist::{HCons, HNil};
 use populate::traits::{DefaultSink, Distribution, SampleIter};
 use rand::Rng;
@@ -266,9 +263,12 @@ pub fn p2_list_fair(n: usize) -> Output {
             map((elem, uniform(1i64, 50)), |(p, q): (i64, i64)| price(p) * q),
         ),
     );
-    let b = d
-        .collect_record_batch(&mut rng(), n / LINES_PER_ORDER)
-        .expect("batch");
+    let b = DistributionArrow::<ArrowBackend>::collect_record_batch(
+        &mut d,
+        &mut rng(),
+        n / LINES_PER_ORDER,
+    )
+    .expect("batch");
     black_box(Output {
         rows: b.num_rows(),
         bytes: batch_bytes(&b),

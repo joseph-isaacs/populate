@@ -138,6 +138,14 @@ macro_rules! impl_default_sink_tuple {
 impl_default_sink_tuple!(T1, T2);
 impl_default_sink_tuple!(T1, T2, T3);
 impl_default_sink_tuple!(T1, T2, T3, T4);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_default_sink_tuple!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 // ============================================================================
 // SampleIter and Distribution
@@ -273,6 +281,14 @@ macro_rules! impl_tuple_sinks {
 impl_tuple_sinks!(A SA a sa, B SB b sb);
 impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc);
 impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg, H SH h sh);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg, H SH h sh, I SI i si);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg, H SH h sh, I SI i si, J SJ j sj);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg, H SH h sh, I SI i si, J SJ j sj, K SK k sk);
+impl_tuple_sinks!(A SA a sa, B SB b sb, C SC c sc, D SD d sd, E SE e se, F SF f sf, G SG g sg, H SH h sh, I SI i si, J SJ j sj, K SK k sk, L SL l sl);
 
 // ============================================================================
 // DistributionExt — ergonomic methods (collect_flat, flatten)

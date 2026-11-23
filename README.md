@@ -84,7 +84,7 @@ See [`populate-tpch/README.md`](populate-tpch/README.md).
 |-------------------------|-----------------------------------------------------|
 | `populate`              | facade: re-exports everything below                 |
 | `populate-core`         | `Distribution`, `SampleIter`, `Sink`, `Backend`, HLists, tuples |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `flatten`, `uniform`, `choose`, `weighted`, `text`, `chars` |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `flatten`, `uniform`, `choose`, `weighted`, `text`, `chars` |
 | `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output                |
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |

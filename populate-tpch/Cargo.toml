@@ -1,0 +1,30 @@
+[package]
+name = "populate-tpch"
+description = "TPC-H data byte-identical to dbgen/tpchgen, on all cores: Arrow, Parquet or .tbl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-select = "60"
+parquet = { workspace = true, features = ["arrow", "snap"] }
+# dbgen's distributions and text grammar, and the reference generator the
+# tests compare against (Apache-2.0, tpchgen-rs project)
+tpchgen = "4.0"
+
+[dev-dependencies]
+divan = { workspace = true }
+tpchgen-arrow = "4.0"
+bytes = "1"
+
+[[bin]]
+name = "tpch-gen"
+path = "src/bin/tpch-gen.rs"
+
+[[bench]]
+name = "tpch"
+harness = false

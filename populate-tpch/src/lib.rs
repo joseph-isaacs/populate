@@ -153,7 +153,7 @@ impl Tpch {
     }
 
     /// Build the text pool every table's comments are cut from (300 MiB,
-    /// ~0.4 s on 4 cores), on `threads` threads (0 = all cores). It is
+    /// ~0.1 s on 4 cores), on `threads` threads (0 = all cores). It is
     /// built once per process, on first use otherwise.
     pub fn prepare(threads: usize) {
         text::Text::init(threads);

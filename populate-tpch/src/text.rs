@@ -9,11 +9,11 @@
 //! into the pool and a distribution pick is a precomputed view, so neither
 //! copies a byte.
 
-use crate::rng::{A, Rng, mulmod, powmod, scale};
+use crate::rng::{Rng, draws, scale};
 use arrow_array::StringViewArray;
 use arrow_buffer::{Buffer, ScalarBuffer};
 use std::ptr::NonNull;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tpchgen::distribution::{Distribution, Distributions};
 
 /// Buffer index of a batch's own string bytes.
@@ -243,407 +243,404 @@ impl Views {
     }
 }
 
-/// A distribution as the pool's grammar reads it: for each unit of
-/// weight, the picked value's bytes, padded to 16 for a fixed-size copy.
-struct Words {
-    picks: Vec<([u8; 16], u8)>,
-    long: Vec<&'static [u8]>,
+/// One distribution's words, each with the text that follows it in the
+/// pool (a space, `", "`, `" the "`), padded to 32 bytes for a fixed-size
+/// copy: one entry per unit of weight, so a draw indexes it directly.
+struct Table {
+    picks: Vec<([u8; 32], u8)>,
 }
 
-impl Words {
-    fn new(d: &Distribution) -> Self {
+impl Table {
+    fn new(d: &Distribution, suffix: impl Fn(&[u8]) -> &'static [u8]) -> Self {
         let mut picks = Vec::new();
-        let mut long = Vec::new();
         let mut prev = 0;
         for i in 0..d.size() {
             let w = d.get_weight(i);
             let v = d.get_values()[i].as_bytes();
-            let mut b = [0u8; 16];
-            let tag = if v.len() <= 16 {
-                b[..v.len()].copy_from_slice(v);
-                v.len() as u8
-            } else {
-                long.push(v);
-                b[..8].copy_from_slice(&(long.len() as u64 - 1).to_le_bytes());
-                u8::MAX
-            };
-            picks.extend(std::iter::repeat_n((b, tag), (w - prev) as usize));
+            let s = suffix(v);
+            let n = v.len() + s.len();
+            assert!(n <= 32, "pool word too long");
+            let mut b = [0u8; 32];
+            b[..v.len()].copy_from_slice(v);
+            b[v.len()..n].copy_from_slice(s);
+            picks.extend(std::iter::repeat_n((b, n as u8), (w - prev) as usize));
             prev = w;
         }
-        Words { picks, long }
-    }
-
-    /// The next draw's value, appended to `out`.
-    #[inline(always)]
-    fn put(&self, r: &mut PoolRng, out: &mut Out) {
-        let x = r.next();
-        let (b, n) = &self.picks[scale(x, self.picks.len() as u32) as usize];
-        if *n != u8::MAX {
-            out.put16(b, *n as usize);
-        } else {
-            let i = u64::from_le_bytes(b[..8].try_into().expect("8 bytes"));
-            out.bytes(self.long[i as usize]);
-        }
-    }
-
-    /// The next draw's value (grammar syntax).
-    #[inline(always)]
-    fn syntax(&self, r: &mut PoolRng) -> ([u8; 16], usize) {
-        let x = r.next();
-        let (b, n) = self.picks[scale(x, self.picks.len() as u32) as usize];
-        assert!(n != u8::MAX, "short syntax");
-        (b, n as usize)
+        Table { picks }
     }
 }
 
-/// Text being generated, written with fixed-size copies into reserved
-/// room.
-struct Out {
-    buf: Vec<u8>,
+/// A distribution's values, by weight unit (the grammar's syntax strings).
+fn syntax(d: &Distribution) -> Vec<&'static str> {
+    let mut picks = Vec::new();
+    let mut prev = 0;
+    for i in 0..d.size() {
+        let w = d.get_weight(i);
+        picks.extend(std::iter::repeat_n(d.get_values()[i], (w - prev) as usize));
+        prev = w;
+    }
+    picks
 }
 
-impl Out {
-    fn with_capacity(n: usize) -> Self {
-        Out {
-            buf: Vec::with_capacity(n + MAX_SENTENCE + 16),
-        }
+/// Text being generated into `buf`, with fixed-size copies: a sentence
+/// may only start while [`ROOM`] bytes are left.
+struct Out<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+/// Room for one sentence and a 32-byte overrun.
+const ROOM: usize = MAX_SENTENCE + 32;
+
+impl<'a> Out<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Out { buf, len: 0 }
     }
 
-    fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    /// Make room for one more sentence (and a 16-byte overrun).
+    /// Whether a sentence can start.
     #[inline(always)]
-    fn reserve_sentence(&mut self) {
-        self.buf.reserve(MAX_SENTENCE + 32);
+    fn has_room(&self) -> bool {
+        self.len + ROOM <= self.buf.len()
     }
 
+    /// Drop the last `pop` bytes (0 or 1), then append the first `n` bytes
+    /// of `b`.
     #[inline(always)]
-    fn put16(&mut self, b: &[u8; 16], n: usize) {
-        let len = self.buf.len();
-        debug_assert!(len + 16 <= self.buf.capacity());
-        // SAFETY: `reserve_sentence` left room for a whole sentence plus a
-        // 16-byte overrun; only the first `n` bytes are kept.
+    fn put32(&mut self, pop: usize, b: &[u8; 32], n: usize) {
+        let len = self.len - pop;
+        debug_assert!(len + 32 <= self.buf.len());
+        // SAFETY: a sentence starts only with `ROOM` bytes left (checked in
+        // `Grammar::sentence`), enough for the whole sentence plus a 32-byte
+        // overrun; only the first `n` bytes are kept.
         unsafe {
             self.buf
                 .as_mut_ptr()
                 .add(len)
-                .cast::<[u8; 16]>()
+                .cast::<[u8; 32]>()
                 .write_unaligned(*b);
-            self.buf.set_len(len + n);
         }
-    }
-
-    #[inline(always)]
-    fn bytes(&mut self, b: &[u8]) {
-        self.buf.extend_from_slice(b);
-    }
-
-    #[inline(always)]
-    fn push(&mut self, b: u8) {
-        // SAFETY: as `put16`.
-        unsafe {
-            let len = self.buf.len();
-            self.buf.as_mut_ptr().add(len).write(b);
-            self.buf.set_len(len + 1);
-        }
-    }
-
-    #[inline(always)]
-    fn pop(&mut self) {
-        self.buf.pop();
-    }
-
-    fn last(&self) -> Option<u8> {
-        self.buf.last().copied()
+        self.len = len + n;
     }
 }
 
 /// The pool's stream: one stream that never skips, with its draw count.
-#[derive(Clone, Copy)]
+/// Draws are made [`POOL_BLOCK`] at a time by independent lanes
+/// ([`draws`]), so the parse never waits on the multiply chain.
 struct PoolRng {
-    seed: u64,
-    /// Draws made so far.
-    k: u64,
+    buf: Box<[u32; POOL_BLOCK]>,
+    /// Draws consumed from `buf`.
+    i: usize,
+    /// Draws made before `buf[0]`.
+    base: u64,
 }
 
 const POOL_SEED: u64 = 933588178;
+const POOL_BLOCK: usize = 4096;
 
 impl PoolRng {
     /// The stream after `k` draws.
     fn at(k: u64) -> Self {
-        PoolRng {
-            seed: mulmod(POOL_SEED, powmod(A, k)),
-            k,
-        }
+        let mut r = PoolRng {
+            buf: Box::new([0; POOL_BLOCK]),
+            i: 0,
+            base: k,
+        };
+        draws(POOL_SEED as i64, k, &mut r.buf[..]);
+        r
+    }
+
+    /// Draws made so far.
+    #[cfg(test)]
+    fn k(&self) -> u64 {
+        self.base + self.i as u64
     }
 
     #[inline(always)]
     fn next(&mut self) -> u32 {
-        self.seed = mulmod(self.seed, A);
-        self.k += 1;
-        self.seed as u32
+        if self.i == POOL_BLOCK {
+            self.refill();
+        }
+        let x = self.buf[self.i];
+        self.i += 1;
+        x
+    }
+
+    #[cold]
+    fn refill(&mut self) {
+        self.base += POOL_BLOCK as u64;
+        self.i = 0;
+        draws(POOL_SEED as i64, self.base, &mut self.buf[..]);
     }
 }
 
-/// dbgen's sentence grammar (tpchgen's `TextPool`).
+/// No table / no phrase.
+const NONE: u8 = u8::MAX;
+
+/// One word: a draw from table `table`, after dropping `pop` bytes.
+#[derive(Clone, Copy)]
+struct Op {
+    table: u8,
+    pop: u8,
+}
+
+/// A phrase's words, in draw order.
+#[derive(Clone, Copy)]
+struct Phrase {
+    ops: [Op; 4],
+    n: u8,
+}
+
+/// One token of a sentence: an optional word (`pre`), then an optional
+/// phrase drawn from `set` (noun or verb phrases).
+#[derive(Clone, Copy)]
+struct Slot {
+    pre: Op,
+    set: u8,
+}
+
+#[derive(Clone, Copy)]
+struct Sentence {
+    slots: [Slot; 6],
+    n: u8,
+}
+
+/// Phrases by weight unit, for one phrase distribution.
+struct PhraseSet {
+    picks: Vec<Phrase>,
+}
+
+/// dbgen's sentence grammar (tpchgen's `TextPool`), compiled: each
+/// sentence, noun-phrase and verb-phrase syntax becomes a list of word
+/// draws, each a fixed-size copy of a word with its following text, so
+/// generating a sentence reads no syntax characters. Draws are made in
+/// tpchgen's order: the sentence's syntax, then per token the phrase's
+/// syntax and its words.
 struct Grammar {
-    grammar: Words,
-    np: Words,
-    vp: Words,
-    prepositions: Words,
-    terminators: Words,
-    articles: Words,
-    adjectives: Words,
-    adverbs: Words,
-    nouns: Words,
-    verbs: Words,
-    auxiliaries: Words,
+    tables: Vec<Table>,
+    sets: [PhraseSet; 2],
+    sentences: Vec<Sentence>,
 }
 
 impl Grammar {
     fn new(d: &Distributions) -> Self {
-        Grammar {
-            grammar: Words::new(d.grammar()),
-            np: Words::new(d.noun_phrase()),
-            vp: Words::new(d.verb_phrase()),
-            prepositions: Words::new(d.prepositions()),
-            terminators: Words::new(d.terminators()),
-            articles: Words::new(d.articles()),
-            adjectives: Words::new(d.adjectives()),
-            adverbs: Words::new(d.adverbs()),
-            nouns: Words::new(d.nouns()),
-            verbs: Words::new(d.verbs()),
-            auxiliaries: Words::new(d.auxiliaries()),
-        }
-    }
-
-    #[inline(always)]
-    fn noun_phrase(&self, out: &mut Out, r: &mut PoolRng) {
-        let (syntax, n) = self.np.syntax(r);
-        for &c in &syntax[..n] {
-            let src = match c {
-                b'A' => &self.articles,
-                b'J' => &self.adjectives,
-                b'D' => &self.adverbs,
-                b'N' => &self.nouns,
-                b',' => {
-                    out.pop();
-                    out.push(b',');
-                    out.push(b' ');
-                    continue;
+        let space: fn(&[u8]) -> &'static [u8] = |_| b" ";
+        let comma: fn(&[u8]) -> &'static [u8] = |_| b", ";
+        // tables: 0 adjectives, 1 adjectives + ", ", 2 adverbs, 3 nouns,
+        // 4 articles, 5 verbs, 6 auxiliaries, 7 prepositions + " the ",
+        // 8 terminators + " "
+        let tables = vec![
+            Table::new(d.adjectives(), space),
+            Table::new(d.adjectives(), comma),
+            Table::new(d.adverbs(), space),
+            Table::new(d.nouns(), space),
+            Table::new(d.articles(), space),
+            Table::new(d.verbs(), space),
+            Table::new(d.auxiliaries(), space),
+            Table::new(d.prepositions(), |_| b" the "),
+            // a sentence token is followed by a space unless it ends in one
+            Table::new(d.terminators(), |v| {
+                if v.last() == Some(&b' ') { b"" } else { b" " }
+            }),
+        ];
+        let op = |table| Op { table, pop: 0 };
+        let phrase = |ops: &[Op]| {
+            assert!(ops.len() <= 4, "phrase too long");
+            let mut p = Phrase {
+                ops: [op(NONE); 4],
+                n: ops.len() as u8,
+            };
+            p.ops[..ops.len()].copy_from_slice(ops);
+            p
+        };
+        let noun_phrase = |s: &str| {
+            let mut ops: Vec<Op> = Vec::new();
+            for c in s.bytes() {
+                match c {
+                    b'A' => ops.push(op(4)),
+                    b'J' => ops.push(op(0)),
+                    b'D' => ops.push(op(2)),
+                    b'N' => ops.push(op(3)),
+                    // "J," : the adjective is followed by ", "
+                    b',' => {
+                        let last = ops.last_mut().expect("',' after a word");
+                        assert!(last.table == 0, "',' after an adjective");
+                        last.table = 1;
+                    }
+                    b' ' => {}
+                    c => panic!("unknown noun phrase token {c}"),
                 }
-                b' ' => continue,
-                c => panic!("unknown noun phrase token {c}"),
+            }
+            phrase(&ops)
+        };
+        let verb_phrase = |s: &str| {
+            let ops: Vec<Op> = s
+                .bytes()
+                .step_by(2)
+                .map(|c| match c {
+                    b'D' => op(2),
+                    b'V' => op(5),
+                    b'X' => op(6),
+                    c => panic!("unknown verb phrase token {c}"),
+                })
+                .collect();
+            phrase(&ops)
+        };
+        let sets = [
+            PhraseSet {
+                picks: syntax(d.noun_phrase())
+                    .into_iter()
+                    .map(noun_phrase)
+                    .collect(),
+            },
+            PhraseSet {
+                picks: syntax(d.verb_phrase())
+                    .into_iter()
+                    .map(verb_phrase)
+                    .collect(),
+            },
+        ];
+        let sentence = |s: &str| {
+            let slots: Vec<Slot> = s
+                .bytes()
+                .step_by(2)
+                .map(|c| match c {
+                    b'N' => Slot {
+                        pre: op(NONE),
+                        set: 0,
+                    },
+                    b'V' => Slot {
+                        pre: op(NONE),
+                        set: 1,
+                    },
+                    b'P' => Slot { pre: op(7), set: 0 },
+                    // drop the space before the terminator
+                    b'T' => Slot {
+                        pre: Op { table: 8, pop: 1 },
+                        set: NONE,
+                    },
+                    c => panic!("unknown grammar token {c}"),
+                })
+                .collect();
+            assert!(slots.len() <= 6, "sentence too long");
+            let mut t = Sentence {
+                slots: [Slot {
+                    pre: op(NONE),
+                    set: NONE,
+                }; 6],
+                n: slots.len() as u8,
             };
-            src.put(r, out);
-            out.push(b' ');
+            t.slots[..slots.len()].copy_from_slice(&slots);
+            t
+        };
+        let sentences = syntax(d.grammar()).into_iter().map(sentence).collect();
+        Grammar {
+            tables,
+            sets,
+            sentences,
         }
     }
 
     #[inline(always)]
-    fn verb_phrase(&self, out: &mut Out, r: &mut PoolRng) {
-        let (syntax, n) = self.vp.syntax(r);
-        for &c in syntax[..n].iter().step_by(2) {
-            let src = match c {
-                b'D' => &self.adverbs,
-                b'V' => &self.verbs,
-                b'X' => &self.auxiliaries,
-                c => panic!("unknown verb phrase token {c}"),
-            };
-            src.put(r, out);
-            out.push(b' ');
-        }
+    fn word(&self, op: Op, out: &mut Out, r: &mut PoolRng) {
+        let t = &self.tables[op.table as usize];
+        let (b, n) = &t.picks[scale(r.next(), t.picks.len() as u32) as usize];
+        out.put32(op.pop as usize, b, *n as usize);
     }
 
     /// One sentence, appended to `out`.
     fn sentence(&self, out: &mut Out, r: &mut PoolRng) {
-        out.reserve_sentence();
-        let (syntax, n) = self.grammar.syntax(r);
-        for &c in syntax[..n].iter().step_by(2) {
-            match c {
-                b'V' => self.verb_phrase(out, r),
-                b'N' => self.noun_phrase(out, r),
-                b'P' => {
-                    self.prepositions.put(r, out);
-                    out.bytes(b" the ");
-                    self.noun_phrase(out, r);
-                }
-                b'T' => {
-                    out.pop();
-                    self.terminators.put(r, out);
-                }
-                c => panic!("unknown grammar token {c}"),
+        assert!(out.has_room(), "no room for a sentence");
+        let s = &self.sentences[scale(r.next(), self.sentences.len() as u32) as usize];
+        for slot in &s.slots[..s.n as usize] {
+            if slot.pre.table != NONE {
+                self.word(slot.pre, out, r);
             }
-            if out.last() != Some(b' ') {
-                out.push(b' ');
+            if slot.set != NONE {
+                let set = &self.sets[slot.set as usize].picks;
+                let p = &set[scale(r.next(), set.len() as u32) as usize];
+                for &op in &p.ops[..p.n as usize] {
+                    self.word(op, out, r);
+                }
             }
         }
     }
 }
 
-/// Sentences parsed from draw `start` on, as if a sentence began there,
-/// until one begins at or after draw `end`.
-struct Segment {
-    out: Vec<u8>,
-    /// `(draw, offset in out)` where each sentence began.
-    starts: Vec<(u64, usize)>,
-    /// Where the next sentence after the last one begins.
-    end: u64,
-}
-
-fn segment(g: &Grammar, start: u64, end: u64, bytes: usize) -> Segment {
-    let mut r = PoolRng::at(start);
-    let mut out = Out::with_capacity(bytes);
-    let mut starts = Vec::new();
-    while r.k < end {
-        starts.push((r.k, out.len()));
+/// Sentences from draw `k` on into `buf`, until exactly `buf.len()`
+/// bytes are written (`exact`, so `buf` must end at a sentence start), or
+/// at least `buf.len()` (the pool's end, cut mid-sentence).
+fn fill(g: &Grammar, k: u64, buf: &mut [u8], exact: bool) {
+    let mut r = PoolRng::at(k);
+    let end = buf.len();
+    let mut out = Out::new(buf);
+    while out.has_room() {
         g.sentence(&mut out, &mut r);
     }
-    Segment {
-        out: out.buf,
-        starts,
-        end: r.k,
+    // the last sentences into scratch room, then copied
+    let (at, mut tail) = (out.len, Vec::new());
+    let mut scratch = vec![0u8; ROOM * 2];
+    while at + tail.len() < end {
+        let mut o = Out::new(&mut scratch);
+        g.sentence(&mut o, &mut r);
+        let n = o.len;
+        tail.extend_from_slice(&scratch[..n]);
     }
+    assert!(!exact || at + tail.len() == end, "pool index out of date");
+    buf[at..].copy_from_slice(&tail[..end - at]);
 }
 
 /// dbgen's text pool (tpchgen's `TextPool::new`): sentences from one stream
 /// until there are `POOL_SIZE` bytes. Tested equal to tpchgen's pool.
 ///
-/// Built on all cores by speculation. The stream is split into segments of
-/// draws, and each segment is parsed from its first draw as if a sentence
-/// began there. That guess is usually wrong, but the parse is a function of
-/// the draw index alone once it is at a sentence start, so as soon as the
-/// true parse (continued serially from the previous segment's end) begins
-/// a sentence at a draw where the speculative one did too, the rest of the
-/// segment is exactly the true text and is taken as is. Each check is
-/// exact, so the result is the serial pool whatever the speculation finds;
-/// in practice the two parses meet within a few sentences.
+/// The parse is sequential: where a sentence starts depends on every
+/// earlier one. [`POOL_INDEX`] holds, for evenly spaced points of the pool,
+/// the draw and byte at which a sentence starts there (tested against the
+/// serial parse), so the parts between them are generated independently,
+/// on all cores, each straight into its place.
 pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
     let g = Grammar::new(d);
-    // draws per byte, from the first sentences
-    let sample = segment(&g, 0, 4096, 0);
-    let per_byte = sample.end as f64 / sample.out.len() as f64;
-    let total = (POOL_SIZE as f64 * per_byte * 1.01) as u64;
     let threads = match threads {
         0 => std::thread::available_parallelism().map_or(1, |t| t.get()),
         t => t,
     };
-    let parts = if threads == 1 { 1 } else { threads as u64 * 4 };
-    let bounds: Vec<u64> = (0..=parts).map(|i| total * i / parts).collect();
-    let bytes = POOL_SIZE / parts as usize + 1;
-    if parts == 1 {
-        let mut r = PoolRng::at(0);
-        let mut out = Out::with_capacity(POOL_SIZE);
-        while out.len() < POOL_SIZE {
-            g.sentence(&mut out, &mut r);
-        }
-        out.buf.truncate(POOL_SIZE);
-        return out.buf;
-    }
-    let segs: Vec<Segment> = {
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let done: Vec<std::sync::Mutex<Option<Segment>>> =
-            (0..parts).map(|_| std::sync::Mutex::new(None)).collect();
-        std::thread::scope(|s| {
-            for _ in 0..threads {
-                s.spawn(|| {
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if i >= parts as usize {
-                            break;
-                        }
-                        let seg = segment(&g, bounds[i], bounds[i + 1], bytes);
-                        *done[i].lock().expect("segment") = Some(seg);
-                    }
-                });
-            }
-        });
-        done.into_iter()
-            .map(|m| m.into_inner().expect("segment").expect("built"))
-            .collect()
-    };
-
-    // Stitch: segment 0 is true. Continue the true parse into each next
-    // segment (into a small bridge) until it meets one of that segment's
-    // sentence starts; from there the segment is the true text.
-    let mut pieces: Vec<(usize, &[u8])> = Vec::new(); // (segment, bytes)
-    let mut bridges: Vec<Vec<u8>> = Vec::new();
-    let mut at = segs[0].end;
-    let mut len = segs[0].out.len();
-    pieces.push((0, &segs[0].out));
-    let mut bridge_of = Vec::new(); // piece index -> bridge index
-    for (i, seg) in segs.iter().enumerate().skip(1) {
-        if len >= POOL_SIZE {
-            break;
-        }
-        let mut r = PoolRng::at(at);
-        let mut bridge = Out::with_capacity(0);
-        let mut taken = None;
-        loop {
-            if let Ok(k) = seg.starts.binary_search_by_key(&r.k, |&(k, _)| k) {
-                taken = Some(&seg.out[seg.starts[k].1..]);
-                r = PoolRng::at(seg.end);
-                break;
-            }
-            if r.k >= seg.end {
-                break; // never met: the true parse covered the segment
-            }
-            g.sentence(&mut bridge, &mut r);
-        }
-        at = r.k;
-        len += bridge.len();
-        bridge_of.push((pieces.len(), bridges.len()));
-        pieces.push((usize::MAX, &[]));
-        bridges.push(bridge.buf);
-        if let Some(t) = taken {
-            len += t.len();
-            pieces.push((i, t));
-        }
-    }
-    let mut tail = Out::with_capacity(0);
-    let mut r = PoolRng::at(at);
-    while len + tail.len() < POOL_SIZE {
-        g.sentence(&mut tail, &mut r);
-    }
-    let tail = tail.buf;
-    for &(p, b) in &bridge_of {
-        pieces[p].1 = &bridges[b];
-    }
-    pieces.push((usize::MAX, &tail));
-
-    // copy the pieces into place on all cores
+    // whole parts of the index, 4 per thread, the last to the pool's end
+    let step = (POOL_INDEX.len() / (threads * 4)).max(1);
+    let marks: Vec<(u64, usize)> = POOL_INDEX
+        .iter()
+        .step_by(step)
+        .map(|&(k, b)| (k, b as usize))
+        .collect();
     let mut out = vec![0u8; POOL_SIZE];
-    let mut jobs = Vec::new();
+    let mut parts = Vec::new();
     let mut rest: &mut [u8] = &mut out;
-    for &(_, bytes) in &pieces {
-        let n = bytes.len().min(rest.len());
-        let (dst, r) = rest.split_at_mut(n);
-        jobs.push((dst, &bytes[..n]));
+    for (i, &(k, b)) in marks.iter().enumerate() {
+        let end = marks.get(i + 1).map_or(POOL_SIZE, |m| m.1);
+        let (part, r) = rest.split_at_mut(end - b);
+        parts.push((k, part, i + 1 < marks.len()));
         rest = r;
     }
-    let next = std::sync::Mutex::new(jobs.into_iter());
-    // a closure, so the lock is released before each copy
-    let take = || next.lock().expect("jobs").next();
+    if threads == 1 {
+        for (k, part, exact) in parts {
+            fill(&g, k, part, exact);
+        }
+        return out;
+    }
+    let next = Mutex::new(parts.into_iter());
+    // a closure, so the lock is released before each part
+    let take = || next.lock().expect("parts").next();
     std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
-                while let Some((dst, src)) = take() {
-                    dst.copy_from_slice(src);
+                while let Some((k, part, exact)) = take() {
+                    fill(&g, k, part, exact);
                 }
             });
         }
     });
-    drop(pieces);
-    std::thread::scope(|s| {
-        for seg in segs {
-            s.spawn(move || drop(seg));
-        }
-    });
-    out.truncate(POOL_SIZE);
     out
 }
+
+include!("pool_index.rs");
 
 #[cfg(test)]
 mod tests {
@@ -656,6 +653,54 @@ mod tests {
         let theirs = TextPool::get_or_init_default();
         assert_eq!(ours.len(), theirs.size() as usize);
         assert!(*ours == theirs.text(0, theirs.size()).as_bytes());
+    }
+
+    /// Sentence starts in the pool: `(draws before, byte offset)` of the first
+    /// sentence at or after each `i * POOL_SIZE / POOL_MARKS`.
+    fn pool_marks(d: &Distributions) -> Vec<(u64, u32)> {
+        let g = Grammar::new(d);
+        let mut r = PoolRng::at(0);
+        let mut buf = vec![0u8; ROOM * 2];
+        let (mut at, mut marks) = (0usize, Vec::new());
+        while marks.len() < POOL_MARKS {
+            if at >= marks.len() * POOL_SIZE / POOL_MARKS {
+                marks.push((r.k(), at as u32));
+            }
+            let mut o = Out::new(&mut buf);
+            g.sentence(&mut o, &mut r);
+            at += o.len;
+        }
+        marks
+    }
+
+    const POOL_MARKS: usize = 512;
+
+    /// `POOL_INDEX` is the serial parse's. `POOL_INDEX_UPDATE=1` rewrites
+    /// `src/pool_index.rs` from it.
+    #[test]
+    fn pool_index_matches_serial_parse() {
+        let marks = pool_marks(Distributions::static_default());
+        if std::env::var_os("POOL_INDEX_UPDATE").is_some() {
+            let mut f = String::from(
+                "// Generated by `POOL_INDEX_UPDATE=1 cargo test -p populate-tpch pool_index`.\n\
+                 /// `(draws before, byte offset)` of the pool's sentence starts\n\
+                 /// ([`pool_marks`]).\n",
+            );
+            f += &format!("const POOL_INDEX: [(u64, u32); {POOL_MARKS}] = [\n");
+            for (k, b) in &marks {
+                f += &format!("    ({k}, {b}),\n");
+            }
+            f += "];\n";
+            std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pool_index.rs"), f)
+                .expect("write pool_index.rs");
+        }
+        assert!(marks == POOL_INDEX, "run with POOL_INDEX_UPDATE=1");
+    }
+
+    #[test]
+    fn serial_pool_matches_parallel() {
+        let d = Distributions::static_default();
+        assert!(build_pool(d, 1) == Text::get().pool);
     }
 
     #[test]

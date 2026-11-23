@@ -66,13 +66,23 @@ it. The generators are this crate's own:
   one dictionary of all of them. Both are shared Arrow buffers, so every
   comment and value is a `Utf8View` into them: 16 bytes per row, no string
   copied, whatever the comment's length.
-- **The text pool on all cores.** dbgen builds the pool by parsing one
-  long stream of draws into sentences, which is sequential. Here every
-  segment of the stream is parsed speculatively, as if a sentence started
-  at its first draw; a stitch pass continues the true parse into each
-  next segment until it meets one of that segment's sentence starts, from
-  where the speculative text is the true text. 0.75 s → ~0.25 s on 4 cores
-  (built once per process, `Tpch::prepare`).
+- **The text pool, fast and on all cores.** dbgen builds the pool by
+  parsing one long stream of draws into sentences from a small grammar,
+  which is sequential: where a sentence starts depends on every earlier
+  one. Two changes:
+  - The grammar is compiled: each sentence, noun-phrase and verb-phrase
+    shape becomes a list of word draws, and each word is one 32-byte copy
+    of the word with what follows it (a space, `", "`, `" the "`). No
+    syntax is read per word, and there is no mispredicted jump per word.
+    One thread: 0.50 → 0.38 s.
+  - `src/pool_index.rs` lists 512 sentence starts (draw and byte), evenly
+    spaced through the pool. The parts between them are generated
+    independently, each straight into its place in the pool. A test
+    checks the list against the serial parse and can regenerate it.
+    4 threads: 0.23 → 0.10 s.
+
+  The pool is built once per process (`Tpch::prepare`), and is tested
+  equal to tpchgen's byte for byte.
 - **Line items by order.** `lineitem` streams reserve 7 slots per order;
   the return flag of the k-th line past its receipt date uses the k-th
   slot, as in dbgen. Comment views are made in their own pass after the
@@ -113,16 +123,18 @@ not fit in this container's tmpfs).
 
 | SF | output           | threads | tpcgen-cli | populate-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|
-| 1  | `.tbl`           | 1       | 7.07 s     | 3.74 s        | 1.9x    |
-| 1  | `.tbl`           | 4       | 2.99 s     | 1.14 s        | 2.6x    |
-| 1  | Parquet (snappy) | 1       | 7.04 s     | 4.89 s        | 1.4x    |
-| 1  | Parquet (snappy) | 4       | 3.01 s     | 1.39 s        | 2.2x    |
+| 1  | `.tbl`           | 1       | 6.44 s     | 3.47 s        | 1.9x    |
+| 1  | `.tbl`           | 4       | 2.61 s     | 1.02 s        | 2.6x    |
+| 1  | Parquet (snappy) | 1       | 6.74 s     | 3.95 s        | 1.7x    |
+| 1  | Parquet (snappy) | 4       | 2.50 s     | 1.15 s        | 2.2x    |
 | 10 | `.tbl`           | 1       | 60.4 s     | 35.4 s        | 1.7x    |
 | 10 | `.tbl`           | 4       | 20.3 s     | 9.21 s        | 2.2x    |
 | 10 | Parquet (snappy) | 1       | 64.3 s     | 45.6 s        | 1.4x    |
 | 10 | Parquet (snappy) | 4       | 19.7 s     | 11.4 s        | 1.7x    |
 
-The `.tbl` files are identical (1,100 MB at SF 1). Parquet files: 358 MB
+The SF 1 rows are after the faster text pool; the SF 10 rows are from
+before it (about 0.4 s more per run on one thread). The `.tbl` files are
+identical (1,100 MB at SF 1). Parquet files: 358 MB
 vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
 
 ### Where the time goes
@@ -131,12 +143,13 @@ vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
 stage per table on one thread, and `--example tpch_columns` the Parquet encoding
 of each column. At SF 1, summed over the tables:
 
-| stage                                           | time   |
-|-------------------------------------------------|-------:|
-| generation into Arrow (with the 0.56 s text pool) | ~1.15 s |
-| Arrow → `.tbl` text                             | ~1.85 s |
-| Arrow → Parquet (snappy)                        | ~3.1 s  |
+| stage                       | time    |
+|-----------------------------|--------:|
+| the text pool               | ~0.4 s  |
+| generation into Arrow       | ~0.95 s |
+| Arrow → `.tbl` text         | ~1.5 s  |
+| Arrow → Parquet (snappy)    | ~2.9 s  |
 
 Formatting text and encoding Parquet now cost more than making the data.
-In Parquet, `lineitem`'s comment column alone is ~0.7 s: 6M unique
+In Parquet, `lineitem`'s comment column alone is ~0.6 s: 6M unique
 strings, read from random places in the pool and compressed.

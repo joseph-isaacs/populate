@@ -10,6 +10,7 @@ mod dist;
 mod random;
 mod row;
 mod scalar;
+mod with_column;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 

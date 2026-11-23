@@ -1,0 +1,724 @@
+//! TPC-H's text: the 300 MiB text pool comments are cut from, the value
+//! distributions, and `Utf8View` columns that point into both without
+//! copying.
+//!
+//! Every string column is a `StringViewArray` with the same three buffers:
+//! [`DATA`] (the batch's own bytes: names, addresses, phone numbers),
+//! [`POOL`] (the text pool, shared by every batch) and [`DICT`] (every
+//! distribution value, shared too). A comment is a view of `(offset, len)`
+//! into the pool and a distribution pick is a precomputed view, so neither
+//! copies a byte.
+
+use crate::rng::{Rng, draws, scale};
+use arrow_array::StringViewArray;
+use arrow_buffer::{Buffer, ScalarBuffer};
+use std::ptr::NonNull;
+use std::sync::{Arc, Mutex, OnceLock};
+use tpchgen::distribution::{Distribution, Distributions};
+
+/// Buffer index of a batch's own string bytes.
+pub(crate) const DATA: u32 = 0;
+/// Buffer index of the text pool.
+pub(crate) const POOL: u32 = 1;
+/// Buffer index of the distribution values.
+pub(crate) const DICT: u32 = 2;
+
+/// Size of dbgen's text pool.
+pub(crate) const POOL_SIZE: usize = 300 * 1024 * 1024;
+/// Longest sentence the grammar makes (the pool is generated past its
+/// size by at most this, then truncated).
+const MAX_SENTENCE: usize = 256;
+
+/// The view of `bytes`, stored at `offset` of buffer `buffer` (ignored for
+/// strings of up to 12 bytes, which live in the view).
+#[inline(always)]
+pub(crate) fn view(bytes: &[u8], buffer: u32, offset: u32) -> u128 {
+    let len = bytes.len();
+    if len <= 12 {
+        let mut b = [0u8; 16];
+        b[4..4 + len].copy_from_slice(bytes);
+        u128::from_le_bytes(b) | len as u128
+    } else {
+        let prefix = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"));
+        len as u128 | (prefix as u128) << 32 | (buffer as u128) << 64 | (offset as u128) << 96
+    }
+}
+
+/// A distribution: dbgen's weighted pick, as views into [`DICT`].
+#[derive(Debug)]
+pub(crate) struct Dist {
+    /// Value index for each unit of weight.
+    picks: Vec<u8>,
+    /// Each value's view.
+    pub(crate) views: Vec<u128>,
+    pub(crate) values: Vec<&'static str>,
+}
+
+impl Dist {
+    fn new(d: &Distribution, dict: &mut Vec<u8>) -> Self {
+        let values = d.get_values().to_vec();
+        let mut picks = Vec::new();
+        let mut views = Vec::new();
+        let mut prev = 0;
+        for (i, v) in values.iter().enumerate() {
+            let w = d.get_weight(i);
+            picks.extend(std::iter::repeat_n(i as u8, (w - prev).max(0) as usize));
+            prev = w;
+            views.push(view(v.as_bytes(), DICT, dict.len() as u32));
+            dict.extend_from_slice(v.as_bytes());
+        }
+        assert!(values.len() <= 256);
+        Dist {
+            picks,
+            views,
+            values,
+        }
+    }
+
+    /// Total weight: picks are `0..weight`.
+    #[inline(always)]
+    pub(crate) fn weight(&self) -> u32 {
+        self.picks.len() as u32
+    }
+
+    /// The value index draw `x` picks (`Distribution::random_value`).
+    #[inline(always)]
+    pub(crate) fn pick_draw(&self, x: u32) -> usize {
+        // weights are small, so the integer mapping is exact (see `scale`)
+        self.picks[scale(x, self.weight()) as usize] as usize
+    }
+
+    /// The value index the next draw of `r` picks.
+    #[inline(always)]
+    pub(crate) fn pick(&self, r: &mut Rng) -> usize {
+        let x = r.next_rand();
+        self.pick_draw(x)
+    }
+}
+
+/// Everything shared by all batches: the pool, the distributions and the
+/// buffers their views point into.
+#[derive(Debug)]
+pub(crate) struct Text {
+    pub(crate) pool: &'static [u8],
+    pool_buf: Buffer,
+    dict_buf: Buffer,
+    /// `[empty, pool, dict]`, for columns with no bytes of their own.
+    shared: Arc<[Buffer]>,
+    pub(crate) colors: Dist,
+    pub(crate) types: Dist,
+    pub(crate) containers: Dist,
+    pub(crate) segments: Dist,
+    pub(crate) priorities: Dist,
+    pub(crate) return_flags: Dist,
+    pub(crate) instructions: Dist,
+    pub(crate) modes: Dist,
+    pub(crate) nations: Dist,
+    /// `n_regionkey` of each nation.
+    pub(crate) nation_regions: Vec<i64>,
+    pub(crate) regions: Dist,
+}
+
+static TEXT: OnceLock<Text> = OnceLock::new();
+
+/// `bytes` as an Arrow buffer, without copying.
+fn static_buffer(bytes: &'static [u8]) -> Buffer {
+    let ptr = NonNull::new(bytes.as_ptr() as *mut u8).expect("non-null");
+    // SAFETY: the bytes are 'static and never written, so they outlive the
+    // buffer and are valid for `len` bytes; the owner is a no-op.
+    unsafe { Buffer::from_custom_allocation(ptr, bytes.len(), Arc::new(())) }
+}
+
+impl Text {
+    /// The shared text, built on first use on all cores.
+    pub(crate) fn get() -> &'static Text {
+        Self::init(0)
+    }
+
+    /// The shared text, built on `threads` threads (0 = all cores) if this
+    /// is the first use.
+    pub(crate) fn init(threads: usize) -> &'static Text {
+        TEXT.get_or_init(|| {
+            let d = Distributions::static_default();
+            let pool: &'static [u8] = Box::leak(build_pool(d, threads).into_boxed_slice());
+            let mut dict = Vec::new();
+            let mut dist = |x: &Distribution| Dist::new(x, &mut dict);
+            let colors = dist(d.part_colors());
+            let types = dist(d.part_types());
+            let containers = dist(d.part_containers());
+            let segments = dist(d.market_segments());
+            let priorities = dist(d.order_priority());
+            let return_flags = dist(d.return_flags());
+            let instructions = dist(d.ship_instructions());
+            let modes = dist(d.ship_modes());
+            let nations = dist(d.nations());
+            let regions = dist(d.regions());
+            let nation_regions = (0..d.nations().size())
+                .map(|i| d.nations().get_weight(i) as i64)
+                .collect();
+            let dict: &'static [u8] = Box::leak(dict.into_boxed_slice());
+            let (pool_buf, dict_buf) = (static_buffer(pool), static_buffer(dict));
+            Text {
+                pool,
+                shared: Arc::from(vec![
+                    Buffer::from_vec(Vec::<u8>::new()),
+                    pool_buf.clone(),
+                    dict_buf.clone(),
+                ]),
+                pool_buf,
+                dict_buf,
+                colors,
+                types,
+                containers,
+                segments,
+                priorities,
+                return_flags,
+                instructions,
+                modes,
+                nations,
+                nation_regions,
+                regions,
+            }
+        })
+    }
+
+    /// The view of pool bytes `offset..offset + len`.
+    #[inline(always)]
+    pub(crate) fn pool_view(&self, offset: u32, len: u32) -> u128 {
+        let (o, n) = (offset as usize, len as usize);
+        if n <= 12 {
+            view(&self.pool[o..o + n], POOL, offset)
+        } else {
+            // SAFETY: `o + 4 <= o + n <= pool.len()`, checked by the caller's
+            // range (dbgen's offsets stay `max_len` short of the end).
+            let prefix = u32::from_le_bytes(self.pool[o..o + 4].try_into().expect("4 bytes"));
+            n as u128 | (prefix as u128) << 32 | (POOL as u128) << 64 | (offset as u128) << 96
+        }
+    }
+
+    /// A string column from views and the batch's own bytes.
+    pub(crate) fn array(&self, views: Vec<u128>, data: Vec<u8>) -> StringViewArray {
+        let buffers = if data.is_empty() {
+            self.shared.clone()
+        } else {
+            Arc::from(vec![
+                Buffer::from_vec(data),
+                self.pool_buf.clone(),
+                self.dict_buf.clone(),
+            ])
+        };
+        // SAFETY: every view is built by `view`/`pool_view` from valid UTF-8
+        // (ASCII) bytes at the offset of the buffer it names.
+        unsafe { StringViewArray::new_unchecked(ScalarBuffer::from(views), buffers, None) }
+    }
+}
+
+/// A string column being built.
+#[derive(Default)]
+pub(crate) struct Views {
+    pub(crate) views: Vec<u128>,
+    pub(crate) data: Vec<u8>,
+}
+
+impl Views {
+    pub(crate) fn with_capacity(n: usize, bytes: usize) -> Self {
+        Views {
+            views: Vec::with_capacity(n),
+            data: Vec::with_capacity(bytes),
+        }
+    }
+
+    /// Append the bytes `data[start..]` (just written) as the next string.
+    #[inline(always)]
+    pub(crate) fn end_string(&mut self, start: usize) {
+        let v = view(&self.data[start..], DATA, start as u32);
+        if self.data.len() - start <= 12 {
+            self.data.truncate(start);
+        }
+        self.views.push(v);
+    }
+
+    pub(crate) fn finish(self, t: &Text) -> StringViewArray {
+        t.array(self.views, self.data)
+    }
+}
+
+/// One distribution's words, each with the text that follows it in the
+/// pool (a space, `", "`, `" the "`), padded to 32 bytes for a fixed-size
+/// copy: one entry per unit of weight, so a draw indexes it directly.
+struct Table {
+    picks: Vec<([u8; 32], u8)>,
+}
+
+impl Table {
+    fn new(d: &Distribution, suffix: impl Fn(&[u8]) -> &'static [u8]) -> Self {
+        let mut picks = Vec::new();
+        let mut prev = 0;
+        for i in 0..d.size() {
+            let w = d.get_weight(i);
+            let v = d.get_values()[i].as_bytes();
+            let s = suffix(v);
+            let n = v.len() + s.len();
+            assert!(n <= 32, "pool word too long");
+            let mut b = [0u8; 32];
+            b[..v.len()].copy_from_slice(v);
+            b[v.len()..n].copy_from_slice(s);
+            picks.extend(std::iter::repeat_n((b, n as u8), (w - prev) as usize));
+            prev = w;
+        }
+        Table { picks }
+    }
+}
+
+/// A distribution's values, by weight unit (the grammar's syntax strings).
+fn syntax(d: &Distribution) -> Vec<&'static str> {
+    let mut picks = Vec::new();
+    let mut prev = 0;
+    for i in 0..d.size() {
+        let w = d.get_weight(i);
+        picks.extend(std::iter::repeat_n(d.get_values()[i], (w - prev) as usize));
+        prev = w;
+    }
+    picks
+}
+
+/// Text being generated into `buf`, with fixed-size copies: a sentence
+/// may only start while [`ROOM`] bytes are left.
+struct Out<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+/// Room for one sentence and a 32-byte overrun.
+const ROOM: usize = MAX_SENTENCE + 32;
+
+impl<'a> Out<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Out { buf, len: 0 }
+    }
+
+    /// Whether a sentence can start.
+    #[inline(always)]
+    fn has_room(&self) -> bool {
+        self.len + ROOM <= self.buf.len()
+    }
+
+    /// Drop the last `pop` bytes (0 or 1), then append the first `n` bytes
+    /// of `b`.
+    #[inline(always)]
+    fn put32(&mut self, pop: usize, b: &[u8; 32], n: usize) {
+        let len = self.len - pop;
+        debug_assert!(len + 32 <= self.buf.len());
+        // SAFETY: a sentence starts only with `ROOM` bytes left (checked in
+        // `Grammar::sentence`), enough for the whole sentence plus a 32-byte
+        // overrun; only the first `n` bytes are kept.
+        unsafe {
+            self.buf
+                .as_mut_ptr()
+                .add(len)
+                .cast::<[u8; 32]>()
+                .write_unaligned(*b);
+        }
+        self.len = len + n;
+    }
+}
+
+/// The pool's stream: one stream that never skips, with its draw count.
+/// Draws are made [`POOL_BLOCK`] at a time by independent lanes
+/// ([`draws`]), so the parse never waits on the multiply chain.
+struct PoolRng {
+    buf: Box<[u32; POOL_BLOCK]>,
+    /// Draws consumed from `buf`.
+    i: usize,
+    /// Draws made before `buf[0]`.
+    base: u64,
+}
+
+const POOL_SEED: u64 = 933588178;
+const POOL_BLOCK: usize = 4096;
+
+impl PoolRng {
+    /// The stream after `k` draws.
+    fn at(k: u64) -> Self {
+        let mut r = PoolRng {
+            buf: Box::new([0; POOL_BLOCK]),
+            i: 0,
+            base: k,
+        };
+        draws(POOL_SEED as i64, k, &mut r.buf[..]);
+        r
+    }
+
+    /// Draws made so far.
+    #[cfg(test)]
+    fn k(&self) -> u64 {
+        self.base + self.i as u64
+    }
+
+    #[inline(always)]
+    fn next(&mut self) -> u32 {
+        if self.i == POOL_BLOCK {
+            self.refill();
+        }
+        let x = self.buf[self.i];
+        self.i += 1;
+        x
+    }
+
+    #[cold]
+    fn refill(&mut self) {
+        self.base += POOL_BLOCK as u64;
+        self.i = 0;
+        draws(POOL_SEED as i64, self.base, &mut self.buf[..]);
+    }
+}
+
+/// No table / no phrase.
+const NONE: u8 = u8::MAX;
+
+/// One word: a draw from table `table`, after dropping `pop` bytes.
+#[derive(Clone, Copy)]
+struct Op {
+    table: u8,
+    pop: u8,
+}
+
+/// A phrase's words, in draw order.
+#[derive(Clone, Copy)]
+struct Phrase {
+    ops: [Op; 4],
+    n: u8,
+}
+
+/// One token of a sentence: an optional word (`pre`), then an optional
+/// phrase drawn from `set` (noun or verb phrases).
+#[derive(Clone, Copy)]
+struct Slot {
+    pre: Op,
+    set: u8,
+}
+
+#[derive(Clone, Copy)]
+struct Sentence {
+    slots: [Slot; 6],
+    n: u8,
+}
+
+/// Phrases by weight unit, for one phrase distribution.
+struct PhraseSet {
+    picks: Vec<Phrase>,
+}
+
+/// dbgen's sentence grammar (tpchgen's `TextPool`), compiled: each
+/// sentence, noun-phrase and verb-phrase syntax becomes a list of word
+/// draws, each a fixed-size copy of a word with its following text, so
+/// generating a sentence reads no syntax characters. Draws are made in
+/// tpchgen's order: the sentence's syntax, then per token the phrase's
+/// syntax and its words.
+struct Grammar {
+    tables: Vec<Table>,
+    sets: [PhraseSet; 2],
+    sentences: Vec<Sentence>,
+}
+
+impl Grammar {
+    fn new(d: &Distributions) -> Self {
+        let space: fn(&[u8]) -> &'static [u8] = |_| b" ";
+        let comma: fn(&[u8]) -> &'static [u8] = |_| b", ";
+        // tables: 0 adjectives, 1 adjectives + ", ", 2 adverbs, 3 nouns,
+        // 4 articles, 5 verbs, 6 auxiliaries, 7 prepositions + " the ",
+        // 8 terminators + " "
+        let tables = vec![
+            Table::new(d.adjectives(), space),
+            Table::new(d.adjectives(), comma),
+            Table::new(d.adverbs(), space),
+            Table::new(d.nouns(), space),
+            Table::new(d.articles(), space),
+            Table::new(d.verbs(), space),
+            Table::new(d.auxiliaries(), space),
+            Table::new(d.prepositions(), |_| b" the "),
+            // a sentence token is followed by a space unless it ends in one
+            Table::new(d.terminators(), |v| {
+                if v.last() == Some(&b' ') { b"" } else { b" " }
+            }),
+        ];
+        let op = |table| Op { table, pop: 0 };
+        let phrase = |ops: &[Op]| {
+            assert!(ops.len() <= 4, "phrase too long");
+            let mut p = Phrase {
+                ops: [op(NONE); 4],
+                n: ops.len() as u8,
+            };
+            p.ops[..ops.len()].copy_from_slice(ops);
+            p
+        };
+        let noun_phrase = |s: &str| {
+            let mut ops: Vec<Op> = Vec::new();
+            for c in s.bytes() {
+                match c {
+                    b'A' => ops.push(op(4)),
+                    b'J' => ops.push(op(0)),
+                    b'D' => ops.push(op(2)),
+                    b'N' => ops.push(op(3)),
+                    // "J," : the adjective is followed by ", "
+                    b',' => {
+                        let last = ops.last_mut().expect("',' after a word");
+                        assert!(last.table == 0, "',' after an adjective");
+                        last.table = 1;
+                    }
+                    b' ' => {}
+                    c => panic!("unknown noun phrase token {c}"),
+                }
+            }
+            phrase(&ops)
+        };
+        let verb_phrase = |s: &str| {
+            let ops: Vec<Op> = s
+                .bytes()
+                .step_by(2)
+                .map(|c| match c {
+                    b'D' => op(2),
+                    b'V' => op(5),
+                    b'X' => op(6),
+                    c => panic!("unknown verb phrase token {c}"),
+                })
+                .collect();
+            phrase(&ops)
+        };
+        let sets = [
+            PhraseSet {
+                picks: syntax(d.noun_phrase())
+                    .into_iter()
+                    .map(noun_phrase)
+                    .collect(),
+            },
+            PhraseSet {
+                picks: syntax(d.verb_phrase())
+                    .into_iter()
+                    .map(verb_phrase)
+                    .collect(),
+            },
+        ];
+        let sentence = |s: &str| {
+            let slots: Vec<Slot> = s
+                .bytes()
+                .step_by(2)
+                .map(|c| match c {
+                    b'N' => Slot {
+                        pre: op(NONE),
+                        set: 0,
+                    },
+                    b'V' => Slot {
+                        pre: op(NONE),
+                        set: 1,
+                    },
+                    b'P' => Slot { pre: op(7), set: 0 },
+                    // drop the space before the terminator
+                    b'T' => Slot {
+                        pre: Op { table: 8, pop: 1 },
+                        set: NONE,
+                    },
+                    c => panic!("unknown grammar token {c}"),
+                })
+                .collect();
+            assert!(slots.len() <= 6, "sentence too long");
+            let mut t = Sentence {
+                slots: [Slot {
+                    pre: op(NONE),
+                    set: NONE,
+                }; 6],
+                n: slots.len() as u8,
+            };
+            t.slots[..slots.len()].copy_from_slice(&slots);
+            t
+        };
+        let sentences = syntax(d.grammar()).into_iter().map(sentence).collect();
+        Grammar {
+            tables,
+            sets,
+            sentences,
+        }
+    }
+
+    #[inline(always)]
+    fn word(&self, op: Op, out: &mut Out, r: &mut PoolRng) {
+        let t = &self.tables[op.table as usize];
+        let (b, n) = &t.picks[scale(r.next(), t.picks.len() as u32) as usize];
+        out.put32(op.pop as usize, b, *n as usize);
+    }
+
+    /// One sentence, appended to `out`.
+    fn sentence(&self, out: &mut Out, r: &mut PoolRng) {
+        assert!(out.has_room(), "no room for a sentence");
+        let s = &self.sentences[scale(r.next(), self.sentences.len() as u32) as usize];
+        for slot in &s.slots[..s.n as usize] {
+            if slot.pre.table != NONE {
+                self.word(slot.pre, out, r);
+            }
+            if slot.set != NONE {
+                let set = &self.sets[slot.set as usize].picks;
+                let p = &set[scale(r.next(), set.len() as u32) as usize];
+                for &op in &p.ops[..p.n as usize] {
+                    self.word(op, out, r);
+                }
+            }
+        }
+    }
+}
+
+/// Sentences from draw `k` on into `buf`, until exactly `buf.len()`
+/// bytes are written (`exact`, so `buf` must end at a sentence start), or
+/// at least `buf.len()` (the pool's end, cut mid-sentence).
+fn fill(g: &Grammar, k: u64, buf: &mut [u8], exact: bool) {
+    let mut r = PoolRng::at(k);
+    let end = buf.len();
+    let mut out = Out::new(buf);
+    while out.has_room() {
+        g.sentence(&mut out, &mut r);
+    }
+    // the last sentences into scratch room, then copied
+    let (at, mut tail) = (out.len, Vec::new());
+    let mut scratch = vec![0u8; ROOM * 2];
+    while at + tail.len() < end {
+        let mut o = Out::new(&mut scratch);
+        g.sentence(&mut o, &mut r);
+        let n = o.len;
+        tail.extend_from_slice(&scratch[..n]);
+    }
+    assert!(!exact || at + tail.len() == end, "pool index out of date");
+    buf[at..].copy_from_slice(&tail[..end - at]);
+}
+
+/// dbgen's text pool (tpchgen's `TextPool::new`): sentences from one stream
+/// until there are `POOL_SIZE` bytes. Tested equal to tpchgen's pool.
+///
+/// The parse is sequential: where a sentence starts depends on every
+/// earlier one. [`POOL_INDEX`] holds, for evenly spaced points of the pool,
+/// the draw and byte at which a sentence starts there (tested against the
+/// serial parse), so the parts between them are generated independently,
+/// on all cores, each straight into its place.
+pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
+    let g = Grammar::new(d);
+    let threads = match threads {
+        0 => std::thread::available_parallelism().map_or(1, |t| t.get()),
+        t => t,
+    };
+    // whole parts of the index, 4 per thread, the last to the pool's end
+    let step = (POOL_INDEX.len() / (threads * 4)).max(1);
+    let marks: Vec<(u64, usize)> = POOL_INDEX
+        .iter()
+        .step_by(step)
+        .map(|&(k, b)| (k, b as usize))
+        .collect();
+    let mut out = vec![0u8; POOL_SIZE];
+    let mut parts = Vec::new();
+    let mut rest: &mut [u8] = &mut out;
+    for (i, &(k, b)) in marks.iter().enumerate() {
+        let end = marks.get(i + 1).map_or(POOL_SIZE, |m| m.1);
+        let (part, r) = rest.split_at_mut(end - b);
+        parts.push((k, part, i + 1 < marks.len()));
+        rest = r;
+    }
+    if threads == 1 {
+        for (k, part, exact) in parts {
+            fill(&g, k, part, exact);
+        }
+        return out;
+    }
+    let next = Mutex::new(parts.into_iter());
+    // a closure, so the lock is released before each part
+    let take = || next.lock().expect("parts").next();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some((k, part, exact)) = take() {
+                    fill(&g, k, part, exact);
+                }
+            });
+        }
+    });
+    out
+}
+
+include!("pool_index.rs");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tpchgen::text::TextPool;
+
+    #[test]
+    fn pool_matches_tpchgen() {
+        let ours = &Text::get().pool;
+        let theirs = TextPool::get_or_init_default();
+        assert_eq!(ours.len(), theirs.size() as usize);
+        assert!(*ours == theirs.text(0, theirs.size()).as_bytes());
+    }
+
+    /// Sentence starts in the pool: `(draws before, byte offset)` of the first
+    /// sentence at or after each `i * POOL_SIZE / POOL_MARKS`.
+    fn pool_marks(d: &Distributions) -> Vec<(u64, u32)> {
+        let g = Grammar::new(d);
+        let mut r = PoolRng::at(0);
+        let mut buf = vec![0u8; ROOM * 2];
+        let (mut at, mut marks) = (0usize, Vec::new());
+        while marks.len() < POOL_MARKS {
+            if at >= marks.len() * POOL_SIZE / POOL_MARKS {
+                marks.push((r.k(), at as u32));
+            }
+            let mut o = Out::new(&mut buf);
+            g.sentence(&mut o, &mut r);
+            at += o.len;
+        }
+        marks
+    }
+
+    const POOL_MARKS: usize = 512;
+
+    /// `POOL_INDEX` is the serial parse's. `POOL_INDEX_UPDATE=1` rewrites
+    /// `src/pool_index.rs` from it.
+    #[test]
+    fn pool_index_matches_serial_parse() {
+        let marks = pool_marks(Distributions::static_default());
+        if std::env::var_os("POOL_INDEX_UPDATE").is_some() {
+            let mut f = String::from(
+                "// Generated by `POOL_INDEX_UPDATE=1 cargo test -p populate-tpch pool_index`.\n\
+                 /// `(draws before, byte offset)` of the pool's sentence starts\n\
+                 /// ([`pool_marks`]).\n",
+            );
+            f += &format!("const POOL_INDEX: [(u64, u32); {POOL_MARKS}] = [\n");
+            for (k, b) in &marks {
+                f += &format!("    ({k}, {b}),\n");
+            }
+            f += "];\n";
+            std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pool_index.rs"), f)
+                .expect("write pool_index.rs");
+        }
+        assert!(marks == POOL_INDEX, "run with POOL_INDEX_UPDATE=1");
+    }
+
+    #[test]
+    fn serial_pool_matches_parallel() {
+        let d = Distributions::static_default();
+        assert!(build_pool(d, 1) == Text::get().pool);
+    }
+
+    #[test]
+    fn picks_match_tpchgen() {
+        use tpchgen::random::RowRandomInt;
+        let d = Distributions::static_default();
+        let t = Text::get();
+        for (ours, theirs) in [
+            (&t.types, d.part_types()),
+            (&t.priorities, d.order_priority()),
+            (&t.modes, d.ship_modes()),
+            (&t.return_flags, d.return_flags()),
+        ] {
+            let mut a = Rng::at(42, 1, 0);
+            let mut b = RowRandomInt::new(42, 1);
+            for _ in 0..10_000 {
+                assert_eq!(ours.values[ours.pick(&mut a)], theirs.random_value(&mut b));
+            }
+        }
+    }
+}

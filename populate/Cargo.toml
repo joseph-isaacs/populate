@@ -25,6 +25,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 bytes = "1"
+arrow-cast = { workspace = true, features = ["prettyprint"] }
 
 [[test]]
 name = "zero_copy"
@@ -41,4 +42,8 @@ required-features = ["arrow"]
 
 [[bench]]
 name = "leaves"
+harness = false
+
+[[bench]]
+name = "with_column"
 harness = false

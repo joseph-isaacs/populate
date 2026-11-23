@@ -33,7 +33,7 @@ use parquet::file::metadata::{
     ColumnChunkMetaData, ColumnIndexBuilder, LevelHistogram, OffsetIndexBuilder,
 };
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
-use parquet::file::statistics::Statistics;
+use parquet::file::statistics::{Statistics, ValueStatistics};
 use parquet::file::writer::{SerializedPageWriter, TrackedWrite};
 use parquet::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath};
 use std::ops::Range;
@@ -47,6 +47,7 @@ pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterPr
         (DataType::Int64, PhysicalType::INT64) => true,
         (DataType::Decimal128(p, _), PhysicalType::INT32) => *p <= 9,
         (DataType::Decimal128(p, _), PhysicalType::INT64) => *p <= 18,
+        (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
         _ => false,
     };
     type_ok
@@ -92,6 +93,18 @@ impl DirectColumn {
                 });
                 encode(&self.descr, props, &v)
             }
+            PhysicalType::BYTE_ARRAY => {
+                let v = Values::<&[u8]>::gather(&self.arrays, |a, out| {
+                    let sv = a.as_string_view();
+                    let get = |i: usize| unsafe { sv.value_unchecked(i) }.as_bytes();
+                    match a.logical_nulls().filter(|n| n.null_count() > 0) {
+                        // SAFETY: `i` is a row of `sv`
+                        None => out.extend((0..sv.len()).map(get)),
+                        Some(n) => out.extend(n.valid_indices().map(get)),
+                    }
+                });
+                encode_bytes(&self.descr, props, &v)
+            }
             _ => {
                 let v = Values::<i64>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int64 => extend(out, a.as_primitive::<Int64Type>().values(), a),
@@ -108,7 +121,6 @@ impl DirectColumn {
 /// The physical value types handled here.
 trait Native: Copy + Ord + Default + Send + 'static {
     const SIZE: usize;
-    const TYPE: PhysicalType;
     const MIN: Self;
     const MAX: Self;
     /// Order-preserving: `a <= b` iff `a.key() <= b.key()`.
@@ -119,7 +131,6 @@ trait Native: Copy + Ord + Default + Send + 'static {
 
 impl Native for i32 {
     const SIZE: usize = 4;
-    const TYPE: PhysicalType = PhysicalType::INT32;
     const MIN: Self = i32::MIN;
     const MAX: Self = i32::MAX;
     fn key(self) -> u64 {
@@ -135,7 +146,6 @@ impl Native for i32 {
 
 impl Native for i64 {
     const SIZE: usize = 8;
-    const TYPE: PhysicalType = PhysicalType::INT64;
     const MIN: Self = i64::MIN;
     const MAX: Self = i64::MAX;
     fn key(self) -> u64 {
@@ -158,8 +168,8 @@ struct Values<T> {
     lens: Vec<usize>,
 }
 
-impl<T: Native> Values<T> {
-    fn gather(arrays: &[ArrayRef], mut push: impl FnMut(&ArrayRef, &mut Vec<T>)) -> Self {
+impl<T> Values<T> {
+    fn gather<'a>(arrays: &'a [ArrayRef], mut push: impl FnMut(&'a ArrayRef, &mut Vec<T>)) -> Self {
         let rows: usize = arrays.iter().map(|a| a.len()).sum();
         let mut vals = Vec::with_capacity(rows);
         let mut valid: Option<BooleanBufferBuilder> = None;
@@ -236,31 +246,67 @@ fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     Some((lo, hi))
 }
 
-fn encode<T: Native>(
-    descr: &ColumnDescPtr,
-    props: &WriterProperties,
-    v: &Values<T>,
-) -> Result<(Bytes, ColumnCloseResult)> {
-    let path = descr.path();
-    let compression = props.compression(path);
-    let stats_level = props.statistics_enabled(path);
-    let has_levels = descr.max_def_level() > 0;
-    let rows = v.rows;
-    let nulls = (rows - v.vals.len()) as u64;
-    let valid = v.valid.as_ref();
+/// Writes one column chunk's pages and gathers its metadata: the parts
+/// that don't depend on the value type.
+struct ChunkWriter<'a> {
+    descr: &'a ColumnDescPtr,
+    props: &'a WriterProperties,
+    compression: Compression,
+    snappy: snap::raw::Encoder,
+    pages: SerializedPageWriter<'a, Vec<u8>>,
+    has_levels: bool,
+    histograms: bool,
+    encodings: Vec<Encoding>,
+    compressed: i64,
+    uncompressed: i64,
+    written: u64,
+    /// Total string bytes (byte array columns only).
+    unencoded: Option<i64>,
+    dictionary_offset: Option<i64>,
+    data_offset: Option<i64>,
+    column_index: ColumnIndexBuilder,
+    offset_index: OffsetIndexBuilder,
+}
 
-    let (lo, hi) = match min_max(&v.vals) {
-        Some((lo, hi)) => (Some(lo), Some(hi)),
-        None => (None, None),
-    };
-    let plan = plan(v, props, path, lo.zip(hi));
-    let mut snappy = snap::raw::Encoder::new();
-    let mut compress = |body: Vec<u8>| -> Result<(Bytes, usize)> {
+impl<'a> ChunkWriter<'a> {
+    fn new(
+        descr: &'a ColumnDescPtr,
+        props: &'a WriterProperties,
+        sink: &'a mut TrackedWrite<Vec<u8>>,
+    ) -> Self {
+        let has_levels = descr.max_def_level() > 0;
+        let stats = props.statistics_enabled(descr.path());
+        ChunkWriter {
+            descr,
+            props,
+            compression: props.compression(descr.path()),
+            snappy: snap::raw::Encoder::new(),
+            pages: SerializedPageWriter::new(sink),
+            has_levels,
+            // as arrow-rs: level histograms whenever statistics are on
+            histograms: has_levels && stats != EnabledStatistics::None,
+            encodings: if has_levels {
+                vec![Encoding::RLE]
+            } else {
+                Vec::new()
+            },
+            compressed: 0,
+            uncompressed: 0,
+            written: 0,
+            unencoded: None,
+            dictionary_offset: None,
+            data_offset: None,
+            column_index: ColumnIndexBuilder::new(descr.physical_type()),
+            offset_index: OffsetIndexBuilder::new(),
+        }
+    }
+
+    fn compress(&mut self, body: Vec<u8>) -> Result<(Bytes, usize)> {
         let n = body.len();
-        Ok(match compression {
+        Ok(match self.compression {
             Compression::SNAPPY => (
                 Bytes::from(
-                    snappy
+                    self.snappy
                         .compress_vec(&body)
                         .map_err(|e| ParquetError::External(Box::new(e)))?,
                 ),
@@ -268,49 +314,41 @@ fn encode<T: Native>(
             ),
             _ => (Bytes::from(body), n),
         })
-    };
-
-    let mut sink = TrackedWrite::new(Vec::new());
-    let mut pages = SerializedPageWriter::new(&mut sink);
-    let mut encodings = Vec::new();
-    if has_levels {
-        encodings.push(Encoding::RLE);
     }
-    let (mut compressed, mut uncompressed) = (0i64, 0i64);
-    let mut dictionary_offset = None;
-    if let Some(entries) = &plan.entries {
-        let mut body = Vec::with_capacity(entries.len() * T::SIZE);
-        entries.iter().for_each(|e| e.put(&mut body));
-        let (buf, n) = compress(body)?;
+
+    /// The PLAIN dictionary page of `entries` entries.
+    fn dictionary(&mut self, body: Vec<u8>, entries: usize) -> Result<()> {
+        let (buf, n) = self.compress(body)?;
         let page = Page::DictionaryPage {
             buf,
-            num_values: entries.len() as u32,
+            num_values: entries as u32,
             encoding: Encoding::PLAIN,
             is_sorted: false,
         };
-        let spec = pages.write_page(CompressedPage::new(page, n))?;
-        dictionary_offset = Some(spec.offset as i64);
-        compressed += spec.compressed_size as i64;
-        uncompressed += spec.uncompressed_size as i64;
-        encodings.extend([Encoding::PLAIN, Encoding::RLE_DICTIONARY]);
-    }
-    if plan.pages.iter().any(|p| p.entries.is_none()) && !encodings.contains(&Encoding::PLAIN) {
-        encodings.push(Encoding::PLAIN);
+        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        self.dictionary_offset = Some(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.encodings
+            .extend([Encoding::PLAIN, Encoding::RLE_DICTIONARY]);
+        Ok(())
     }
 
-    let mut column_index = ColumnIndexBuilder::new(T::TYPE);
-    let mut offset_index = OffsetIndexBuilder::new();
-    let mut data_offset = None;
-    // as arrow-rs: page min/max boundary order, and level histograms
-    // whenever statistics are on
-    let (mut ascending, mut descending, mut last) = (true, true, None);
-    let histograms = has_levels && stats_level != EnabledStatistics::None;
-    for p in &plan.pages {
-        let (r0, r1, v0, v1) = (p.rows.start, p.rows.end, p.vals.start, p.vals.end);
-        let vals = &v.vals[v0..v1];
-        let page_min_max = min_max(vals);
-        let mut body = Vec::with_capacity(16 + vals.len() * T::SIZE);
-        if has_levels {
+    /// A v1 data page of rows `rows` (`vals` of them valid): definition
+    /// levels from `valid`, then the values `put` writes in `encoding`.
+    /// `put` returns the page's min and max (column index bytes).
+    fn data_page(
+        &mut self,
+        rows: Range<usize>,
+        vals: usize,
+        valid: Option<&BooleanBuffer>,
+        encoding: Encoding,
+        put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        let (r0, r1) = (rows.start, rows.end);
+        let mut body = Vec::new();
+        if self.has_levels {
             body.extend_from_slice(&[0; 4]);
             match valid {
                 // `sliced` copies only if the page starts mid-byte
@@ -320,21 +358,11 @@ fn encode<T: Native>(
             let len = (body.len() - 4) as u32;
             body[..4].copy_from_slice(&len.to_le_bytes());
         }
-        let encoding = match p.entries {
-            Some(n) => {
-                // as arrow-rs: the width of the dictionary when the page
-                // was flushed
-                let w = 64 - (n.saturating_sub(1) as u64).leading_zeros();
-                body.push(w as u8);
-                hybrid(&plan.idx[v0..v1], w, &mut body);
-                Encoding::RLE_DICTIONARY
-            }
-            None => {
-                vals.iter().for_each(|x| x.put(&mut body));
-                Encoding::PLAIN
-            }
-        };
-        let (buf, n) = compress(body)?;
+        let min_max = put(&mut body);
+        if encoding == Encoding::PLAIN && !self.encodings.contains(&Encoding::PLAIN) {
+            self.encodings.push(Encoding::PLAIN);
+        }
+        let (buf, n) = self.compress(body)?;
         let page = Page::DataPage {
             buf,
             num_values: (r1 - r0) as u32,
@@ -343,67 +371,513 @@ fn encode<T: Native>(
             rep_level_encoding: Encoding::RLE,
             statistics: None,
         };
-        let spec = pages.write_page(CompressedPage::new(page, n))?;
-        data_offset.get_or_insert(spec.offset as i64);
-        compressed += spec.compressed_size as i64;
-        uncompressed += spec.uncompressed_size as i64;
-        offset_index.append_row_count((r1 - r0) as i64);
-        offset_index.append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
-        let bytes = |x: Option<T>| {
-            let mut b = Vec::new();
-            if let Some(x) = x {
-                x.put(&mut b);
+        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        self.data_offset.get_or_insert(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.offset_index.append_row_count((r1 - r0) as i64);
+        self.offset_index
+            .append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
+        let page_nulls = ((r1 - r0) - vals) as i64;
+        let (lo, hi) = min_max.unwrap_or_default();
+        self.column_index
+            .append(vals == 0, lo, hi, page_nulls, None);
+        if self.histograms {
+            let h = LevelHistogram::from(vec![page_nulls, vals as i64]);
+            self.column_index.append_histograms(&None, &Some(h));
+        }
+        Ok(())
+    }
+
+    /// Finish the chunk: `rows` rows, `vals` valid, chunk statistics
+    /// `stats` and the pages' `order`.
+    fn finish(
+        mut self,
+        rows: usize,
+        vals: usize,
+        stats: Statistics,
+        order: BoundaryOrder,
+    ) -> Result<ColumnCloseResult> {
+        self.column_index.set_boundary_order(order);
+        self.pages.close()?;
+        let stats_level = self.props.statistics_enabled(self.descr.path());
+        let nulls = (rows - vals) as i64;
+        let mut meta = ColumnChunkMetaData::builder(self.descr.clone())
+            .set_compression(self.compression)
+            .set_encodings(self.encodings)
+            .set_num_values(rows as i64)
+            .set_total_compressed_size(self.compressed)
+            .set_total_uncompressed_size(self.uncompressed)
+            .set_data_page_offset(self.data_offset.unwrap_or(0))
+            .set_dictionary_page_offset(self.dictionary_offset)
+            .set_unencoded_byte_array_data_bytes(self.unencoded);
+        if stats_level != EnabledStatistics::None {
+            meta = meta.set_statistics(stats);
+            if self.histograms {
+                let h = vec![nulls, vals as i64];
+                meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
             }
-            b
-        };
-        if let (Some((lo, hi)), Some((last_lo, last_hi))) = (page_min_max, last) {
+        }
+        Ok(ColumnCloseResult {
+            bytes_written: self.written,
+            rows_written: rows as u64,
+            metadata: meta.build()?,
+            bloom_filter: None,
+            column_index: match stats_level {
+                EnabledStatistics::Page => Some(self.column_index.build()?),
+                _ => None,
+            },
+            offset_index: (!self.props.offset_index_disabled()).then(|| self.offset_index.build()),
+        })
+    }
+}
+
+impl ChunkWriter<'_> {
+    /// Record a byte array page's string bytes, as arrow-rs does.
+    fn unencoded_bytes(&mut self, n: i64) {
+        *self.unencoded.get_or_insert(0) += n;
+        self.offset_index
+            .append_unencoded_byte_array_data_bytes(Some(n));
+    }
+}
+
+/// Pages' boundary order, from each page's `(min, max)` in order (`None`
+/// for all-null pages), as arrow-rs computes it.
+fn boundary_order<K: PartialOrd>(pages: impl Iterator<Item = Option<(K, K)>>) -> BoundaryOrder {
+    let (mut ascending, mut descending, mut last) = (true, true, None::<(K, K)>);
+    for m in pages {
+        if let (Some((lo, hi)), Some((last_lo, last_hi))) = (&m, &last) {
             ascending &= last_lo <= lo && last_hi <= hi;
             descending &= lo <= last_lo && hi <= last_hi;
         }
-        last = page_min_max.or(last);
-        let (lo, hi) = (page_min_max.map(|m| m.0), page_min_max.map(|m| m.1));
-        let page_nulls = ((r1 - r0) - vals.len()) as i64;
-        column_index.append(vals.is_empty(), bytes(lo), bytes(hi), page_nulls, None);
-        if histograms {
-            let h = LevelHistogram::from(vec![page_nulls, vals.len() as i64]);
-            column_index.append_histograms(&None, &Some(h));
+        if m.is_some() {
+            last = m;
         }
     }
-    column_index.set_boundary_order(match (ascending, descending) {
+    match (ascending, descending) {
         (true, _) => BoundaryOrder::ASCENDING,
         (false, true) => BoundaryOrder::DESCENDING,
         (false, false) => BoundaryOrder::UNORDERED,
-    });
-    pages.close()?;
-    let buf = sink.into_inner()?;
+    }
+}
 
-    let mut meta = ColumnChunkMetaData::builder(descr.clone())
-        .set_compression(compression)
-        .set_encodings(encodings)
-        .set_num_values(rows as i64)
-        .set_total_compressed_size(compressed)
-        .set_total_uncompressed_size(uncompressed)
-        .set_data_page_offset(data_offset.unwrap_or(0))
-        .set_dictionary_page_offset(dictionary_offset);
-    if stats_level != EnabledStatistics::None {
-        meta = meta.set_statistics(T::stats(lo, hi, nulls));
-        if histograms {
-            let h = vec![nulls as i64, v.vals.len() as i64];
-            meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
+fn encode<T: Native>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &Values<T>,
+) -> Result<(Bytes, ColumnCloseResult)> {
+    let path = descr.path();
+    let (lo, hi) = match min_max(&v.vals) {
+        Some((lo, hi)) => (Some(lo), Some(hi)),
+        None => (None, None),
+    };
+    let plan = plan(v, props, path, lo.zip(hi));
+    let mut sink = TrackedWrite::new(Vec::new());
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    if let Some(entries) = &plan.entries {
+        let mut body = Vec::with_capacity(entries.len() * T::SIZE);
+        entries.iter().for_each(|e| e.put(&mut body));
+        w.dictionary(body, entries.len())?;
+    }
+    let bytes = |x: T| {
+        let mut b = Vec::new();
+        x.put(&mut b);
+        b
+    };
+    let mut page_ranges = Vec::with_capacity(plan.pages.len());
+    for p in &plan.pages {
+        let (v0, v1) = (p.vals.start, p.vals.end);
+        let vals = &v.vals[v0..v1];
+        let mm = min_max(vals);
+        page_ranges.push(mm);
+        let (encoding, idx) = match p.entries {
+            Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &plan.idx[v0..v1]))),
+            None => (Encoding::PLAIN, None),
+        };
+        w.data_page(
+            p.rows.clone(),
+            vals.len(),
+            v.valid.as_ref(),
+            encoding,
+            |body| {
+                match idx {
+                    Some((n, idx)) => {
+                        // as arrow-rs: the width of the dictionary when the
+                        // page was flushed
+                        let bits = 64 - (n.saturating_sub(1) as u64).leading_zeros();
+                        body.push(bits as u8);
+                        hybrid(idx, bits, body);
+                    }
+                    None => {
+                        body.reserve(vals.len() * T::SIZE);
+                        vals.iter().for_each(|x| x.put(body));
+                    }
+                }
+                mm.map(|(lo, hi)| (bytes(lo), bytes(hi)))
+            },
+        )?;
+    }
+    let order = boundary_order(page_ranges.into_iter());
+    let nulls = (v.rows - v.vals.len()) as u64;
+    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls), order)?;
+    Ok((Bytes::from(sink.into_inner()?), close))
+}
+
+// ---------------------------------------------------------------------------
+// Strings (`Utf8View` as BYTE_ARRAY)
+
+/// `data` truncated to at most `len` bytes on a character boundary (an
+/// exact copy if shorter), as arrow-rs truncates a minimum. Whether it was
+/// truncated.
+fn truncate_min(data: &[u8], len: Option<usize>) -> (Vec<u8>, bool) {
+    match (len, std::str::from_utf8(data)) {
+        (Some(l), Ok(s)) if data.len() > l => match (1..=l).rfind(|&x| s.is_char_boundary(x)) {
+            Some(split) => (data[..split].to_vec(), true),
+            None => (data.to_vec(), false),
+        },
+        (Some(l), Err(_)) if data.len() > l => (data[..l].to_vec(), true),
+        _ => (data.to_vec(), false),
+    }
+}
+
+/// `data` truncated to at most `len` bytes and incremented, an upper bound
+/// (an exact copy if shorter or if no such bound exists), as arrow-rs
+/// truncates a maximum.
+fn truncate_max(data: &[u8], len: Option<usize>) -> (Vec<u8>, bool) {
+    let Some(l) = len.filter(|&l| data.len() > l) else {
+        return (data.to_vec(), false);
+    };
+    let bound = match std::str::from_utf8(data) {
+        Ok(s) => (l.saturating_sub(3)..=l)
+            .rfind(|&x| s.is_char_boundary(x))
+            .and_then(|split| {
+                let s = &s[..split];
+                s.char_indices().rev().find_map(|(i, c)| {
+                    let next = char::from_u32(c as u32 + 1)?;
+                    (next.len_utf8() == c.len_utf8()).then(|| {
+                        let mut r = s.as_bytes()[..i + c.len_utf8()].to_vec();
+                        next.encode_utf8(&mut r[i..]);
+                        r
+                    })
+                })
+            }),
+        Err(_) => {
+            let mut r = data[..l].to_vec();
+            r.iter_mut()
+                .rev()
+                .find_map(|b| {
+                    let (v, overflow) = b.overflowing_add(1);
+                    *b = v;
+                    (!overflow).then_some(())
+                })
+                .map(|()| r)
+        }
+    };
+    match bound {
+        Some(b) => (b, true),
+        None => (data.to_vec(), false),
+    }
+}
+
+/// Start loading `x` into cache: strings of a view array can be anywhere
+/// (TPC-H's comments are random slices of a 300 MiB pool), and each is a
+/// cache miss when its turn comes.
+#[inline(always)]
+fn prefetch(x: &[u8]) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch is only a hint; it never faults.
+    unsafe {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        _mm_prefetch::<_MM_HINT_T0>(x.as_ptr().cast());
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = x;
+}
+
+/// `a < b` by bytes, deciding on the first 8 bytes when they differ.
+#[inline(always)]
+fn less(a: &[u8], b: &[u8]) -> bool {
+    if a.len() >= 8 && b.len() >= 8 {
+        let x = u64::from_be_bytes(a[..8].try_into().expect("8 bytes"));
+        let y = u64::from_be_bytes(b[..8].try_into().expect("8 bytes"));
+        if x != y {
+            return x < y;
         }
     }
-    let close = ColumnCloseResult {
-        bytes_written: buf.len() as u64,
-        rows_written: rows as u64,
-        metadata: meta.build()?,
-        bloom_filter: None,
-        column_index: match stats_level {
-            EnabledStatistics::Page => Some(column_index.build()?),
-            _ => None,
-        },
-        offset_index: (!props.offset_index_disabled()).then(|| offset_index.build()),
+    a < b
+}
+
+/// Smallest and largest of `v`, by bytes.
+fn bytes_min_max<'a>(v: &[&'a [u8]]) -> Option<(&'a [u8], &'a [u8])> {
+    let (&first, rest) = v.split_first()?;
+    Some(rest.iter().fold((first, first), |(lo, hi), &x| {
+        (
+            if less(x, lo) { x } else { lo },
+            if less(hi, x) { x } else { hi },
+        )
+    }))
+}
+
+/// String dictionary entries in first-seen order, in an open-addressing
+/// hash table keyed by the bytes.
+struct BytesDict<'a> {
+    entries: Vec<&'a [u8]>,
+    /// PLAIN size of the entries.
+    bytes: usize,
+    table: Vec<u32>,
+    bits: u32,
+}
+
+/// A cheap hash of a string: its length and its first and last 8 bytes.
+#[inline(always)]
+fn bytes_hash(x: &[u8], bits: u32) -> usize {
+    let n = x.len();
+    let u32_at = |i: usize| u32::from_le_bytes(x[i..i + 4].try_into().expect("4 bytes")) as u64;
+    let (a, b) = if n >= 8 {
+        let w = |i: usize| u64::from_le_bytes(x[i..i + 8].try_into().expect("8 bytes"));
+        (w(0), w(n - 8))
+    } else if n >= 4 {
+        (u32_at(0), u32_at(n - 4))
+    } else {
+        // 0..=3 bytes: first, middle and last
+        let b = |i: usize| x.get(i).copied().unwrap_or(0) as u64;
+        (b(0) | b(n / 2) << 8 | b(n.saturating_sub(1)) << 16, 0)
     };
-    Ok((Bytes::from(buf), close))
+    let k = a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.rotate_left(29) ^ n as u64;
+    hash(k ^ (k >> 31), bits)
+}
+
+impl<'a> BytesDict<'a> {
+    fn new() -> Self {
+        BytesDict {
+            entries: Vec::new(),
+            bytes: 0,
+            table: vec![u32::MAX; 1 << 10],
+            bits: 10,
+        }
+    }
+
+    fn encode(&mut self, xs: &[&'a [u8]], idx: &mut Vec<u32>) {
+        for &x in xs {
+            let mask = (1usize << self.bits) - 1;
+            let mut h = bytes_hash(x, self.bits);
+            let i = loop {
+                match self.table[h] {
+                    u32::MAX => {
+                        let i = self.entries.len() as u32;
+                        self.table[h] = i;
+                        self.entries.push(x);
+                        self.bytes += 4 + x.len();
+                        break i;
+                    }
+                    i if self.entries[i as usize] == x => break i,
+                    _ => h = (h + 1) & mask,
+                }
+            };
+            idx.push(i);
+            if self.entries.len() * 2 > 1 << self.bits {
+                self.grow();
+            }
+        }
+    }
+
+    fn grow(&mut self) {
+        self.bits += 1;
+        let mask = (1usize << self.bits) - 1;
+        self.table = vec![u32::MAX; 1 << self.bits];
+        for (i, &e) in self.entries.iter().enumerate() {
+            let mut h = bytes_hash(e, self.bits);
+            while self.table[h] != u32::MAX {
+                h = (h + 1) & mask;
+            }
+            self.table[h] = i as u32;
+        }
+    }
+}
+
+/// [`plan`] for strings: pages end after the mini-batch that reaches the
+/// row limit or the page size limit (PLAIN bytes, or the bit-packed
+/// indexes), and the dictionary falls back to PLAIN at its page size limit.
+fn plan_bytes<'a>(
+    v: &Values<&'a [u8]>,
+    props: &WriterProperties,
+    path: &ColumnPath,
+) -> (Vec<PageSpan>, Option<BytesDict<'a>>, Vec<u32>) {
+    let row_limit = props.data_page_row_count_limit().max(1);
+    let size_limit = props.data_page_size_limit();
+    let batch = props.write_batch_size().max(1);
+    let dict_limit = props.dictionary_page_size_limit();
+    let mut dict = (props.dictionary_enabled(path) && !v.vals.is_empty()).then(BytesDict::new);
+    let mut idx = Vec::with_capacity(if dict.is_some() { v.vals.len() } else { 0 });
+    let mut pages = Vec::new();
+    let (mut r0, mut v0, mut row, mut val) = (0, 0, 0, 0);
+    let mut plain_bytes = 0;
+    let mut fell_back = dict.is_none();
+    for &len in &v.lens {
+        let mut left = len;
+        while left > 0 {
+            let step = left.min(batch);
+            let n = v
+                .valid
+                .as_ref()
+                .map_or(step, |b| b.slice(row, step).count_set_bits());
+            let xs = &v.vals[val..val + n];
+            match dict.as_mut().filter(|_| !fell_back) {
+                Some(d) => d.encode(xs, &mut idx),
+                None => plain_bytes += xs.iter().map(|x| 4 + x.len()).sum::<usize>(),
+            }
+            (row, val, left) = (row + step, val + n, left - step);
+            let entries = dict
+                .as_ref()
+                .filter(|_| !fell_back)
+                .map(|d| d.entries.len());
+            let size = match entries {
+                Some(e) => {
+                    1 + ((val - v0) * (64 - (e.max(1) as u64 - 1).leading_zeros() as usize)) / 8
+                }
+                None => plain_bytes,
+            };
+            let fall_back = dict
+                .as_ref()
+                .is_some_and(|d| !fell_back && d.bytes >= dict_limit);
+            if row - r0 >= row_limit || size >= size_limit || fall_back {
+                pages.push(PageSpan {
+                    rows: r0..row,
+                    vals: v0..val,
+                    entries,
+                });
+                (r0, v0, plain_bytes) = (row, val, 0);
+            }
+            fell_back |= fall_back;
+        }
+    }
+    if row > r0 {
+        let entries = dict
+            .as_ref()
+            .filter(|_| !fell_back)
+            .map(|d| d.entries.len());
+        pages.push(PageSpan {
+            rows: r0..row,
+            vals: v0..val,
+            entries,
+        });
+    }
+    (pages, dict, idx)
+}
+
+fn put_bytes(x: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(&(x.len() as u32).to_le_bytes());
+    out.extend_from_slice(x);
+}
+
+fn encode_bytes(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &Values<&[u8]>,
+) -> Result<(Bytes, ColumnCloseResult)> {
+    let path = descr.path();
+    let (pages, dict, idx) = plan_bytes(v, props, path);
+    let mut sink = TrackedWrite::new(Vec::new());
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    if let Some(d) = &dict {
+        let mut body = Vec::with_capacity(d.bytes);
+        d.entries.iter().for_each(|e| put_bytes(e, &mut body));
+        w.dictionary(body, d.entries.len())?;
+    }
+    let index_len = props.column_index_truncate_length();
+    let entries: &[&[u8]] = dict.as_ref().map_or(&[], |d| &d.entries);
+    let mut seen = vec![false; entries.len()];
+    let mut page_ranges: Vec<Option<(&[u8], &[u8])>> = Vec::with_capacity(pages.len());
+    for p in &pages {
+        let (v0, v1) = (p.vals.start, p.vals.end);
+        let vals = &v.vals[v0..v1];
+        let (encoding, ix) = match p.entries {
+            Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &idx[v0..v1]))),
+            None => (Encoding::PLAIN, None),
+        };
+        let mut strings = 0i64;
+        let mut mm = None;
+        w.data_page(
+            p.rows.clone(),
+            vals.len(),
+            v.valid.as_ref(),
+            encoding,
+            |body| {
+                match ix {
+                    Some((n, ix)) => {
+                        let bits = 64 - (n.saturating_sub(1) as u64).leading_zeros();
+                        body.push(bits as u8);
+                        hybrid(ix, bits, body);
+                        // min and max over the entries the page uses
+                        for &i in ix {
+                            seen[i as usize] = true;
+                        }
+                        let used = seen.iter().enumerate().filter(|&(_, &s)| s);
+                        let used: Vec<&[u8]> = used.map(|(i, _)| entries[i]).collect();
+                        mm = bytes_min_max(&used);
+                        seen.iter_mut().for_each(|s| *s = false);
+                        strings = vals.iter().map(|x| x.len() as i64).sum();
+                    }
+                    None => {
+                        // one pass: the strings may be scattered in memory
+                        let need: usize =
+                            vals.len() * 4 + vals.iter().map(|x| x.len()).sum::<usize>();
+                        body.reserve(need);
+                        if let Some((&first, _)) = vals.split_first() {
+                            let (mut lo, mut hi) = (first, first);
+                            for (i, &x) in vals.iter().enumerate() {
+                                if let Some(ahead) = vals.get(i + 16) {
+                                    prefetch(ahead);
+                                }
+                                put_bytes(x, body);
+                                if less(x, lo) {
+                                    lo = x;
+                                } else if less(hi, x) {
+                                    hi = x;
+                                }
+                                strings += x.len() as i64;
+                            }
+                            mm = Some((lo, hi));
+                        }
+                    }
+                }
+                mm.map(|(lo, hi)| (truncate_min(lo, index_len).0, truncate_max(hi, index_len).0))
+            },
+        )?;
+        page_ranges.push(mm);
+        w.unencoded_bytes(strings);
+    }
+    let order = boundary_order(page_ranges.iter().copied());
+    let nulls = (v.rows - v.vals.len()) as u64;
+    let chunk =
+        page_ranges
+            .iter()
+            .flatten()
+            .fold(None, |acc: Option<(&[u8], &[u8])>, &(lo, hi)| {
+                Some(match acc {
+                    None => (lo, hi),
+                    Some((a, b)) => (
+                        if less(lo, a) { lo } else { a },
+                        if less(b, hi) { hi } else { b },
+                    ),
+                })
+            });
+    let stats = match chunk {
+        Some((lo, hi)) => {
+            let len = props.statistics_truncate_length();
+            let (lo, tlo) = truncate_min(lo, len);
+            let (hi, thi) = truncate_max(hi, len);
+            Statistics::ByteArray(
+                ValueStatistics::new(Some(lo.into()), Some(hi.into()), None, Some(nulls), false)
+                    .with_min_is_exact(!tlo)
+                    .with_max_is_exact(!thi),
+            )
+        }
+        None => Statistics::ByteArray(ValueStatistics::new(None, None, None, Some(nulls), false)),
+    };
+    let close = w.finish(v.rows, v.vals.len(), stats, order)?;
+    Ok((Bytes::from(sink.into_inner()?), close))
 }
 
 /// A data page: its rows and values, and the number of dictionary entries

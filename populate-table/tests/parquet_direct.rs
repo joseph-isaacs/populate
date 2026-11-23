@@ -5,7 +5,8 @@
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch,
+    StringArray, StringViewArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
@@ -47,6 +48,9 @@ fn schema() -> SchemaRef {
         Field::new("price", DataType::Decimal128(7, 2), true),
         Field::new("big_price", DataType::Decimal128(15, 2), true),
         Field::new("name", DataType::Utf8, true),
+        Field::new("view", DataType::Utf8View, true),
+        Field::new("long_view", DataType::Utf8View, true),
+        Field::new("required_view", DataType::Utf8View, false),
     ]))
 }
 
@@ -97,6 +101,26 @@ fn batch(start: i64, n: usize) -> RecordBatch {
         Arc::new(StringArray::from_iter(
             rows.clone()
                 .map(|r| (!null(r)).then(|| format!("n{}", r % 13))),
+        )),
+        // few distinct values, some inline in the view and some not
+        Arc::new(StringViewArray::from_iter(rows.clone().map(|r| {
+            (!null(r))
+                .then(|| ["a", "bb", "a longer string value", ""][(r % 4) as usize].to_string())
+        }))),
+        // all distinct and longer than the 64-byte statistics truncation,
+        // with multi-byte characters around the cut
+        Arc::new(StringViewArray::from_iter(rows.clone().map(|r| {
+            (!null(r)).then(|| {
+                format!(
+                    "{:0>62}é€{}{}",
+                    r * 7919 % 100_003,
+                    "x".repeat((r % 50) as usize),
+                    r
+                )
+            })
+        }))),
+        Arc::new(StringViewArray::from_iter_values(
+            rows.clone().map(|r| format!("v{}", r % 1000)),
         )),
     ];
     RecordBatch::try_new(schema(), columns).unwrap()

@@ -1,5 +1,5 @@
 //! Built-in distributions: [`constant`], [`range`], [`map`], [`list`],
-//! [`flatten`], and the random leaves in [`random`] ([`uniform`], [`choose`],
+//! [`with_column`], [`flatten`], and the random leaves in [`random`] ([`uniform`], [`choose`],
 //! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in `populate-core`
 //! (orphan rule); their iterator types are re-exported here.
 
@@ -11,7 +11,15 @@ use rand::Rng;
 use std::marker::PhantomData;
 use std::ops::Add;
 
-pub use populate_core::tuple::{TupleIter2, TupleIter3, TupleIter4};
+mod with_column;
+pub use with_column::{
+    Column, ColumnRng, ReadRows, RowAppend, WithColumn, WithColumnIter, with_column,
+};
+
+pub use populate_core::tuple::{
+    TupleIter2, TupleIter3, TupleIter4, TupleIter5, TupleIter6, TupleIter7, TupleIter8, TupleIter9,
+    TupleIter10, TupleIter11, TupleIter12,
+};
 
 pub mod bounded;
 pub mod random;

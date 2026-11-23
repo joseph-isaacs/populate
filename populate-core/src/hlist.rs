@@ -100,6 +100,13 @@ impl_tuple_hlist!(A a, B b);
 impl_tuple_hlist!(A a, B b, C c);
 impl_tuple_hlist!(A a, B b, C c, D d);
 impl_tuple_hlist!(A a, B b, C c, D d, E e);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g, H h);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
+impl_tuple_hlist!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l);
 
 // ============================================================================
 // ValueHList — recursive value-to-HList (mirrors DefaultSink but for values)
@@ -156,5 +163,13 @@ macro_rules! impl_value_hlist_tuple {
 impl_value_hlist_tuple!(0 A, 1 B);
 impl_value_hlist_tuple!(0 A, 1 B, 2 C);
 impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H, 8 I);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H, 8 I, 9 J);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H, 8 I, 9 J, 10 K);
+impl_value_hlist_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H, 8 I, 9 J, 10 K, 11 L);
 
 // Scalar ValueHList impls — generated via for_all_primitives! in traits.rs

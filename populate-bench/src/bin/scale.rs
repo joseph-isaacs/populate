@@ -11,6 +11,8 @@
 //! - `tpch-numeric`: tpchgen rows -> the 11 numeric columns.
 //! - `tpch-direct`: tpchgen's RNGs and row logic for just those columns,
 //!   straight into column `Vec`s (same values; one thread only).
+//! - `tpch-lanes`: the same columns, byte-identical to tpchgen, from the
+//!   lane-parallel TPC-H RNG ([`TpchLanes`]); SF 10 only.
 //! - `populate`: populate's 11 numeric columns (same row count as tpchgen).
 //!
 //! With `threads > 1` each thread generates one partition. tpchgen uses its
@@ -19,12 +21,16 @@
 //! 2^18, each seeded by its index (the orderkey `range` starts at the
 //! chunk's first row), and deals them out to the threads, so its output does
 //! not depend on the thread count: `SCALE_CHECK=1` prints a checksum to
-//! show it. Peak RSS (`VmHWM`) is per process, so run one workload per process.
+//! show it. `tpch-lanes` deals out fixed chunks of orders the same way,
+//! each started with [`TpchLanes::at_order`]. For `tpch-numeric` and
+//! `tpch-lanes` the checksum is a sum of per-row hashes ([`row_hash`]), so
+//! the two can be compared at any thread count. Peak RSS (`VmHWM`) is per process, so run one workload per process.
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
 use populate_bench::fair::{Cols, SF, TpchDirect, cols_to_batch};
+use populate_bench::lanes::{LANES, ORDERS, ORDERS_PER_BLOCK, TpchLanes};
 use populate_bench::{
     BATCH, batch_bytes, batch_bytes_60, numeric_schema_60, p2_numeric_batches, tpch_numeric_batch,
     tpchgen_init,
@@ -82,7 +88,35 @@ fn tpch_full(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
     t
 }
 
-fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
+/// Order-independent checksum of a batch: each row's values are folded in
+/// column order, and the row hashes are summed. Rows can then come in any
+/// order or batching (tpchgen's partitions vs `tpch-lanes`' chunks) and the
+/// totals still match exactly when the rows do.
+fn row_hash(b: &RecordBatch) -> u64 {
+    let mut rows = vec![0xcbf2_9ce4_8422_2325u64; b.num_rows()];
+    for c in b.columns() {
+        let mut fold = |vals: &mut dyn Iterator<Item = i64>| {
+            for (h, v) in rows.iter_mut().zip(vals) {
+                *h = (*h ^ v as u64).wrapping_mul(0x100_0000_01b3);
+            }
+        };
+        if let Some(a) = c.as_primitive_opt::<Int64Type>() {
+            fold(&mut a.values().iter().copied());
+        } else {
+            fold(
+                &mut c
+                    .as_primitive::<Int32Type>()
+                    .values()
+                    .iter()
+                    .map(|&v| v as i64),
+            );
+        }
+    }
+    rows.iter()
+        .fold(0u64, |acc, &h| acc.wrapping_add(h ^ (h >> 29)))
+}
+
+fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize, check: bool) -> Totals {
     let mut t = Totals::default();
     let schema = numeric_schema_60();
     let mut it = LineItemGenerator::new(sf, part, parts).iter();
@@ -97,7 +131,7 @@ fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
         t.add(Totals {
             rows: b.num_rows(),
             bytes: batch_bytes_60(&b),
-            hash: 0,
+            hash: if check { row_hash(&b) } else { 0 },
         });
         drop(black_box(b));
     }
@@ -122,6 +156,39 @@ fn tpch_direct(n: usize, batch: usize) -> Totals {
         });
         drop(black_box(b));
         left -= len;
+    }
+    t
+}
+
+/// Orders per `tpch-lanes` chunk: ~2^18 lineitems, a multiple of the
+/// block size.
+const LANE_CHUNK: usize = 32 * ORDERS_PER_BLOCK;
+
+/// The whole SF 10 `lineitem` table, byte-identical to tpchgen, from the
+/// lane-parallel RNG. Chunks of [`LANE_CHUNK`] orders are dealt out to the
+/// threads like populate's, each starting with a skip-ahead, so the rows
+/// don't depend on the thread count. Batches are ~`BATCH` rows (whole
+/// orders), not exactly `batch`.
+fn tpch_lanes(thread: usize, threads: usize, check: bool) -> Totals {
+    let mut t = Totals::default();
+    for c in (thread..ORDERS.div_ceil(LANE_CHUNK)).step_by(threads) {
+        let (start, end) = (c * LANE_CHUNK, ((c + 1) * LANE_CHUNK).min(ORDERS));
+        let mut g = TpchLanes::at_order(start);
+        let mut o = start;
+        while o < end {
+            let len = ORDERS_PER_BLOCK.min(end - o);
+            debug_assert_eq!(len % LANES, 0);
+            let mut cols = Cols::default();
+            g.fill_orders(len, &mut cols);
+            let b = cols_to_batch(cols);
+            t.add(Totals {
+                rows: b.num_rows(),
+                bytes: batch_bytes_60(&b),
+                hash: if check { row_hash(&b) } else { 0 },
+            });
+            drop(black_box(b));
+            o += len;
+        }
     }
     t
 }
@@ -186,14 +253,14 @@ fn peak_rss_mib() -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: scale <tpch-full|tpch-numeric|tpch-direct|populate> <sf> [threads] [batch]";
+    let usage = "usage: scale <tpch-full|tpch-numeric|tpch-direct|tpch-lanes|populate> <sf> [threads] [batch]";
     let workload = args.first().expect(usage).clone();
     let sf: f64 = args.get(1).expect(usage).parse().expect("sf");
     let threads: usize = args.get(2).map_or(1, |a| a.parse().expect("threads"));
     let batch: usize = args.get(3).map_or(BATCH, |a| a.parse().expect("batch"));
 
     let init = Instant::now();
-    if workload.starts_with("tpch") {
+    if workload.starts_with("tpch") && workload != "tpch-lanes" {
         tpchgen_init();
     }
     let init = init.elapsed();
@@ -209,7 +276,11 @@ fn main() {
                     let (part, parts) = (i as i32 + 1, threads as i32);
                     match workload {
                         "tpch-full" => tpch_full(sf, part, parts, batch),
-                        "tpch-numeric" => tpch_numeric(sf, part, parts, batch),
+                        "tpch-numeric" => tpch_numeric(sf, part, parts, batch, check),
+                        "tpch-lanes" => {
+                            assert_eq!(sf, SF, "tpch-lanes is fixed at SF{SF}");
+                            tpch_lanes(i, threads, check)
+                        }
                         "tpch-direct" => {
                             assert_eq!(threads, 1, "tpch-direct is single-threaded");
                             assert_eq!(sf, SF, "tpch-direct is fixed at SF{SF}");

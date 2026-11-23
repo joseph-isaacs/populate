@@ -8,6 +8,8 @@
 //! - [`Chunks`]: any generator split into independent chunks gets the same
 //!   multi-core drivers ([`chunks::for_each_batch`], [`par_ordered`], and
 //!   [`par_sources`] for several sources on one pool, biggest work first).
+//! - [`text`]: the TPC `.dat` / `.tbl` text formats from Arrow batches,
+//!   and a parallel writer for them.
 //! - `write_parquet` / `Table::write_parquet` (feature `parquet`): parallel
 //!   generation *and* encoding streamed into one Parquet file.
 
@@ -15,6 +17,7 @@ pub mod chunks;
 pub mod sched;
 pub mod stream;
 pub mod table;
+pub mod text;
 
 #[cfg(feature = "parquet")]
 mod parquet;

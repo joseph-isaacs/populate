@@ -8,7 +8,7 @@ Arrow and Parquet output) against [tpchgen](https://crates.io/crates/tpchgen)
 cargo bench -p populate-bench            # divan: time, rows/s, bytes/s, allocs, max live heap
 cargo run -p populate-bench --release    # Markdown table incl. peak heap (args: [rows] [repeats])
 cargo test -p populate-bench             # sanity checks: shapes/sizes match on both sides
-cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|tpch-direct|populate> <sf> [threads]
+cargo run -p populate-bench --release --bin scale -- <tpch-full|tpch-numeric|tpch-direct|tpch-lanes|populate> <sf> [threads]
 ```
 
 The crate is not in the workspace `default-members`, so root `cargo build` /
@@ -72,6 +72,25 @@ So the RNG gap from the summary below can be closed without giving up
 spec-correct output: like-for-like it is now ~1.8x at the default target
 and ~2.5–3x with AVX2. This is where column-at-a-time generation actually
 pays: a row loop has to step each stream serially.
+
+### Full table: SF10 `lineitem`, byte-identical, streamed
+
+The `tpch-lanes` workload of `scale` generates the whole SF10 table this
+way. Orders are cut into fixed chunks (65,536 orders, ~262k rows) dealt out
+to the threads; each chunk starts with `TpchLanes::at_order`, which jumps
+every stream ahead (`16807^k`) to the chunk's first draw. With
+`SCALE_CHECK=1`, `tpch-lanes` and `tpch-numeric` print an order-independent
+per-row checksum. Both give `5818b09aeaf9e04d` at SF10 on 1 and 4 threads,
+with 59,986,052 rows, so the full table matches tpchgen exactly.
+
+Same VM, best of 3 interleaved runs (s):
+
+| workload | 1 thread | 4 threads |
+|---|---:|---:|
+| tpchgen rows -> numeric cols (`tpch-numeric`) | 3.95 | 1.10 |
+| tpchgen RNGs + row logic (`tpch-direct`) | 2.10 | n/a |
+| **lane-parallel tpchgen RNG (`tpch-lanes`)** | **1.58** | **0.54** |
+| populate, xoshiro uniforms (not TPC-H values) | 0.72 | 0.20 |
 
 Not done yet: the 4 string streams (their draw counts vary per row, so they
 need a prefix pass first), and it is a bench-crate prototype hard-wired to

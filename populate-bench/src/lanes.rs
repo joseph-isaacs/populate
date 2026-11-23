@@ -37,7 +37,9 @@ pub const LANES: usize = 16;
 const LINE_NUMBERS: [i32; SLOTS + 1] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Orders per block: ~4 lines each, so a block is ~`BATCH` lineitems.
 /// A multiple of `LANES`, so every stream consumes whole lane chunks.
-const ORDERS_PER_BLOCK: usize = BATCH / 4;
+pub const ORDERS_PER_BLOCK: usize = BATCH / 4;
+/// `orders` rows at SF 10 (`OrderGenerator::SCALE_BASE * SF`).
+pub const ORDERS: usize = 15_000_000;
 
 /// `a * b mod (2^31 - 1)` for `a, b` in `[1, m)`, with no division and no
 /// compare (so it vectorises even on baseline x86-64, which has no 64-bit
@@ -125,6 +127,14 @@ impl Stream {
         }
         self.lanes = lanes;
     }
+
+    /// Skip the next `draws` values: every lane jumps by `16807^draws`.
+    pub fn skip(&mut self, draws: u64) {
+        let jump = powmod(A, draws);
+        for x in &mut self.lanes {
+            *x = mulmod(*x as u64, jump) as u32;
+        }
+    }
 }
 
 /// Dense draws for `orders` orders: `SLOTS` per order. With `orders` a
@@ -197,6 +207,21 @@ impl TpchLanes {
             od_line: Vec::new(),
             vals: Default::default(),
         }
+    }
+
+    /// Start at order index `start` (0-based), as if `start` orders had
+    /// already been generated: each per-order stream skips `start` draws and
+    /// each line stream `7 * start`. Same output as generating from 0 and
+    /// throwing the first `start` orders away.
+    pub fn at_order(start: usize) -> Self {
+        let mut g = Self::new();
+        g.order_date.skip(start as u64);
+        g.line_count.skip(start as u64);
+        for s in &mut g.lines {
+            s.skip((start * SLOTS) as u64);
+        }
+        g.index = start as i64;
+        g
     }
 
     /// Generate the next `orders` whole orders (a multiple of `LANES`) and
@@ -370,6 +395,24 @@ mod tests {
         let rows: Vec<_> = LineItemGenerator::new(SF, 1, 1).iter().take(n).collect();
         let want = crate::tpch_numeric_batch(&rows, &crate::numeric_schema_60());
         assert_eq!(cols_to_batch(got), want);
+    }
+
+    /// Starting mid-table gives the same rows as generating from the start.
+    #[test]
+    fn at_order_matches_skipping() {
+        let (skip, take) = (3 * ORDERS_PER_BLOCK + 48, 2 * ORDERS_PER_BLOCK);
+        let mut all = Cols::default();
+        let mut g = TpchLanes::new();
+        g.fill_orders(skip, &mut all);
+        let first = all.i64s[0].len();
+        g.fill_orders(take, &mut all);
+        let mut got = Cols::default();
+        TpchLanes::at_order(skip).fill_orders(take, &mut got);
+        let want = cols_to_batch(all);
+        assert_eq!(
+            cols_to_batch(got),
+            want.slice(first, want.num_rows() - first)
+        );
     }
 
     #[test]

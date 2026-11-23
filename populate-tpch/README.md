@@ -127,8 +127,8 @@ vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
 
 ### Where the time goes
 
-`cargo run -p populate-tpch --release --example stages -- 1` times each
-stage per table on one thread, and `--example columns` the Parquet encoding
+`cargo run -p populate-tpch --release --example tpch_stages -- 1` times each
+stage per table on one thread, and `--example tpch_columns` the Parquet encoding
 of each column. At SF 1, summed over the tables:
 
 | stage                                           | time   |

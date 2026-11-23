@@ -1,7 +1,7 @@
 //! Time per table and stage, on one thread: generation, `.tbl`
 //! formatting (from the Arrow batches) and Parquet encoding.
 //!
-//! `cargo run -p populate-tpch --release --example stages -- [sf]`
+//! `cargo run -p populate-tpch --release --example tpch_stages -- [sf]`
 use populate_tpch::{TableName, Tpch};
 use std::hint::black_box;
 use std::io::sink;

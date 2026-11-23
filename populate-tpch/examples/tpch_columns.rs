@@ -1,7 +1,7 @@
 //! Parquet encoding time per column of one table, on one thread, through
 //! populate-table's writer (direct encoding where it applies).
 //!
-//! `cargo run -p populate-tpch --release --example columns -- [table] [sf]`
+//! `cargo run -p populate-tpch --release --example tpch_columns -- [table] [sf]`
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use populate_table::{Chunks, write_parquet};

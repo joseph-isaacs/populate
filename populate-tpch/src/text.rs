@@ -521,7 +521,6 @@ fn segment(g: &Grammar, start: u64, end: u64, bytes: usize) -> Segment {
 /// exact, so the result is the serial pool whatever the speculation finds;
 /// in practice the two parses meet within a few sentences.
 pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
-    let t0 = std::time::Instant::now();
     let g = Grammar::new(d);
     // draws per byte, from the first sentences
     let sample = segment(&g, 0, 4096, 0);
@@ -566,9 +565,6 @@ pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
             .collect()
     };
 
-    if std::env::var_os("POOL_TIMING").is_some() {
-        eprintln!("pool segments: {:?}", t0.elapsed());
-    }
     // Stitch: segment 0 is true. Continue the true parse into each next
     // segment (into a small bridge) until it meets one of that segment's
     // sentence starts; from there the segment is the true text.
@@ -646,9 +642,6 @@ pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
         }
     });
     out.truncate(POOL_SIZE);
-    if std::env::var_os("POOL_TIMING").is_some() {
-        eprintln!("pool total: {:?}", t0.elapsed());
-    }
     out
 }
 

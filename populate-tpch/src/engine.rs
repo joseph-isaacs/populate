@@ -261,16 +261,24 @@ impl TextChunks for TpchTable {
     }
 }
 
-/// Parquet writer properties for TPC-H: dictionary encoding for text,
-/// 32-bit integers and dates; plain encoding for decimals and 64-bit keys,
-/// which have too many distinct values for a dictionary to pay. Snappy
-/// compression. Used when `write_parquet` gets no properties; start from it
+/// Parquet writer properties for TPC-H: dictionary encoding for 32-bit
+/// integers, dates and the text columns with few distinct values; plain
+/// encoding for decimals, 64-bit keys, comments, names, addresses and phone
+/// numbers, which have too many distinct values for a dictionary to pay
+/// (the writer would build one, outgrow its size limit and fall back).
+/// Snappy compression. Used when `write_parquet` gets no properties; start from it
 /// to change other settings.
 pub fn parquet_props() -> WriterPropertiesBuilder {
     let mut p = WriterProperties::builder().set_compression(Compression::SNAPPY);
     for t in TableName::ALL {
         for f in t.schema().fields() {
-            let dict = !matches!(f.data_type(), DataType::Decimal128(..) | DataType::Int64);
+            let distinct = ["comment", "name", "address", "phone"]
+                .iter()
+                .any(|s| f.name().ends_with(s))
+                && f.name() != "n_name"
+                && f.name() != "r_name";
+            let dict =
+                !distinct && !matches!(f.data_type(), DataType::Decimal128(..) | DataType::Int64);
             p = p.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), dict);
         }
     }

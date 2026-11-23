@@ -99,7 +99,24 @@ pub fn write_batch_with(
     let start = out.len();
     let mut w = Cursor(out.spare_capacity_mut().as_mut_ptr().cast::<u8>());
     let base = w.0;
+    // the long strings of view columns, to prefetch a few rows ahead: they
+    // can be anywhere (TPC-H's comments are random slices of a 300 MiB
+    // pool), and each would be a cache miss when its row comes
+    let views: Vec<&StringViewArray> = cols
+        .iter()
+        .filter_map(|(c, _)| match c {
+            Col::Str(a) if !a.data_buffers().is_empty() => Some(*a),
+            _ => None,
+        })
+        .collect();
+    const AHEAD: usize = 8;
+    let dates = &*DATES;
     for r in 0..rows {
+        if r + AHEAD < rows {
+            for a in &views {
+                prefetch_view(a, r + AHEAD);
+            }
+        }
         for (c, nulls) in &cols {
             // SAFETY: `r` is a row of the batch.
             if nulls.as_ref().is_none_or(|n| unsafe { n.get(r) }) {
@@ -112,7 +129,13 @@ pub fn write_batch_with(
                         Col::I32(v) => w.int(*v.get_unchecked(r) as i64),
                         Col::I64(v) => w.int(*v.get_unchecked(r)),
                         Col::Dec(v, s, p) => w.decimal128(*v.get_unchecked(r), *s, *p),
-                        Col::Date(v) => w.date(*v.get_unchecked(r)),
+                        Col::Date(v) => {
+                            let d = *v.get_unchecked(r);
+                            match dates.get(d.wrapping_sub(DATES_FROM) as u32 as usize) {
+                                Some(text) => w.bytes(text),
+                                None => w.date(d),
+                            }
+                        }
                         Col::Str(a) => w.view(a, r, encoding),
                     }
                 }
@@ -126,6 +149,43 @@ pub fn write_batch_with(
         let written = w.0.offset_from(base) as usize;
         debug_assert!(written <= bound);
         out.set_len(start + written);
+    }
+}
+
+/// First day of [`DATES`]: 1900-01-01.
+const DATES_FROM: i32 = -25_567;
+
+/// `YYYY-MM-DD` of every day from 1900 to 2099, a table lookup instead of
+/// the calendar arithmetic (TPC-H and TPC-DS dates are all in it).
+static DATES: std::sync::LazyLock<Vec<[u8; 10]>> = std::sync::LazyLock::new(|| {
+    (DATES_FROM..47_482)
+        .map(|d| {
+            let mut b = [0u8; MAX_NUMBER];
+            let mut c = Cursor(b.as_mut_ptr());
+            // SAFETY: a date in this range is 10 bytes
+            unsafe { c.date(d) };
+            b[..10].try_into().expect("10 bytes")
+        })
+        .collect()
+});
+
+/// Start loading the bytes of string `r` of `a` into cache, if they are
+/// not in its view.
+#[inline(always)]
+fn prefetch_view(a: &StringViewArray, r: usize) {
+    let v = a.views()[r];
+    if v as u32 > 12 {
+        let (buffer, offset) = ((v >> 64) as u32 as usize, (v >> 96) as usize);
+        if let Some(b) = a.data_buffers().get(buffer) {
+            #[cfg(target_arch = "x86_64")]
+            // SAFETY: a prefetch is only a hint; it never faults.
+            unsafe {
+                use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                _mm_prefetch::<_MM_HINT_T0>(b.as_ptr().wrapping_add(offset).cast());
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            let _ = (b, offset);
+        }
     }
 }
 

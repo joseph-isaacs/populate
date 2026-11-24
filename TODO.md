@@ -26,11 +26,10 @@ multi-threaded output equals one sequential run.
     [`populate-h2o/README.md`](populate-h2o/README.md)).
   - [ ] Parallelise the join key shuffles themselves (draws are
     sequential; only the swaps overlap).
-- [ ] **DSB** (skewed TPC-DS, on `populate-tpcds`)
-  - Find out whether DSB's code forks tpcds-kit's dsdgen.
-  - Port its skew and correlation changes into the `tpcdsgen` path, and
-    generate tables in dependency order.
-  - Test against DSB's own generator output.
+- [x] **DSB** (`populate-dsb`): DSB's dsdgen is a fork of TPC-DS dsdgen;
+  its changes are ported into a copy of tpcdsgen. All 24 tables match DSB
+  dsdgen byte for byte at SF 1, 2 and 5, chunked on all cores.
+  - Next: a DSB-aware fused sales path, as populate-tpcds has.
 - [ ] **TSBS devops / IoT** (`populate-tsbs`)
   - Reproduce Go `math/rand` and the per-host simulation for `--seed`
     determinism.

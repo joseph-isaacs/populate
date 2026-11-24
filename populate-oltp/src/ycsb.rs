@@ -21,9 +21,10 @@
 use crate::engine::{DEFAULT_BATCH_SIZE, Plan};
 use crate::rng::JavaTlr;
 use crate::strings::Views;
-use crate::text::Delimited;
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use parquet::basic::Compression;
+use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use populate_table::text::TextChunks;
 use populate_table::{Chunks, chunks};
 use std::sync::Arc;
@@ -243,11 +244,22 @@ impl Ycsb {
         cols.push(keys.finish());
         if self.data_integrity {
             let names = self.field_names();
+            let hashes: Vec<i32> = key_strs
+                .iter()
+                .map(|k| java_hash(0, k.as_bytes()))
+                .collect();
             let mut buf = Vec::new();
             for name in &names {
                 let mut v = Views::with_capacity(len, len * self.field_length);
-                for key in &key_strs {
-                    deterministic_value(key, name, self.field_length, &mut buf);
+                for (key, &h) in key_strs.iter().zip(&hashes) {
+                    buf.clear();
+                    deterministic_value(
+                        key.as_bytes(),
+                        h,
+                        name.as_bytes(),
+                        self.field_length,
+                        &mut buf,
+                    );
                     v.push(&buf);
                 }
                 cols.push(v.finish());
@@ -263,6 +275,39 @@ impl Ycsb {
             }
         }
         RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
+    }
+
+    /// Records `first..end` as TSV lines, straight from the generators.
+    fn text(&self, first: u64, end: u64, out: &mut Vec<u8>) {
+        let names = self.field_names();
+        let layout = (!self.data_integrity).then(|| RandomLayout::new(self));
+        let line = 24 + self.field_count * (self.field_length + 1);
+        out.reserve((end - first) as usize * line);
+        let mut key = String::new();
+        for j in first..end {
+            key.clear();
+            self.push_key(self.insert_start + j, &mut key);
+            out.extend_from_slice(key.as_bytes());
+            let h = java_hash(0, key.as_bytes());
+            for (f, name) in names.iter().enumerate() {
+                out.push(b'\t');
+                match &layout {
+                    None => deterministic_value(
+                        key.as_bytes(),
+                        h,
+                        name.as_bytes(),
+                        self.field_length,
+                        out,
+                    ),
+                    Some(l) => {
+                        let at = out.len();
+                        out.resize(at + self.field_length, 0);
+                        l.fill(self.tlr, j, f, &mut out[at..]);
+                    }
+                }
+            }
+            out.push(b'\n');
+        }
     }
 
     fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
@@ -283,15 +328,30 @@ impl Ycsb {
         chunks::for_each_batch(self, threads, f)
     }
 
-    /// Write the records as one Parquet file, one row group per chunk.
+    /// Parquet writer properties for YCSB: every value is distinct, so no
+    /// dictionaries (the writer would build them and fall back). Snappy.
+    /// Used when `write_parquet` gets no properties.
+    pub fn parquet_props() -> WriterPropertiesBuilder {
+        WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .set_dictionary_enabled(false)
+    }
+
+    /// Write the records as one Parquet file, one row group per chunk
+    /// (`props: None` means [`Ycsb::parquet_props`]).
     pub fn write_parquet<W: std::io::Write + Send>(
         &self,
         writer: W,
         threads: usize,
         props: Option<parquet::file::properties::WriterProperties>,
     ) -> Result<W, parquet::errors::ParquetError> {
-        let mut w =
-            crate::write_parquet_many(std::slice::from_ref(self), vec![writer], threads, props)?;
+        let props = props.unwrap_or_else(|| Self::parquet_props().build());
+        let mut w = crate::write_parquet_many(
+            std::slice::from_ref(self),
+            vec![writer],
+            threads,
+            Some(props),
+        )?;
         Ok(w.pop().expect("one writer"))
     }
 
@@ -306,11 +366,6 @@ impl Ycsb {
         Ok(w.pop().expect("one writer"))
     }
 }
-
-const TSV: Delimited = Delimited {
-    sep: b'\t',
-    null: b"",
-};
 
 impl Chunks for Ycsb {
     fn schema(&self) -> SchemaRef {
@@ -338,7 +393,7 @@ impl TextChunks for Ycsb {
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
         let (first, end) = self.plan.range(i);
-        self.generate(first, end, &mut |b| TSV.write(&b, &mut bufs[0]));
+        self.text(first, end, &mut bufs[0]);
     }
 }
 
@@ -364,21 +419,22 @@ fn java_hash(h: i32, s: &[u8]) -> i32 {
 
 /// `CoreWorkload.buildDeterministicValue(key, field)` for a constant field
 /// length `size`, into `out`.
-fn deterministic_value(key: &str, field: &str, size: usize, out: &mut Vec<u8>) {
-    out.clear();
-    out.extend_from_slice(key.as_bytes());
+/// `h` is `String.hashCode` of `key`; the value is appended to `out`.
+fn deterministic_value(key: &[u8], h: i32, field: &[u8], size: usize, out: &mut Vec<u8>) {
+    let start = out.len();
+    out.extend_from_slice(key);
     out.push(b':');
-    out.extend_from_slice(field.as_bytes());
-    let mut h = java_hash(0, out);
+    out.extend_from_slice(field);
+    let mut h = java_hash(java_hash(h, b":"), field);
     let mut b = itoa::Buffer::new();
-    while out.len() < size {
+    while out.len() - start < size {
         out.push(b':');
         h = java_hash(h, b":");
         let t = b.format(h).as_bytes();
         out.extend_from_slice(t);
         h = java_hash(h, t);
     }
-    out.truncate(size);
+    out.truncate(start + size);
 }
 
 /// Where each field's random bytes come from in the thread's int stream.
@@ -413,20 +469,35 @@ impl RandomLayout {
     #[inline]
     fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
         let at = j * self.per_record + self.at[f];
-        for (k, c) in out.chunks_mut(6).enumerate() {
-            six(tlr.int_at(at + k as u64), c);
+        let gamma = tlr.gamma();
+        let mut state = tlr.state_at(at);
+        let mut chunks = out.chunks_exact_mut(6);
+        for c in &mut chunks {
+            c.copy_from_slice(&six(JavaTlr::int_of(state)).to_le_bytes()[..6]);
+            state = state.wrapping_add(gamma);
+        }
+        let rest = chunks.into_remainder();
+        if !rest.is_empty() {
+            let n = rest.len();
+            rest.copy_from_slice(&six(JavaTlr::int_of(state)).to_le_bytes()[..n]);
         }
     }
 }
 
 /// `RandomByteIterator.fillBytesImpl`: 6 printable bytes from one int.
+///
+/// Byte `k` is `((bytes >> 5k) & mask_k) + ' '` (masks 31, 63, 95, 31,
+/// 63, 95), little-endian in the low 6 bytes of the result.
 #[inline(always)]
-fn six(bytes: i32, out: &mut [u8]) {
-    const SHIFT: [u32; 6] = [0, 5, 10, 15, 20, 25];
-    const MASK: [i32; 6] = [31, 63, 95, 31, 63, 95];
-    for (k, b) in out.iter_mut().enumerate() {
-        *b = (((bytes >> SHIFT[k]) & MASK[k]) + b' ' as i32) as u8;
-    }
+fn six(bytes: i32) -> u64 {
+    let x = bytes as u32 as u64;
+    (x & 31
+        | (x << 3) & (63 << 8)
+        | (x << 6) & (95 << 16)
+        | (x << 9) & (31 << 24)
+        | (x << 12) & (63 << 32)
+        | (x << 15) & (95 << 40))
+        + 0x2020_2020_2020
 }
 
 /// The iteration order of a `java.util.HashMap<String, _>` (default

@@ -46,6 +46,14 @@ impl Delimited {
             })
             .collect();
         let mut buf = itoa::Buffer::new();
+        // the load time is one value: format each distinct time once
+        let mut last_ts: Option<(i64, Vec<u8>)> = None;
+        let bytes: usize = batch
+            .columns()
+            .iter()
+            .map(|a| a.get_buffer_memory_size())
+            .sum();
+        out.reserve(bytes);
         for r in 0..batch.num_rows() {
             for (k, (c, nulls)) in cols.iter().enumerate() {
                 if k > 0 {
@@ -59,7 +67,15 @@ impl Delimited {
                     Col::I32(v) => out.extend_from_slice(buf.format(v[r]).as_bytes()),
                     Col::I64(v) => out.extend_from_slice(buf.format(v[r]).as_bytes()),
                     Col::Dec(v, s) => decimal(out, v[r], *s, &mut buf),
-                    Col::Ts(v) => timestamp(out, v[r], &mut buf),
+                    Col::Ts(v) => {
+                        let t = v[r];
+                        if last_ts.as_ref().is_none_or(|(l, _)| *l != t) {
+                            let mut b = Vec::new();
+                            timestamp(&mut b, t, &mut buf);
+                            last_ts = Some((t, b));
+                        }
+                        out.extend_from_slice(&last_ts.as_ref().expect("set").1);
+                    }
                     Col::Str(a) => out.extend_from_slice(a.value(r).as_bytes()),
                 }
             }

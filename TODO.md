@@ -18,11 +18,13 @@ multi-threaded output equals one sequential run.
     `ssb-dbgen`'s (`cmp`, SF 0.01 to 10), on TPC-H's streams (see
     [`populate-ssb/README.md`](populate-ssb/README.md)). Clean
     re-implementation, no ssb-dbgen code.
-- [ ] **H2O db-benchmark groupby and join** (`populate-h2o`)
-  - groupby: `id1`–`id6`, `v1`–`v3`, with N, K, NA % and sort knobs.
-  - join: LHS of N rows, RHS small / medium / big (N/1e6, N/1e3, N).
-  - Decide the match target: R's `set.seed(108)` output (needs R's Mersenne
-    Twister and `sample()`), `falsa`, or statistics only.
+- [x] **H2O db-benchmark groupby and join** (`populate-h2o`)
+  - Matches R's `set.seed(108)` output byte for byte (R's Mersenne
+    Twister, `sample()`, `round()`, data.table `fwrite`): every 1e7 data
+    set the benchmark uses and groupby `1e8_1e2_0_0`. 8–17x faster than
+    `Rscript` (see [`populate-h2o/README.md`](populate-h2o/README.md)).
+  - [ ] Parallelise the remaining sequential steps: the groupby stream
+    pass and the join key permutations.
 - [ ] **DSB** (skewed TPC-DS, on `populate-tpcds`)
   - Find out whether DSB's code forks tpcds-kit's dsdgen.
   - Port its skew and correlation changes into the `tpcdsgen` path, and

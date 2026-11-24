@@ -23,10 +23,11 @@
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
+use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::schema::types::ColumnPath;
 use populate_oltp::{
-    JavaTlr, Tpcc, TpccTable, TpccTableName, Ycsb, for_each_batch_many, write_parquet_many,
+    JavaTlr, Tpcc, TpccTable, TpccTableName, Ycsb, for_each_batch_many, tpcc, write_parquet_many,
     write_text_many,
 };
 use populate_table::Chunks;
@@ -190,7 +191,7 @@ fn tpcc(args: impl Iterator<Item = String>) -> Result<(), String> {
         })
         .collect();
     let files: Vec<String> = names.iter().map(|t| t.to_string()).collect();
-    run(&c, &tables, &files, "csv", "tpcc")
+    run(&c, &tables, &files, "csv", "tpcc", tpcc::parquet_props())
 }
 
 fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -250,7 +251,14 @@ fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
     if let Some(r) = c.row_group {
         y = y.chunk_rows(r);
     }
-    run(&c, &[y], &["usertable".to_string()], "tsv", "ycsb")
+    run(
+        &c,
+        &[y],
+        &["usertable".to_string()],
+        "tsv",
+        "ycsb",
+        Ycsb::parquet_props(),
+    )
 }
 
 fn run<T: Chunks + TextChunks>(
@@ -259,6 +267,7 @@ fn run<T: Chunks + TextChunks>(
     names: &[String],
     text_ext: &str,
     default_dir: &str,
+    props: WriterPropertiesBuilder,
 ) -> Result<(), String> {
     let out = c.out.clone().unwrap_or_else(|| default_dir.into());
     let fail = |what: &dyn std::fmt::Display, e: &dyn std::fmt::Display| -> ! {
@@ -290,10 +299,18 @@ fn run<T: Chunks + TextChunks>(
     let start = Instant::now();
     let (rows, bytes): (Vec<u64>, Vec<u64>) = match c.format {
         Format::Parquet => {
-            let props = WriterProperties::builder()
-                .set_compression(c.compression)
-                .set_dictionary_enabled(c.dictionary)
-                .build();
+            let mut props = props.set_compression(c.compression);
+            if !c.dictionary {
+                for t in tables {
+                    for f in t.schema().fields() {
+                        props = props.set_column_dictionary_enabled(
+                            ColumnPath::from(f.name().as_str()),
+                            false,
+                        );
+                    }
+                }
+            }
+            let props = props.build();
             write_parquet_many(tables, create(), c.threads, Some(props))
                 .unwrap_or_else(|e| fail(&"parquet", &e));
             paths.iter().map(|p| (parquet_rows(p), size(p))).unzip()
@@ -362,11 +379,20 @@ struct Lines<W>(W, u64);
 impl<W: Write> Write for Lines<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.0.write(buf)?;
-        self.1 += buf[..n].iter().filter(|&&b| b == b'\n').count() as u64;
+        self.1 += newlines(&buf[..n]);
         Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
     }
+}
+
+/// Newlines in `b`: counted in `u8` lanes per 255 bytes, which
+/// vectorises (a `u64` count per byte ran at ~1.4 GB/s, serially, on the
+/// file's writer).
+fn newlines(b: &[u8]) -> u64 {
+    b.chunks(255)
+        .map(|c| c.iter().fold(0u8, |n, &x| n + (x == b'\n') as u8) as u64)
+        .sum()
 }

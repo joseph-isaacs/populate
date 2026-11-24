@@ -106,3 +106,17 @@ See [`populate-ssb/README.md`](populate-ssb/README.md).
 | `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 
 See `populate/DESIGN.md` for the design.
+
+## H2O db-benchmark
+
+`populate-h2o` generates the H2O db-benchmark groupby and join data sets,
+byte-identical to the CSV its R datagen scripts write (R's Mersenne
+Twister, `sample()`, `round()` and data.table `fwrite` reproduced), as CSV,
+Arrow or Parquet, on all cores.
+
+```sh
+cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 0 --sort 0
+cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
+```
+
+See [`populate-h2o/README.md`](populate-h2o/README.md).

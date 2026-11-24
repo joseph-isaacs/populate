@@ -626,3 +626,65 @@ fn fixed_size_list_columns() {
         start += ga.num_rows() as usize;
     }
 }
+
+/// Short lists (bit-packed repetition levels) and lists of one value (a
+/// single run): same values and statistics as arrow-rs.
+#[test]
+fn short_fixed_size_lists() {
+    for n in [1, 2, 5, 15, 16] {
+        let item = Arc::new(Field::new_list_field(DataType::Float64, false));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            DataType::FixedSizeList(item.clone(), n),
+            false,
+        )]));
+        let rows = 3001;
+        let vals: Vec<f64> = (0..rows * n as usize)
+            .map(|i| (i % 97) as f64 - 40.0)
+            .collect();
+        let a = FixedSizeListArray::new(item, n, Arc::new(Float64Array::from(vals)), None);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(a)]).unwrap();
+        let d = Groups(schema.clone(), vec![vec![batch.clone()]]);
+        let props = || {
+            WriterProperties::builder()
+                .set_dictionary_enabled(false)
+                .set_data_page_size_limit(4096)
+                .build()
+        };
+        let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+        let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props())).unwrap();
+        w.write(&batch).unwrap();
+        let theirs = w.into_inner().unwrap();
+        let back = |f: Vec<u8>| -> RecordBatch {
+            let r = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(f))
+                .unwrap()
+                .build()
+                .unwrap();
+            let b: Vec<RecordBatch> = r.map(Result::unwrap).collect();
+            arrow_select::concat::concat_batches(&schema, &b).unwrap()
+        };
+        let meta = |f: &[u8]| {
+            SerializedFileReader::new(Bytes::from(f.to_vec()))
+                .unwrap()
+                .metadata()
+                .row_group(0)
+                .column(0)
+                .clone()
+        };
+        assert_eq!(back(ours.clone()), batch, "n = {n}");
+        assert_eq!(back(theirs.clone()), batch);
+        let (a, b) = (meta(&ours), meta(&theirs));
+        assert_eq!(a.statistics(), b.statistics(), "n = {n}");
+        assert_eq!(
+            a.repetition_level_histogram(),
+            b.repetition_level_histogram()
+        );
+        // levels cost no more than arrow-rs's (within a few page headers)
+        assert!(
+            ours.len() <= theirs.len() + 64,
+            "n = {n}: {} vs {}",
+            ours.len(),
+            theirs.len()
+        );
+    }
+}

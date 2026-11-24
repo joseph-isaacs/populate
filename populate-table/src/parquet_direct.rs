@@ -1,5 +1,6 @@
 //! Parquet column chunks for flat integer, timestamp, float and string
-//! columns, encoded here instead of by arrow-rs's column writer.
+//! columns, and required `FixedSizeList`s of numbers (PLAIN, in pages of
+//! whole records), encoded here instead of by arrow-rs's column writer.
 //!
 //! arrow-rs is general: it builds definition levels and a list of non-null
 //! indexes per batch, gathers values through it, and dictionary-encodes
@@ -45,8 +46,9 @@ use std::ops::Range;
 use std::ptr::null;
 use std::slice::from_raw_parts;
 
-/// Whether a flat column of type `dt`, stored as `descr`, can be encoded
-/// here under `props` (anything else goes to arrow-rs).
+/// Whether a flat column, or a required `FixedSizeList` of required
+/// numbers with its dictionary off, of type `dt`, stored as `descr`, can be
+/// encoded here under `props` (anything else goes to arrow-rs).
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
     if let DataType::FixedSizeList(item, n) = dt {
@@ -376,9 +378,7 @@ macro_rules! float_native {
                 {
                     // SAFETY: `Self` is a transparent integer: its bytes, in
                     // order, are the values' little-endian PLAIN encoding
-                    let b = unsafe {
-                        std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), size_of_val(v))
-                    };
+                    let b = unsafe { from_raw_parts(v.as_ptr().cast::<u8>(), size_of_val(v)) };
                     out.extend_from_slice(b);
                 }
                 #[cfg(not(target_endian = "little"))]
@@ -722,16 +722,26 @@ impl ChunkWriter<'_> {
         put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
         let levels = records * n;
-        let mut one = Vec::new();
-        rle(0, 1, 1, &mut one);
-        if n > 1 {
+        let mut body = Vec::with_capacity(16 + levels * 8);
+        body.extend_from_slice(&[0; 4]);
+        if n == 1 {
+            rle(0, records, 1, &mut body);
+        } else if n < 16 {
+            // short lists: bit-packed (two RLE runs per record would cost
+            // more than the bits)
+            let rep: Vec<u8> = (0..levels).map(|i| (i % n != 0) as u8).collect();
+            bitpack(&rep, 1, &mut body);
+        } else {
+            // a run of one 0, then a run of `n - 1` ones, per record
+            let mut one = Vec::new();
+            rle(0, 1, 1, &mut one);
             rle(1, n - 1, 1, &mut one);
+            for _ in 0..records {
+                body.extend_from_slice(&one);
+            }
         }
-        let mut body = Vec::with_capacity(8 + one.len() * records + 8 + levels * 8);
-        body.extend_from_slice(&((one.len() * records) as u32).to_le_bytes());
-        for _ in 0..records {
-            body.extend_from_slice(&one);
-        }
+        let len = (body.len() - 4) as u32;
+        body[..4].copy_from_slice(&len.to_le_bytes());
         let at = body.len();
         body.extend_from_slice(&[0; 4]);
         rle(1, levels, 1, &mut body);
@@ -903,13 +913,13 @@ fn list_slices<'a, T: 'a>(
 fn f32_bits(v: &[f32]) -> &[F32] {
     // SAFETY: `F32` is a transparent `u32`, of the size and alignment of
     // `f32`, and every bit pattern is valid for both
-    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), v.len()) }
+    unsafe { from_raw_parts(v.as_ptr().cast(), v.len()) }
 }
 
 /// `f64`s as [`F64`]s, in place.
 fn f64_bits(v: &[f64]) -> &[F64] {
     // SAFETY: as `f32_bits`
-    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), v.len()) }
+    unsafe { from_raw_parts(v.as_ptr().cast(), v.len()) }
 }
 
 /// Fold page minima (or maxima) into the chunk's as arrow-rs does: a NaN

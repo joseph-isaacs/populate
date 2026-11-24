@@ -18,14 +18,15 @@ use populate_table::Chunks;
 use populate_table::text::TextChunks;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
+use std::thread::scope;
 
 use crate::cols::{
-    Bits, Cursor, NA, counting_pass, first_appearance, gather, id_strings, int32, micros,
+    Bits, Cursor, NA, first_appearance, gather, id_strings, int32, micros, sort_rows, thread_count,
     write_with,
 };
 use crate::fwrite::{digits, round6_micros};
 use crate::groupby::{DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS};
-use crate::rng::{RMt, sample_int, sample_noreplace, shuffle};
+use crate::rng::{RMt, apply_shuffle, sample_int, shuffle, shuffle_draws};
 use crate::{SEED, pretty_sci};
 
 /// One generated table: key columns (`id1..`), and its value column.
@@ -83,8 +84,9 @@ struct Xlr {
 
 fn split_xlr(rng: &mut RMt, n: f64) -> Xlr {
     let dn = n * 1.1;
-    // sample.int(dn): size = asVecSize(dn), n = (int) dn
-    let key = sample_noreplace(rng, dn as u64, dn as u64);
+    // sample.int(dn): size = asVecSize(dn) = n = (int) dn, a permutation
+    let mut key: Vec<u32> = (1..=dn as u32).collect();
+    shuffle(rng, &mut key);
     let pick = |a: f64, b: f64| -> Vec<u32> { seq_idx(a, b, key.len()).map(|i| key[i]).collect() };
     Xlr {
         x: pick(1.0, n * 0.9),
@@ -93,41 +95,105 @@ fn split_xlr(rng: &mut RMt, n: f64) -> Xlr {
     }
 }
 
-/// The script's `sample_all(x, size)`: every value of `x`, then
-/// `size - length(x)` draws from it, shuffled.
-fn sample_all(rng: &mut RMt, a: &[u32], b: &[u32], size: f64) -> Vec<u32> {
-    let x: Vec<u32> = a.iter().chain(b).copied().collect();
-    assert!(x.len() as f64 <= size);
-    let more = (size - x.len() as f64).max(0.0) as usize;
-    let mut y = Vec::with_capacity(x.len() + more);
-    y.extend_from_slice(&x);
-    let mut idx = vec![0u32; more];
-    rng.fill_index(x.len() as u64, &mut idx);
-    y.extend(idx.iter().map(|&i| x[i as usize]));
-    shuffle(rng, &mut y);
-    y
+/// The draws of the script's `sample_all(x, size)` (every value of `x`,
+/// then `size - length(x)` draws from it, shuffled), made sequentially;
+/// [`SampleAll::build`] makes the column from them, on any thread.
+struct SampleAll {
+    x: Vec<u32>,
+    idx: Vec<u32>,
+    js: Vec<u32>,
 }
 
-/// `round(runif(n, max = 100), 6)` as micros.
+impl SampleAll {
+    fn draw(rng: &mut RMt, a: &[u32], b: &[u32], size: f64) -> Self {
+        let x: Vec<u32> = a.iter().chain(b).copied().collect();
+        assert!(x.len() as f64 <= size);
+        let more = (size - x.len() as f64).max(0.0) as usize;
+        let mut idx = vec![0u32; more];
+        rng.fill_index(x.len() as u64, &mut idx);
+        let js = shuffle_draws(rng, x.len() + more);
+        SampleAll { x, idx, js }
+    }
+
+    fn build(self) -> Vec<u32> {
+        let mut y = self.x.clone();
+        y.extend(self.idx.iter().map(|&i| self.x[i as usize]));
+        drop(self.idx);
+        apply_shuffle(&mut y, &self.js);
+        y
+    }
+}
+
+/// `sample_all` for each of `keys`' columns: draws in order, then the
+/// columns built in parallel.
+fn sample_all_cols(rng: &mut RMt, keys: &[(&[u32], &[u32])], size: f64) -> Vec<Vec<u32>> {
+    scope(|s| {
+        // each column is built while the next one's draws are made
+        let hs: Vec<_> = keys
+            .iter()
+            .map(|(a, b)| {
+                let d = SampleAll::draw(rng, a, b, size);
+                s.spawn(|| d.build())
+            })
+            .collect();
+        hs.into_iter()
+            .map(|h| h.join().expect("sample_all"))
+            .collect()
+    })
+}
+
+#[cfg(test)]
+fn sample_all(rng: &mut RMt, a: &[u32], b: &[u32], size: f64) -> Vec<u32> {
+    SampleAll::draw(rng, a, b, size).build()
+}
+
+/// `round(runif(n, max = 100), 6)` as micros. One draw each, so the
+/// generator skips to each thread's first row and the threads fill their
+/// parts in parallel.
 fn values(rng: &mut RMt, n: usize) -> Vec<u32> {
-    let mut u = vec![0f64; n];
-    rng.fill_unif(&mut u);
-    u.iter().map(|&u| round6_micros(100.0 * u) as u32).collect()
+    let mut out = vec![0u32; n];
+    let per = n.div_ceil(thread_count(0)).max(1);
+    let starts: Vec<RMt> = out
+        .chunks(per)
+        .map(|c| {
+            let at = rng.clone();
+            rng.skip(c.len() as u64);
+            at
+        })
+        .collect();
+    scope(|s| {
+        for (part, mut r) in out.chunks_mut(per).zip(starts) {
+            s.spawn(move || {
+                let mut u = [0f64; 1024];
+                for part in part.chunks_mut(1024) {
+                    let u = &mut u[..part.len()];
+                    r.fill_unif(u);
+                    for (d, &u) in part.iter_mut().zip(u.iter()) {
+                        *d = round6_micros(100.0 * u) as u32;
+                    }
+                }
+            });
+        }
+    });
+    out
 }
 
 /// `setkeyv(d, cols)`: stable sort of the rows by `keys` (indices into
 /// `ids`), first most significant.
 fn sort_by(ids: &mut [Vec<u32>], keys: &[usize]) {
     let n = ids[0].len();
-    let mut perm: Vec<u32> = (0..n as u32).collect();
-    for &c in keys.iter().rev() {
-        let col = &ids[c];
-        let max = col.iter().copied().max().unwrap_or(0) as usize;
-        counting_pass(&mut perm, max + 1, |r| col[r as usize]);
-    }
-    for c in ids.iter_mut() {
-        *c = gather(c, &perm);
-    }
+    let domains: Vec<u64> = keys
+        .iter()
+        .map(|&c| ids[c].iter().copied().max().unwrap_or(0) as u64 + 1)
+        .collect();
+    let ranks = vec![None; keys.len()];
+    let perm = sort_rows(n, |k, r| ids[keys[k]][r], &ranks, &domains, 0);
+    scope(|s| {
+        for c in ids.iter_mut() {
+            let perm = &perm;
+            s.spawn(move || *c = gather(c, perm));
+        }
+    });
 }
 
 impl Join {
@@ -183,10 +249,8 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
     let keys: Vec<Xlr> = sizes.iter().map(|&s| split_xlr(&mut rng, s)).collect();
 
     // left
-    let mut ids: Vec<Vec<u32>> = keys
-        .iter()
-        .map(|k| sample_all(&mut rng, &k.x, &k.l, nf))
-        .collect();
+    let lhs: Vec<(&[u32], &[u32])> = keys.iter().map(|k| (&k.x[..], &k.l[..])).collect();
+    let mut ids = sample_all_cols(&mut rng, &lhs, nf);
     if sort {
         sort_by(&mut ids, &[0, 1, 2]);
     }
@@ -227,10 +291,8 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
 
     // right: small (id1), medium (id1, id2; key id2), big (key id3)
     for (t, &size) in sizes.iter().enumerate() {
-        let mut ids: Vec<Vec<u32>> = keys[..=t]
-            .iter()
-            .map(|k| sample_all(&mut rng, &k.x, &k.r, size))
-            .collect();
+        let rhs: Vec<(&[u32], &[u32])> = keys[..=t].iter().map(|k| (&k.x[..], &k.r[..])).collect();
+        let mut ids = sample_all_cols(&mut rng, &rhs, size);
         if sort {
             sort_by(&mut ids, &[t]);
         }

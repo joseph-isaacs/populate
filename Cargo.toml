@@ -8,6 +8,8 @@ members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-oltp",
+    "populate-synth",
     "populate-ldbc",
     "populate-bench",
 ]
@@ -23,6 +25,8 @@ default-members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-oltp",
+    "populate-synth",
     "populate-ldbc",
 ]
 resolver = "2"
@@ -49,6 +53,8 @@ populate-sink-parquet = { path = "populate-sink-parquet" }
 populate-table = { path = "populate-table" }
 populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
+populate-oltp = { path = "populate-oltp" }
+populate-synth = { path = "populate-synth" }
 populate-ldbc = { path = "populate-ldbc" }
 
 # populate-ldbc's tests generate ~2 GB of data: optimise the crate itself

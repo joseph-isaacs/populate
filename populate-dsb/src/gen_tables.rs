@@ -4,6 +4,7 @@
 use crate::TableName;
 use crate::dat::{self, Encoding};
 use crate::direct;
+use crate::pairs::Channel;
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
@@ -403,8 +404,8 @@ pub fn for_each_batch_many(
     r.unwrap_or_else(|e| match e {});
 }
 
-/// One job source: a table. `idx` lists its outputs, so that a sales
-/// table and its returns could share one pass; today each unit has one.
+/// One job source: a table, or a sales table and its returns generated
+/// together.
 struct Unit<'a> {
     tables: &'a [DsTable],
     /// Indexes into `tables` of this unit's outputs.
@@ -414,15 +415,42 @@ struct Unit<'a> {
     raw: bool,
 }
 
-/// Units for `tables`, in order: one per table.
+/// Units for `tables`, in order; a sales table and its returns with the
+/// same chunks and batch size become one unit (sales first) at the first
+/// one's place.
 fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
-    (0..tables.len())
-        .map(|i| Unit {
-            tables,
-            idx: vec![i],
-            raw,
-        })
-        .collect()
+    // partner[i]: the table generated together with tables[i]
+    let mut partner = vec![None; tables.len()];
+    for (i, a) in tables.iter().enumerate() {
+        for (j, b) in tables.iter().enumerate() {
+            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
+                (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
+                _ => false,
+            };
+            if same_channel
+                && a.chunk_source_rows == b.chunk_source_rows
+                && a.source_rows == b.source_rows
+                && a.batch_size == b.batch_size
+            {
+                partner[i] = Some(j);
+            }
+        }
+    }
+    // pair only tables that chose each other (a table listed twice pairs once)
+    let partner: Vec<Option<usize>> = (0..tables.len())
+        .map(|i| partner[i].filter(|&j| partner[j] == Some(i)))
+        .collect();
+    let mut units = Vec::new();
+    for (i, t) in tables.iter().enumerate() {
+        let idx = match partner[i] {
+            Some(j) if j < i => continue,
+            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
+            Some(j) => vec![j, i],
+            None => vec![i],
+        };
+        units.push(Unit { tables, idx, raw });
+    }
+    units
 }
 
 impl Unit<'_> {
@@ -444,6 +472,12 @@ impl MultiChunks for Unit<'_> {
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
+        if self.idx.len() == 2 {
+            // `idx` is sales, returns: the channel's outputs 0 and 1
+            let (channel, _) = Channel::of(t.name).expect("a channel");
+            let batch = if self.raw { GEN_BATCH } else { t.batch_size };
+            return channel.run(&t.session, t.source_rows, first, last, batch, emit);
+        }
         if self.raw {
             t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
         } else {

@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatchReader;
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{CatalogSalesRow, CatalogSalesRowGenerator};
 use dsbgen::types::{Decimal, Pricing};
+use std::mem::take;
 use std::sync::{Arc, LazyLock};
 
 /// Generate [`CatalogSalesRow`]s in [`RecordBatch`] format
@@ -17,7 +18,8 @@ use std::sync::{Arc, LazyLock};
 /// Buffers can be recycled if the consumer drops each [`RecordBatch`] before
 /// generating the next one.
 pub struct CatalogSalesArrow {
-    inner: CatalogSalesRowGenerator,
+    /// `None` for a [`Self::converter`].
+    inner: Option<CatalogSalesRowGenerator>,
     batch_size: usize,
     // reused allocations across batches
     scratch: Vec<CatalogSalesRow>,
@@ -66,7 +68,16 @@ impl CatalogSalesArrow {
     pub fn new(session: Session) -> Self {
         let row_count = session.get_scaling().get_row_count(Table::CatalogSales);
         Self {
-            inner: CatalogSalesRowGenerator::new(session, row_count),
+            inner: Some(CatalogSalesRowGenerator::new(session, row_count)),
+            ..Self::converter()
+        }
+    }
+
+    /// Converts rows made elsewhere ([`Self::batch_from_rows`]); it
+    /// generates none itself.
+    pub fn converter() -> Self {
+        Self {
+            inner: None,
             batch_size: DEFAULT_BATCH_SIZE,
             scratch: Vec::with_capacity(DEFAULT_BATCH_SIZE),
             cs_sold_date_sk: PrimitiveArrayRecycler::new(),
@@ -107,6 +118,8 @@ impl CatalogSalesArrow {
     }
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .skip_rows_until_starting_row_number(starting_row_number);
     }
 
@@ -119,6 +132,8 @@ impl CatalogSalesArrow {
         ending_row_number: u64,
     ) -> Self {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .set_source_row_range(starting_row_number, ending_row_number);
         self
     }
@@ -141,12 +156,20 @@ impl Iterator for CatalogSalesArrow {
     fn next(&mut self) -> Option<Self::Item> {
         self.scratch.clear();
         self.scratch
-            .extend(self.inner.by_ref().take(self.batch_size));
-        let rows = &self.scratch;
-        if rows.is_empty() {
+            .extend(self.inner.as_mut()?.by_ref().take(self.batch_size));
+        if self.scratch.is_empty() {
             return None;
         }
+        let rows = take(&mut self.scratch);
+        let batch = self.batch_from_rows(&rows);
+        self.scratch = rows;
+        Some(batch)
+    }
+}
 
+impl CatalogSalesArrow {
+    /// The batch of `rows`, made with this generator's recycled buffers.
+    pub fn batch_from_rows(&mut self, rows: &[CatalogSalesRow]) -> Result<RecordBatch, ArrowError> {
         let schema = self.schema();
         let Self {
             cs_sold_date_sk,
@@ -255,7 +278,7 @@ impl Iterator for CatalogSalesArrow {
         );
         let cs_net_profit = dec(cs_net_profit, 33, Pricing::get_net_profit);
 
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(cs_sold_date_sk),
@@ -293,8 +316,7 @@ impl Iterator for CatalogSalesArrow {
                 Arc::new(cs_net_paid_inc_ship_tax),
                 Arc::new(cs_net_profit),
             ],
-        );
-        Some(batch)
+        )
     }
 }
 

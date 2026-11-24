@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatchReader;
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{WebReturnsRow, WebReturnsRowGenerator};
 use dsbgen::types::{Decimal, Pricing};
+use std::mem::take;
 use std::sync::{Arc, LazyLock};
 
 /// Generate [`WebReturnsRow`]s in [`RecordBatch`] format
@@ -17,7 +18,8 @@ use std::sync::{Arc, LazyLock};
 /// Buffers can be recycled if the consumer drops each [`RecordBatch`] before
 /// generating the next one.
 pub struct WebReturnsArrow {
-    inner: WebReturnsRowGenerator,
+    /// `None` for a [`Self::converter`].
+    inner: Option<WebReturnsRowGenerator>,
     batch_size: usize,
     // reused allocations across batches
     scratch: Vec<WebReturnsRow>,
@@ -56,7 +58,16 @@ impl WebReturnsArrow {
     pub fn new(session: Session) -> Self {
         let row_count = session.get_scaling().get_row_count(Table::WebReturns);
         Self {
-            inner: WebReturnsRowGenerator::new(session, row_count),
+            inner: Some(WebReturnsRowGenerator::new(session, row_count)),
+            ..Self::converter()
+        }
+    }
+
+    /// Converts rows made elsewhere ([`Self::batch_from_rows`]); it
+    /// generates none itself.
+    pub fn converter() -> Self {
+        Self {
+            inner: None,
             batch_size: DEFAULT_BATCH_SIZE,
             scratch: Vec::with_capacity(DEFAULT_BATCH_SIZE),
             wr_returned_date_sk: PrimitiveArrayRecycler::new(),
@@ -87,6 +98,8 @@ impl WebReturnsArrow {
     }
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .skip_rows_until_starting_row_number(starting_row_number);
     }
 
@@ -99,6 +112,8 @@ impl WebReturnsArrow {
         ending_row_number: u64,
     ) -> Self {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .set_source_row_range(starting_row_number, ending_row_number);
         self
     }
@@ -121,12 +136,20 @@ impl Iterator for WebReturnsArrow {
     fn next(&mut self) -> Option<Self::Item> {
         self.scratch.clear();
         self.scratch
-            .extend(self.inner.by_ref().take(self.batch_size));
-        let rows = &self.scratch;
-        if rows.is_empty() {
+            .extend(self.inner.as_mut()?.by_ref().take(self.batch_size));
+        if self.scratch.is_empty() {
             return None;
         }
+        let rows = take(&mut self.scratch);
+        let batch = self.batch_from_rows(&rows);
+        self.scratch = rows;
+        Some(batch)
+    }
+}
 
+impl WebReturnsArrow {
+    /// The batch of `rows`, made with this generator's recycled buffers.
+    pub fn batch_from_rows(&mut self, rows: &[WebReturnsRow]) -> Result<RecordBatch, ArrowError> {
         let schema = self.schema();
         let Self {
             wr_returned_date_sk,
@@ -236,7 +259,7 @@ impl Iterator for WebReturnsArrow {
         let wr_account_credit = dec(wr_account_credit, 22, Pricing::get_store_credit);
         let wr_net_loss = dec(wr_net_loss, 23, Pricing::get_net_loss);
 
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(wr_returned_date_sk),
@@ -264,8 +287,7 @@ impl Iterator for WebReturnsArrow {
                 Arc::new(wr_account_credit),
                 Arc::new(wr_net_loss),
             ],
-        );
-        Some(batch)
+        )
     }
 }
 

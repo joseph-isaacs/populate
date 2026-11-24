@@ -116,15 +116,8 @@ impl<C: GeneratorColumn> AbstractRowGenerator<C> {
 
     /// Consume remaining seeds for all streams (AbstractRowGenerator.consumeRemainingSeedsForRow)
     pub fn consume_remaining_seeds_for_row(&mut self) {
-        use crate::random::RandomValueGenerator;
-
         for stream in self.random_number_streams.iter_mut() {
-            // Consume remaining seeds until each stream has used its full seeds_per_row allocation
-            while stream.get_seeds_used() < stream.get_seeds_per_row() {
-                RandomValueGenerator::generate_uniform_random_int(1, 100, stream);
-            }
-            // Reset seeds used count for next row
-            stream.reset_seeds_used();
+            stream.finish_row();
         }
     }
 

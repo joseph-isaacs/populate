@@ -37,6 +37,17 @@ impl RandomNumberStream {
     }
 }
 
+/// `16807^k mod (2^31 - 1)`: `k` Lehmer steps as one multiplication.
+static POW: [i64; 256] = {
+    let mut p = [1i64; 256];
+    let mut k = 1;
+    while k < 256 {
+        p[k] = p[k - 1] * 16807 % i32::MAX as i64;
+        k += 1;
+    }
+    p
+};
+
 impl RandomNumberStream {
     // https://en.wikipedia.org/wiki/Lehmer_random_number_generator
     pub fn next_random(&mut self) -> i64 {
@@ -74,6 +85,22 @@ impl RandomNumberStream {
         }
 
         self.seed = next_seed;
+        self.seeds_used = 0;
+    }
+
+    /// Burn the rest of this row's budget, as drawing until `seeds_used`
+    /// reaches `seeds_per_row` would (nothing if the row overran), and
+    /// start the next row's count.
+    #[inline]
+    pub fn finish_row(&mut self) {
+        if self.seeds_used < self.seeds_per_row {
+            let left = (self.seeds_per_row - self.seeds_used) as usize;
+            if left < POW.len() {
+                self.seed = self.seed * POW[left] % i32::MAX as i64;
+            } else {
+                self.advance(left as u64);
+            }
+        }
         self.seeds_used = 0;
     }
 
@@ -143,6 +170,27 @@ impl RandomNumberStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finish_row_burns_like_drawing() {
+        for per in [1u32, 2, 7, 100, 255, 256, 300, 1000] {
+            for used in [0u32, 1, 5, 99, 254, 255, 299, 1001] {
+                let mut fast = RandomNumberStream::new_with_column(5, per);
+                let mut slow = fast.clone();
+                for _ in 0..used {
+                    fast.next_random();
+                    slow.next_random();
+                }
+                fast.finish_row();
+                while slow.get_seeds_used() < slow.get_seeds_per_row() {
+                    slow.next_random();
+                }
+                slow.reset_seeds_used();
+                assert_eq!(fast.seed(), slow.seed(), "per {per} used {used}");
+                assert_eq!(fast.get_seeds_used(), 0);
+            }
+        }
+    }
 
     #[test]
     fn test_random_stream_creation() {

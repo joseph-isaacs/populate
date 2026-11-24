@@ -10,6 +10,8 @@
 //!   top 16 bits of `y`), as `bits / 16 + 1` draws, and rejects values
 //!   `>= n`. So every attempt for one `n` takes the same number of draws.
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
 use std::fmt::{self, Debug, Formatter};
 
 /// MT19937 state size.
@@ -163,6 +165,35 @@ impl RMt {
                     });
                 }
             }
+            2 => {
+                let mask = s.mask as u32;
+                while i < out.len() {
+                    if self.mti >= N {
+                        self.regen();
+                    }
+                    if N - self.mti < 2 {
+                        // an attempt straddles two blocks
+                        out[i] = self.unif_index(range) as u32;
+                        i += 1;
+                        continue;
+                    }
+                    let o = &mut out[i..];
+                    let ys = &self.mt[self.mti..];
+                    let mut used = 0;
+                    let mut k = 0;
+                    for p in ys.chunks_exact(2) {
+                        used += 2;
+                        let v = (((temper(p[0]) >> 16) << 16) | (temper(p[1]) >> 16)) & mask;
+                        o[k] = v;
+                        k += (v < n) as usize;
+                        if k == o.len() {
+                            break;
+                        }
+                    }
+                    self.mti += used;
+                    i += k;
+                }
+            }
             _ => {
                 for o in out {
                     *o = self.unif_index(range) as u32;
@@ -175,6 +206,49 @@ impl RMt {
     /// same stream position as [`fill_index`](Self::fill_index).
     pub fn skip_index(&mut self, range: u64, mut n: u64) {
         let s = Sampler::new(range);
+        if s.draws == 2 {
+            let mask = s.mask as u32;
+            let r = range as u32;
+            while n > 0 {
+                if self.mti >= N {
+                    self.regen();
+                }
+                if N - self.mti < 2 {
+                    self.unif_index(range);
+                    n -= 1;
+                    continue;
+                }
+                let ys = &self.mt[self.mti..];
+                let pairs = ys.len() / 2;
+                if (pairs as u64) < n {
+                    // can't run out in this block: count accepts, no exit test
+                    let mut t = [0u32; N];
+                    for (t, &y) in t.iter_mut().zip(ys) {
+                        *t = temper(y);
+                    }
+                    let hit = t[..2 * pairs]
+                        .chunks_exact(2)
+                        .map(|p| ((((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask) < r) as u32)
+                        .sum::<u32>() as u64;
+                    if hit < n {
+                        n -= hit;
+                        self.mti += 2 * pairs;
+                        continue;
+                    }
+                }
+                let mut used = 0;
+                for p in ys.chunks_exact(2) {
+                    used += 2;
+                    let v = (((temper(p[0]) >> 16) << 16) | (temper(p[1]) >> 16)) & mask;
+                    n -= (v < r) as u64;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                self.mti += used;
+            }
+            return;
+        }
         if s.draws != 1 {
             for _ in 0..n {
                 self.unif_index(range);
@@ -184,6 +258,22 @@ impl RMt {
         let mask = s.mask as u32;
         let r = range as u32;
         while n > 0 {
+            if self.mti >= N {
+                self.regen();
+            }
+            let ys = &self.mt[self.mti..];
+            if (ys.len() as u64) < n {
+                // can't run out in this block: count accepts, no exit test
+                let hit = ys
+                    .iter()
+                    .map(|&y| (((temper(y) >> 16) & mask) < r) as u32)
+                    .sum::<u32>() as u64;
+                if hit < n {
+                    n -= hit;
+                    self.mti = N;
+                    continue;
+                }
+            }
             self.with_block(|ys| {
                 let mut used = 0;
                 for &y in ys {
@@ -290,19 +380,99 @@ pub fn sample_noreplace(rng: &mut RMt, n: u64, k: u64) -> Vec<u32> {
 /// moves the last live element into its place. Done on the values
 /// themselves, as swaps, the taken values collect at the end in reverse.
 pub fn shuffle(rng: &mut RMt, v: &mut [u32]) {
-    let n = v.len();
+    let js = shuffle_draws(rng, v.len());
+    apply_shuffle(v, &js);
+}
+
+/// The draws of `sample.int(n)`: `R_unif_index(m)` for `m = n, n-1, ..,
+/// 1`. They depend only on the generator, so they can be made first and
+/// the (memory-bound) swaps applied later, on another thread.
+pub fn shuffle_draws(rng: &mut RMt, n: usize) -> Vec<u32> {
     if n < 2 {
         // k < 2: one draw, no reordering
         if n == 1 {
             rng.unif_index(1);
         }
+        return vec![];
+    }
+    // draw `i` is for m = n - i
+    let mut out = vec![0u32; n];
+    let mut m = n as u64;
+    while m > 0 {
+        // every m down to the next power of two draws the same bits
+        let s = Sampler::new(m);
+        let low = if m == 1 { 0 } else { (s.mask >> 1) + 1 };
+        if s.draws != 2 {
+            for mm in (low + 1..=m).rev() {
+                out[n - mm as usize] = rng.unif_index(mm) as u32;
+            }
+            m = low;
+            continue;
+        }
+        let mask = s.mask as u32;
+        while m > low {
+            if rng.mti >= N {
+                rng.regen();
+            }
+            if N - rng.mti < 2 {
+                // an attempt straddles two blocks
+                out[n - m as usize] = rng.unif_index(m) as u32;
+                m -= 1;
+                continue;
+            }
+            // temper the rest of the block, then take pairs branch-free:
+            // an accepted value is kept and moves on to the next m
+            let ys = &rng.mt[rng.mti..];
+            let mut t = [0u32; N];
+            for (t, &y) in t.iter_mut().zip(ys) {
+                *t = temper(y);
+            }
+            let mut used = 0;
+            for p in t[..ys.len() / 2 * 2].chunks_exact(2) {
+                used += 2;
+                let v = ((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask;
+                let hit = (v as u64) < m;
+                out[n - m as usize] = v;
+                m -= hit as u64;
+                if m == low {
+                    break;
+                }
+            }
+            rng.mti += used;
+        }
+    }
+    out
+}
+
+/// Apply [`shuffle_draws`] to `v` (of the same length, or length < 2).
+pub fn apply_shuffle(v: &mut [u32], js: &[u32]) {
+    let n = v.len();
+    if n < 2 {
         return;
     }
-    for m in (1..=n).rev() {
-        let j = rng.unif_index(m as u64) as usize;
-        v.swap(j, m - 1);
+    assert_eq!(js.len(), n);
+    // prefetch the elements a few swaps ahead: the swaps are random
+    // accesses into an array much larger than cache
+    const AHEAD: usize = 16;
+    for (t, &j) in js.iter().enumerate() {
+        if let Some(&a) = js.get(t + AHEAD) {
+            prefetch(&v[a as usize]);
+        }
+        v.swap(j as usize, n - t - 1);
     }
     v.reverse();
+}
+
+/// Hint that `*p` will be read soon.
+#[inline(always)]
+fn prefetch<T>(p: &T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetching is a hint; any address is allowed
+    unsafe {
+        _mm_prefetch(p as *const T as *const i8, _MM_HINT_T0)
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = p;
 }
 
 /// `sample.int(n, k)` by R's hashing algorithm (`do_sample2`), used when
@@ -392,7 +562,7 @@ mod tests {
 
     #[test]
     fn shuffle_is_sample() {
-        for n in [1u64, 2, 3, 10, 1000] {
+        for n in [1u64, 2, 3, 10, 1000, 65_537, 300_000] {
             let mut a = RMt::set_seed(3);
             let mut b = a.clone();
             let perm = sample_noreplace(&mut a, n, n);
@@ -405,8 +575,32 @@ mod tests {
     }
 
     #[test]
+    fn fast_fills_match_unif_index() {
+        for range in [
+            2u64,
+            100,
+            65_536,
+            65_537,
+            100_000,
+            10_000_000,
+            2_147_483_647,
+        ] {
+            for offset in [0u64, 1, 623] {
+                let mut a = RMt::set_seed(11);
+                a.skip(offset);
+                let mut b = a.clone();
+                let mut v = vec![0u32; 3001];
+                a.fill_index(range, &mut v);
+                let want: Vec<u32> = (0..3001).map(|_| b.unif_index(range) as u32).collect();
+                assert_eq!(v, want, "range {range} offset {offset}");
+                assert_eq!(a.next_u32(), b.next_u32());
+            }
+        }
+    }
+
+    #[test]
     fn skip_matches_draws() {
-        for range in [2u64, 5, 100, 1000, 65_536, 100_000] {
+        for range in [2u64, 5, 100, 1000, 65_536, 100_000, 10_000_000] {
             let mut a = RMt::set_seed(7);
             let mut b = a.clone();
             let mut v = vec![0u32; 5000];

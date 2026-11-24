@@ -172,10 +172,10 @@ impl Join {
 fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
     let nf = n as f64;
     let mut rng = RMt::set_seed(SEED);
-    let data_name = format!("J1_{}_NA_{}_{}", pretty_sci(n), nas, sort as u8);
+    let x_name = pretty_sci(n);
+    let data_name = format!("J1_{x_name}_NA_{nas}_{}", sort as u8);
     // join_to_tbls: the right tables are named from the left's name,
     // `<d>e<p>`, as `<d>e<p - 6>`, `<d>e<p - 3>`, `<d>e<p>`
-    let x_name = pretty_sci(n);
     let (d, p) = x_name.split_once('e').expect("pretty name");
     let p: u32 = p.parse().expect("exponent");
     let right_names = [p - 6, p - 3, p].map(|e| format!("{d}e{e}"));

@@ -25,7 +25,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_table::Chunks;
 use populate_table::table::par_ordered;
-use populate_table::text::TextChunks;
+use populate_table::text::{TextChunks, write_text_many};
 use std::convert::Infallible;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Write};
@@ -465,7 +465,7 @@ impl GroupBy {
 
     /// Write the CSV `fwrite` writes, on `threads` threads (0 = all cores).
     pub fn write_csv<W: Write + Send>(&self, w: W, threads: usize) -> io::Result<W> {
-        let mut v = populate_table::text::write_text_many(&[self], vec![w], threads)?;
+        let mut v = write_text_many(&[self], vec![w], threads)?;
         Ok(v.pop().expect("one writer"))
     }
 }

@@ -172,7 +172,9 @@ impl<S: Shape> Synth<S> {
     }
 
     /// Generate and encode on `threads` threads into one Parquet file, one
-    /// row group per chunk ([`Synth::parquet_props`] if `props` is `None`).
+    /// row group per chunk. `None` uses [`Synth::parquet_props`]; given
+    /// `props` are used as they are, so start from `parquet_props` to keep
+    /// the shape's plain columns.
     pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,

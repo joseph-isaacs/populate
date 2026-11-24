@@ -4,8 +4,8 @@
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    Date32Type, Decimal128Type, Int8Type, Int16Type, Int32Type, Int64Type,
-    TimestampMicrosecondType, TimestampSecondType,
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
+    Int64Type, TimestampMicrosecondType, TimestampSecondType,
 };
 use arrow_array::{
     Array, ArrayRef, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array,
@@ -422,4 +422,39 @@ fn equal_views_in_different_batches_are_different_strings() {
     };
     let want = [strings(one.column(0)), strings(two.column(0))].concat();
     assert_eq!(strings(got.column(0)), want);
+}
+
+/// A NaN among values of a narrow range: the dictionary must still cover
+/// the NaN (statistics leave it out).
+#[test]
+fn nan_with_a_narrow_range() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Float32, false),
+        Field::new("b", DataType::Float64, true),
+    ]));
+    let a = Float32Array::from(vec![1.0, f32::NAN, 1.0, 1.5]);
+    let b = Float64Array::from(vec![Some(2.0), Some(-f64::NAN), None, Some(2.0)]);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap();
+    let d = Groups(schema, vec![vec![batch.clone()]]);
+    let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let back = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(ours))
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let bits = |b: &RecordBatch| {
+        let a: Vec<u32> = b
+            .column(0)
+            .as_primitive::<Float32Type>()
+            .values()
+            .iter()
+            .map(|x| x.to_bits())
+            .collect();
+        let c = b.column(1).as_primitive::<Float64Type>();
+        let b: Vec<Option<u64>> = c.iter().map(|x| x.map(f64::to_bits)).collect();
+        (a, b)
+    };
+    assert_eq!(bits(&back), bits(&batch));
 }

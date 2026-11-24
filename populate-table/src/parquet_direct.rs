@@ -650,7 +650,18 @@ fn encode<T: Native>(
         Some((lo, hi)) => (Some(lo), Some(hi)),
         None => (None, None),
     };
-    let plan = plan(v, props, path, lo.zip(hi));
+    // the dictionary's direct table spans every value, NaNs included
+    // (statistics leave them out)
+    let span = if T::FLOAT {
+        (!v.vals.is_empty()).then(|| {
+            let lo = v.vals.iter().copied().fold(T::MAX, Ord::min);
+            let hi = v.vals.iter().copied().fold(T::MIN, Ord::max);
+            (lo, hi)
+        })
+    } else {
+        lo.zip(hi)
+    };
+    let plan = plan(v, props, path, span);
     let mut sink = TrackedWrite::new(Vec::new());
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(entries) = &plan.entries {
@@ -1279,8 +1290,13 @@ impl<T: Native> Dict<T> {
             0
         } else {
             // load factor at most 1/2 for the entries the chunk can reach
+            // up to 2^16 slots (1 MiB of 16-byte slots); bigger
+            // dictionaries grow from there
             let most = n.min(cap).max(1);
-            (2 * most).next_power_of_two().trailing_zeros().max(10)
+            (2 * most)
+                .next_power_of_two()
+                .trailing_zeros()
+                .clamp(10, 16)
         };
         Self {
             entries: Vec::new(),

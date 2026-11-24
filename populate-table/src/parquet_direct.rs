@@ -662,11 +662,12 @@ fn encode<T: Native>(
         lo.zip(hi)
     };
     let plan = plan(v, props, path, span);
-    // all PLAIN: room for the whole chunk up front (an upper bound when
-    // compressed), so it isn't copied as it grows
+    // all PLAIN and uncompressed: room for the whole chunk up front, so it
+    // isn't copied as it grows (compressed chunks can be far smaller)
+    let plain = props.compression(path) == Compression::UNCOMPRESSED;
     let cap = match plan.entries {
-        None => v.vals.len() * T::SIZE + v.rows / 8 + 64 * plan.pages.len() + 1024,
-        Some(_) => 0,
+        None if plain => v.vals.len() * T::SIZE + v.rows / 8 + 64 * plan.pages.len() + 1024,
+        _ => 0,
     };
     let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
@@ -1084,13 +1085,14 @@ fn encode_bytes(
 ) -> Result<(Bytes, ColumnCloseResult)> {
     let path = descr.path();
     let (pages, dict, idx) = plan_bytes(v, keys, props, path);
-    // as in `encode`: room for an all-PLAIN chunk up front
+    // as in `encode`: room for an all-PLAIN uncompressed chunk up front
+    let plain = props.compression(path) == Compression::UNCOMPRESSED;
     let cap = match dict {
-        None => {
+        None if plain => {
             let bytes: usize = v.vals.iter().map(|x| 4 + x.len()).sum();
             bytes + v.rows / 8 + 64 * pages.len() + 1024
         }
-        Some(_) => 0,
+        _ => 0,
     };
     let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);

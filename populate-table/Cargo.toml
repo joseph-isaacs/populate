@@ -30,6 +30,10 @@ arrow-select = "60"
 name = "table"
 required-features = ["parquet"]
 
+[[example]]
+name = "plain_strings"
+required-features = ["parquet"]
+
 [[test]]
 name = "parquet_direct"
 required-features = ["parquet"]

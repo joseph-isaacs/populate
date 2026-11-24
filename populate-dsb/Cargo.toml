@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# the CLI's allocator (feature `mimalloc`, on by default; the library
+# itself doesn't use it)
+mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-table = { workspace = true, features = ["parquet"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
@@ -15,6 +18,10 @@ parquet = { workspace = true, features = ["arrow", "snap"] }
 # tpcdsgen 4.0 (Apache-2.0, tpchgen-rs project) with DSB's dsdgen changes
 dsbgen = { path = "dsbgen" }
 dsbgen-arrow = { path = "dsbgen-arrow" }
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 divan = { workspace = true }

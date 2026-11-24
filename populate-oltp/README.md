@@ -103,9 +103,20 @@ its own key range; generate one `Ycsb` per thread with
 
 ## Speed
 
-4 cores, `--release`, one run each (see `cargo bench -p populate-oltp`):
+4 cores, `--release`, best of 5, output to tmpfs (see also `cargo bench -p
+populate-oltp`):
 
 | Workload | Generate (Arrow) | Parquet (snappy) | Text |
 |---|---|---|---|
-| TPC-C, 10 warehouses (5.1M rows) | 0.25 s | 0.68 s, 556 MiB | 0.54 s, 685 MiB CSV |
-| YCSB, 1M records (1 GiB) | 0.23 s | 0.81 s, 1,017 MiB | 1.57 s, 986 MiB TSV |
+| TPC-C, 10 warehouses (5.1M rows) | 0.20 s | 0.59 s, 556 MiB | 0.37 s, 685 MiB CSV |
+| YCSB, 1M records (1 GiB) | 0.19 s | 0.69 s, 1,010 MiB | 0.53 s, 986 MiB TSV |
+
+For comparison, on the same machine: `go-tpc tpcc prepare --warehouses 10
+--threads 4 --output-type csv` takes 3.6 s, and YCSB 0.17.0's own load of 1M
+records (one client thread, the `ycsb-ref` binding writing TSV) 3.4 s.
+
+YCSB text is written straight from the generators (no Arrow arrays), each
+random 6-byte group built in one word from YCSB's int; Parquet uses
+per-table writer properties (`tpcc::parquet_props`, `Ycsb::parquet_props`)
+that skip dictionaries for columns of distinct values. Most of the Parquet
+time is in populate-table's encoder.

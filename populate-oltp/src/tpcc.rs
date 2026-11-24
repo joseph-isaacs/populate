@@ -32,6 +32,9 @@ use arrow_array::types::Decimal128Type;
 use arrow_array::{ArrayRef, Int32Array, PrimitiveArray, RecordBatch, TimestampMicrosecondArray};
 use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use parquet::basic::Compression;
+use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
+use parquet::schema::types::ColumnPath;
 use populate_table::text::TextChunks;
 use populate_table::{Chunks, Stream, chunks};
 use std::fmt;
@@ -325,15 +328,21 @@ impl TpccTable {
         v
     }
 
-    /// Write the table as one Parquet file, one row group per chunk.
+    /// Write the table as one Parquet file, one row group per chunk
+    /// (`props: None` means [`parquet_props`]).
     pub fn write_parquet<W: std::io::Write + Send>(
         &self,
         writer: W,
         threads: usize,
         props: Option<parquet::file::properties::WriterProperties>,
     ) -> Result<W, parquet::errors::ParquetError> {
-        let mut w =
-            crate::write_parquet_many(std::slice::from_ref(self), vec![writer], threads, props)?;
+        let props = props.unwrap_or_else(|| parquet_props().build());
+        let mut w = crate::write_parquet_many(
+            std::slice::from_ref(self),
+            vec![writer],
+            threads,
+            Some(props),
+        )?;
         Ok(w.pop().expect("one writer"))
     }
 
@@ -349,6 +358,38 @@ impl TpccTable {
         let mut w = crate::write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
+}
+
+/// Parquet writer properties for TPC-C: dictionary encoding for the ids,
+/// counts, constants and the text columns with few distinct values (states,
+/// `c_last`, `c_credit`, `c_middle`); plain encoding for random text, item
+/// ids and random amounts, which have too many distinct values for a
+/// dictionary to pay (the writer would build one and fall back). Snappy.
+/// Used when `write_parquet` gets no properties.
+pub fn parquet_props() -> WriterPropertiesBuilder {
+    const DICT_TEXT: [&str; 6] = [
+        "c_middle", "c_credit", "c_last", "w_state", "d_state", "c_state",
+    ];
+    const PLAIN: [&str; 6] = [
+        "i_id",
+        "s_i_id",
+        "ol_i_id",
+        "i_im_id",
+        "i_price",
+        "ol_amount",
+    ];
+    let mut p = WriterProperties::builder().set_compression(Compression::SNAPPY);
+    for t in TpccTableName::ALL {
+        for f in t.schema().fields() {
+            let name = f.name().as_str();
+            let dict = match f.data_type() {
+                DataType::Utf8View => DICT_TEXT.contains(&name),
+                _ => !PLAIN.contains(&name),
+            };
+            p = p.set_column_dictionary_enabled(ColumnPath::from(name), dict);
+        }
+    }
+    p
 }
 
 const CSV: Delimited = Delimited {

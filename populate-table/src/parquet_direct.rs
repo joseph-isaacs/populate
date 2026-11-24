@@ -1,5 +1,6 @@
-//! Parquet column chunks for flat integer columns, encoded here instead of
-//! by arrow-rs's column writer.
+//! Parquet column chunks for flat integer, timestamp, float and string
+//! columns, and required `FixedSizeList`s of numbers (PLAIN, in pages of
+//! whole records), encoded here instead of by arrow-rs's column writer.
 //!
 //! arrow-rs is general: it builds definition levels and a list of non-null
 //! indexes per batch, gathers values through it, and dictionary-encodes
@@ -20,10 +21,14 @@
 //! It is appended to the row group as a finished chunk.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
+    Int64Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+    TimestampSecondType,
+};
 use arrow_array::{Array, ArrayRef};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use bytes::Bytes;
 use parquet::basic::{BoundaryOrder, Compression, Encoding, Type as PhysicalType};
 use parquet::column::page::{CompressedPage, Page, PageWriter};
@@ -38,25 +43,49 @@ use parquet::file::writer::{SerializedPageWriter, TrackedWrite};
 use parquet::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath};
 use std::mem::take;
 use std::ops::Range;
-use std::ptr::null;
+use std::ptr::{copy_nonoverlapping, null};
 use std::slice::from_raw_parts;
 
-/// Whether a flat column of type `dt`, stored as `descr`, can be encoded
-/// here under `props` (anything else goes to arrow-rs).
+/// Whether a flat column, or a required `FixedSizeList` of required
+/// numbers with its dictionary off, of type `dt`, stored as `descr`, can be
+/// encoded here under `props` (anything else goes to arrow-rs).
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
+    if let DataType::FixedSizeList(item, n) = dt {
+        // a required list of required values, PLAIN
+        let item_ok = matches!(
+            (item.data_type(), descr.physical_type()),
+            (DataType::Float32, PhysicalType::FLOAT)
+                | (DataType::Float64, PhysicalType::DOUBLE)
+                | (DataType::Int32, PhysicalType::INT32)
+                | (DataType::Int64, PhysicalType::INT64)
+        );
+        return item_ok
+            && *n > 0
+            && descr.max_rep_level() == 1
+            && descr.max_def_level() == 1
+            && !props.dictionary_enabled(path)
+            && common_ok(path, props);
+    }
     let type_ok = match (dt, descr.physical_type()) {
-        (DataType::Int32 | DataType::Date32, PhysicalType::INT32) => true,
-        (DataType::Int64, PhysicalType::INT64) => true,
+        (
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Date32,
+            PhysicalType::INT32,
+        ) => true,
+        (DataType::Int64 | DataType::Timestamp(..), PhysicalType::INT64) => true,
+        (DataType::Float32, PhysicalType::FLOAT) => true,
+        (DataType::Float64, PhysicalType::DOUBLE) => true,
         (DataType::Decimal128(p, _), PhysicalType::INT32) => *p <= 9,
         (DataType::Decimal128(p, _), PhysicalType::INT64) => *p <= 18,
         (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
         _ => false,
     };
-    type_ok
-        && descr.max_rep_level() == 0
-        && descr.max_def_level() <= 1
-        && props.writer_version() == WriterVersion::PARQUET_1_0
+    type_ok && descr.max_rep_level() == 0 && descr.max_def_level() <= 1 && common_ok(path, props)
+}
+
+/// Writer settings every direct column needs.
+fn common_ok(path: &ColumnPath, props: &WriterProperties) -> bool {
+    props.writer_version() == WriterVersion::PARQUET_1_0
         && matches!(
             props.compression(path),
             Compression::SNAPPY | Compression::UNCOMPRESSED
@@ -85,11 +114,42 @@ impl DirectColumn {
 
     /// The encoded chunk (offsets relative to its start) and its metadata.
     pub(crate) fn close(self, props: &WriterProperties) -> Result<(Bytes, ColumnCloseResult)> {
+        if let Some(DataType::FixedSizeList(_, n)) = self.arrays.first().map(|a| a.data_type()) {
+            let n = *n as usize;
+            return match self.descr.physical_type() {
+                PhysicalType::FLOAT => {
+                    let v = list_slices(&self.arrays, |a| {
+                        f32_bits(a.as_primitive::<Float32Type>().values())
+                    })?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                PhysicalType::DOUBLE => {
+                    let v = list_slices(&self.arrays, |a| {
+                        f64_bits(a.as_primitive::<Float64Type>().values())
+                    })?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                PhysicalType::INT32 => {
+                    let v = list_slices(&self.arrays, |a| a.as_primitive::<Int32Type>().values())?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                _ => {
+                    let v = list_slices(&self.arrays, |a| a.as_primitive::<Int64Type>().values())?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+            };
+        }
         match self.descr.physical_type() {
             PhysicalType::INT32 => {
                 let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int32 => extend(out, a.as_primitive::<Int32Type>().values(), a),
                     DataType::Date32 => extend(out, a.as_primitive::<Date32Type>().values(), a),
+                    DataType::Int16 => {
+                        extend_map(out, a.as_primitive::<Int16Type>().values(), a, i32::from)
+                    }
+                    DataType::Int8 => {
+                        extend_map(out, a.as_primitive::<Int8Type>().values(), a, i32::from)
+                    }
                     _ => extend_map(out, a.as_primitive::<Decimal128Type>().values(), a, |d| {
                         d as i32
                     }),
@@ -146,9 +206,40 @@ impl DirectColumn {
                 });
                 encode_bytes(&self.descr, props, &v, &keys)
             }
+            PhysicalType::FLOAT => {
+                let v = Values::<F32>::gather(&self.arrays, |a, out| {
+                    extend_map(out, a.as_primitive::<Float32Type>().values(), a, |x| {
+                        F32(x.to_bits())
+                    })
+                });
+                encode(&self.descr, props, &v)
+            }
+            PhysicalType::DOUBLE => {
+                let v = Values::<F64>::gather(&self.arrays, |a, out| {
+                    extend_map(out, a.as_primitive::<Float64Type>().values(), a, |x| {
+                        F64(x.to_bits())
+                    })
+                });
+                encode(&self.descr, props, &v)
+            }
             _ => {
                 let v = Values::<i64>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int64 => extend(out, a.as_primitive::<Int64Type>().values(), a),
+                    DataType::Timestamp(unit, _) => {
+                        let values = match unit {
+                            TimeUnit::Second => a.as_primitive::<TimestampSecondType>().values(),
+                            TimeUnit::Millisecond => {
+                                a.as_primitive::<TimestampMillisecondType>().values()
+                            }
+                            TimeUnit::Microsecond => {
+                                a.as_primitive::<TimestampMicrosecondType>().values()
+                            }
+                            TimeUnit::Nanosecond => {
+                                a.as_primitive::<TimestampNanosecondType>().values()
+                            }
+                        };
+                        extend(out, values, a)
+                    }
                     _ => extend_map(out, a.as_primitive::<Decimal128Type>().values(), a, |d| {
                         d as i64
                     }),
@@ -167,7 +258,25 @@ trait Native: Copy + Ord + Default + Send + 'static {
     /// Order-preserving: `a <= b` iff `a.key() <= b.key()`.
     fn key(self) -> u64;
     fn put(self, out: &mut Vec<u8>);
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics;
+    /// PLAIN encoding of `v`.
+    fn put_all(v: &[Self], out: &mut Vec<u8>) {
+        out.reserve(v.len() * Self::SIZE);
+        v.iter().for_each(|x| x.put(out));
+    }
+    /// Chunk statistics; `nans` is the NaN count (floats only).
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, nans: Option<u64>) -> Statistics;
+    /// Floating point: NaNs are left out of min / max unless every value
+    /// is NaN, and pages and chunks count them, as arrow-rs does.
+    const FLOAT: bool = false;
+    fn is_nan(self) -> bool {
+        false
+    }
+    /// Floats: smallest and largest non-NaN values, `None` if there are
+    /// none.
+    fn min_max_numbers(v: &[Self]) -> Option<(Self, Self)> {
+        let _ = v;
+        None
+    }
 }
 
 impl Native for i32 {
@@ -180,7 +289,7 @@ impl Native for i32 {
     fn put(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
     }
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics {
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, _: Option<u64>) -> Statistics {
         Statistics::int32(min, max, None, Some(nulls), false)
     }
 }
@@ -195,10 +304,120 @@ impl Native for i64 {
     fn put(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
     }
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics {
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, _: Option<u64>) -> Statistics {
         Statistics::int64(min, max, None, Some(nulls), false)
     }
 }
+
+/// An `f32` by its bits: equal when the bits are (as arrow-rs's
+/// dictionary compares them), ordered by IEEE 754 total order (as its
+/// statistics are).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+struct F32(u32);
+
+/// An `f64` by its bits, as [`F32`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+struct F64(u64);
+
+macro_rules! float_native {
+    ($t:ident, $bits:ty, $f:ty, $size:expr, $variant:ident) => {
+        impl $t {
+            const SIGN: $bits = 1 << (<$bits>::BITS - 1);
+
+            /// Total-order key: flip all bits of negatives, the sign of
+            /// positives.
+            #[inline(always)]
+            fn total(self) -> $bits {
+                if self.0 & Self::SIGN != 0 {
+                    !self.0
+                } else {
+                    self.0 | Self::SIGN
+                }
+            }
+
+            /// Inverse of [`total`](Self::total).
+            #[inline(always)]
+            fn from_total(k: $bits) -> Self {
+                $t(if k & Self::SIGN != 0 {
+                    k ^ Self::SIGN
+                } else {
+                    !k
+                })
+            }
+        }
+
+        impl Ord for $t {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.total().cmp(&other.total())
+            }
+        }
+
+        impl PartialOrd for $t {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Native for $t {
+            const SIZE: usize = $size;
+            // the extremes of the total order: -NaN and +NaN with every
+            // payload bit set
+            const MIN: Self = $t(<$bits>::MAX);
+            const MAX: Self = $t(<$bits>::MAX >> 1);
+            const FLOAT: bool = true;
+            fn key(self) -> u64 {
+                self.total() as u64
+            }
+            fn put(self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&self.0.to_le_bytes());
+            }
+            fn put_all(v: &[Self], out: &mut Vec<u8>) {
+                #[cfg(target_endian = "little")]
+                {
+                    // SAFETY: `Self` is a transparent integer: its bytes, in
+                    // order, are the values' little-endian PLAIN encoding
+                    let b = unsafe { from_raw_parts(v.as_ptr().cast::<u8>(), size_of_val(v)) };
+                    out.extend_from_slice(b);
+                }
+                #[cfg(not(target_endian = "little"))]
+                v.iter().for_each(|x| x.put(out));
+            }
+            fn stats(
+                min: Option<Self>,
+                max: Option<Self>,
+                nulls: u64,
+                nans: Option<u64>,
+            ) -> Statistics {
+                let f = |x: Option<Self>| x.map(|x| <$f>::from_bits(x.0));
+                Statistics::$variant(
+                    ValueStatistics::new(f(min), f(max), None, Some(nulls), false)
+                        .with_nan_count(nans),
+                )
+            }
+            #[inline(always)]
+            fn is_nan(self) -> bool {
+                // exponent all ones, mantissa not zero
+                (self.0 & !Self::SIGN) > (<$f>::INFINITY).to_bits()
+            }
+            fn min_max_numbers(v: &[Self]) -> Option<(Self, Self)> {
+                // branch-free folds over total-order keys, NaN as the
+                // identity of each, so they vectorise
+                let lo = v.iter().fold(<$bits>::MAX, |m, &x| {
+                    m.min(if x.is_nan() { <$bits>::MAX } else { x.total() })
+                });
+                let hi = v
+                    .iter()
+                    .fold(0, |m, &x| m.max(if x.is_nan() { 0 } else { x.total() }));
+                (lo <= hi).then(|| (Self::from_total(lo), Self::from_total(hi)))
+            }
+        }
+    };
+}
+
+float_native!(F32, u32, f32, 4, Float);
+float_native!(F64, u64, f64, 8, Double);
 
 /// A chunk's non-null values, its validity bitmap (the definition levels,
 /// bit-packed at width 1) if any row is null, and its arrays' lengths.
@@ -276,11 +495,18 @@ fn extend_map<S: Copy, T: Copy>(out: &mut Vec<T>, values: &[S], a: &ArrayRef, f:
     }
 }
 
-/// Smallest and largest of `v`.
+/// Smallest and largest of `v` (for floats, of its non-NaN values if it
+/// has any).
 fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     if v.is_empty() {
         return None;
     }
+    if T::FLOAT
+        && let Some(r) = T::min_max_numbers(v)
+    {
+        return Some(r);
+    }
+    // floats with every value NaN: their total-order extremes
     // two plain folds: each vectorizes, a fold over a pair does not
     let lo = v.iter().copied().fold(T::MAX, Ord::min);
     let hi = v.iter().copied().fold(T::MIN, Ord::max);
@@ -303,6 +529,8 @@ struct ChunkWriter<'a> {
     written: u64,
     /// Total string bytes (byte array columns only).
     unencoded: Option<i64>,
+    /// Values per record of a fixed-size list column (levels are values).
+    list: Option<usize>,
     dictionary_offset: Option<i64>,
     data_offset: Option<i64>,
     column_index: ColumnIndexBuilder,
@@ -336,6 +564,7 @@ impl<'a> ChunkWriter<'a> {
             written: 0,
             unencoded: None,
             dictionary_offset: None,
+            list: None,
             data_offset: None,
             column_index: ColumnIndexBuilder::new(descr.physical_type()),
             offset_index: OffsetIndexBuilder::new(),
@@ -385,6 +614,7 @@ impl<'a> ChunkWriter<'a> {
         vals: usize,
         valid: Option<&BooleanBuffer>,
         encoding: Encoding,
+        nans: Option<i64>,
         put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
         let (r0, r1) = (rows.start, rows.end);
@@ -423,7 +653,7 @@ impl<'a> ChunkWriter<'a> {
         let page_nulls = ((r1 - r0) - vals) as i64;
         let (lo, hi) = min_max.unwrap_or_default();
         self.column_index
-            .append(vals == 0, lo, hi, page_nulls, None);
+            .append(vals == 0, lo, hi, page_nulls, nans);
         if self.histograms {
             let h = LevelHistogram::from(vec![page_nulls, vals as i64]);
             self.column_index.append_histograms(&None, &Some(h));
@@ -458,11 +688,16 @@ impl<'a> ChunkWriter<'a> {
             if self.histograms {
                 let h = vec![nulls, vals as i64];
                 meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
+                if let Some(n) = self.list {
+                    let records = (rows / n) as i64;
+                    let h = vec![records, rows as i64 - records];
+                    meta = meta.set_repetition_level_histogram(Some(LevelHistogram::from(h)));
+                }
             }
         }
         Ok(ColumnCloseResult {
             bytes_written: self.written,
-            rows_written: rows as u64,
+            rows_written: (rows / self.list.unwrap_or(1)) as u64,
             metadata: meta.build()?,
             bloom_filter: None,
             column_index: match stats_level {
@@ -475,6 +710,74 @@ impl<'a> ChunkWriter<'a> {
 }
 
 impl ChunkWriter<'_> {
+    /// A v1 data page of `records` lists of `n` values each (none null):
+    /// repetition levels (0 then `n - 1` ones per list), definition levels
+    /// (all 1), then the PLAIN values `put` writes. `put` returns the
+    /// page's min and max (column index bytes).
+    fn list_page(
+        &mut self,
+        records: usize,
+        n: usize,
+        nans: Option<i64>,
+        put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        let levels = records * n;
+        let mut body = Vec::with_capacity(16 + levels * 8);
+        body.extend_from_slice(&[0; 4]);
+        if n == 1 {
+            rle(0, records, 1, &mut body);
+        } else if n < 16 {
+            // short lists: bit-packed (two RLE runs per record would cost
+            // more than the bits)
+            let rep: Vec<u8> = (0..levels).map(|i| (i % n != 0) as u8).collect();
+            bitpack(&rep, 1, &mut body);
+        } else {
+            // a run of one 0, then a run of `n - 1` ones, per record
+            let mut one = Vec::new();
+            rle(0, 1, 1, &mut one);
+            rle(1, n - 1, 1, &mut one);
+            for _ in 0..records {
+                body.extend_from_slice(&one);
+            }
+        }
+        let len = (body.len() - 4) as u32;
+        body[..4].copy_from_slice(&len.to_le_bytes());
+        let at = body.len();
+        body.extend_from_slice(&[0; 4]);
+        rle(1, levels, 1, &mut body);
+        let len = (body.len() - at - 4) as u32;
+        body[at..at + 4].copy_from_slice(&len.to_le_bytes());
+        let min_max = put(&mut body);
+        if !self.encodings.contains(&Encoding::PLAIN) {
+            self.encodings.push(Encoding::PLAIN);
+        }
+        let (buf, size) = self.compress(body)?;
+        let page = Page::DataPage {
+            buf,
+            num_values: levels as u32,
+            encoding: Encoding::PLAIN,
+            def_level_encoding: Encoding::RLE,
+            rep_level_encoding: Encoding::RLE,
+            statistics: None,
+        };
+        let spec = self.pages.write_page(CompressedPage::new(page, size))?;
+        self.data_offset.get_or_insert(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.offset_index.append_row_count(records as i64);
+        self.offset_index
+            .append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
+        let (lo, hi) = min_max.unwrap_or_default();
+        self.column_index.append(false, lo, hi, 0, nans);
+        if self.histograms {
+            let rep = LevelHistogram::from(vec![records as i64, (levels - records) as i64]);
+            let def = LevelHistogram::from(vec![0, levels as i64]);
+            self.column_index.append_histograms(&Some(rep), &Some(def));
+        }
+        Ok(())
+    }
+
     /// Record a byte array page's string bytes, as arrow-rs does.
     fn unencoded_bytes(&mut self, n: i64) {
         *self.unencoded.get_or_insert(0) += n;
@@ -513,7 +816,18 @@ fn encode<T: Native>(
         Some((lo, hi)) => (Some(lo), Some(hi)),
         None => (None, None),
     };
-    let plan = plan(v, props, path, lo.zip(hi));
+    // the dictionary's direct table spans every value, NaNs included
+    // (statistics leave them out)
+    let span = if T::FLOAT {
+        (!v.vals.is_empty()).then(|| {
+            let lo = v.vals.iter().copied().fold(T::MAX, Ord::min);
+            let hi = v.vals.iter().copied().fold(T::MIN, Ord::max);
+            (lo, hi)
+        })
+    } else {
+        lo.zip(hi)
+    };
+    let plan = plan(v, props, path, span);
     let mut sink = TrackedWrite::new(Vec::new());
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(entries) = &plan.entries {
@@ -536,11 +850,13 @@ fn encode<T: Native>(
             Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &plan.idx[v0..v1]))),
             None => (Encoding::PLAIN, None),
         };
+        let nans = T::FLOAT.then(|| vals.iter().filter(|x| x.is_nan()).count() as i64);
         w.data_page(
             p.rows.clone(),
             vals.len(),
             v.valid.as_ref(),
             encoding,
+            nans,
             |body| {
                 match idx {
                     Some((n, idx)) => {
@@ -561,7 +877,108 @@ fn encode<T: Native>(
     }
     let order = boundary_order(page_ranges.into_iter());
     let nulls = (v.rows - v.vals.len()) as u64;
-    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls), order)?;
+    let nans = (T::FLOAT && !v.vals.is_empty())
+        .then(|| v.vals.iter().filter(|x| x.is_nan()).count() as u64);
+    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls, nans), order)?;
+    Ok((Bytes::from(sink.into_inner()?), close))
+}
+
+// ---------------------------------------------------------------------------
+// Fixed-size lists of numbers
+
+/// The values of each of a chunk's fixed-size list arrays, as slices of
+/// the arrays (no copy); an error if any list or value is null (the column
+/// is declared required).
+fn list_slices<'a, T: 'a>(
+    arrays: &'a [ArrayRef],
+    values: impl Fn(&'a ArrayRef) -> &'a [T],
+) -> Result<Vec<&'a [T]>> {
+    arrays
+        .iter()
+        .map(|a| {
+            let l = a.as_fixed_size_list();
+            let child = l.values();
+            if l.null_count() > 0 || child.null_count() > 0 {
+                return Err(ParquetError::General(
+                    "null in a required fixed-size list column".into(),
+                ));
+            }
+            let start = l.value_offset_at(0);
+            Ok(&values(child)[start..start + l.len() * l.value_length() as usize])
+        })
+        .collect()
+}
+
+/// `f32`s as [`F32`]s, in place.
+fn f32_bits(v: &[f32]) -> &[F32] {
+    // SAFETY: `F32` is a transparent `u32`, of the size and alignment of
+    // `f32`, and every bit pattern is valid for both
+    unsafe { from_raw_parts(v.as_ptr().cast(), v.len()) }
+}
+
+/// `f64`s as [`F64`]s, in place.
+fn f64_bits(v: &[f64]) -> &[F64] {
+    // SAFETY: as `f32_bits`
+    unsafe { from_raw_parts(v.as_ptr().cast(), v.len()) }
+}
+
+/// Fold page minima (or maxima) into the chunk's as arrow-rs does: a NaN
+/// gives way to any number, then `better` decides.
+fn fold_stat<T: Native>(acc: Option<T>, x: T, better: impl Fn(T, T) -> bool) -> Option<T> {
+    Some(match acc {
+        None => x,
+        Some(a) if a.is_nan() && !x.is_nan() => x,
+        Some(a) if !a.is_nan() && x.is_nan() => a,
+        Some(a) if better(x, a) => x,
+        Some(a) => a,
+    })
+}
+
+/// A required `FixedSizeList` column of `n` values per record, PLAIN, in
+/// pages of whole records (a page never spans two of the input arrays,
+/// which are encoded where they are).
+fn encode_list<T: Native>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    n: usize,
+    parts: &[&[T]],
+) -> Result<(Bytes, ColumnCloseResult)> {
+    let per_page = props
+        .data_page_row_count_limit()
+        .min(props.data_page_size_limit() / (n * T::SIZE))
+        .max(1);
+    let mut sink = TrackedWrite::new(Vec::new());
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    w.list = Some(n);
+    let bytes = |x: T| {
+        let mut b = Vec::new();
+        x.put(&mut b);
+        b
+    };
+    let (mut lo, mut hi) = (None, None);
+    let mut nans = 0u64;
+    let mut levels = 0;
+    let mut page_ranges = Vec::new();
+    for part in parts {
+        for page in part.chunks(per_page * n) {
+            let mm = min_max(page);
+            if let Some((a, b)) = mm {
+                lo = fold_stat(lo, a, |x, y| x < y);
+                hi = fold_stat(hi, b, |x, y| x > y);
+            }
+            page_ranges.push(mm);
+            let page_nans = T::FLOAT.then(|| page.iter().filter(|x| x.is_nan()).count());
+            nans += page_nans.unwrap_or(0) as u64;
+            w.list_page(page.len() / n, n, page_nans.map(|c| c as i64), |body| {
+                T::put_all(page, body);
+                mm.map(|(lo, hi)| (bytes(lo), bytes(hi)))
+            })?;
+            levels += page.len();
+        }
+    }
+    let order = boundary_order(page_ranges.into_iter());
+    let nans = (T::FLOAT && levels > 0).then_some(nans);
+    let close = w.finish(levels, levels, T::stats(lo, hi, 0, nans), order)?;
     Ok((Bytes::from(sink.into_inner()?), close))
 }
 
@@ -951,6 +1368,7 @@ fn encode_bytes(
             vals.len(),
             v.valid.as_ref(),
             encoding,
+            None,
             |body| {
                 match ix {
                     Some((n, ix)) => {
@@ -974,18 +1392,29 @@ fn encode_bytes(
                         body.reserve(need);
                         if let Some((&first, _)) = vals.split_first() {
                             let (mut lo, mut hi) = (first, first);
+                            let start = body.len();
+                            let mut at = body.as_mut_ptr().wrapping_add(start);
                             for (i, &x) in vals.iter().enumerate() {
                                 if let Some(ahead) = vals.get(i + 16) {
                                     prefetch(ahead);
                                 }
-                                put_bytes(x, body);
+                                // SAFETY: `need` bytes were reserved for the
+                                // lengths and bytes of all of `vals`.
+                                unsafe {
+                                    at.cast::<[u8; 4]>()
+                                        .write_unaligned((x.len() as u32).to_le_bytes());
+                                    copy_nonoverlapping(x.as_ptr(), at.add(4), x.len());
+                                    at = at.add(4 + x.len());
+                                }
                                 if less(x, lo) {
                                     lo = x;
                                 } else if less(hi, x) {
                                     hi = x;
                                 }
-                                strings += x.len() as i64;
                             }
+                            // SAFETY: all `need` bytes were written
+                            unsafe { body.set_len(start + need) };
+                            strings = (need - 4 * vals.len()) as i64;
                             mm = Some((lo, hi));
                         }
                     }
@@ -1062,7 +1491,7 @@ fn plan<T: Native>(
     let dict_limit = props.dictionary_page_size_limit();
     let mut dict = range
         .filter(|_| props.dictionary_enabled(path))
-        .map(|(lo, hi)| Dict::new(lo, hi, v.vals.len()));
+        .map(|(lo, hi)| Dict::new(lo, hi, v.vals.len(), dict_limit / T::SIZE + batch));
     let mut idx = Vec::with_capacity(if dict.is_some() { v.vals.len() } else { 0 });
     let mut pages = Vec::new();
     let (mut r0, mut v0, mut row, mut val) = (0, 0, 0, 0);
@@ -1115,28 +1544,48 @@ fn plan<T: Native>(
 
 /// Dictionary entries in first-seen order. Values spanning a small range
 /// index a table by `value - min`; others go through an open-addressing
-/// hash table.
+/// hash table of `(value, index)` slots (one cache line per probe), sized
+/// up front for the most entries the chunk can reach before the dictionary
+/// page size limit, so it rarely has to grow.
 struct Dict<T> {
     entries: Vec<T>,
     lo: T,
+    /// Direct mode: entry index by `value - lo`.
     table: Vec<u32>,
-    keys: Vec<T>,
+    /// Hash mode: `(value, entry index)`, `u32::MAX` for empty.
+    slots: Vec<(T, u32)>,
     bits: u32,
 }
 
 impl<T: Native> Dict<T> {
-    fn new(lo: T, hi: T, n: usize) -> Self {
+    /// For `n` values, of which at most about `cap` become entries.
+    fn new(lo: T, hi: T, n: usize, cap: usize) -> Self {
         let span = hi.key() - lo.key();
         let direct = span < (n as u64).max(1024);
-        let bits = if direct { 0 } else { 10 };
+        let bits = if direct {
+            0
+        } else {
+            // load factor at most 1/2 for the entries the chunk can reach
+            // up to 2^16 slots (1 MiB of 16-byte slots); bigger
+            // dictionaries grow from there
+            let most = n.min(cap).max(1);
+            (2 * most)
+                .next_power_of_two()
+                .trailing_zeros()
+                .clamp(10, 16)
+        };
         Self {
             entries: Vec::new(),
             lo,
-            table: vec![u32::MAX; if direct { span as usize + 1 } else { 1 << bits }],
-            keys: if direct {
+            table: if direct {
+                vec![u32::MAX; span as usize + 1]
+            } else {
+                Vec::new()
+            },
+            slots: if direct {
                 Vec::new()
             } else {
-                vec![T::default(); 1 << bits]
+                vec![(T::default(), u32::MAX); 1 << bits]
             },
             bits,
         }
@@ -1155,21 +1604,27 @@ impl<T: Native> Dict<T> {
             }
             return;
         }
-        for &x in xs {
+        // how far ahead to prefetch slots: tables past the caches miss on
+        // nearly every new value
+        const AHEAD: usize = 16;
+        for (k, &x) in xs.iter().enumerate() {
+            if let Some(&next) = xs.get(k + AHEAD) {
+                prefetch_slot(&self.slots[hash(next.key(), self.bits)]);
+            }
             let mask = (1usize << self.bits) - 1;
             let mut h = hash(x.key(), self.bits);
             let i = loop {
-                match self.table[h] {
-                    u32::MAX => {
-                        let i = self.entries.len() as u32;
-                        self.table[h] = i;
-                        self.keys[h] = x;
-                        self.entries.push(x);
-                        break i;
-                    }
-                    i if self.keys[h] == x => break i,
-                    _ => h = (h + 1) & mask,
+                let (key, i) = self.slots[h];
+                if i == u32::MAX {
+                    let i = self.entries.len() as u32;
+                    self.slots[h] = (x, i);
+                    self.entries.push(x);
+                    break i;
                 }
+                if key == x {
+                    break i;
+                }
+                h = (h + 1) & mask;
             };
             idx.push(i);
             if self.entries.len() * 2 > 1 << self.bits {
@@ -1181,17 +1636,28 @@ impl<T: Native> Dict<T> {
     fn grow(&mut self) {
         self.bits += 1;
         let mask = (1usize << self.bits) - 1;
-        self.table = vec![u32::MAX; 1 << self.bits];
-        self.keys = vec![T::default(); 1 << self.bits];
+        self.slots = vec![(T::default(), u32::MAX); 1 << self.bits];
         for (i, &e) in self.entries.iter().enumerate() {
             let mut h = hash(e.key(), self.bits);
-            while self.table[h] != u32::MAX {
+            while self.slots[h].1 != u32::MAX {
                 h = (h + 1) & mask;
             }
-            self.table[h] = i as u32;
-            self.keys[h] = e;
+            self.slots[h] = (e, i as u32);
         }
     }
+}
+
+/// Start loading a hash slot into cache.
+#[inline(always)]
+fn prefetch_slot<S>(s: &S) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch is only a hint; it never faults.
+    unsafe {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        _mm_prefetch::<_MM_HINT_T0>((s as *const S).cast());
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = s;
 }
 
 fn hash(k: u64, bits: u32) -> usize {

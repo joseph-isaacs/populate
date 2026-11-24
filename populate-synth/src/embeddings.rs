@@ -5,10 +5,11 @@
 //! belongs to a Zipf-skewed cluster (some topics are much bigger than
 //! others) and its vector is that centre plus Gaussian noise of total
 //! length about `noise`, normalised to length 1, so cosine similarity is
-//! high within a cluster and near zero across clusters.
+//! high within a cluster and near zero across clusters. The noise is
+//! [`FastNormal`]: five draws per hash from 4,096 normal quantiles.
 
 use crate::Shape;
-use crate::kernel::{Quantiles, Zipf, prim_ref};
+use crate::kernel::{FastNormal, Quantiles, Zipf, prim_ref};
 use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array, RecordBatch};
 use arrow_buffer::ScalarBuffer;
@@ -27,7 +28,7 @@ pub struct Embeddings {
     /// `clusters x dim`, row-major, each row unit length.
     centres: Vec<f32>,
     cluster: Zipf,
-    normal: Quantiles,
+    fast: FastNormal,
     s_cluster: Stream,
     s_noise: Stream,
 }
@@ -67,7 +68,7 @@ impl Embeddings {
             item,
             centres,
             cluster: Zipf::new(clusters as u64, 0.8),
-            normal,
+            fast: FastNormal::default(),
             s_cluster: Stream::new(seed, "embeddings.cluster"),
             s_noise: Stream::new(seed, "embeddings.noise"),
         }
@@ -87,6 +88,14 @@ impl Shape for Embeddings {
         "embeddings"
     }
 
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "id" | "embedding")
+    }
+
+    fn is_random(&self, column: &str) -> bool {
+        column == "embedding"
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -98,16 +107,17 @@ impl Shape for Embeddings {
             .map(|r| self.cluster.sample(self.s_cluster.at(r)) as i32)
             .collect();
         let scale = self.noise / (dim as f32).sqrt();
+        let hashes = FastNormal::hashes(dim) as u64;
         let mut values: Vec<f32> = Vec::with_capacity(len * dim);
+        let mut noise = vec![0.0f32; dim];
         for (r, &k) in rows().zip(&cluster) {
             let centre = &self.centres[k as usize * dim..(k as usize + 1) * dim];
-            let base = r.wrapping_mul(dim as u64);
+            self.fast
+                .fill(self.s_noise, r.wrapping_mul(hashes), &mut noise);
             let at = values.len();
-            values.extend(centre.iter().enumerate().map(|(j, &c)| {
-                c + scale * self.normal.sample(self.s_noise.at(base + j as u64)) as f32
-            }));
+            values.extend(centre.iter().zip(&noise).map(|(&c, &z)| c + scale * z));
             let v = &mut values[at..];
-            let inv = 1.0 / v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let inv = 1.0 / sum_squares(v).sqrt();
             v.iter_mut().for_each(|x| *x *= inv);
         }
         let embedding = FixedSizeListArray::new(
@@ -123,4 +133,18 @@ impl Shape for Embeddings {
         ];
         RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
     }
+}
+
+/// `sum(x^2)` in eight independent lanes (a plain `f32` sum is one serial
+/// chain the compiler may not reorder).
+fn sum_squares(v: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    let mut chunks = v.chunks_exact(8);
+    for c in &mut chunks {
+        for (a, x) in acc.iter_mut().zip(c) {
+            *a += x * x;
+        }
+    }
+    let tail: f32 = chunks.remainder().iter().map(|x| x * x).sum();
+    acc.iter().sum::<f32>() + tail
 }

@@ -47,6 +47,7 @@ pub use taxi::Taxi;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
@@ -71,6 +72,22 @@ pub trait Shape: Sync {
     /// Rows `start..start + len`, which must equal those rows of any other
     /// batch that covers them.
     fn batch(&self, start: u64, len: usize) -> RecordBatch;
+
+    /// Whether a column is written PLAIN by default: nearly every value distinct within
+    /// a chunk (ids, times, continuous floats), where a dictionary costs
+    /// time and makes the file bigger.
+    fn is_plain(&self, column: &str) -> bool {
+        let _ = column;
+        false
+    }
+
+    /// Whether a column is written uncompressed by default: random bits
+    /// (continuous floats, vectors) that Snappy cannot shrink but still
+    /// spends time on.
+    fn is_random(&self, column: &str) -> bool {
+        let _ = column;
+        false
+    }
 }
 
 /// A [`Shape`] of `rows` rows, cut into chunks of batches: a [`Chunks`]
@@ -163,23 +180,42 @@ impl<S: Shape> Synth<S> {
     }
 
     /// Generate and encode on `threads` threads into one Parquet file, one
-    /// row group per chunk ([`parquet_props`] if `props` is `None`).
+    /// row group per chunk. `None` uses [`Synth::parquet_props`]; given
+    /// `props` are used as they are, so start from `parquet_props` to keep
+    /// the shape's plain columns.
     pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
         props: Option<WriterProperties>,
     ) -> Result<W, ParquetError> {
-        populate_table::write_parquet(
-            self,
-            writer,
-            threads,
-            Some(props.unwrap_or_else(parquet_props)),
-        )
+        let props = props.unwrap_or_else(|| self.parquet_props());
+        populate_table::write_parquet(self, writer, threads, Some(props))
+    }
+
+    /// [`parquet_props`], with dictionaries off for the shape's
+    /// [`is_plain`](Shape::is_plain) columns and compression off for
+    /// [`is_random`](Shape::is_random) ones (every leaf under them).
+    pub fn parquet_props(&self) -> WriterProperties {
+        let mut b = WriterProperties::builder().set_compression(Compression::SNAPPY);
+        let descr = ArrowSchemaConverter::new()
+            .convert(&self.shape.schema())
+            .expect("shape schemas convert to Parquet");
+        for c in descr.columns() {
+            let root = &c.path().parts()[0];
+            if self.shape.is_plain(root) {
+                b = b.set_column_dictionary_enabled(c.path().clone(), false);
+            }
+            if self.shape.is_random(root) {
+                b = b.set_column_compression(c.path().clone(), Compression::UNCOMPRESSED);
+            }
+        }
+        b.build()
     }
 }
 
-/// Snappy, everything else arrow-rs's defaults.
+/// Snappy, everything else arrow-rs's defaults (dictionaries on for every
+/// column).
 pub fn parquet_props() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::SNAPPY)

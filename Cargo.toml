@@ -8,6 +8,7 @@ members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-ssb",
     "populate-h2o",
     "populate-oltp",
     "populate-synth",
@@ -25,6 +26,7 @@ default-members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-ssb",
     "populate-h2o",
     "populate-oltp",
     "populate-synth",
@@ -53,6 +55,7 @@ populate-sink-parquet = { path = "populate-sink-parquet" }
 populate-table = { path = "populate-table" }
 populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
+populate-ssb = { path = "populate-ssb" }
 populate-h2o = { path = "populate-h2o" }
 populate-oltp = { path = "populate-oltp" }
 populate-synth = { path = "populate-synth" }

@@ -457,6 +457,17 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
 impl Unit<'_> {
     /// Chunk `i` as `.dat` text, appended to `bufs` (one per output).
     fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        if let [s, r] = self.idx[..] {
+            // sales and returns hold only numbers: text straight from the rows
+            let t = &self.tables[s];
+            let (first, last) = t.range(i);
+            let (channel, _) = Channel::of(t.name).expect("a channel");
+            let [sales, returns] = bufs else {
+                unreachable!("a pair has two outputs")
+            };
+            debug_assert_eq!(self.tables[r].range(i), (first, last));
+            return channel.run_dat(&t.session, t.source_rows, first, last, sales, returns);
+        }
         self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
     }
 }

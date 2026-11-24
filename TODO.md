@@ -41,9 +41,16 @@ multi-threaded output equals one sequential run.
   - YCSB `usertable`, byte-identical to YCSB 0.17.0's own `ycsb load`
     (keys, `dataintegrity` values, and random values given the client
     thread's seed). See [`populate-oltp/README.md`](populate-oltp/README.md).
-- [ ] **LDBC SNB** (spike only)
-  - Prototype `Person` and `knows` to see whether the multi-pass, sorted
-    generation fits `Chunks` at all, before committing to the full schema.
+- [x] **LDBC SNB, identical to the LDBC Spark datagen** (`populate-ldbc`)
+  - All 14 dynamic and 4 static tables of `--mode raw`. Byte-identical CSV
+    at SF 0.1 and 1; value-identical to the datagen's raw Parquet, row by
+    row, at SF 3 and 10 (its CSV row order past one block is a Spark
+    file-scan artefact). 9.5–32x faster than the Spark datagen on 4 cores
+    (see [`populate-ldbc/README.md`](populate-ldbc/README.md)).
+  - Persons and friendships are a pre-pass; a chunk is 1,000 persons of an
+    activity block, resumed from the block's RNG state.
+  - [ ] Cheaper state-skipping pass (now ~60% of generation), and the
+    interactive / BI modes (`--mode bi`: factor tables, update streams).
 - [x] **Synthetic shapes** (examples, not benchmarks) (`populate-synth`)
   - NYC-taxi-like trips, ClickBench-like web hits, ML feature tables, and
     vector embeddings as `FixedSizeList<f32>`. Every value is a function of

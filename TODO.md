@@ -29,11 +29,14 @@ multi-threaded output equals one sequential run.
   - Port its skew and correlation changes into the `tpcdsgen` path, and
     generate tables in dependency order.
   - Test against DSB's own generator output.
-- [ ] **TSBS devops / IoT** (`populate-tsbs`)
-  - Reproduce Go `math/rand` and the per-host simulation for `--seed`
-    determinism.
-  - Output Arrow / Parquet. Test against `tsbs_generate_data` with a fixed
-    seed.
+- [x] **TSBS devops / IoT** (`populate-tsbs`)
+  - All five use cases, byte-identical to `tsbs_generate_data` for any seed
+    and flags in the eight text formats (Go `math/rand`, amd64
+    `math.Exp`/`math.Log`, the per-host and batch simulation, ported);
+    Arrow / Parquet per measurement. 3.5x Go on one thread, 12-15x on 4
+    cores (see [`populate-tsbs/README.md`](populate-tsbs/README.md)).
+  - [ ] The binary formats: `siridb` (qpack), `prometheus` (protobuf),
+    `mongo` (flatbuffers).
 - [ ] **TPC-C and YCSB initial load** (`populate-oltp`)
   - TPC-C tables with NURand and random strings, and YCSB `usertable`.
   - No canonical bytes: test row counts, key ranges and distributions against

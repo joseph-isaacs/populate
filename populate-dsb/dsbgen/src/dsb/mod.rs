@@ -78,38 +78,72 @@ fn exp_ratio(draw: i64, lambda: f64) -> f64 {
 /// Largest `max - min` [`exp_rank`] looks up.
 const TABLE_MAX_RANGE: i64 = 4096;
 
-/// Per range, the smallest draw of each rank above `min` (`steps[k - 1]`
-/// is where the offset reaches `k`), built on first use.
+/// Bits of a draw the step index looks up by (`draw >> INDEX_SHIFT`).
+const INDEX_SHIFT: u32 = 31 - 12;
+
+/// The draws where one range's rank steps, and where to start looking.
+struct Steps {
+    /// The smallest draw of each offset above `min`: `draws[k - 1]` is
+    /// where the offset reaches `k`.
+    draws: Box<[i32]>,
+    /// For each `draw >> INDEX_SHIFT`, the offset of the smallest draw
+    /// with those high bits.
+    index: Box<[u16]>,
+}
+
+impl Steps {
+    fn new(range: i64, lambda: f64) -> Self {
+        let draws: Box<[i32]> = (1..=range)
+            .map(|k| {
+                // smallest draw in [0, i32::MAX] with offset >= k
+                let (mut lo, mut hi) = (0i64, i32::MAX as i64 + 1);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if exp_offset(mid, range, lambda) >= k {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                lo.min(i32::MAX as i64) as i32
+            })
+            .collect();
+        let index = (0..1usize << (31 - INDEX_SHIFT))
+            .map(|b| {
+                let d = (b << INDEX_SHIFT) as i32;
+                draws.partition_point(|&s| s <= d) as u16
+            })
+            .collect();
+        Steps { draws, index }
+    }
+
+    #[inline]
+    fn offset(&self, draw: i64) -> i64 {
+        let d = draw as i32;
+        let mut k = self.index[(d >> INDEX_SHIFT) as usize] as usize;
+        while k < self.draws.len() && self.draws[k] <= d {
+            k += 1;
+        }
+        k as i64
+    }
+}
+
+/// Per range, its [`Steps`], built on first use.
 #[derive(Default)]
 struct ExpSteps {
-    by_range: Vec<Option<Box<[i32]>>>,
+    by_range: Vec<Option<Steps>>,
 }
 
 impl ExpSteps {
+    #[inline]
     fn steps(&mut self, range: i64, lambda: f64, draw: i64) -> i64 {
         let r = range as usize;
         if self.by_range.len() <= r {
             self.by_range.resize_with(r + 1, || None);
         }
-        let steps = self.by_range[r].get_or_insert_with(|| {
-            (1..=range)
-                .map(|k| {
-                    // smallest draw in [0, i32::MAX] with offset >= k
-                    let (mut lo, mut hi) = (0i64, i32::MAX as i64 + 1);
-                    while lo < hi {
-                        let mid = (lo + hi) / 2;
-                        if exp_offset(mid, range, lambda) >= k {
-                            hi = mid;
-                        } else {
-                            lo = mid + 1;
-                        }
-                    }
-                    lo.min(i32::MAX as i64) as i32
-                })
-                .collect()
-        });
-        let d = draw as i32;
-        steps.partition_point(|&s| s <= d) as i64
+        self.by_range[r]
+            .get_or_insert_with(|| Steps::new(range, lambda))
+            .offset(draw)
     }
 }
 
@@ -375,7 +409,7 @@ mod tests {
             for range in [0i64, 1, 2, 11, 19, 30, 49, 99, 999, 4096] {
                 let mut t = ExpSteps::default();
                 t.steps(range, lambda, 1);
-                let steps = t.by_range[range as usize].clone().unwrap();
+                let steps = t.by_range[range as usize].as_ref().unwrap().draws.clone();
                 let mut draws: Vec<i64> =
                     (1..20_000).map(|i| i * 107_351 % i32::MAX as i64).collect();
                 for &s in steps.iter() {

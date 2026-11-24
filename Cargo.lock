@@ -777,6 +777,7 @@ dependencies = [
  "divan",
  "dsbgen",
  "dsbgen-arrow",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]

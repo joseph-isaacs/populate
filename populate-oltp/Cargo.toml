@@ -1,0 +1,27 @@
+[package]
+name = "populate-oltp"
+description = "TPC-C initial load and YCSB load (byte-identical to YCSB), on all cores: Arrow, Parquet or text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "snap"] }
+itoa = "1"
+
+[dev-dependencies]
+divan = { workspace = true }
+arrow-select = "60"
+bytes = "1"
+
+[[bin]]
+name = "oltp-gen"
+path = "src/bin/oltp-gen.rs"
+
+[[bench]]
+name = "oltp"
+harness = false

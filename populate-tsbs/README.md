@@ -27,11 +27,14 @@ cargo run -p populate-tsbs --release --bin tsbs-gen -- \
 | `timestream` | the timescaledb serializer | no header |
 | `cratedb` | TSV with JSON tags | with the header |
 | `cassandra` | one CSV line per field | devops use cases (Go panics on IoT's float tags) |
+| `prometheus` | a version byte, then a length-prefixed protobuf `TimeSeries` per field | devops use cases |
+| `siridb` | qpack, with length headers | devops use cases |
+| `mongo` | length-prefixed `MongoPoint` flatbuffers (Go's builder ported, vtable sharing included) | devops use cases |
 | `parquet` | one file per measurement | `--out DIR` |
 | `arrow` | generate the Arrow tables and drop them | for timing |
 
-Not yet: the binary formats (`siridb`, `mongo`, `prometheus`); `akumuli`
-panics in `tsbs_generate_data` itself.
+`akumuli` panics in `tsbs_generate_data` itself, so there is nothing to
+match.
 
 ## How it matches Go
 
@@ -59,7 +62,7 @@ simulation is a faithful port:
 `tests/golden.rs` holds the length and FNV-1a hash of `tsbs_generate_data`'s
 output for every use case and text format plus the flags that change the
 run; with `TSBS_GENERATE_DATA=/path/to/tsbs_generate_data` it also compares
-156 runs byte for byte against the binary.
+204 runs byte for byte against the binary.
 
 ## Parallel, though the RNG is sequential
 
@@ -91,11 +94,21 @@ from 1 point up, against one sequential run that mirrors Go's
 
 | use case | scale | format | output | Go | tsbs-gen, 1 thread | tsbs-gen, 4 threads |
 |---|---:|---|---:|---:|---:|---:|
-| devops | 100 | influx | 3.32 GB | 11.18 s | 3.24 s (3.5x) | 0.78 s (14.3x) |
-| devops | 100 | timescaledb | 2.13 GB | 10.92 s | 3.03 s (3.6x) | 0.74 s (14.8x) |
-| cpu-only | 1000 | influx | 2.99 GB | 10.08 s | 3.01 s (3.3x) | 0.87 s (11.6x) |
-| iot | 100 | influx | 0.37 GB | 3.81 s | 1.13 s (3.4x) | 0.30 s (12.7x) |
-| devops-generic | 200 | influx | 0.44 GB | 2.15 s | 0.56 s (3.8x) | 0.28 s (7.6x) |
+| devops | 100 | influx | 3.32 GB | 11.05 s | 1.76 s (6.3x) | 0.58 s (19x) |
+| devops | 100 | timescaledb | 2.13 GB | 10.16 s | 1.69 s (6.0x) | 0.49 s (21x) |
+| devops | 100 | cratedb | 2.45 GB | 10.84 s | 1.57 s (6.9x) | 0.51 s (21x) |
+| devops | 100 | cassandra | 21.3 GB | 36.93 s | 3.48 s (11x) | 1.29 s (29x) |
+| devops | 100 | prometheus | 23.0 GB | 100.6 s | 4.75 s (21x) | 1.79 s (56x) |
+| devops | 100 | siridb | 4.50 GB | 36.89 s | 3.14 s (12x) | 0.86 s (43x) |
+| devops | 100 | mongo | 7.88 GB | 21.87 s | 6.93 s (3.2x) | 2.00 s (11x) |
+| cpu-only | 1000 | influx | 2.99 GB | 9.92 s | 1.73 s (5.7x) | 0.61 s (16x) |
+| iot | 100 | influx | 0.37 GB | 4.17 s | 0.48 s (8.6x) | 0.22 s (19x) |
+| devops-generic | 200 | influx | 0.44 GB | 2.19 s | 0.36 s (6.2x) | 0.18 s (12x) |
+
+Where the time goes: the frontier's work is Go's generator (batched: up
+to 273 lagged-Fibonacci steps per vectorised pass) and the walks; workers
+replay the frontier's tick states rather than redoing them, and format
+with every host's tags and every measurement's keys pre-rendered.
 
 ## Arrow and Parquet
 

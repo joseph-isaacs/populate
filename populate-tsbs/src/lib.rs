@@ -29,6 +29,7 @@
 //! ```
 
 pub mod arrow;
+pub mod binary;
 pub mod chunked;
 pub mod config;
 pub mod devops;
@@ -40,6 +41,7 @@ pub mod sim;
 pub mod text;
 
 pub use arrow::TsbsArrow;
+use binary::PROMETHEUS_HEADER;
 pub use chunked::{Chunked, DEFAULT_CHUNK_POINTS};
 pub use config::{Config, UseCase};
 pub use text::Format;
@@ -99,14 +101,16 @@ impl Tsbs {
             chunk_points
         };
         let src = self.text(format, cp).map_err(io::Error::other)?;
+        let w = HeaderOnFirstWrite::new(w, format);
         let mut w = write_text_many(&[&src as &dyn TextChunks], vec![w], threads)?;
-        Ok(w.pop().expect("one writer"))
+        Ok(w.pop().expect("one writer").w)
     }
 
     /// `format`'s text from one simulator, point by point, exactly as
     /// `tsbs_generate_data`'s `runSimulator` loop: the reference the
     /// chunked output is tested against.
-    pub fn write_text_sequential<W: Write>(&self, format: Format, mut w: W) -> io::Result<W> {
+    pub fn write_text_sequential<W: Write>(&self, format: Format, w: W) -> io::Result<W> {
+        let mut w = HeaderOnFirstWrite::new(w, format);
         let mut sim = AnySim::new(&self.cfg);
         let st = sim.statics().clone();
         format.check(&st).map_err(io::Error::other)?;
@@ -131,7 +135,7 @@ impl Tsbs {
         }
         w.write_all(&buf)?;
         w.flush()?;
-        Ok(w)
+        Ok(w.w)
     }
 
     /// The run as Arrow tables, one per measurement.
@@ -153,6 +157,38 @@ impl Tsbs {
     ) -> Result<Vec<W>, ParquetError> {
         let a = self.arrow(chunk_points);
         populate_table::write_parquet_many(&[&a as &dyn MultiChunks], writers, threads, props)
+    }
+}
+
+/// Writes prometheus's version header just before the first byte of the
+/// first point, as Go does (no points, no header).
+struct HeaderOnFirstWrite<W> {
+    w: W,
+    header: &'static [u8],
+}
+
+impl<W: Write> HeaderOnFirstWrite<W> {
+    fn new(w: W, format: Format) -> Self {
+        let header = if format == Format::Prometheus {
+            PROMETHEUS_HEADER
+        } else {
+            &[]
+        };
+        HeaderOnFirstWrite { w, header }
+    }
+}
+
+impl<W: Write> Write for HeaderOnFirstWrite<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if !buf.is_empty() && !self.header.is_empty() {
+            self.w.write_all(self.header)?;
+            self.header = &[];
+        }
+        self.w.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.w.flush()
     }
 }
 

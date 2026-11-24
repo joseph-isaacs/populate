@@ -43,7 +43,7 @@ struct Args {
 
 const USAGE: &str = "usage: tsbs-gen --use-case devops|cpu-only|cpu-single|devops-generic|iot \
 --scale N --seed N --format influx|victoriametrics|questdb|timescaledb|clickhouse|timestream|\
-cratedb|cassandra|parquet|arrow [--timestamp-start T] [--timestamp-end T] [--log-interval D] \
+cratedb|cassandra|prometheus|siridb|mongo|parquet|arrow [--timestamp-start T] [--timestamp-end T] [--log-interval D] \
 [--initial-scale N] [--max-data-points N] [--max-metric-count N] \
 [--interleaved-generation-group-id N] [--interleaved-generation-groups N] [--file PATH] \
 [--out DIR] [--threads N] [--chunk-points N]";

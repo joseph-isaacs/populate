@@ -597,6 +597,7 @@ impl DevopsSim {
         let statics = Statics {
             start: cfg.start,
             tag_cache: OnceLock::new(),
+            label_cache: OnceLock::new(),
             tag_keys: HOST_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types: vec![Type::Str; HOST_TAG_KEYS.len()],
             measurements,

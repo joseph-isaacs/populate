@@ -286,6 +286,7 @@ impl IotSim {
         let statics = Statics {
             start: cfg.start,
             tag_cache: OnceLock::new(),
+            label_cache: OnceLock::new(),
             tag_keys: TRUCK_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types,
             measurements,

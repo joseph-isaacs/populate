@@ -83,7 +83,8 @@ See [`populate-tpch/README.md`](populate-tpch/README.md).
 `populate-tsbs` generates TSBS's devops and IoT data byte-identical to
 `tsbs_generate_data` for any seed and flags (Go's `math/rand`, its amd64
 `math.Exp`/`math.Log` and the per-host simulation, ported), as influx,
-timescaledb, cratedb, cassandra and the other text formats, or as Arrow and
+timescaledb, cratedb, cassandra and the other text formats, prometheus,
+siridb and mongo's binary formats, or as Arrow and
 Parquet, one table per measurement, on all cores.
 
 ```sh

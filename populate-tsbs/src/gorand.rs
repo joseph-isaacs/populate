@@ -200,7 +200,6 @@ impl GoRand {
         self.norm_slow(j, i, x)
     }
 
-    #[cold]
     /// `NormFloat64` into every element of `out`, in order.
     pub fn fill_norm(&mut self, out: &mut [f64]) {
         let mut feed = self.feed;
@@ -228,6 +227,7 @@ impl GoRand {
         (self.feed, self.ahead) = (feed, ahead);
     }
 
+    #[cold]
     fn norm_slow(&mut self, mut j: i32, mut i: usize, mut x: f64) -> f64 {
         const RN: f64 = 3.442619855899;
         // the constant expression `1.0 / rn`, rounded once

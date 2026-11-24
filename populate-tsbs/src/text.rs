@@ -2,6 +2,7 @@
 //! VictoriaMetrics and QuestDB), TimescaleDB's two-line format (also
 //! ClickHouse and Timestream), CrateDB's TSV and Cassandra's CSV.
 
+use crate::binary::{mongo, prometheus, siridb};
 use crate::config::civil_from_days;
 use crate::model::{NO_TAG, Point, Statics, TagCache, TagVal, Type, Val};
 use std::fmt;
@@ -28,11 +29,18 @@ pub enum Format {
     CrateDb,
     /// `cassandra`: one CSV line per field.
     Cassandra,
+    /// `prometheus`: a version byte, then a length-prefixed protobuf
+    /// `TimeSeries` per field.
+    Prometheus,
+    /// `siridb`: qpack-encoded points with length headers.
+    SiriDb,
+    /// `mongo`: length-prefixed `MongoPoint` flatbuffers.
+    Mongo,
 }
 
 impl Format {
-    /// Every text format.
-    pub const ALL: [Format; 8] = [
+    /// Every format.
+    pub const ALL: [Format; 11] = [
         Format::Influx,
         Format::VictoriaMetrics,
         Format::QuestDb,
@@ -41,6 +49,9 @@ impl Format {
         Format::Timestream,
         Format::CrateDb,
         Format::Cassandra,
+        Format::Prometheus,
+        Format::SiriDb,
+        Format::Mongo,
     ];
 
     /// The `--format` name.
@@ -54,6 +65,9 @@ impl Format {
             Format::Timestream => "timestream",
             Format::CrateDb => "cratedb",
             Format::Cassandra => "cassandra",
+            Format::Prometheus => "prometheus",
+            Format::SiriDb => "siridb",
+            Format::Mongo => "mongo",
         }
     }
 
@@ -65,11 +79,16 @@ impl Format {
         )
     }
 
-    /// Whether every point of `st` can be written (Go panics on non-string
-    /// tags in cassandra).
+    /// Whether every point of `st` can be written (Go panics on IoT's
+    /// non-string tags in cassandra, prometheus, siridb and mongo).
     pub fn check(self, st: &Statics) -> Result<(), String> {
-        if self == Format::Cassandra && st.tag_types.iter().any(|&t| t != Type::Str) {
-            return Err("non-string tags not implemented for cassandra".into());
+        let strings = st.tag_types.iter().all(|&t| t == Type::Str);
+        if matches!(
+            self,
+            Format::Cassandra | Format::Prometheus | Format::SiriDb | Format::Mongo
+        ) && !strings
+        {
+            return Err(format!("non-string tags not implemented for {self}"));
         }
         Ok(())
     }
@@ -296,7 +315,7 @@ fn push_extra_kv(st: &Statics, p: &Point, out: &mut Vec<u8>) {
 }
 
 /// The point's tags in order: the generator's, then the measurement's.
-fn tags<'a>(
+pub(crate) fn tags<'a>(
     st: &'a Statics,
     p: &'a Point,
 ) -> impl Iterator<Item = (&'a str, Option<&'a TagVal>, Option<&'a str>)> + 'a {
@@ -355,6 +374,9 @@ pub fn write_point(format: Format, st: &Statics, p: &Point, out: &mut Vec<u8>) {
         Format::TimescaleDb | Format::ClickHouse | Format::Timestream => timescale(st, p, out),
         Format::CrateDb => crate_db(st, p, out),
         Format::Cassandra => cassandra(st, p, out),
+        Format::Prometheus => prometheus(st, p, out),
+        Format::SiriDb => siridb(st, p, out),
+        Format::Mongo => mongo(st, p, out),
     }
 }
 

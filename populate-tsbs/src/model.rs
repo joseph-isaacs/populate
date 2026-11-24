@@ -1,6 +1,7 @@
 //! What a simulator emits: [`Point`]s, plus the [`Statics`] they refer to
 //! (measurement names, field and tag keys, each host's tag values).
 
+use crate::binary::LabelCache;
 use std::sync::OnceLock;
 
 /// A field value, as TSBS's `interface{}` holds it.
@@ -103,6 +104,8 @@ pub struct Statics {
     pub header_fields: Vec<Vec<Box<str>>>,
     /// Each generator's tags, formatted once for the text serializers.
     pub tag_cache: OnceLock<TagCache>,
+    /// Each generator's tags as prometheus labels, made on first use.
+    pub label_cache: OnceLock<LabelCache>,
 }
 
 /// Per generator, its tags as the serializers write them when none is

@@ -35,7 +35,7 @@ multi-threaded output equals one sequential run.
     `math.Exp`/`math.Log`, the per-host and batch simulation, ported);
     Arrow / Parquet per measurement. 3.5x Go on one thread, 12-15x on 4
     cores (see [`populate-tsbs/README.md`](populate-tsbs/README.md)).
-  - [ ] The binary formats: `siridb` (qpack), `prometheus` (protobuf),
+  - [x] The binary formats: `siridb` (qpack), `prometheus` (protobuf),
     `mongo` (flatbuffers).
 - [ ] **TPC-C and YCSB initial load** (`populate-oltp`)
   - TPC-C tables with NURand and random strings, and YCSB `usertable`.

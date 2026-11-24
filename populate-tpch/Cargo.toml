@@ -16,6 +16,10 @@ parquet = { workspace = true, features = ["arrow", "snap"] }
 # tests compare against (Apache-2.0, tpchgen-rs project)
 tpchgen = "4.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# madvise, to put the text pool on huge pages
+libc = "0.2"
+
 [dev-dependencies]
 divan = { workspace = true }
 tpchgen-arrow = "4.0"

@@ -19,16 +19,16 @@ pub enum CustomerDemographicsGeneratorColumn {
 impl GeneratorColumn for CustomerDemographicsGeneratorColumn {
     fn get_global_column_number(&self) -> i32 {
         match self {
-            Self::CdDemoSk => 149,
-            Self::CdGender => 150,
-            Self::CdMaritalStatus => 151,
-            Self::CdEducationStatus => 152,
-            Self::CdPurchaseEstimate => 153,
-            Self::CdCreditRating => 154,
-            Self::CdDepCount => 155,
-            Self::CdDepEmployedCount => 156,
-            Self::CdDepCollegeCount => 157,
-            Self::CdNulls => 158,
+            Self::CdDemoSk => 76,
+            Self::CdGender => 77,
+            Self::CdMaritalStatus => 78,
+            Self::CdEducationStatus => 79,
+            Self::CdPurchaseEstimate => 80,
+            Self::CdCreditRating => 81,
+            Self::CdDepCount => 82,
+            Self::CdDepEmployedCount => 83,
+            Self::CdDepCollegeCount => 84,
+            Self::CdNulls => 85,
         }
     }
 

@@ -70,3 +70,35 @@ pub fn get_city_at_index(index: usize) -> &'static str {
 
     dist.get_value_at_index(0, index)
 }
+
+/// The `street_names` distribution (DSB picks from it by index).
+pub fn street_names_distribution() -> &'static StringValuesDistribution {
+    STREET_NAMES_DISTRIBUTION.get_or_init(|| {
+        StringValuesDistribution::build_string_values_distribution("street_names.dst", 1, 2)
+            .expect("Failed to load street names distribution")
+    })
+}
+
+/// The `street_type` distribution.
+pub fn street_types_distribution() -> &'static StringValuesDistribution {
+    STREET_TYPES_DISTRIBUTION.get_or_init(|| {
+        StringValuesDistribution::build_string_values_distribution("street_types.dst", 1, 1)
+            .expect("Failed to load street types distribution")
+    })
+}
+
+/// The `cities` distribution.
+pub fn cities_distribution() -> &'static StringValuesDistribution {
+    CITIES_DISTRIBUTION.get_or_init(|| {
+        StringValuesDistribution::build_string_values_distribution("cities.dst", 1, 6)
+            .expect("Failed to load cities distribution")
+    })
+}
+
+/// The `countries` distribution.
+pub fn countries_distribution() -> &'static StringValuesDistribution {
+    COUNTRIES_DISTRIBUTION.get_or_init(|| {
+        StringValuesDistribution::build_string_values_distribution("countries.dst", 1, 1)
+            .expect("Failed to load countries distribution")
+    })
+}

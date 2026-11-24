@@ -103,18 +103,20 @@ impl Table {
     pub fn get_ordinal(&self) -> i64 {
         match self {
             // Java enum order (from Table.java):
+            // DSB reorders the first twelve tables (its tables.h), which
+            // moves their SCD dates and stream numbers.
             Table::CallCenter => 0,
-            Table::CatalogPage => 1,
-            Table::CatalogReturns => 2,
-            Table::CatalogSales => 3,
-            Table::Customer => 4,
-            Table::CustomerAddress => 5,
-            Table::CustomerDemographics => 6,
-            Table::DateDim => 7,
-            Table::HouseholdDemographics => 8,
-            Table::IncomeBand => 9,
-            Table::Inventory => 10,
-            Table::Item => 11,
+            Table::Item => 1,
+            Table::CustomerAddress => 2,
+            Table::CustomerDemographics => 3,
+            Table::HouseholdDemographics => 4,
+            Table::Customer => 5,
+            Table::CatalogPage => 6,
+            Table::CatalogReturns => 7,
+            Table::CatalogSales => 8,
+            Table::DateDim => 9,
+            Table::IncomeBand => 10,
+            Table::Inventory => 11,
             Table::Promotion => 12,
             Table::Reason => 13,
             Table::ShipMode => 14,
@@ -540,7 +542,7 @@ mod tests {
         // These numbers offset SCD dates, so they must match the reference
         // generator.
         assert_eq!(Table::CallCenter.get_ordinal(), 0);
-        assert_eq!(Table::Item.get_ordinal(), 11);
+        assert_eq!(Table::Item.get_ordinal(), 1);
         assert_eq!(Table::Store.get_ordinal(), 15);
         assert_eq!(Table::WebPage.get_ordinal(), 20);
         assert_eq!(Table::WebSite.get_ordinal(), 23);

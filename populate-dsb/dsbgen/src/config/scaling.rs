@@ -75,13 +75,8 @@ impl Scaling {
             return self.scale_inventory();
         }
 
-        // In C compat mode the reason table is static at 75 rows regardless of scale.
-        // The Java port's logarithmic model (35 at SF1) is wrong; C always emits all
-        // 75 entries from return_reasons_c.dst.
-        if table == Table::Reason && self.compat_mode == CompatMode::C {
-            return REASON_ROW_COUNT_C;
-        }
-
+        // DSB's dsdgen (2.11) scales `reason` with the spec's model (35 rows
+        // at SF 1), unlike tpcgen-cli's C mode, which writes all 75.
         // Get base row count from ScalingInfo
         let scaling_info = table.get_scaling_info();
         let base_row_count: u64 = scaling_info

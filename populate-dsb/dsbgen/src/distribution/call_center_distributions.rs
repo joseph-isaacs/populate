@@ -18,7 +18,7 @@ impl CallCenterDistributions {
         })
     }
 
-    fn call_center_classes() -> &'static StringValuesDistribution {
+    pub fn call_center_classes() -> &'static StringValuesDistribution {
         CALL_CENTER_CLASSES_DISTRIBUTION.get_or_init(|| {
             StringValuesDistribution::build_string_values_distribution(
                 "call_center_classes.dst",
@@ -29,7 +29,7 @@ impl CallCenterDistributions {
         })
     }
 
-    fn call_center_hours() -> &'static StringValuesDistribution {
+    pub fn call_center_hours() -> &'static StringValuesDistribution {
         CALL_CENTER_HOURS_DISTRIBUTION.get_or_init(|| {
             StringValuesDistribution::build_string_values_distribution(
                 "call_center_hours.dst",

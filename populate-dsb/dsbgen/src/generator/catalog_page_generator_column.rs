@@ -41,17 +41,17 @@ impl GeneratorColumn for CatalogPageGeneratorColumn {
 
     fn get_global_column_number(&self) -> i32 {
         match self {
-            CatalogPageGeneratorColumn::CpCatalogPageSk => 35,
-            CatalogPageGeneratorColumn::CpCatalogPageId => 36,
-            CatalogPageGeneratorColumn::CpStartDateId => 37,
-            CatalogPageGeneratorColumn::CpEndDateId => 38,
-            CatalogPageGeneratorColumn::CpPromoId => 39,
-            CatalogPageGeneratorColumn::CpDepartment => 40,
-            CatalogPageGeneratorColumn::CpCatalogNumber => 41,
-            CatalogPageGeneratorColumn::CpCatalogPageNumber => 42,
-            CatalogPageGeneratorColumn::CpDescription => 43,
-            CatalogPageGeneratorColumn::CpType => 44,
-            CatalogPageGeneratorColumn::CpNulls => 45,
+            CatalogPageGeneratorColumn::CpCatalogPageSk => 111,
+            CatalogPageGeneratorColumn::CpCatalogPageId => 112,
+            CatalogPageGeneratorColumn::CpStartDateId => 113,
+            CatalogPageGeneratorColumn::CpEndDateId => 114,
+            CatalogPageGeneratorColumn::CpPromoId => 115,
+            CatalogPageGeneratorColumn::CpDepartment => 116,
+            CatalogPageGeneratorColumn::CpCatalogNumber => 117,
+            CatalogPageGeneratorColumn::CpCatalogPageNumber => 118,
+            CatalogPageGeneratorColumn::CpDescription => 119,
+            CatalogPageGeneratorColumn::CpType => 120,
+            CatalogPageGeneratorColumn::CpNulls => 121,
         }
     }
 

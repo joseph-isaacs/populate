@@ -35,11 +35,11 @@ impl GeneratorColumn for InventoryGeneratorColumn {
 
     fn get_global_column_number(&self) -> i32 {
         match self {
-            InventoryGeneratorColumn::InvDateSk => 198,
-            InventoryGeneratorColumn::InvItemSk => 199,
-            InventoryGeneratorColumn::InvWarehouseSk => 200,
-            InventoryGeneratorColumn::InvQuantityOnHand => 201,
-            InventoryGeneratorColumn::InvNulls => 202,
+            InventoryGeneratorColumn::InvDateSk => 223,
+            InventoryGeneratorColumn::InvItemSk => 224,
+            InventoryGeneratorColumn::InvWarehouseSk => 225,
+            InventoryGeneratorColumn::InvQuantityOnHand => 226,
+            InventoryGeneratorColumn::InvNulls => 227,
         }
     }
 

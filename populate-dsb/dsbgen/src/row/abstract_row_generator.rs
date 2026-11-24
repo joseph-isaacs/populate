@@ -17,6 +17,13 @@ pub struct AbstractRowGenerator<C> {
     /// Global column number of the first column, so a column's stream is at
     /// index `global_column_number - base_global_column_number`
     base_global_column_number: i32,
+    /// DSB: the streams at the start of row 1, after the draws a table
+    /// makes when it initialises (its permutations), with those draws
+    /// still counted as used in row 1, as dsdgen counts them.
+    row1: Option<Vec<(i64, u32)>>,
+    /// DSB: the streams at the start of row 2. Row 1 overruns its budgets
+    /// by the initialisation draws, so later rows are offset from it.
+    row2: Option<Vec<i64>>,
     column: PhantomData<C>,
 }
 
@@ -58,8 +65,43 @@ impl<C: GeneratorColumn> AbstractRowGenerator<C> {
             row_count,
             random_number_streams,
             base_global_column_number,
+            row1: None,
+            row2: None,
             column: PhantomData,
         }
+    }
+
+    /// Record the current streams as the start of row 1 (call after the
+    /// table's initialisation draws).
+    pub fn mark_row1(&mut self) {
+        self.row1 = Some(
+            self.random_number_streams
+                .iter()
+                .map(|s| (s.seed(), s.get_seeds_used()))
+                .collect(),
+        );
+    }
+
+    /// The streams' seeds now (after `finish_row` of row 1, the start of
+    /// row 2).
+    pub fn seeds(&self) -> Vec<i64> {
+        self.random_number_streams.iter().map(|s| s.seed()).collect()
+    }
+
+    /// Set the start of row 2 (see [`Self::seeds`]).
+    pub fn set_row2(&mut self, seeds: Vec<i64>) {
+        self.row2 = Some(seeds);
+    }
+
+    /// Whether skipping to `row` needs the row-2 snapshot first.
+    pub fn needs_row2(&self, row: u64) -> bool {
+        row > 1 && self.row1.is_some() && self.row2.is_none()
+    }
+
+    /// Override the per-row budget of `column` (see
+    /// [`RandomNumberStream::set_seeds_per_row`]).
+    pub fn set_seeds_per_row(&mut self, column: &C, n: u32) {
+        self.get_random_number_stream(column).set_seeds_per_row(n);
     }
 
     /// Get the random number stream for a generator column
@@ -86,6 +128,25 @@ impl<C: GeneratorColumn> AbstractRowGenerator<C> {
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// all streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        if let Some(row1) = &self.row1 {
+            if starting_row_number <= 1 {
+                for (stream, &(seed, used)) in self.random_number_streams.iter_mut().zip(row1) {
+                    stream.set_seed(seed);
+                    stream.set_seeds_used(used);
+                }
+            } else {
+                let row2 = self
+                    .row2
+                    .as_ref()
+                    .expect("row-2 snapshot set before skipping past row 1");
+                for (stream, &seed) in self.random_number_streams.iter_mut().zip(row2) {
+                    stream.set_seed(seed);
+                    stream.advance((starting_row_number - 2) * stream.get_seeds_per_row() as u64);
+                }
+            }
+            self.current_row = starting_row_number;
+            return;
+        }
         let rows_to_skip = starting_row_number.saturating_sub(1);
         for stream in self.random_number_streams.iter_mut() {
             stream.skip_rows(rows_to_skip);

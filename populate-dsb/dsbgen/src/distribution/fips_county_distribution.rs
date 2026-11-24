@@ -121,4 +121,9 @@ impl FipsCountyDistribution {
     pub fn get_gmt_offset_at_index(index: usize) -> i32 {
         Self::get_instance().gmt_offsets[index]
     }
+
+    /// Number of counties (`distsize("fips_county")`).
+    pub fn size() -> usize {
+        Self::get_instance().counties.len()
+    }
 }

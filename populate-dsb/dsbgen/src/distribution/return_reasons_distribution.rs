@@ -34,10 +34,10 @@ impl ReturnReasonsDistribution {
     }
 
     pub fn get_return_reason_at_index(index: usize, compat: CompatMode) -> &'static str {
-        match compat {
-            CompatMode::C => Self::get_distribution_c().get_value_at_index(0, index),
-            CompatMode::Trino => Self::get_distribution().get_value_at_index(0, index),
-        }
+        // DSB's tpcds.dst repeats "reason 31" (row 30), as the Java port's
+        // file does; tpcgen-cli's C mode file has "reason 30".
+        let _ = compat;
+        Self::get_distribution().get_value_at_index(0, index)
     }
 
     pub fn get_size() -> usize {

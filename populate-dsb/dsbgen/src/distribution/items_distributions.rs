@@ -486,3 +486,49 @@ mod tests {
         assert!(dist.get_size() > 0);
     }
 }
+
+// ============================================================================
+// DSB: index access for exponential picks
+// ============================================================================
+
+/// `distsize("categories")`.
+pub fn category_count() -> usize {
+    get_categories_distribution().names.len()
+}
+
+/// `distsize` of category `category_index`'s class distribution.
+pub fn category_class_count(category_index: usize) -> usize {
+    get_category_class_distributions()[category_index].names.len()
+}
+
+/// Class `class_index` (0-based) of category `category_index`.
+pub fn category_class_at(category_index: usize, class_index: usize) -> CategoryClass {
+    let d = &get_category_class_distributions()[category_index];
+    CategoryClass {
+        id: (class_index + 1) as i64,
+        name: d.names[class_index].clone(),
+        brand_count: d.brand_counts[class_index],
+    }
+}
+
+/// `distItemCount("i_manager_id")`: the max of its last range.
+pub fn manager_id_item_count() -> i32 {
+    let d = get_item_manager_id_distribution();
+    d.get_value_at_index(2, d.get_size() - 1)
+}
+
+/// `distItemCount("i_manufact_id")`.
+pub fn manufact_id_item_count() -> i32 {
+    let d = get_item_manufact_id_distribution();
+    d.get_value_at_index(2, d.get_size() - 1)
+}
+
+/// The `colors` distribution.
+pub fn colors_distribution() -> &'static StringValuesDistribution {
+    get_colors_distribution()
+}
+
+/// The `units` distribution.
+pub fn units_distribution() -> &'static StringValuesDistribution {
+    get_units_distribution()
+}

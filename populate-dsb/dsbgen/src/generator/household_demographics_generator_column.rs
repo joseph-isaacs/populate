@@ -29,12 +29,12 @@ pub enum HouseholdDemographicsGeneratorColumn {
 impl GeneratorColumn for HouseholdDemographicsGeneratorColumn {
     fn get_global_column_number(&self) -> i32 {
         match self {
-            Self::HdDemoSk => 188,
-            Self::HdIncomeBandId => 189,
-            Self::HdBuyPotential => 190,
-            Self::HdDepCount => 191,
-            Self::HdVehicleCount => 192,
-            Self::HdNulls => 193,
+            Self::HdDemoSk => 86,
+            Self::HdIncomeBandId => 87,
+            Self::HdBuyPotential => 88,
+            Self::HdDepCount => 89,
+            Self::HdVehicleCount => 90,
+            Self::HdNulls => 91,
         }
     }
 

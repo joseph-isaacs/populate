@@ -11,8 +11,23 @@ use crate::table::Table;
 use crate::types::{Address, Date, Decimal};
 
 /// Row generator for the CALL_CENTER table (CallCenterRowGenerator)
+/// DSB's permutations for `call_center` (made on its first row).
+struct Perms {
+    class: Vec<i32>,
+    hours: Vec<i32>,
+    market_id: Vec<i32>,
+    division: Vec<i32>,
+    company: Vec<i32>,
+    sq_ft_bucket: (i32, i32),
+    sq_ft: Vec<i32>,
+    employees_max: i32,
+    employees_bucket: (i32, i32),
+    employees: Vec<i32>,
+}
+
 pub struct CallCenterRowGenerator {
     abstract_generator: AbstractRowGenerator<CallCenterGeneratorColumn>,
+    perms: Perms,
     text: RandomTextGenerator,
     previous_row: Option<CallCenterRow>,
     session: Session,
@@ -36,8 +51,47 @@ const JULIAN_DATE_START: i64 = Date::JULIAN_DATA_START_DATE - 23; // 23 is the o
 impl CallCenterRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use crate::dsb::{make_bucket, make_perm};
+        use CallCenterGeneratorColumn::*;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        // DSB: `nScale = get_int("SCALE")`.
+        let scale = session.get_scaling().get_scale() as i32;
+        let n_class = CallCenterDistributions::call_center_classes().get_size() as i32;
+        let n_hours = CallCenterDistributions::call_center_hours().get_size() as i32;
+        let class = make_perm(n_class, ag.get_random_number_stream(&CcClass));
+        let hours = make_perm(n_hours, ag.get_random_number_stream(&CcHours));
+        let market_id = make_perm(6, ag.get_random_number_stream(&CcMarketId));
+        let division = make_perm(6, ag.get_random_number_stream(&CcCompany));
+        let company = make_perm(6, ag.get_random_number_stream(&CcCompany));
+        let sq_ft_bucket = make_bucket(20, 700 - 100 + 1);
+        let sq_ft = make_perm(sq_ft_bucket.1, ag.get_random_number_stream(&CcSqFt));
+        let employees_max = MAX_NUMBER_OF_EMPLOYEES_UNSCALED * scale * scale;
+        let employees_bucket = make_bucket(20, employees_max);
+        let employees = make_perm(employees_bucket.1, ag.get_random_number_stream(&CcEmployees));
+        // call_center is the first table to call mk_address, so its first
+        // row draws the address permutations.
+        let draws = crate::dsb::address::AddressPerms::get().draws;
+        let s = ag.get_random_number_stream(&CcAddress);
+        s.advance(draws);
+        s.set_seeds_used(draws as u32);
+        // Exponential bucket plus uniform value: two draws every row.
+        ag.set_seeds_per_row(&CcEmployees, 2);
+        ag.set_seeds_per_row(&CcSqFt, 2);
+        ag.mark_row1();
         Self {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
+            perms: Perms {
+                class,
+                hours,
+                market_id,
+                division,
+                company,
+                sq_ft_bucket,
+                sq_ft,
+                employees_max,
+                employees_bucket,
+                employees,
+            },
             text: RandomTextGenerator::new(),
             previous_row: None,
             session,
@@ -89,8 +143,8 @@ impl CallCenterRowGenerator {
             let address_stream = self
                 .abstract_generator
                 .get_random_number_stream(&CallCenterGeneratorColumn::CcAddress);
-            let address =
-                Address::make_address_for_column(Table::CallCenter, address_stream, scaling);
+            let (address, _) =
+                crate::dsb::address::make_address(Table::CallCenter, address_stream, scaling);
 
             (open_date_id, final_cc_name, address)
         } else {
@@ -122,18 +176,21 @@ impl CallCenterRowGenerator {
         let class_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcClass);
-        let cc_class = CallCenterDistributions::pick_random_call_center_class(class_stream);
+        let classes = CallCenterDistributions::call_center_classes();
+        let cc_class = classes.get_value_at_index(
+            0,
+            crate::dsb::exp_pick_index(classes.get_size() as i32, Some(&self.perms.class), class_stream),
+        );
         field_change_flag >>= 1;
 
         let employees_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcEmployees);
-        let scale = scaling.get_scale().ceil() as i32;
-        let mut cc_employees = RandomValueGenerator::generate_uniform_random_int(
+        let mut cc_employees = crate::dsb::exp_bucketed_int(
             1,
-            MAX_NUMBER_OF_EMPLOYEES_UNSCALED
-                .wrapping_mul(scale)
-                .wrapping_mul(scale),
+            self.perms.employees_max,
+            self.perms.employees_bucket,
+            &self.perms.employees,
             employees_stream,
         );
         if let Some(ref prev_row) = self.previous_row {
@@ -149,9 +206,14 @@ impl CallCenterRowGenerator {
         let sq_ft_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcSqFt);
-        let mut cc_sq_ft =
-            RandomValueGenerator::generate_uniform_random_int(100, 700, sq_ft_stream)
-                .wrapping_mul(cc_employees);
+        let mut cc_sq_ft = crate::dsb::exp_bucketed_int(
+            100,
+            700,
+            self.perms.sq_ft_bucket,
+            &self.perms.sq_ft,
+            sq_ft_stream,
+        )
+        .wrapping_mul(cc_employees);
         if let Some(ref prev_row) = self.previous_row {
             cc_sq_ft = get_value_for_slowly_changing_dimension(
                 field_change_flag,
@@ -166,7 +228,11 @@ impl CallCenterRowGenerator {
         let hours_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcHours);
-        let cc_hours = CallCenterDistributions::pick_random_call_center_hours(hours_stream);
+        let hours = CallCenterDistributions::call_center_hours();
+        let cc_hours = hours.get_value_at_index(
+            0,
+            crate::dsb::exp_pick_index(hours.get_size() as i32, Some(&self.perms.hours), hours_stream),
+        );
         field_change_flag >>= 1;
 
         let manager_stream = self
@@ -195,8 +261,10 @@ impl CallCenterRowGenerator {
         let market_id_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcMarketId);
-        let mut cc_market_id =
-            RandomValueGenerator::generate_uniform_random_int(1, 6, market_id_stream);
+        let mut cc_market_id = crate::dsb::map_perm(
+            crate::dsb::exp_int(1, 6, market_id_stream),
+            &self.perms.market_id,
+        );
         if let Some(ref prev_row) = self.previous_row {
             cc_market_id = get_value_for_slowly_changing_dimension(
                 field_change_flag,
@@ -268,7 +336,7 @@ impl CallCenterRowGenerator {
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcCompany);
         let mut cc_company =
-            RandomValueGenerator::generate_uniform_random_int(1, 6, company_stream);
+            crate::dsb::map_perm(crate::dsb::exp_int(1, 6, company_stream), &self.perms.company);
         if let Some(ref prev_row) = self.previous_row {
             cc_company = get_value_for_slowly_changing_dimension(
                 field_change_flag,
@@ -282,8 +350,10 @@ impl CallCenterRowGenerator {
         let division_id_stream = self
             .abstract_generator
             .get_random_number_stream(&CallCenterGeneratorColumn::CcCompany); // Note: uses same stream as company
-        let mut cc_division_id =
-            RandomValueGenerator::generate_uniform_random_int(1, 6, division_id_stream);
+        let mut cc_division_id = crate::dsb::map_perm(
+            crate::dsb::exp_int(1, 6, division_id_stream),
+            &self.perms.division,
+        );
         if let Some(ref prev_row) = self.previous_row {
             cc_division_id = get_value_for_slowly_changing_dimension(
                 field_change_flag,
@@ -394,6 +464,11 @@ impl CallCenterRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        if self.abstract_generator.needs_row2(starting_row_number) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+        }
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
         self.previous_row = None;

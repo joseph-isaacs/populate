@@ -47,22 +47,22 @@ impl GeneratorColumn for CustomerAddressGeneratorColumn {
 
     fn get_global_column_number(&self) -> i32 {
         match self {
-            CustomerAddressGeneratorColumn::CaAddressSk => 133,
-            CustomerAddressGeneratorColumn::CaAddressId => 134,
-            CustomerAddressGeneratorColumn::CaAddressStreetNum => 135,
-            CustomerAddressGeneratorColumn::CaAddressStreetName => 136,
-            CustomerAddressGeneratorColumn::CaAddressStreetType => 137,
-            CustomerAddressGeneratorColumn::CaAddressSuiteNum => 138,
-            CustomerAddressGeneratorColumn::CaAddressCity => 139,
-            CustomerAddressGeneratorColumn::CaAddressCounty => 140,
-            CustomerAddressGeneratorColumn::CaAddressState => 141,
-            CustomerAddressGeneratorColumn::CaAddressZip => 142,
-            CustomerAddressGeneratorColumn::CaAddressCountry => 143,
-            CustomerAddressGeneratorColumn::CaAddressGmtOffset => 144,
-            CustomerAddressGeneratorColumn::CaLocationType => 145,
-            CustomerAddressGeneratorColumn::CaNulls => 146,
-            CustomerAddressGeneratorColumn::CaAddress => 147,
-            CustomerAddressGeneratorColumn::CaAddressStreetName2 => 148,
+            CustomerAddressGeneratorColumn::CaAddressSk => 60,
+            CustomerAddressGeneratorColumn::CaAddressId => 61,
+            CustomerAddressGeneratorColumn::CaAddressStreetNum => 62,
+            CustomerAddressGeneratorColumn::CaAddressStreetName => 63,
+            CustomerAddressGeneratorColumn::CaAddressStreetType => 64,
+            CustomerAddressGeneratorColumn::CaAddressSuiteNum => 65,
+            CustomerAddressGeneratorColumn::CaAddressCity => 66,
+            CustomerAddressGeneratorColumn::CaAddressCounty => 67,
+            CustomerAddressGeneratorColumn::CaAddressState => 68,
+            CustomerAddressGeneratorColumn::CaAddressZip => 69,
+            CustomerAddressGeneratorColumn::CaAddressCountry => 70,
+            CustomerAddressGeneratorColumn::CaAddressGmtOffset => 71,
+            CustomerAddressGeneratorColumn::CaLocationType => 72,
+            CustomerAddressGeneratorColumn::CaNulls => 73,
+            CustomerAddressGeneratorColumn::CaAddress => 74,
+            CustomerAddressGeneratorColumn::CaAddressStreetName2 => 75,
         }
     }
 

@@ -75,6 +75,51 @@ impl RandomNumberStream {
         self.seeds_used = 0;
     }
 
+    /// Advance the stream by `n` draws from where it is now (dsdgen's
+    /// `skip_random`, but relative), leaving `seeds_used` alone.
+    pub fn advance(&mut self, mut n: u64) {
+        let mut next_seed = self.seed;
+        let mut multiplier = Self::MULTIPLIER;
+        while n > 0 {
+            if n % 2 == 1 {
+                next_seed = (multiplier * next_seed) % i32::MAX as i64;
+            }
+            n /= 2;
+            multiplier = (multiplier * multiplier) % i32::MAX as i64;
+        }
+        self.seed = next_seed;
+    }
+
+    /// The current seed (the last value drawn).
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// Put the stream at `seed`, as if it had just drawn it.
+    pub fn set_seed(&mut self, seed: i64) {
+        self.seed = seed;
+        self.seeds_used = 0;
+    }
+
+    /// The stream as it starts, before any draw.
+    pub fn initial(&self) -> Self {
+        let mut s = self.clone();
+        s.seed = s.initial_seed;
+        s.seeds_used = 0;
+        s
+    }
+
+    /// Change the per-row budget (for columns whose every row draws a fixed
+    /// number above dsdgen's budget, so skipping stays exact).
+    pub fn set_seeds_per_row(&mut self, n: u32) {
+        self.seeds_per_row = n;
+    }
+
+    /// Set the draws counted in this row (restoring a snapshot).
+    pub fn set_seeds_used(&mut self, n: u32) {
+        self.seeds_used = n;
+    }
+
     pub fn reset_seed(&mut self) {
         self.seed = self.initial_seed;
         self.seeds_used = 0;

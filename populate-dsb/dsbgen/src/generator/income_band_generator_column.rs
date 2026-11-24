@@ -16,10 +16,10 @@ impl IncomeBandGeneratorColumn {
     fn get_column_info(&self) -> (i32, u32) {
         use IncomeBandGeneratorColumn::*;
         match self {
-            IbIncomeBandId => (194, 1),
-            IbLowerBound => (195, 1),
-            IbUpperBound => (196, 1),
-            IbNulls => (197, 2),
+            IbIncomeBandId => (219, 1),
+            IbLowerBound => (220, 1),
+            IbUpperBound => (221, 1),
+            IbNulls => (222, 2),
         }
     }
 }

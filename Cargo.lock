@@ -827,6 +827,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "divan",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]

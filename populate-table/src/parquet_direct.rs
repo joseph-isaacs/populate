@@ -498,6 +498,11 @@ fn extend_map<S: Copy, T: Copy>(out: &mut Vec<T>, values: &[S], a: &ArrayRef, f:
 /// Smallest and largest of `v` (for floats, of its non-NaN values if it
 /// has any).
 fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
+    wide(|| min_max_in(v))
+}
+
+#[inline(always)]
+fn min_max_in<T: Native>(v: &[T]) -> Option<(T, T)> {
     if v.is_empty() {
         return None;
     }
@@ -511,6 +516,30 @@ fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     let lo = v.iter().copied().fold(T::MAX, Ord::min);
     let hi = v.iter().copied().fold(T::MIN, Ord::max);
     Some((lo, hi))
+}
+
+/// NaNs in `v` (floats only, else `None`).
+fn nan_count<T: Native>(v: &[T]) -> Option<usize> {
+    T::FLOAT.then(|| wide(|| v.iter().filter(|x| x.is_nan()).count()))
+}
+
+/// `f()` compiled for AVX2 where the CPU has it (min / max of 32-bit
+/// lanes and the like need SSE4.1 or later, past the x86-64 baseline), so
+/// the folds over every value vectorise wide.
+#[inline(always)]
+fn wide<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has AVX2
+        return unsafe { avx2(f) };
+    }
+    f()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn avx2<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 /// Writes one column chunk's pages and gathers its metadata: the parts
@@ -850,7 +879,7 @@ fn encode<T: Native>(
             Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &plan.idx[v0..v1]))),
             None => (Encoding::PLAIN, None),
         };
-        let nans = T::FLOAT.then(|| vals.iter().filter(|x| x.is_nan()).count() as i64);
+        let nans = nan_count(vals).map(|c| c as i64);
         w.data_page(
             p.rows.clone(),
             vals.len(),
@@ -877,8 +906,7 @@ fn encode<T: Native>(
     }
     let order = boundary_order(page_ranges.into_iter());
     let nulls = (v.rows - v.vals.len()) as u64;
-    let nans = (T::FLOAT && !v.vals.is_empty())
-        .then(|| v.vals.iter().filter(|x| x.is_nan()).count() as u64);
+    let nans = (T::FLOAT && !v.vals.is_empty()).then(|| nan_count(&v.vals).unwrap_or(0) as u64);
     let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls, nans), order)?;
     Ok((Bytes::from(sink.into_inner()?), close))
 }
@@ -947,7 +975,13 @@ fn encode_list<T: Native>(
         .data_page_row_count_limit()
         .min(props.data_page_size_limit() / (n * T::SIZE))
         .max(1);
-    let mut sink = TrackedWrite::new(Vec::new());
+    // presized: the values plus a page header and levels per page, so a
+    // chunk of hundreds of MB is not grown (copied) by doubling
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let pages = total.div_ceil(per_page * n) + parts.len();
+    let level_bytes = if (2..16).contains(&n) { total / 8 } else { 0 };
+    let cap = total * T::SIZE + level_bytes + pages * (64 + 3 * per_page.min(total));
+    let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     w.list = Some(n);
     let bytes = |x: T| {
@@ -967,7 +1001,7 @@ fn encode_list<T: Native>(
                 hi = fold_stat(hi, b, |x, y| x > y);
             }
             page_ranges.push(mm);
-            let page_nans = T::FLOAT.then(|| page.iter().filter(|x| x.is_nan()).count());
+            let page_nans = nan_count(page);
             nans += page_nans.unwrap_or(0) as u64;
             w.list_page(page.len() / n, n, page_nans.map(|c| c as i64), |body| {
                 T::put_all(page, body);

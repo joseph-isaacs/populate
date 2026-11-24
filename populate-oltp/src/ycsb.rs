@@ -88,11 +88,9 @@ impl Ycsb {
     }
 
     fn update(&mut self) {
-        let start = self.insert_start.min(self.record_count);
-        let count = self
-            .insert_count
-            .unwrap_or(self.record_count - start)
-            .min(self.record_count - start);
+        // as YCSB's Client: `insertcount` records if given, else
+        // `recordcount`, starting at `insertstart`
+        let count = self.insert_count.unwrap_or(self.record_count);
         self.plan = Plan::new(count, 1.0)
             .chunk_source_rows(self.chunk_rows)
             .batch_size(self.batch);
@@ -117,7 +115,7 @@ impl Ycsb {
         self.set(|y| y.insert_start = n)
     }
 
-    /// `insertcount` (default: `recordcount - insertstart`).
+    /// `insertcount` (default: `recordcount`, as YCSB's client loads).
     pub fn insert_count(self, n: u64) -> Self {
         self.set(|y| y.insert_count = Some(n))
     }
@@ -133,8 +131,27 @@ impl Ycsb {
     }
 
     /// `fieldnameprefix` (default `field`).
+    ///
+    /// Panics unless `p` is printable ASCII without tabs: the values are
+    /// built byte-wise, and the TSV output separates fields with tabs.
     pub fn field_prefix(self, p: &str) -> Self {
+        assert!(
+            p.bytes().all(|b| b.is_ascii_graphic() || b == b' '),
+            "fieldnameprefix must be printable ASCII"
+        );
         self.set(|y| y.field_prefix = p.into())
+    }
+
+    /// YCSB's own check of the properties: `CoreWorkload` refuses
+    /// `insertstart + insertcount > recordcount`.
+    pub fn check(&self) -> Result<(), String> {
+        match self.insert_count {
+            Some(c) if self.insert_start + c > self.record_count => Err(format!(
+                "insertstart ({}) + insertcount ({c}) is more than recordcount ({})",
+                self.insert_start, self.record_count
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// `insertorder=ordered` (default `hashed`).
@@ -416,8 +433,8 @@ fn six(bytes: i32, out: &mut [u8]) {
 /// capacity) after inserting `keys` in order, as indexes into `keys`.
 ///
 /// Buckets in index order, each in insertion order (resizes keep the
-/// relative order). Panics if a bucket reaches 8 entries, where HashMap
-/// would turn it into a tree.
+/// relative order). Panics if a bucket gets a 9th entry, where HashMap
+/// would turn it into a tree or resize.
 fn java_hashmap_order(keys: &[String]) -> Vec<usize> {
     let mut cap = 16usize;
     while keys.len() > cap / 4 * 3 {
@@ -430,7 +447,7 @@ fn java_hashmap_order(keys: &[String]) -> Vec<usize> {
         buckets[spread as usize & (cap - 1)].push(i);
     }
     assert!(
-        buckets.iter().all(|b| b.len() < 8),
+        buckets.iter().all(|b| b.len() <= 8),
         "field names collide in Java's HashMap; random values are not supported for them"
     );
     buckets.into_iter().flatten().collect()

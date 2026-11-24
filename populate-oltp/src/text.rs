@@ -33,7 +33,7 @@ impl Delimited {
                 let c = match a.data_type() {
                     DataType::Int32 => Col::I32(a.as_primitive::<Int32Type>().values()),
                     DataType::Int64 => Col::I64(a.as_primitive::<Int64Type>().values()),
-                    DataType::Decimal128(_, s) => {
+                    DataType::Decimal128(_, s) if *s >= 0 => {
                         Col::Dec(a.as_primitive::<Decimal128Type>().values(), *s as u32)
                     }
                     DataType::Timestamp(TimeUnit::Microsecond, None) => {
@@ -96,7 +96,12 @@ fn timestamp(out: &mut Vec<u8>, us: i64, buf: &mut itoa::Buffer) {
         out.push(b'0' + (v / 10) as u8);
         out.push(b'0' + (v % 10) as u8);
     };
-    out.extend_from_slice(buf.format(y).as_bytes());
+    let year = buf.format(y.abs()).as_bytes();
+    if y < 0 {
+        out.push(b'-');
+    }
+    out.extend(std::iter::repeat_n(b'0', 4usize.saturating_sub(year.len())));
+    out.extend_from_slice(year);
     out.push(b'-');
     two(out, m);
     out.push(b'-');

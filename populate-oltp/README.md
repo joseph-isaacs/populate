@@ -88,7 +88,7 @@ binding receives the values, after setting the client thread's random seed
 by reflection. `tests/ycsb.rs` holds fixtures and FNV hashes of its output
 for: 100,000 default records with random values; 20,000 with
 `dataintegrity=true`; 20 fields of 37 bytes with another prefix;
-`insertstart`/`insertcount` slices with `insertorder=ordered` and
+`insertstart` with and without `insertcount`, with `insertorder=ordered` and
 `zeropadding=12`; and short deterministic fields; each on 1 and 4 threads
 with odd chunk and batch sizes. Before merging, a wider matrix (default and
 `dataintegrity` loads of 20,000; 1, 3, 20 and 50 fields; field lengths 1, 5,

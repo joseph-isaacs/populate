@@ -92,6 +92,12 @@ fn whole_loads() {
             0x585eb35309c2f44c,
             58_180,
         ),
+        (
+            "recordcount=300 insertstart=100 refdb.seed=4 (300 records from 100)",
+            Ycsb::new(300).insert_start(100).java_random(tlr(4)),
+            0x6b4152255cd0b194,
+            310_160,
+        ),
     ];
     for (props, y, hash, len) in cases {
         for threads in [1, 4] {
@@ -128,4 +134,29 @@ fn arrow_equals_tsv() {
     assert_eq!(text, tsv(&y, 2));
     assert_eq!(y.schema().field(0).name(), "ycsb_key");
     assert_eq!(y.schema().field(10).name(), "field9");
+}
+
+#[test]
+fn checks_like_ycsb() {
+    assert!(
+        Ycsb::new(10)
+            .insert_start(5)
+            .insert_count(6)
+            .check()
+            .is_err()
+    );
+    assert!(
+        Ycsb::new(10)
+            .insert_start(5)
+            .insert_count(5)
+            .check()
+            .is_ok()
+    );
+    assert_eq!(Ycsb::new(10).insert_start(5).rows(), 10);
+}
+
+#[test]
+#[should_panic(expected = "printable ASCII")]
+fn non_ascii_prefix() {
+    let _ = Ycsb::new(1).field_prefix("fieldé");
 }

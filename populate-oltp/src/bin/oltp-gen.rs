@@ -159,7 +159,9 @@ fn tpcc(args: impl Iterator<Item = String>) -> Result<(), String> {
                 names = val()?
                     .split(',')
                     .map(str::parse)
-                    .collect::<Result<_, _>>()?
+                    .collect::<Result<_, _>>()?;
+                let mut seen = std::collections::HashSet::new();
+                names.retain(|t| seen.insert(*t));
             }
             _ => return Ok(false),
         }
@@ -219,6 +221,9 @@ fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             "--field-prefix" => {
                 let p = val()?;
+                if !p.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                    return Err("--field-prefix must be printable ASCII".into());
+                }
                 sets.push(Box::new(move |y| y.field_prefix(&p)))
             }
             "--zero-padding" => {
@@ -238,6 +243,7 @@ fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
         y = s(y);
     }
     y = y.java_random(tlr);
+    y.check()?;
     if let Some(b) = c.batch {
         y = y.batch_size(b);
     }

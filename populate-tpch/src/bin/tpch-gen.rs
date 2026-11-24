@@ -19,6 +19,7 @@
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
+#[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
@@ -36,6 +37,7 @@ use std::time::Instant;
 
 /// mimalloc: 10-18% faster runs than the system allocator (buffers are
 /// reused instead of returned to the OS and faulted in again)
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 

@@ -8,6 +8,7 @@ members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-ldbc",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -22,6 +23,7 @@ default-members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-ldbc",
 ]
 resolver = "2"
 
@@ -47,6 +49,12 @@ populate-sink-parquet = { path = "populate-sink-parquet" }
 populate-table = { path = "populate-table" }
 populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
+populate-ldbc = { path = "populate-ldbc" }
+
+# populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
+# in test builds too (its dependencies stay as they are)
+[profile.dev.package.populate-ldbc]
+opt-level = 3
 
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
 # (populate is generic, so everything is monomorphised into the bench crate

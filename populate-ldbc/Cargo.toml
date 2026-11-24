@@ -1,0 +1,19 @@
+[package]
+name = "populate-ldbc"
+description = "LDBC SNB data byte-identical to the LDBC Spark datagen, on all cores: CSV, Arrow or Parquet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "snap"] }
+# Java's Normalizer (NFD) for the datagen's e-mail addresses
+unicode-normalization = "0.1"
+
+[[bin]]
+name = "ldbc-gen"
+path = "src/bin/ldbc-gen.rs"

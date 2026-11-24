@@ -15,6 +15,7 @@ members = [
     "populate-dsb",
     "populate-dsb/dsbgen",
     "populate-dsb/dsbgen-arrow",
+    "populate-ldbc",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -36,6 +37,7 @@ default-members = [
     "populate-dsb",
     "populate-dsb/dsbgen",
     "populate-dsb/dsbgen-arrow",
+    "populate-ldbc",
 ]
 resolver = "2"
 
@@ -65,6 +67,12 @@ populate-ssb = { path = "populate-ssb" }
 populate-h2o = { path = "populate-h2o" }
 populate-oltp = { path = "populate-oltp" }
 populate-synth = { path = "populate-synth" }
+populate-ldbc = { path = "populate-ldbc" }
+
+# populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
+# in test builds too (its dependencies stay as they are)
+[profile.dev.package.populate-ldbc]
+opt-level = 3
 
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
 # (populate is generic, so everything is monomorphised into the bench crate

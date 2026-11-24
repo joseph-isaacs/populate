@@ -464,6 +464,10 @@ impl Shape for Hits {
         "hits"
     }
 
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "WatchID" | "ClientIP" | "UserID" | "URLHash")
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

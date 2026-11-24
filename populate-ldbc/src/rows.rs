@@ -148,10 +148,10 @@ impl Col {
     pub fn end_str(&mut self) {
         match self {
             Col::Str(d, o) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"))
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"))
             }
             Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
                 n.push(true);
             }
             _ => unreachable!("not a string column"),
@@ -168,10 +168,152 @@ impl Col {
     pub fn null_str(&mut self) {
         match self {
             Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
                 n.push(false);
             }
             _ => unreachable!("not an optional string column"),
+        }
+    }
+}
+
+impl Col {
+    /// The values of an `i64` column.
+    pub fn i64s(&self) -> &[i64] {
+        match self {
+            Col::I64(v) => v,
+            _ => unreachable!("not an i64 column"),
+        }
+    }
+
+    /// The values of an `i32` column.
+    pub fn i32s(&self) -> &[i32] {
+        match self {
+            Col::I32(v) => v,
+            _ => unreachable!("not an i32 column"),
+        }
+    }
+
+    /// The values of a bool column.
+    pub fn bools(&self) -> &[bool] {
+        match self {
+            Col::Bool(v) => v,
+            _ => unreachable!("not a bool column"),
+        }
+    }
+
+    /// Row `r` of a string column (`None` if null).
+    pub fn str_at(&self, r: usize) -> Option<&[u8]> {
+        let at = |o: &[u32]| {
+            let s = if r == 0 { 0 } else { o[r - 1] as usize };
+            (s, o[r] as usize)
+        };
+        match self {
+            Col::Str(d, o) => {
+                let (a, b) = at(o);
+                Some(&d[a..b])
+            }
+            Col::OptStr(d, o, n) => {
+                let (a, b) = at(o);
+                n[r].then(|| &d[a..b])
+            }
+            _ => unreachable!("not a string column"),
+        }
+    }
+
+    /// Append row `r` of `other` (a column of the same kind).
+    pub fn push_from(&mut self, other: &Col, r: usize) {
+        match (self, other) {
+            (Col::I64(a), Col::I64(b)) => a.push(b[r]),
+            (Col::I32(a), Col::I32(b)) => a.push(b[r]),
+            (Col::Bool(a), Col::Bool(b)) => a.push(b[r]),
+            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
+                a.push(b[r]);
+                n.push(m[r]);
+            }
+            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
+                a.push(b[r]);
+                n.push(m[r]);
+            }
+            (c @ Col::Str(..), o @ Col::Str(..)) => c.str(o.str_at(r).expect("str")),
+            (c @ Col::OptStr(..), o @ Col::OptStr(..)) => match o.str_at(r) {
+                Some(v) => c.str(v),
+                None => c.null_str(),
+            },
+            _ => unreachable!("columns of different kinds"),
+        }
+    }
+
+    /// Row `r` of an optional `i32` column.
+    pub fn opt_i32_at(&self, r: usize) -> Option<i32> {
+        match self {
+            Col::OptI32(v, n) => n[r].then_some(v[r]),
+            Col::I32(v) => Some(v[r]),
+            _ => unreachable!("not an i32 column"),
+        }
+    }
+}
+
+impl Col {
+    /// The values at rows `idx`, in that order.
+    pub fn gather(&self, idx: &[u32]) -> Col {
+        fn strs(d: &[u8], o: &[u32], idx: &[u32]) -> (Vec<u8>, Vec<u32>) {
+            let (mut nd, mut no) = (Vec::new(), Vec::with_capacity(idx.len()));
+            for &i in idx {
+                let i = i as usize;
+                let s = if i == 0 { 0 } else { o[i - 1] as usize };
+                nd.extend_from_slice(&d[s..o[i] as usize]);
+                no.push(u32::try_from(nd.len()).expect("a string column is over 4 GiB"));
+            }
+            (nd, no)
+        }
+        fn pick<T: Copy>(v: &[T], idx: &[u32]) -> Vec<T> {
+            idx.iter().map(|&i| v[i as usize]).collect()
+        }
+        match self {
+            Col::I64(v) => Col::I64(pick(v, idx)),
+            Col::I32(v) => Col::I32(pick(v, idx)),
+            Col::Bool(v) => Col::Bool(pick(v, idx)),
+            Col::Str(d, o) => {
+                let (d, o) = strs(d, o, idx);
+                Col::Str(d, o)
+            }
+            Col::OptI64(v, n) => Col::OptI64(pick(v, idx), pick(n, idx)),
+            Col::OptI32(v, n) => Col::OptI32(pick(v, idx), pick(n, idx)),
+            Col::OptStr(d, o, n) => {
+                let (d, o) = strs(d, o, idx);
+                Col::OptStr(d, o, pick(n, idx))
+            }
+        }
+    }
+
+    /// Append `other`'s values (a column of the same kind).
+    pub fn append(&mut self, other: &Col) {
+        fn strs(d: &mut Vec<u8>, o: &mut Vec<u32>, od: &[u8], oo: &[u32]) {
+            let base = u32::try_from(d.len()).expect("a string column is over 4 GiB");
+            d.extend_from_slice(od);
+            o.extend(
+                oo.iter()
+                    .map(|&e| base.checked_add(e).expect("a string column is over 4 GiB")),
+            );
+        }
+        match (self, other) {
+            (Col::I64(a), Col::I64(b)) => a.extend_from_slice(b),
+            (Col::I32(a), Col::I32(b)) => a.extend_from_slice(b),
+            (Col::Bool(a), Col::Bool(b)) => a.extend_from_slice(b),
+            (Col::Str(d, o), Col::Str(od, oo)) => strs(d, o, od, oo),
+            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
+                a.extend_from_slice(b);
+                n.extend_from_slice(m);
+            }
+            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
+                a.extend_from_slice(b);
+                n.extend_from_slice(m);
+            }
+            (Col::OptStr(d, o, n), Col::OptStr(od, oo, m)) => {
+                strs(d, o, od, oo);
+                n.extend_from_slice(m);
+            }
+            _ => unreachable!("columns of different kinds"),
         }
     }
 }

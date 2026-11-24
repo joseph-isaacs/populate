@@ -28,13 +28,16 @@
 //! [ldbc_snb_datagen_spark]: https://github.com/ldbc/ldbc_snb_datagen_spark
 
 mod activity;
+pub mod bi;
 pub mod csv;
 mod dates;
 mod dict;
+pub mod factors;
 mod fdlibm;
 mod java;
 mod jrand;
 mod knows;
+pub mod layout;
 pub mod params;
 mod person;
 pub mod rows;
@@ -48,9 +51,10 @@ use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::SchemaRef;
 use dates::Dates;
 use dict::{Dictionaries, PlaceType};
+use factors::{Factor, FactorInput};
 use knows::Knows;
 use params::Params;
-use person::{Person, PersonGenerator};
+use person::{Hot, Person, PersonGenerator};
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 use rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
@@ -119,6 +123,7 @@ pub struct Ldbc {
     dates: Dates,
     dicts: Dictionaries,
     persons: Vec<Person>,
+    hot: Vec<Hot>,
     knows: Vec<Vec<Knows>>,
     blocks: Vec<Vec<u32>>,
     /// Chunk `i` is persons `start..end` of block `b`: `(b, start, end)`.
@@ -128,6 +133,8 @@ pub struct Ldbc {
     resume: Vec<Mutex<Vec<Option<Resume>>>>,
     num_bits: u32,
     pub timings: Timings,
+    /// Gathers the factor tables' inputs from each chunk, when asked to.
+    factor_input: Option<FactorInput>,
 }
 
 /// Persons per chunk. A block of 10,000 persons is generated in order from
@@ -218,6 +225,7 @@ impl Ldbc {
             params,
             dates,
             dicts,
+            hot: persons.iter().map(Hot::of).collect(),
             persons,
             knows,
             blocks,
@@ -230,6 +238,7 @@ impl Ldbc {
                 knows: t3 - t2,
                 states: Duration::ZERO,
             },
+            factor_input: None,
         };
         Ok(g.with_states(threads))
     }
@@ -285,6 +294,7 @@ impl Ldbc {
             d: &self.dicts,
             dates: &self.dates,
             persons: &self.persons,
+            hot: &self.hot,
             knows: &self.knows,
             num_bits: self.num_bits,
         }
@@ -335,6 +345,24 @@ impl Ldbc {
         if let Some(s) = states.get_mut(k + 1) {
             s.get_or_insert(next);
         }
+        drop(states);
+        if let Some(f) = &self.factor_input {
+            f.add(i, out);
+        }
+    }
+
+    /// Gather the factor tables' inputs from every chunk generated from
+    /// now on (each chunk once), for [`Self::factors`].
+    pub fn collect_factors(&mut self) {
+        self.factor_input = Some(FactorInput::new(self.num_chunks()));
+    }
+
+    /// The datagen's factor tables (`--generate-factors`), on `threads`
+    /// threads (0 = all cores), once every chunk has been generated after
+    /// [`Self::collect_factors`].
+    pub fn factors(&self, threads: usize) -> Vec<Factor> {
+        let f = self.factor_input.as_ref().expect("collect_factors first");
+        f.finish(&self.static_rows(), threads)
     }
 
     /// Generate every chunk on `threads` threads (0 = all cores)

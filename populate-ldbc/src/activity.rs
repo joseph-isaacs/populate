@@ -16,7 +16,7 @@ use crate::java::{clamp, push_utf16};
 use crate::jrand::{Aspect, Farm};
 use crate::knows::Knows;
 use crate::params::{POST_MAPPING, Params};
-use crate::person::Person;
+use crate::person::{Hot, Person};
 use crate::rows::{Rows, t};
 use std::mem::{replace, take};
 use std::ops::Range;
@@ -34,6 +34,8 @@ pub struct World<'a> {
     pub d: &'a Dictionaries,
     pub dates: &'a Dates,
     pub persons: &'a [Person],
+    /// [`Hot`] of each person.
+    pub hot: &'a [Hot],
     pub knows: &'a [Vec<Knows>],
     /// `SN` id bits for the block number.
     pub num_bits: u32,
@@ -140,6 +142,12 @@ pub struct BlockGen<'w, 'a> {
     text_len: usize,
     /// Only advance the state: no rows, no text.
     dry: bool,
+    /// Scratch: positions of related tags in the tag matrix.
+    related: Vec<u32>,
+    /// Scratch for comments: parents, their members' masks, spare tag lists.
+    parents: Vec<Parent>,
+    cached: Vec<Option<(u32, usize)>>,
+    tag_pool: Vec<Vec<i32>>,
     like_power: PowerDistribution,
     pub out: Vec<Rows>,
 }
@@ -169,6 +177,10 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             m_deletion: Vec::new(),
             m_masks: Vec::new(),
             dry: false,
+            related: Vec::new(),
+            parents: Vec::new(),
+            cached: Vec::new(),
+            tag_pool: Vec::new(),
             like_power: PowerDistribution::new(1.0, w.p.max_num_like as f64, 0.07),
             out,
         }
@@ -417,13 +429,18 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             deletion: p.deletion,
             deleted: false,
             moderator: i,
-            title: clamp(
-                &format!(
-                    "Wall of {} {}",
-                    w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
-                ),
-                256,
-            ),
+            // titles are only written, not drawn from
+            title: if self.dry {
+                String::new()
+            } else {
+                clamp(
+                    &format!(
+                        "Wall of {} {}",
+                        w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
+                    ),
+                    256,
+                )
+            },
             tags: p.interests.clone(),
             language,
             place: p.city,
@@ -465,14 +482,18 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             .get(Aspect::ForumInterest)
             .next_int_bound(p.interests.len() as i32);
         let interest = p.interests[idx as usize];
-        let title = clamp(
-            &format!(
-                "Group for {} in {}",
-                d.tags.names[interest as usize].replace('"', "\\\""),
-                d.places.name(p.city)
-            ),
-            256,
-        );
+        let title = if self.dry {
+            String::new()
+        } else {
+            clamp(
+                &format!(
+                    "Group for {} in {}",
+                    d.tags.names[interest as usize].replace('"', "\\\""),
+                    d.places.name(p.city)
+                ),
+                256,
+            )
+        };
         let mut f = Forum {
             id: w.id(forum_id, creation, self.block),
             creation,
@@ -500,7 +521,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     .farm
                     .get(Aspect::MembershipIndex)
                     .next_int_bound(num_friends) as usize];
-                let to = &w.persons[k.to as usize];
+                let to = &w.hot[k.to as usize];
                 if members.binary_search(&to.account_id).is_err() {
                     let min_c = f.creation.max(to.creation) + w.p.delta;
                     let max_c = f.deletion.min(to.deletion).min(dates.end);
@@ -539,7 +560,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     .farm
                     .get(Aspect::MembershipIndex)
                     .next_int_bound(block.len() as i32) as usize];
-                let m = &w.persons[cand as usize];
+                let m = &w.hot[cand as usize];
                 let prob = self.farm.get(Aspect::Membership).next_double();
                 if prob < 0.1 && members.binary_search(&m.account_id).is_err() {
                     let min_c = f.creation.max(m.creation) + w.p.delta;
@@ -601,13 +622,17 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 (false, p.deletion)
             };
         let language = self.language_of(p);
-        let title = clamp(
-            &format!(
-                "Album {num} of {} {}",
-                w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
-            ),
-            256,
-        );
+        let title = if self.dry {
+            String::new()
+        } else {
+            clamp(
+                &format!(
+                    "Album {num} of {} {}",
+                    w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
+                ),
+                256,
+            )
+        };
         let idx = self
             .farm
             .get(Aspect::ForumInterest)
@@ -632,7 +657,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         for k in &w.knows[i as usize] {
             let prob = self.farm.get(Aspect::AlbumMembership).next_double();
             if prob < 0.7 {
-                let to = &w.persons[k.to as usize];
+                let to = &w.hot[k.to as usize];
                 let c = to.creation.max(f.creation) + w.p.delta;
                 let del = to.deletion.min(f.deletion);
                 if del - c > 0 {
@@ -732,7 +757,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         num_comments: i32,
     ) -> Option<(bool, i64)> {
         let w = self.w;
-        let person = &w.persons[m.person as usize];
+        let person = &w.hot[m.person as usize];
         let end = m.deletion.min(w.dates.end);
         if person.message_deleter
             && self.farm.get(Aspect::DeletionPost).next_double()
@@ -873,7 +898,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
     /// `LdbcSnbTextGenerator.generateText` into `self.text`.
     fn gen_text(&mut self, author: u32, tags: &[i32], post: bool) {
         let w = self.w;
-        let large = w.persons[author as usize].large_poster;
+        let large = w.hot[author as usize].large_poster;
         let (ratio, lmin, lmax, min, max) = if post {
             (
                 w.p.ratio_large_post,
@@ -905,9 +930,9 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         };
     }
 
-    /// Country and IP of a message: the author's, or a random country's
-    /// when travelling.
-    fn location(&mut self, author: &Person, creation: i64) -> (i32, Ip) {
+    /// Country and IP of a message: a random country's when travelling,
+    /// else `None` (the author's, looked up only when writing).
+    fn location(&mut self, creation: i64) -> Option<(i32, Ip)> {
         let w = self.w;
         let prob = self.farm.get(Aspect::DiffIpForTraveler).next_double();
         let travel = dates::is_travel_season(creation);
@@ -918,26 +943,28 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 w.d.places
                     .random_country_uniform(self.farm.get(Aspect::Country));
             let ip = w.d.ips.ip(self.farm.get(Aspect::Ip), c);
-            (c, ip)
+            Some((c, ip))
         } else {
-            (author.country, author.ip)
+            None
         }
     }
 
     fn post(&mut self, f: &Forum, m: &Membership, core: PostCore, num_comments: i32) {
         let w = self.w;
-        let author = &w.persons[m.person as usize];
         self.gen_text(m.person, &core.tags, true);
-        let (country, ip) = self.location(author, core.creation);
+        let loc = self.location(core.creation);
         let id = w.id(self.message_counter, core.creation, self.block);
         self.message_counter += 1;
-        let browser = w.d.browsers.post_browser(&mut self.farm, author.browser);
+        let browser = w.d.browsers.post_browser(&mut self.farm);
         let likes = if self.farm.get(Aspect::NumLike).next_double() <= 0.1 {
             Some(self.likes_prologue(f))
         } else {
             None
         };
         if !self.dry {
+            let author = &w.persons[m.person as usize];
+            let (country, ip) = loc.unwrap_or((author.country, author.ip));
+            let browser = browser.unwrap_or(author.browser);
             let r = &mut self.out[t::POST];
             r.cols[0].i64(core.creation);
             r.cols[1].i64(core.deletion);
@@ -994,7 +1021,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         let w = self.w;
         for i in 0..num {
             let m = f.memberships[(start + i) as usize];
-            let person = &w.persons[m.person as usize];
+            let person = &w.hot[m.person as usize];
             let min_c = person.creation.max(msg.creation) + w.p.delta;
             let max_c = (msg.creation + SEVEN_DAYS)
                 .min(person.deletion)
@@ -1040,10 +1067,16 @@ impl<'w, 'a> BlockGen<'w, 'a> {
     fn comments(&mut self, f: &Forum, post: Parent, num: i32) {
         let w = self.w;
         let post_id = post.id;
-        let mut parents = vec![post];
-        let mut cached: Vec<Option<(u32, usize)>> = Vec::new();
+        // scratch buffers kept across calls (a block makes millions of
+        // comments): the parents, their cached masks, and tag lists
+        let mut parents = take(&mut self.parents);
+        parents.clear();
+        parents.push(post);
+        let mut cached = take(&mut self.cached);
+        cached.clear();
         self.m_masks.clear();
-        let mut tags: Vec<i32> = Vec::new();
+        let mut tags: Vec<i32> = self.tag_pool.pop().unwrap_or_default();
+        tags.clear();
         if self.m_forum != f.id {
             self.m_forum = f.id;
             self.m_creation.clear();
@@ -1085,7 +1118,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 .next_int_bound(count as i32) as u32;
             let at = nth_set(&self.m_masks[start..start + stride], k);
             let m = f.memberships[at];
-            let author = &w.persons[m.person as usize];
+            let author = &w.hot[m.person as usize];
             tags.clear();
             let short;
             if self.farm.get(Aspect::ReducedText).next_double() > 0.6666 {
@@ -1097,16 +1130,19 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     }
                 }
                 let n = (par_tags.len() as f64 / 2.0).ceil() as usize;
+                // the related tags' positions first, then their values: the
+                // Tag and Topic draws are on generators of their own, so
+                // this keeps every draw's order, and the (cache-missing)
+                // reads of the related tags overlap
+                self.related.clear();
                 for _ in 0..n {
-                    let rt = par_tags[self
-                        .farm
-                        .get(Aspect::Tag)
-                        .next_int_bound(par_tags.len() as i32)
-                        as usize];
-                    let rel =
-                        w.d.tag_matrix
-                            .random_related(self.farm.get(Aspect::Topic), rt);
-                    add_sorted(&mut tags, rel);
+                    let [rt, rtop] = self.farm.get_two(Aspect::Tag, Aspect::Topic);
+                    let t = par_tags[rt.next_int_bound(par_tags.len() as i32) as usize];
+                    self.related
+                        .push(w.d.tag_matrix.random_related_index(rtop, t));
+                }
+                for &k in &self.related {
+                    add_sorted(&mut tags, w.d.tag_matrix.related_at(k));
                 }
                 let tags_now = take(&mut tags);
                 self.gen_text(m.person, &tags_now, false);
@@ -1148,15 +1184,18 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 deletion = par.deletion.min(m.deletion);
             }
             let par_id = par.id;
-            let (country, ip) = self.location(author, creation);
+            let loc = self.location(creation);
             let id = w.id(self.message_counter, creation, self.block);
             self.message_counter += 1;
-            let browser = w.d.browsers.post_browser(&mut self.farm, author.browser);
+            let browser = w.d.browsers.post_browser(&mut self.farm);
             let len = match short {
                 Some(s) => s.len(),
                 None => self.text_len,
             };
             if !self.dry {
+                let author = &w.persons[m.person as usize];
+                let (country, ip) = loc.unwrap_or((author.country, author.ip));
+                let browser = browser.unwrap_or(author.browser);
                 let r = &mut self.out[t::COMMENT];
                 r.cols[0].i64(creation);
                 r.cols[1].i64(deletion);
@@ -1192,11 +1231,11 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     r.cols[3].i32(tag);
                 }
             }
-            let msg = Parent {
+            let mut msg = Parent {
                 id,
                 creation,
                 deletion,
-                tags: tags.clone(),
+                tags: Vec::new(),
             };
             let likes = if len > 10 && self.farm.get(Aspect::NumLike).next_double() <= 0.1 {
                 Some(self.likes_prologue(f))
@@ -1207,9 +1246,19 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 self.likes(f, &msg, l, t::LIKES_COMMENT);
             }
             if short.is_none() {
+                let mut fresh = self.tag_pool.pop().unwrap_or_default();
+                fresh.clear();
+                msg.tags = replace(&mut tags, fresh);
                 parents.push(msg);
             }
         }
+        // the comments' tag lists back to the pool, as many as were taken
+        // (the post's own came from elsewhere), so the pool stays small
+        self.tag_pool.push(tags);
+        self.tag_pool
+            .extend(parents.drain(..).skip(1).map(|p| p.tags));
+        self.parents = parents;
+        self.cached = cached;
     }
 
     // ----------------------------------------------------------- photos
@@ -1236,7 +1285,9 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 deleted = false;
                 deletion = album.deletion;
             }
-            let (country, ip) = self.location(moderator, creation);
+            let (country, ip) = self
+                .location(creation)
+                .unwrap_or((moderator.country, moderator.ip));
             let id = w.id(self.message_counter, creation, self.block);
             self.message_counter += 1;
             let likes = if self.farm.get(Aspect::NumLike).next_double() <= 0.1 {
@@ -1284,6 +1335,23 @@ impl<'w, 'a> BlockGen<'w, 'a> {
 /// or at `pd`: appends one bit per member to `masks` (8 per byte) and
 /// returns how many. Branch-free over groups of 8, so it vectorises.
 fn active_masks(c: &[i64], d: &[i64], pc: i64, pd: i64, masks: &mut Vec<u8>) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has AVX2
+        return unsafe { active_masks_avx2(c, d, pc, pd, masks) };
+    }
+    active_masks_any(c, d, pc, pd, masks)
+}
+
+/// [`active_masks`] compiled for AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn active_masks_avx2(c: &[i64], d: &[i64], pc: i64, pd: i64, masks: &mut Vec<u8>) -> u32 {
+    active_masks_any(c, d, pc, pd, masks)
+}
+
+#[inline(always)]
+fn active_masks_any(c: &[i64], d: &[i64], pc: i64, pd: i64, masks: &mut Vec<u8>) -> u32 {
     let active = |c: i64, d: i64| ((c < pc) & (d > pc)) | ((c < pd) & (d > pd));
     let mut count = 0;
     let (cc, cr) = c.as_chunks::<8>();

@@ -1,14 +1,14 @@
 use crate::config::Session;
 use crate::distribution::{CallCenterDistributions, FirstNamesWeights, NamesDistributions};
-use crate::generator::CallCenterGeneratorColumn;
-use crate::random::{RandomTextGenerator, RandomValueGenerator};
+use crate::generator::{CallCenterGeneratorColumn, GeneratorColumn};
+use crate::random::{RandomNumberStream, RandomTextGenerator, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, CallCenterRow};
 use crate::slowly_changing_dimension_utils::{
     compute_scd_key, get_value_for_slowly_changing_dimension, ScdRowGenerator,
     SlowlyChangingDimensionKey,
 };
 use crate::table::Table;
-use crate::types::{Address, Date, Decimal};
+use crate::types::{Date, Decimal};
 
 /// Row generator for the CALL_CENTER table (CallCenterRowGenerator)
 /// DSB's permutations for `call_center` (made on its first row).
@@ -449,6 +449,20 @@ impl CallCenterRowGenerator {
         self.previous_row = Some(new_row.clone());
 
         new_row
+    }
+
+    /// The stream of `call_center`'s column `global_column` after the whole
+    /// table: DSB draws the sales channels' pricing permutations from the
+    /// streams numbered like the sales tables, which are call_center's.
+    pub fn stream_after_table(session: &Session, global_column: i32) -> RandomNumberStream {
+        let rows = session.get_scaling().get_row_count(crate::config::Table::CallCenter);
+        let mut g = Self::new(session.clone(), rows);
+        while g.next().is_some() {}
+        let column = CallCenterGeneratorColumn::values()
+            .iter()
+            .find(|c| c.get_global_column_number() == global_column)
+            .expect("a call_center column");
+        g.abstract_generator.get_random_number_stream(column).clone()
     }
 
     /// Start generating at `starting_row_number` (1-based), fast forwarding

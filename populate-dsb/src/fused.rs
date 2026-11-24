@@ -340,6 +340,11 @@ struct Order {
     ticket: i64,
 }
 
+/// Whether the fused channel paths below are used. They are still
+/// TPC-DS's; until they follow DSB, the sales and returns tables come
+/// from dsbgen's row generators.
+const FUSED: bool = false;
+
 /// A sales channel: a sales table and its returns, generated together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Channel {
@@ -352,6 +357,9 @@ impl Channel {
     /// The channel of a sales or returns table, and whether it is the sales one.
     pub(crate) fn of(t: TableName) -> Option<(Channel, bool)> {
         use TableName::*;
+        if !FUSED {
+            return None;
+        }
         Some(match t {
             StoreSales => (Channel::Store, true),
             StoreReturns => (Channel::Store, false),

@@ -13,6 +13,7 @@
 pub mod address;
 pub mod attributes;
 pub mod join;
+pub mod sales;
 
 use crate::random::RandomNumberStream;
 use crate::types::{Date, Decimal};

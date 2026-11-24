@@ -17,9 +17,11 @@
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
 use crate::generator::CatalogReturnsGeneratorColumn;
+use crate::dsb::join::{join_key, DemographicsJoin};
+use crate::dsb::sales::{orders_before, Channel};
 use crate::join_key_utils::{
-    generate_returns_date_join_key, generate_time_join_key, generate_uniform_join_key,
-    CS_MAX_SHIP_DELAY, CS_MIN_SHIP_DELAY,
+    generate_returns_date_join_key, generate_time_join_key, CS_MAX_SHIP_DELAY,
+    CS_MIN_SHIP_DELAY,
 };
 use crate::nulls::create_null_bit_map;
 use crate::random::RandomValueGenerator;
@@ -31,7 +33,7 @@ use crate::table::Table;
 use crate::types::generate_pricing_for_returns_table;
 
 /// Percentage of sales that get returned (same as store returns)
-pub const RETURN_PERCENT: i32 = 10;
+pub const RETURN_PERCENT: i32 = 15;
 
 /// Percentage of returns where the ship customer returns (vs bill customer)
 const GIFT_PERCENTAGE: i32 = 10;
@@ -62,6 +64,7 @@ impl CatalogReturnsRowGenerator {
             .skip_rows_until_starting_row_number(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
+        self.position_variable_streams(starting_row_number);
     }
 
     /// Restrict generation to source rows
@@ -73,6 +76,26 @@ impl CatalogReturnsRowGenerator {
             .set_source_row_range(starting_row_number, ending_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+        self.position_variable_streams(starting_row_number);
+    }
+
+    /// The returning demographics joins draw eight and four values per
+    /// return against a budget of 14 per order: move them past the earlier
+    /// orders' overruns.
+    fn position_variable_streams(&mut self, start: u64) {
+        use CatalogReturnsGeneratorColumn::*;
+        let orders = self
+            .sales
+            .session()
+            .get_scaling()
+            .get_row_count(crate::config::Table::CatalogSales);
+        let before = orders_before(Channel::Catalog, orders, start);
+        self.abstract_generator
+            .get_random_number_stream(&CrReturningCdemoSk)
+            .advance(before.return_cdemo_over);
+        self.abstract_generator
+            .get_random_number_stream(&CrReturningHdemoSk)
+            .advance(before.return_hdemo_over);
     }
 
     /// Generate the return row for `sales_row`.
@@ -91,25 +114,25 @@ impl CatalogReturnsRowGenerator {
             .abstract_generator
             .get_random_number_stream(&CrReturningCustomerSk);
         let mut cr_returning_customer_sk =
-            generate_uniform_join_key(crate::config::Table::Customer, stream, scaling);
+            join_key(crate::config::Table::Customer, stream, scaling, None);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReturningCdemoSk);
         let mut cr_returning_cdemo_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerDemographics, stream, scaling);
+            DemographicsJoin::customer().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReturningHdemoSk);
         let cr_returning_hdemo_sk =
-            generate_uniform_join_key(crate::config::Table::HouseholdDemographics, stream, scaling);
+            DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReturningAddrSk);
         let mut cr_returning_addr_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerAddress, stream, scaling);
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         // If the order was a gift (10%), the ship customer is doing the return
         let stream = self
@@ -162,20 +185,20 @@ impl CatalogReturnsRowGenerator {
             .abstract_generator
             .get_random_number_stream(&CrShipModeSk);
         let cr_ship_mode_sk =
-            generate_uniform_join_key(crate::config::Table::ShipMode, stream, scaling);
+            join_key(crate::config::Table::ShipMode, stream, scaling, None);
 
         // Generate warehouse
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrWarehouseSk);
         let cr_warehouse_sk =
-            generate_uniform_join_key(crate::config::Table::Warehouse, stream, scaling);
+            join_key(crate::config::Table::Warehouse, stream, scaling, None);
 
         // Generate reason
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReasonSk);
-        let cr_reason_sk = generate_uniform_join_key(crate::config::Table::Reason, stream, scaling);
+        let cr_reason_sk = join_key(crate::config::Table::Reason, stream, scaling, None);
 
         CatalogReturnsRow::new(
             null_bit_map,

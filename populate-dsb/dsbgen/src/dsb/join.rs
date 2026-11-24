@@ -8,7 +8,7 @@
 use super::{exp_key, hierarchical_key, make_perm, map_key_perm};
 use crate::config::{Scaling, Table};
 use crate::distribution::DemographicsDistributions as Demo;
-use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
+use crate::generator::{CatalogSalesGeneratorColumn, CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
 use std::sync::OnceLock;
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
@@ -110,3 +110,37 @@ impl DemographicsJoin {
 pub const HDEMO_ATTRIBUTES: u64 = 60;
 /// Distinct gender, education and marital status triples.
 pub const CDEMO_ATTRIBUTES: u64 = 70;
+
+impl DemographicsJoin {
+    /// `customer_demographics_join`'s permutations: drawn on the first
+    /// cdemo join of a run, `catalog_sales`' `CS_BILL_CDEMO_SK` in its
+    /// first order.
+    pub fn customer() -> &'static DemographicsJoin {
+        static JOIN: OnceLock<DemographicsJoin> = OnceLock::new();
+        JOIN.get_or_init(|| {
+            let c = CatalogSalesGeneratorColumn::CsBillCdemoSk;
+            let mut s = RandomNumberStream::new_with_column(
+                c.get_global_column_number(),
+                c.get_seeds_per_row(),
+            );
+            DemographicsJoin::new(
+                vec![
+                    CD_MAX_COLLEGE,
+                    CD_MAX_EMPLOYED,
+                    CD_MAX_CHILDREN,
+                    Demo::get_credit_rating_size() as i32,
+                    Demo::get_purchase_band_size() as i32,
+                    Demo::get_education_size() as i32,
+                    Demo::get_marital_status_size() as i32,
+                    Demo::get_gender_size() as i32,
+                ],
+                &mut s,
+            )
+        })
+    }
+}
+
+/// `CD_MAX_CHILDREN` and friends (join.c's copies).
+const CD_MAX_CHILDREN: i32 = 7;
+const CD_MAX_EMPLOYED: i32 = 7;
+const CD_MAX_COLLEGE: i32 = 7;

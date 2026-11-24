@@ -20,7 +20,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::mem::take;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, OnceLock};
-use std::thread::scope;
+use std::thread::{ScopedJoinHandle, scope};
 
 use crate::cols::{
     Bits, Cursor, NA, first_appearance, gather, id_strings, int32, micros, sort_rows, sort_u64,
@@ -294,11 +294,12 @@ impl Join {
 
     /// [`new`](Self::new) with `chunk_rows` rows per chunk.
     pub fn with_chunk_rows(n: u64, nas: u32, sort: bool, chunk_rows: u64) -> Self {
-        // the script's own limits: N >= 1e7, uniqueN(id1) == N/1e6, and
+        // the script's own limits: N >= 1e7, uniqueN(id1) == N/1e6 (which
+        // holds for multiples of 1e7), and
         // handle_batches takes N <= 1e8 or exactly 1e9
         assert!(
-            n >= 10_000_000 && n.is_multiple_of(1_000_000),
-            "the join datagen needs N >= 1e7, a multiple of 1e6"
+            n >= 10_000_000 && n.is_multiple_of(10_000_000),
+            "the join datagen needs N >= 1e7, a multiple of 1e7"
         );
         assert!(
             n <= 100_000_000 || n == 1_000_000_000,
@@ -322,6 +323,16 @@ impl Join {
     pub fn tables(&self) -> Vec<JoinTable> {
         self.tables.clone()
     }
+}
+
+/// Past this many rows the join is built a column, then a table, at a
+/// time, to bound memory (otherwise the draws of every column are held).
+const BOUNDED_ROWS: u64 = 1 << 27;
+
+/// The left table's key columns: drawn, or (bounded) already built.
+enum Lhs {
+    Drawn(Vec<SampleAll>),
+    Built(Vec<Vec<u32>>),
 }
 
 /// The NA draws for the left table: per id column, indices into its
@@ -355,6 +366,7 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
     let xr = |t: usize| lens[t].1[0] + lens[t].1[2];
     let frac = nas as f64 / 100.0;
     let keys_cell = OnceLock::new();
+    let bounded = n > BOUNDED_ROWS;
 
     scope(|s| {
         let key_hs: Vec<_> = sizes
@@ -365,22 +377,44 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
                 s.spawn(move || split_from(size, &js))
             })
             .collect();
-        // left: its key columns, then v1, then the NAs
-        let lhs: Vec<SampleAll> = (0..3)
-            .map(|t| SampleAll::draw(&mut rng, xl(t), nf))
-            .collect();
+        let mut key_hs = Some(key_hs);
+        let mut join_keys = || -> &Vec<Xlr> {
+            keys_cell.get_or_init(|| {
+                key_hs
+                    .take()
+                    .expect("once")
+                    .into_iter()
+                    .map(|h| h.join().expect("keys"))
+                    .collect()
+            })
+        };
+        // left: its key columns, then v1, then the NAs. Large tables build
+        // each column as soon as it is drawn (its draws take 8 bytes a
+        // row), and each table before the next is drawn.
+        let lhs = if bounded {
+            let keys = join_keys();
+            Lhs::Built(
+                (0..3)
+                    .map(|t| SampleAll::draw(&mut rng, xl(t), nf).build(&keys[t].x, &keys[t].l))
+                    .collect(),
+            )
+        } else {
+            Lhs::Drawn(
+                (0..3)
+                    .map(|t| SampleAll::draw(&mut rng, xl(t), nf))
+                    .collect(),
+            )
+        };
         let v1 = rng.clone();
         rng.skip(n);
-        let keys: &Vec<Xlr> = keys_cell.get_or_init(|| {
-            key_hs
-                .into_iter()
-                .map(|h| h.join().expect("keys"))
-                .collect()
-        });
+        let keys: &Vec<Xlr> = join_keys();
         let lhs_name = data_name.clone();
         let (na_tx, na_rx) = channel::<NaDraws>();
         let lhs_h = s.spawn(move || {
-            let mut ids = build_cols(lhs, keys.iter().map(|k| (&k.x[..], &k.l[..])).collect());
+            let mut ids = match lhs {
+                Lhs::Built(ids) => ids,
+                Lhs::Drawn(d) => build_cols(d, keys.iter().map(|k| (&k.x[..], &k.l[..])).collect()),
+            };
             if sort {
                 sort_by(&mut ids, &[0, 1, 2]);
             }
@@ -414,11 +448,22 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
                 })
                 .expect("left table");
         }
+        let mut lhs_h = Some(lhs_h);
+        let mut tabs = vec![];
+        if bounded {
+            tabs.push(lhs_h.take().expect("once").join().expect("left table"));
+        }
         // right: small (id1), medium (id1, id2; key id2), big (key id3)
-        let rhs_hs: Vec<_> = sizes
-            .iter()
-            .enumerate()
-            .map(|(t, &size)| {
+        let mut rhs_hs: Vec<_> = vec![];
+        for (t, &size) in sizes.iter().enumerate() {
+            if bounded {
+                tabs.extend(
+                    rhs_hs
+                        .drain(..)
+                        .map(|h: ScopedJoinHandle<Tab>| h.join().expect("right table")),
+                );
+            }
+            rhs_hs.push({
                 let draws: Vec<SampleAll> = (0..=t)
                     .map(|k| SampleAll::draw(&mut rng, xr(k), size))
                     .collect();
@@ -442,9 +487,11 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
                         v_name: "v2",
                     }
                 })
-            })
-            .collect();
-        let mut tabs = vec![lhs_h.join().expect("left table")];
+            });
+        }
+        if let Some(h) = lhs_h {
+            tabs.insert(0, h.join().expect("left table"));
+        }
         tabs.extend(rhs_hs.into_iter().map(|h| h.join().expect("right table")));
         tabs
     })

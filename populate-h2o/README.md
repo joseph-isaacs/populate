@@ -125,7 +125,7 @@ What makes the sequential parts fast:
 ## Limits
 
 - `N` up to `2^31 - 1` (R's integer vectors). Join takes what the script
-  takes: `N >= 1e7`, a multiple of 1e6, and `N <= 1e8` or `N = 1e9`.
+  takes: `N >= 1e7`, a multiple of 1e7, and `N <= 1e8` or `N = 1e9`.
 - Join at 1e8 is not compared with R: `Rscript join-datagen.R 1e8` runs
   out of memory on the 15 GB test machine.
 - Sorted groupby data and all join data are held in memory (peak about

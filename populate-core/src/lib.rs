@@ -61,7 +61,8 @@ pub mod tuple;
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
-use rand::Rng;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 pub use sink::Sink;
 pub use string::{StrBuf, StrCol};
 
@@ -73,7 +74,8 @@ pub use string::{StrBuf, StrCol};
 ///
 /// A distribution is a stream, not a recipe: sampling moves it on, and what
 /// comes next may depend on what came before (a counter, or random bits left
-/// over from the last draw). Clone it to start again from the same point.
+/// over from the last draw). Clone it to start again from the same point,
+/// and [`skip`](Self::skip) to start further on.
 pub trait Distribution: Sized {
     /// One row.
     type Item: Columnar;
@@ -92,6 +94,28 @@ pub trait Distribution: Sized {
         // `extend`, which knows the exact length (no per-value capacity
         // check). `in_local` keeps the distribution's state in registers.
         in_local(self, |d| cols.push_n((0..n).map(|_| d.sample(rng))));
+    }
+
+    /// Move past the next `n` rows without producing them, so the stream
+    /// carries on from row `n`. This is how one chunk of a table starts at
+    /// its own first row without generating the chunks before it.
+    ///
+    /// The default samples `n` rows and drops them, which takes time
+    /// proportional to `n`. Override it wherever the state after `n` rows
+    /// can be computed directly: do nothing if rows don't depend on their
+    /// position, add `n` to a counter, pass `n` on to an inner distribution.
+    ///
+    /// No caller RNG is involved. State that only holds randomness (bits
+    /// left over from the last draw, say) can stay as it is. The default
+    /// draws from a throwaway RNG, so it lands exactly on row `n` only for
+    /// state that doesn't depend on the values drawn.
+    fn skip(&mut self, n: u64) {
+        let mut rng = SmallRng::seed_from_u64(0);
+        in_local(self, |d| {
+            for _ in 0..n {
+                d.sample(&mut rng);
+            }
+        });
     }
 
     /// The next `n` rows as new columns.

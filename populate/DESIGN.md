@@ -22,6 +22,10 @@ pub trait Distribution {
 
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item>;
+
+    /// Move past the next `n` rows without producing them. Defaults to `n`
+    /// samples, dropped; override it wherever that can be done directly.
+    fn skip(&mut self, n: u64);
 }
 
 /// A row type and the columns that hold many of it.
@@ -75,9 +79,23 @@ its columns, then the new column is computed in one pass over them.
 
 Sampling moves a distribution on. `range(0, 1)` collected twice gives
 `0..n` and then `n..2n`, and the random leaves keep unused random bits
-between calls. Clone a distribution to start again from the same point
-(`Table::col` clones it for every batch, so a batch depends only on its
-index and seed).
+between calls. Clone a distribution to start again from the same point.
+
+`skip(n)` moves a distribution past `n` rows without producing them.
+`Table::col` clones the distribution for every batch and skips to the
+batch's first row, so a batch depends only on its index and seed, and a
+`range` column still counts through the whole table. Every built-in skips
+in constant time: the random leaves do nothing, `range` adds `n * step`,
+and `map`, `with_column` and tuples pass `n` on. `list` skips `n` lengths
+and leaves its elements alone, because how many elements `n` rows hold is
+random.
+
+The default `skip` samples `n` rows and drops them. It is there so that
+any distribution works in a table, but it is slow (batch `k` pays for the
+`k` batches before it), so a distribution whose rows depend on their
+position should override it. It draws from a throwaway RNG, so it lands
+exactly on row `n` only when the state doesn't depend on the values drawn:
+a counter does, a random walk doesn't.
 
 ## Writing a leaf
 

@@ -177,6 +177,8 @@ impl<T: UniformValue + Columnar> Distribution for Uniform<T> {
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         T::fill(&mut self.sampler, rng, cols, n);
     }
+
+    fn skip(&mut self, _n: u64) {}
 }
 
 // ============================================================================
@@ -212,6 +214,8 @@ impl<T: Copy + Columnar> Distribution for Choose<T> {
         let values = self.values;
         fill_indices(&mut self.idx, rng, cols, n, |i| values[i as usize]);
     }
+
+    fn skip(&mut self, _n: u64) {}
 }
 
 // ============================================================================
@@ -299,6 +303,8 @@ impl<T: Copy + Columnar> Distribution for Weighted<T> {
             }
         }
     }
+
+    fn skip(&mut self, _n: u64) {}
 }
 
 /// The number of values in `min..=max`. Panics (naming `what`) if `min > max`.
@@ -335,6 +341,8 @@ macro_rules! string_distribution {
                 cols.reserve_bytes(n * self.mean_len());
                 in_local(self, |w| cols.push_n_with(n, |b| w.write(rng, b)));
             }
+
+            fn skip(&mut self, _n: u64) {}
         }
     };
 }

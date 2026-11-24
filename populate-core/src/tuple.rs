@@ -47,6 +47,10 @@ macro_rules! tuple_impls {
             ) {
                 $(self.$idx.collect_into(&mut cols.$idx, rng, n);)+
             }
+
+            fn skip(&mut self, n: u64) {
+                $(self.$idx.skip(n);)+
+            }
         }
     };
 }

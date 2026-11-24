@@ -27,8 +27,9 @@
 //! Batch `k` covers rows `k * batch_size ..`. Each column is generated whole,
 //! in declaration order, by one call into its generator:
 //!
-//! - `col` columns run the distribution's columnar `collect_into` with an
-//!   RNG seeded from `(table seed, column name, k)`;
+//! - `col` columns clone the distribution, `skip` it to the batch's first
+//!   row, and run its columnar `collect_into` with an RNG seeded from
+//!   `(table seed, column name, k)`;
 //! - `row` / `row_str` / `key` columns are pure functions of the row number;
 //! - `derive*` columns read earlier columns of the same batch as slices.
 //!
@@ -223,6 +224,10 @@ impl Table {
 
     /// Column drawn from any populate distribution, collected columnar.
     /// A tuple-valued distribution becomes a `Struct` column.
+    ///
+    /// Every batch starts from a clone of `dist`, skipped to the batch's
+    /// first row ([`Distribution::skip`]): a `range` counts through the
+    /// whole table.
     pub fn col<D>(self, name: &str, dist: D) -> Self
     where
         D: Distribution + Clone + Send + Sync + 'static,
@@ -230,8 +235,13 @@ impl Table {
     {
         self.push(
             name,
-            // every batch starts from the distribution as it was declared
-            Box::new(move |ctx| columns_to_value_array(dist.clone().collect(ctx.rng, ctx.len))),
+            // every batch starts from the distribution as it was declared,
+            // moved on to the batch's first row
+            Box::new(move |ctx| {
+                let mut dist = dist.clone();
+                dist.skip(ctx.start);
+                columns_to_value_array(dist.collect(ctx.rng, ctx.len))
+            }),
         )
     }
 

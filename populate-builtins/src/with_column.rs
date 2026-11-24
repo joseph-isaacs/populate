@@ -214,4 +214,8 @@ where
         col.push_n(parent.rows_from(start).map(|row| f(row, &mut child)));
         *cols = P::Item::join(parent, col);
     }
+
+    fn skip(&mut self, n: u64) {
+        self.parent.skip(n);
+    }
 }

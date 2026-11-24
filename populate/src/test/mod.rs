@@ -12,6 +12,7 @@ mod nested;
 mod random;
 mod row;
 mod scalar;
+mod skip;
 mod with_column;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;

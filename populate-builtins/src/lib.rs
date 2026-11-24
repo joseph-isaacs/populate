@@ -36,6 +36,8 @@ impl<T: Copy + Columnar> Distribution for Constant<T> {
     fn sample(&mut self, _rng: &mut impl Rng) -> T {
         self.value
     }
+
+    fn skip(&mut self, _n: u64) {}
 }
 
 // ============================================================================
@@ -54,13 +56,53 @@ pub fn range<T: Add>(start: T, step: T) -> Range<T> {
     Range { next: start, step }
 }
 
-impl<T: Columnar + Add<Output = T> + Copy> Distribution for Range<T> {
+/// A number a [`Range`] can count in: `self + step * n` in one go, for
+/// [`Distribution::skip`].
+pub trait RangeValue: Add<Output = Self> + Copy {
+    /// `self + step * n`. Integers wrap; a float may differ in its last
+    /// bits from adding `step` `n` times.
+    fn advance(self, step: Self, n: u64) -> Self;
+}
+
+macro_rules! range_int {
+    ($($t:ty),*) => {$(
+        impl RangeValue for $t {
+            fn advance(self, step: Self, n: u64) -> Self {
+                // `n as $t` wraps, and so does the arithmetic: the result is
+                // right modulo 2^bits, which is all a wrapped count can be
+                self.wrapping_add(step.wrapping_mul(n as $t))
+            }
+        }
+    )*};
+}
+
+range_int!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+);
+
+macro_rules! range_float {
+    ($($t:ty),*) => {$(
+        impl RangeValue for $t {
+            fn advance(self, step: Self, n: u64) -> Self {
+                self + step * n as $t
+            }
+        }
+    )*};
+}
+
+range_float!(f32, f64);
+
+impl<T: Columnar + RangeValue> Distribution for Range<T> {
     type Item = T;
 
     fn sample(&mut self, _rng: &mut impl Rng) -> T {
         let v = self.next;
         self.next = v + self.step;
         v
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.next = self.next.advance(self.step, n);
     }
 }
 
@@ -94,6 +136,10 @@ where
 
     fn sample(&mut self, rng: &mut impl Rng) -> Out {
         (self.f)(self.source.sample(rng))
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.source.skip(n);
     }
 }
 
@@ -134,5 +180,11 @@ where
             cols.push_lengths((0..n).map(|_| lengths.sample(rng)))
         });
         self.elements.collect_into(&mut cols.values, rng, total);
+    }
+
+    /// Skips `n` lengths. The elements stay where they are: how many of
+    /// them `n` rows hold is random, so there is no row `n` to land on.
+    fn skip(&mut self, n: u64) {
+        self.lengths.skip(n);
     }
 }

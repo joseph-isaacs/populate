@@ -45,12 +45,20 @@ multi-threaded output equals one sequential run.
   - All 14 dynamic and 4 static tables of `--mode raw`. Byte-identical CSV
     at SF 0.1 and 1; value-identical to the datagen's raw Parquet, row by
     row, at SF 3 and 10 (its CSV row order past one block is a Spark
-    file-scan artefact). 9.5–32x faster than the Spark datagen on 4 cores
+    file-scan artefact). 13–39x faster than the Spark datagen on 4 cores
     (see [`populate-ldbc/README.md`](populate-ldbc/README.md)).
+  - `--mode bi` (initial snapshot, insert and delete batches) is
+    byte-identical at SF 0.1 and 1. So are the exploded-edge,
+    exploded-attribute and epoch-millis layouts at SF 0.1. The datagen has
+    no separate interactive mode.
+  - The 34 factor tables (`--generate-factors`) are identical at SF 0.1.
+    At SF 1, 33 match; `people2Hops` samples over Spark's shuffle
+    partitions.
   - Persons and friendships are a pre-pass; a chunk is 1,000 persons of an
-    activity block, resumed from the block's RNG state.
-  - [ ] Cheaper state-skipping pass (now ~60% of generation), and the
-    interactive / BI modes (`--mode bi`: factor tables, update streams).
+    activity block, resumed from the block's RNG state. The state-skipping
+    pass is ~40% of generation, down from ~60%.
+  - [ ] Reproduce Spark's partitioning of large sampled factor tables
+    (`people2Hops` from SF 1).
 - [x] **Synthetic shapes** (examples, not benchmarks) (`populate-synth`)
   - NYC-taxi-like trips, ClickBench-like web hits, ML feature tables, and
     vector embeddings as `FixedSizeList<f32>`. Every value is a function of

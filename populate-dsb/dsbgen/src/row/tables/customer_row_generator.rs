@@ -28,7 +28,14 @@ use crate::row::customer_row::CustomerRow;
 use crate::row::AbstractRowGenerator;
 use crate::table::Table;
 use crate::types::Date;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Rows between [`CustomerRowGenerator::birth_day_stream`]'s checkpoints.
+const BIRTH_CHECKPOINT: u64 = 1 << 16;
+
+/// `C_BIRTH_DAY`'s seed after every [`BIRTH_CHECKPOINT`] rows, by scale.
+static BIRTH_SEEDS: OnceLock<Mutex<HashMap<u64, Vec<i64>>>> = OnceLock::new();
 
 /// Customer row generator (CustomerRowGenerator)
 pub struct CustomerRowGenerator {
@@ -126,7 +133,27 @@ impl CustomerRowGenerator {
         );
         let p = &self.perms.birth;
         s.advance((p.year.len() + p.month.len() + p.day.len()) as u64);
-        for _ in 1..row {
+        // The seed every BIRTH_CHECKPOINT rows, shared by all generators at
+        // this scale and extended as later chunks need it, so a chunk
+        // start replays at most that many rows.
+        let done = row - 1;
+        let k = (done / BIRTH_CHECKPOINT) as usize;
+        let scale = self.session.get_scaling().get_scale().to_bits();
+        let cache = BIRTH_SEEDS.get_or_init(Default::default);
+        let seed = {
+            let mut cache = cache.lock().expect("birth day checkpoints");
+            let seeds = cache.entry(scale).or_insert_with(|| vec![s.seed()]);
+            while seeds.len() <= k {
+                s.set_seed(*seeds.last().expect("a checkpoint"));
+                for _ in 0..BIRTH_CHECKPOINT {
+                    exp_date(birth_min(), birth_max(), p, &mut s);
+                }
+                seeds.push(s.seed());
+            }
+            seeds[k]
+        };
+        s.set_seed(seed);
+        for _ in k as u64 * BIRTH_CHECKPOINT..done {
             exp_date(birth_min(), birth_max(), p, &mut s);
         }
         s.set_seeds_used(0);
@@ -322,5 +349,28 @@ impl Iterator for CustomerRowGenerator {
         let row = self.generate_customer_row(row_number);
         self.abstract_generator.finish_row();
         Some(row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Chunks starting either side of a birth day checkpoint give the
+    /// sequential rows.
+    #[test]
+    fn chunks_across_birth_day_checkpoints() {
+        let session = Session::default();
+        let n = session.get_scaling().get_row_count(Table::Customer);
+        let rows = |first: u64, last: u64| -> Vec<String> {
+            let mut g = CustomerRowGenerator::new(session.clone(), n);
+            g.set_source_row_range(first, last);
+            g.map(|r| r.to_string()).collect()
+        };
+        let whole = rows(65_000, 70_000);
+        let mut chunked = rows(65_000, 65_536);
+        chunked.extend(rows(65_537, 65_537));
+        chunked.extend(rows(65_538, 70_000));
+        assert_eq!(whole, chunked);
     }
 }

@@ -12,12 +12,14 @@
 
 use crate::dates::{self, Dates, SEVEN_DAYS};
 use crate::dict::{Dictionaries, FlashMobTag, Ip, PowerDistribution, push_u64};
-use crate::java::push_utf16;
+use crate::java::{clamp, push_utf16};
 use crate::jrand::{Aspect, Farm};
 use crate::knows::Knows;
 use crate::params::{POST_MAPPING, Params};
 use crate::person::Person;
 use crate::rows::{Rows, t};
+use std::mem::{replace, take};
+use std::ops::Range;
 
 const SHORT_COMMENTS: [&str; 16] = [
     "ok", "good", "great", "cool", "thx", "fine", "LOL", "roflol", "no way!", "I see", "right",
@@ -177,13 +179,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
     /// starting from `at`: [`Resume::start`] for the block's first person,
     /// else the [`Self::state`] after the person before `range`. Returns
     /// the state after the range.
-    pub fn run(
-        &mut self,
-        block: u64,
-        members: &[u32],
-        range: std::ops::Range<usize>,
-        at: &Resume,
-    ) -> Resume {
+    pub fn run(&mut self, block: u64, members: &[u32], range: Range<usize>, at: &Resume) -> Resume {
         self.resume(block, at);
         self.dry = false;
         for &m in &members[range] {
@@ -199,7 +195,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         &mut self,
         block: u64,
         members: &[u32],
-        range: std::ops::Range<usize>,
+        range: Range<usize>,
         at: &Resume,
     ) -> Resume {
         self.resume(block, at);
@@ -421,7 +417,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             deletion: p.deletion,
             deleted: false,
             moderator: i,
-            title: crate::java::clamp(
+            title: clamp(
                 &format!(
                     "Wall of {} {}",
                     w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
@@ -469,7 +465,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             .get(Aspect::ForumInterest)
             .next_int_bound(p.interests.len() as i32);
         let interest = p.interests[idx as usize];
-        let title = crate::java::clamp(
+        let title = clamp(
             &format!(
                 "Group for {} in {}",
                 d.tags.names[interest as usize].replace('"', "\\\""),
@@ -605,7 +601,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 (false, p.deletion)
             };
         let language = self.language_of(p);
-        let title = crate::java::clamp(
+        let title = clamp(
             &format!(
                 "Album {num} of {} {}",
                 w.d.names.pool[p.first_name as usize], w.d.names.pool[p.last_name as usize]
@@ -790,7 +786,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
 
     fn populate_flash_tags(&mut self, f: &Forum) {
         let w = self.w;
-        let mut tmp = std::mem::take(&mut self.flash_scratch);
+        let mut tmp = take(&mut self.flash_scratch);
         w.d.flashmobs
             .generate(self.farm.get(Aspect::Tag), f.creation, &mut tmp);
         let sum: i32 = tmp.iter().map(|t| t.level).sum();
@@ -800,7 +796,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             t.prob = cur;
             cur += t.level as f64 / sum as f64;
         }
-        self.flash_scratch = std::mem::replace(&mut self.flash_tags, tmp);
+        self.flash_scratch = replace(&mut self.flash_tags, tmp);
     }
 
     fn flashmob_post_info(
@@ -1112,7 +1108,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                             .random_related(self.farm.get(Aspect::Topic), rt);
                     add_sorted(&mut tags, rel);
                 }
-                let tags_now = std::mem::take(&mut tags);
+                let tags_now = take(&mut tags);
                 self.gen_text(m.person, &tags_now, false);
                 tags = tags_now;
             } else {

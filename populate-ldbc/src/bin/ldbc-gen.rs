@@ -13,10 +13,12 @@
 //! files with one header; `parquet` writes `DIR/.../<Table>.parquet`;
 //! `none` generates and drops the rows.
 
+use parquet::arrow::ArrowWriter;
 use populate_ldbc::rows::{DYNAMIC, STATIC};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
 use populate_table::text::write_text_many;
 use populate_table::write_parquet_many;
+use std::env::args;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -49,7 +51,7 @@ fn parse() -> Result<Args, String> {
         format: Format::Csv,
         threads: 0,
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args().skip(1);
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
@@ -166,8 +168,8 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             for (def, r) in STATIC.iter().zip(&st) {
                 let f = File::create(static_dir.join(format!("{}.parquet", def.name)))?;
                 let batch = to_batch(def, r);
-                let mut w = parquet::arrow::ArrowWriter::try_new(f, batch.schema(), None)
-                    .map_err(io::Error::other)?;
+                let mut w =
+                    ArrowWriter::try_new(f, batch.schema(), None).map_err(io::Error::other)?;
                 w.write(&batch).map_err(io::Error::other)?;
                 w.close().map_err(io::Error::other)?;
             }

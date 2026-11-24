@@ -2,6 +2,8 @@
 //! `BufferedReader.readLine`, `String.trim`, `Double.parseDouble`,
 //! `HashMap` iteration order, `Arrays.binarySearch`, `java.time` dates.
 
+use std::cmp::Ordering;
+
 /// `BufferedReader.readLine` over a whole file: lines end at `\n`, `\r` or
 /// `\r\n`.
 pub fn lines(s: &str) -> Vec<&str> {
@@ -84,9 +86,9 @@ pub fn binary_search_f32(a: &[f32], key: f32) -> i32 {
         let v = a[mid as usize];
         // Float.compareTo: total order (no NaNs here)
         match v.total_cmp(&key) {
-            std::cmp::Ordering::Less => low = mid + 1,
-            std::cmp::Ordering::Greater => high = mid - 1,
-            std::cmp::Ordering::Equal => return mid,
+            Ordering::Less => low = mid + 1,
+            Ordering::Greater => high = mid - 1,
+            Ordering::Equal => return mid,
         }
     }
     -(low + 1)

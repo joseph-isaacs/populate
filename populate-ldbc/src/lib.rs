@@ -54,7 +54,11 @@ use person::{Person, PersonGenerator};
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 use rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
+use std::collections::HashSet;
+use std::env::var_os;
+use std::fs::read_to_string;
 use std::io;
+use std::mem::take;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -94,7 +98,7 @@ fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> 
             .collect();
         hs.into_iter().map(|h| h.join().expect("worker")).collect()
     });
-    let mut all: Vec<(usize, T)> = parts.iter_mut().flat_map(std::mem::take).collect();
+    let mut all: Vec<(usize, T)> = parts.iter_mut().flat_map(take).collect();
     all.sort_unstable_by_key(|&(i, _)| i);
     all.into_iter().map(|(_, t)| t).collect()
 }
@@ -141,7 +145,7 @@ impl Ldbc {
     pub fn new(resources: &Path, num_persons: u64, threads: usize) -> io::Result<Self> {
         let params = Params::new(num_persons);
         let t0 = Instant::now();
-        let power_law = java::lines(&std::fs::read_to_string(
+        let power_law = java::lines(&read_to_string(
             resources.join("dictionaries/powerLawActivityDeleteDate.txt"),
         )?)
         .into_iter()
@@ -179,7 +183,7 @@ impl Ldbc {
         }
         let knows: Vec<Vec<Knows>> = {
             let persons = &persons;
-            let all = std::sync::Mutex::new(all.into_iter().map(Some).collect::<Vec<_>>());
+            let all = Mutex::new(all.into_iter().map(Some).collect::<Vec<_>>());
             par_map(persons.len(), threads, |i| {
                 let l = all.lock().expect("knows")[i].take().expect("once");
                 knows::merge(persons, l)
@@ -195,6 +199,9 @@ impl Ldbc {
             })
             .collect();
         let num_bits = ((nb as f64).log10() / 2f64.log10()).ceil() as u32;
+        // the datagen refuses more (`Possible id overlap`); ids, and the
+        // caches keyed by them, are unique per block only up to here
+        assert!(num_bits <= 20, "too many blocks: ids would overlap");
         let mut segments = Vec::new();
         let mut resume = Vec::with_capacity(blocks.len());
         for (b, m) in blocks.iter().enumerate() {
@@ -243,7 +250,9 @@ impl Ldbc {
             let g = &self;
             par_map(g.blocks.len(), threads, |b| {
                 let n = g.blocks[b].len().div_ceil(SEGMENT);
-                g.state_before(b, n - 1);
+                if n > 0 {
+                    g.state_before(b, n - 1);
+                }
             });
             self.timings.states = t0.elapsed();
         }
@@ -319,7 +328,7 @@ impl Ldbc {
         let members = &self.blocks[b][..];
         let w = self.world();
         let at = self.state_before(b, k);
-        let mut g = BlockGen::new(&w, std::mem::take(out));
+        let mut g = BlockGen::new(&w, take(out));
         let next = g.run(b as u64, members, start..end, &at);
         *out = g.out;
         let mut states = self.resume[b].lock().expect("resume");
@@ -381,7 +390,7 @@ impl Ldbc {
             }
         }
         {
-            let mut exported = std::collections::HashSet::new();
+            let mut exported = HashSet::new();
             let (tags, classes) = out.split_at_mut(3);
             let (rt, rc) = (&mut tags[2], &mut classes[0]);
             for (id, name) in d.tags.names.iter().enumerate() {
@@ -505,7 +514,10 @@ pub fn to_batch(def: &TableDef, rows: &Rows) -> RecordBatch {
 fn string_array(d: &[u8], ends: &[u32], valid: Option<&Vec<bool>>) -> StringArray {
     let mut offs = Vec::with_capacity(ends.len() + 1);
     offs.push(0i32);
-    offs.extend(ends.iter().map(|&e| e as i32));
+    offs.extend(
+        ends.iter()
+            .map(|&e| i32::try_from(e).expect("a chunk's string column is over 2 GiB")),
+    );
     let offsets = OffsetBuffer::new(ScalarBuffer::from(offs));
     let nulls = valid.map(|v| NullBuffer::from(v.clone()));
     StringArray::try_new(offsets, arrow_buffer::Buffer::from(d.to_vec()), nulls).expect("utf-8")
@@ -514,7 +526,7 @@ fn string_array(d: &[u8], ends: &[u32], valid: Option<&Vec<bool>>) -> StringArra
 /// The resources directory: `$LDBC_DATAGEN_RESOURCES`, else
 /// `ldbc_snb_datagen_spark/src/main/resources` next to the workspace.
 pub fn default_resources() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("LDBC_DATAGEN_RESOURCES") {
+    if let Some(p) = var_os("LDBC_DATAGEN_RESOURCES") {
         return Some(PathBuf::from(p));
     }
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))

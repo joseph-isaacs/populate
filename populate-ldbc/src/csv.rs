@@ -29,6 +29,8 @@ fn two(v: u32) -> [u8; 2] {
 #[inline]
 fn ymd(days: i64) -> [u8; 10] {
     let (y, m, d) = civil_from_days(days);
+    // four-digit years only (the datagen's are 1960s to 2019)
+    debug_assert!((0..=9999).contains(&y), "year {y}");
     let y = y as u32;
     let (hi, lo, m, d) = (two(y / 100 % 100), two(y % 100), two(m), two(d));
     [
@@ -200,6 +202,7 @@ pub fn write(def: &TableDef, rows: &Rows, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::java::ms_of_ymd;
 
     #[test]
     fn spark_dates() {
@@ -210,7 +213,7 @@ mod tests {
             "2010-01-03T15:10:31.499+00:00"
         );
         let mut v = Vec::new();
-        date(&mut v, crate::java::ms_of_ymd(1984, 3, 11));
+        date(&mut v, ms_of_ymd(1984, 3, 11));
         assert_eq!(String::from_utf8(v).unwrap(), "1984-03-11");
     }
 

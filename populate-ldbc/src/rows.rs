@@ -147,9 +147,11 @@ impl Col {
     #[inline(always)]
     pub fn end_str(&mut self) {
         match self {
-            Col::Str(d, o) => o.push(d.len() as u32),
+            Col::Str(d, o) => {
+                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"))
+            }
             Col::OptStr(d, o, n) => {
-                o.push(d.len() as u32);
+                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
                 n.push(true);
             }
             _ => unreachable!("not a string column"),
@@ -166,7 +168,7 @@ impl Col {
     pub fn null_str(&mut self) {
         match self {
             Col::OptStr(d, o, n) => {
-                o.push(d.len() as u32);
+                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
                 n.push(false);
             }
             _ => unreachable!("not an optional string column"),

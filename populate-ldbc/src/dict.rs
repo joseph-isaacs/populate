@@ -1,13 +1,16 @@
 //! The datagen's dictionaries (`src/main/resources/dictionaries`), loaded
 //! the way its Java classes load them.
 
-use crate::java::{lines, parse_f32, parse_f64, parse_i32, split, trim};
+use crate::dates::Dates;
+use crate::fdlibm::{floor_div, log1p};
+use crate::java::{binary_search_f32, lines, parse_f32, parse_f64, parse_i32, split, trim};
 use crate::jrand::{Aspect, Farm, JavaRandom};
 use crate::params::Params;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use unicode_normalization::UnicodeNormalization;
 
 fn read(dir: &Path, rel: &str) -> io::Result<String> {
     let p: PathBuf = dir.join(rel);
@@ -249,7 +252,7 @@ impl Places {
     }
 
     pub fn country_for_person(&self, r: &mut JavaRandom) -> i32 {
-        let pos = crate::java::binary_search_f32(&self.cumulative, r.next_float());
+        let pos = binary_search_f32(&self.cumulative, r.next_float());
         if pos >= 0 { pos } else { -(pos + 1) }
     }
 
@@ -480,7 +483,7 @@ fn geometric_inverse(p: f64, vp: f64, u: f64) -> i32 {
     if u >= 1.0 || p <= 0.0 {
         return i32::MAX;
     }
-    crate::fdlibm::floor_div(crate::fdlibm::log1p(-u), vp)
+    floor_div(log1p(-u), vp)
 }
 
 impl Names {
@@ -540,7 +543,7 @@ impl Names {
             email_base,
             surnames,
             given,
-            vp: crate::fdlibm::log1p(-GEOMETRIC_P),
+            vp: log1p(-GEOMETRIC_P),
         })
     }
 
@@ -580,7 +583,6 @@ impl Names {
 /// `Normalizer.normalize(NFD)`, combining diacritical marks (U+0300..U+036F)
 /// removed, spaces to dots, runs of dots collapsed.
 fn email_base(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
     let mut out = String::with_capacity(s.len());
     for c in s.nfd() {
         if ('\u{0300}'..='\u{036F}').contains(&c) {
@@ -1179,7 +1181,7 @@ pub struct Flashmobs {
 }
 
 impl Flashmobs {
-    fn new(tags: &Tags, dates: &crate::dates::Dates, p: &Params) -> Self {
+    fn new(tags: &Tags, dates: &Dates, p: &Params) -> Self {
         let mut r = JavaRandom::new(0);
         let level = PowerDistribution::new(
             p.flashmob_tag_min_level,
@@ -1293,7 +1295,7 @@ pub struct Dictionaries {
 
 impl Dictionaries {
     /// Load every dictionary from `dir` (the datagen's `src/main/resources`).
-    pub fn load(dir: &Path, p: &Params, dates: &crate::dates::Dates) -> io::Result<Self> {
+    pub fn load(dir: &Path, p: &Params, dates: &Dates) -> io::Result<Self> {
         let (places, tag_matrix) = std::thread::scope(|s| {
             let m = s.spawn(|| TagMatrix::load(dir));
             (Places::load(dir), m.join().expect("tag matrix"))

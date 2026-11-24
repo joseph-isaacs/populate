@@ -4,7 +4,7 @@ use crate::dates::{self, Dates};
 use crate::dict::{Dictionaries, Ip, PowerDistribution};
 use crate::java::hashmap_long_order;
 use crate::jrand::{Aspect, Farm, JavaRandom};
-use crate::params::Params;
+use crate::params::{ALPHA, Params};
 
 /// A person, as the generator keeps it (`Person` minus its knows).
 #[derive(Debug, Clone, Default)]
@@ -121,7 +121,7 @@ impl<'a> PersonGenerator<'a> {
             tag_power: PowerDistribution::new(
                 p.min_num_tags_per_person as f64,
                 (p.max_num_tags_per_person + 1) as f64,
-                crate::params::ALPHA,
+                ALPHA,
             ),
             farm: Farm::default(),
             next_id: 0,

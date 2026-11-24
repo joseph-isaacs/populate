@@ -258,7 +258,12 @@ pub fn sort_rows(
                 }
                 k
             };
-            bucket_sort::<$t>(n, buckets as usize, threads, bucket_of, rest_of)
+            bucket_sort(n, buckets as usize, threads, bucket_of, |r| {
+                (rest_of(r), r as u32)
+            })
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect()
         }};
     }
     if rest_bits < 63.0 {
@@ -268,13 +273,16 @@ pub fn sort_rows(
     }
 }
 
+/// Sort `n` items, `item(r)` for `r` in `0..n`, whose order is
+/// monotone in `bucket_of(r)`: a parallel counting pass into the buckets,
+/// then each bucket sorted, biggest first, on all threads.
 fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
     n: usize,
     buckets: usize,
     threads: usize,
     bucket_of: impl Fn(usize) -> usize + Sync,
-    rest_of: impl Fn(usize) -> T + Sync,
-) -> Vec<u32> {
+    item: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
     // A parallel counting sort: each thread takes a contiguous run of
     // rows, counts its buckets, and scatters its rows to its own offsets
     // (after every earlier thread's rows of the same bucket), so rows stay
@@ -308,17 +316,17 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
     }
     start[buckets] = at;
     drop(counts);
-    let mut pairs = vec![(T::default(), 0u32); n];
+    let mut pairs = vec![T::default(); n];
     {
         let out = SharedSlice(pairs.as_mut_ptr());
         scope(|s| {
             for (t, mut off) in offsets.into_iter().enumerate() {
-                let (f, g, out) = (&bucket_of, &rest_of, &out);
+                let (f, g, out) = (&bucket_of, &item, &out);
                 s.spawn(move || {
                     for r in t * per..((t + 1) * per).min(n) {
                         let i = &mut off[f(r)];
                         // SAFETY: the offsets give every row its own slot
-                        unsafe { out.write(*i, (g(r), r as u32)) };
+                        unsafe { out.write(*i, g(r)) };
                         *i += 1;
                     }
                 });
@@ -330,9 +338,9 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
     let mut order: Vec<usize> = (0..buckets).collect();
     order.sort_unstable_by_key(|&b| Reverse(start[b + 1] - start[b]));
     let next = AtomicUsize::new(0);
-    let slices: Vec<&mut [(T, u32)]> = {
+    let slices: Vec<&mut [T]> = {
         let mut out = Vec::with_capacity(buckets);
-        let mut rest: &mut [(T, u32)] = &mut pairs;
+        let mut rest: &mut [T] = &mut pairs;
         for b in 0..buckets {
             let (h, t) = rest.split_at_mut(start[b + 1] - start[b]);
             out.push(h);
@@ -340,7 +348,7 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
         }
         out
     };
-    let slices: Vec<Mutex<&mut [(T, u32)]>> = slices.into_iter().map(Mutex::new).collect();
+    let slices: Vec<Mutex<&mut [T]>> = slices.into_iter().map(Mutex::new).collect();
     scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
@@ -355,7 +363,20 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
         }
     });
     drop(slices);
-    pairs.into_iter().map(|(_, r)| r).collect()
+    pairs
+}
+
+/// Sort `keys` (in `0..2^bits`) on `threads` threads (0 = all cores).
+pub fn sort_u64(keys: &[u64], bits: u32, threads: usize) -> Vec<u64> {
+    let top = bits.min(12);
+    let shift = bits - top;
+    bucket_sort(
+        keys.len(),
+        1 << top,
+        thread_count(threads),
+        |r| (keys[r] >> shift) as usize,
+        |r| keys[r],
+    )
 }
 
 /// A slice threads write disjoint elements of.

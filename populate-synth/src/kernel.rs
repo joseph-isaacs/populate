@@ -1,0 +1,435 @@
+//! Per-row sampling kernels shared by the shapes.
+//!
+//! Every value is a pure function of `(stream, row)`: a [`Stream`] hashes
+//! the row to 64 random bits and a kernel here turns the bits into a value
+//! with no state, so any slice of rows can be generated on its own and
+//! chunked output equals one sequential run, for any chunk or batch size.
+//!
+//! Continuous distributions are sampled by inverse CDF from a table of
+//! quantiles ([`Quantiles`]): one hash, one lookup and one lerp per value,
+//! with no `exp`/`ln` in the hot loop.
+
+use arrow_array::types::ArrowPrimitiveType;
+use arrow_array::{ArrayRef, PrimitiveArray, StringViewArray};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use std::sync::Arc;
+
+/// `[0, 1)` from the top 53 bits.
+#[inline(always)]
+pub fn unit(bits: u64) -> f64 {
+    (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+}
+
+/// Inverse of the standard normal CDF (Acklam's rational approximation,
+/// relative error below 1.2e-9). Construction-time only.
+pub fn normal_icdf(p: f64) -> f64 {
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    const C: [f64; 6] = [
+        -7.784_894_002_430_293e-3,
+        -3.223_964_580_411_365e-1,
+        -2.400_758_277_161_838,
+        -2.549_732_539_343_734,
+        4.374_664_141_464_968,
+        2.938_163_982_698_783,
+    ];
+    const D: [f64; 4] = [
+        7.784_695_709_041_462e-3,
+        3.224_671_290_700_398e-1,
+        2.445_134_137_142_996,
+        3.754_408_661_907_416,
+    ];
+    let tail = |q: f64| {
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    };
+    if p < 0.02425 {
+        tail((-2.0 * p.ln()).sqrt())
+    } else if p > 1.0 - 0.02425 {
+        -tail((-2.0 * (1.0 - p).ln()).sqrt())
+    } else {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    }
+}
+
+/// Bits of the quantile table index.
+const QBITS: u32 = 12;
+const QN: usize = 1 << QBITS;
+
+/// A continuous distribution as `2^12 + 1` quantiles, sampled by
+/// interpolating between neighbours: the top 12 bits pick the interval,
+/// the next 40 the position in it.
+#[derive(Debug, Clone)]
+pub struct Quantiles {
+    /// `(q[i], q[i + 1] - q[i])`, so a sample is one load and one FMA.
+    knots: Box<[(f64, f64); QN]>,
+}
+
+impl Quantiles {
+    /// From an inverse CDF on `(0, 1)`. The outermost quantiles are taken
+    /// at `0.25 / 2^12` and `1 - 0.25 / 2^12` so unbounded tails stay
+    /// finite.
+    pub fn new(icdf: impl Fn(f64) -> f64) -> Self {
+        let eps = 0.25 / QN as f64;
+        let q: Vec<f64> = (0..=QN)
+            .map(|i| icdf((i as f64 / QN as f64).clamp(eps, 1.0 - eps)))
+            .collect();
+        let mut knots = Box::new([(0.0, 0.0); QN]);
+        for (i, k) in knots.iter_mut().enumerate() {
+            *k = (q[i], q[i + 1] - q[i]);
+        }
+        Quantiles { knots }
+    }
+
+    /// Normal with mean `mu` and standard deviation `sigma`.
+    pub fn normal(mu: f64, sigma: f64) -> Self {
+        Self::new(|p| mu + sigma * normal_icdf(p))
+    }
+
+    /// Log-normal: `exp(N(mu, sigma))`.
+    pub fn lognormal(mu: f64, sigma: f64) -> Self {
+        Self::new(|p| (mu + sigma * normal_icdf(p)).exp())
+    }
+
+    /// Exponential with mean `mean`.
+    pub fn exponential(mean: f64) -> Self {
+        Self::new(|p| -mean * (1.0 - p).ln())
+    }
+
+    /// Piecewise-uniform over `weights.len()` equal bins of `[lo, hi)`
+    /// (e.g. trips per hour of the day).
+    pub fn histogram(lo: f64, hi: f64, weights: &[f64]) -> Self {
+        let total: f64 = weights.iter().sum();
+        let mut cdf = vec![0.0];
+        for w in weights {
+            cdf.push(cdf.last().unwrap() + w / total);
+        }
+        let width = (hi - lo) / weights.len() as f64;
+        Self::new(|p| {
+            let b = cdf.partition_point(|&c| c <= p).clamp(1, weights.len()) - 1;
+            let span = cdf[b + 1] - cdf[b];
+            let f = if span > 0.0 { (p - cdf[b]) / span } else { 0.0 };
+            lo + (b as f64 + f.clamp(0.0, 1.0)) * width
+        })
+    }
+
+    /// The quantile at `p` in `[0, 1)` (a deterministic transform, e.g. of
+    /// a row's position in the day).
+    #[inline(always)]
+    pub fn at(&self, p: f64) -> f64 {
+        let x = p * QN as f64;
+        let i = (x as usize).min(QN - 1);
+        let (q, d) = self.knots[i];
+        q + d * (x - i as f64)
+    }
+
+    #[inline(always)]
+    pub fn sample(&self, bits: u64) -> f64 {
+        let (q, d) = self.knots[(bits >> (64 - QBITS)) as usize];
+        let frac = ((bits << QBITS) >> 24) as f64 * (1.0 / (1u64 << 40) as f64);
+        q + d * frac
+    }
+}
+
+/// Zipf-like ranks in `0..n` (rank 0 most frequent) with exponent `s`,
+/// from the continuous inverse CDF of `x^-s` on `[1, n + 1)`.
+#[derive(Debug, Clone)]
+pub struct Zipf {
+    q: Quantiles,
+    n: u64,
+}
+
+impl Zipf {
+    pub fn new(n: u64, s: f64) -> Self {
+        assert!(n > 0, "zipf over an empty range");
+        let m = (n + 1) as f64;
+        let q = if (s - 1.0).abs() < 1e-9 {
+            Quantiles::new(|p| m.powf(p))
+        } else {
+            let a = 1.0 - s;
+            let top = m.powf(a) - 1.0;
+            Quantiles::new(move |p| (top * p + 1.0).powf(1.0 / a))
+        };
+        Zipf { q, n }
+    }
+
+    #[inline(always)]
+    pub fn sample(&self, bits: u64) -> u64 {
+        ((self.q.sample(bits) - 1.0) as u64).min(self.n - 1)
+    }
+}
+
+/// A pick from at most a handful of weighted values: the index is the
+/// number of cumulative thresholds at or below the draw (branch-free).
+#[derive(Debug, Clone)]
+pub struct Weighted<T> {
+    thresholds: Vec<u64>,
+    values: Vec<T>,
+}
+
+impl<T: Copy> Weighted<T> {
+    pub fn new(items: &[(T, f64)]) -> Self {
+        assert!(!items.is_empty(), "weighted pick from no values");
+        let total: f64 = items.iter().map(|i| i.1).sum();
+        let mut acc = 0.0;
+        let mut thresholds = Vec::new();
+        for (_, w) in &items[..items.len() - 1] {
+            acc += w / total;
+            thresholds.push((acc * u64::MAX as f64) as u64);
+        }
+        Weighted {
+            thresholds,
+            values: items.iter().map(|i| i.0).collect(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn index(&self, bits: u64) -> usize {
+        self.thresholds.iter().map(|&t| (bits >= t) as usize).sum()
+    }
+
+    #[inline(always)]
+    pub fn sample(&self, bits: u64) -> T {
+        self.values[self.index(bits)]
+    }
+}
+
+/// `true` where the draw is below `p` (`p` in `[0, 1]`).
+#[inline(always)]
+pub fn below(bits: u64, p: f64) -> bool {
+    bits < threshold(p)
+}
+
+/// The `u64` threshold for probability `p`.
+#[inline(always)]
+pub fn threshold(p: f64) -> u64 {
+    if p >= 1.0 {
+        u64::MAX
+    } else {
+        (p.max(0.0) * u64::MAX as f64) as u64
+    }
+}
+
+/// Same, as an `ArrayRef`, with optional nulls.
+pub fn prim_ref<T: ArrowPrimitiveType>(v: Vec<T::Native>, nulls: Option<NullBuffer>) -> ArrayRef {
+    Arc::new(PrimitiveArray::<T>::new(ScalarBuffer::from(v), nulls))
+}
+
+/// Validity: valid where `valid(row)` (all-valid gives `None`).
+pub fn validity(start: u64, len: usize, valid: impl Fn(u64) -> bool) -> Option<NullBuffer> {
+    let bits = BooleanBuffer::collect_bool(len, |i| valid(start + i as u64));
+    let n = NullBuffer::new(bits);
+    (n.null_count() > 0).then_some(n)
+}
+
+/// A fixed set of strings stored once; a column of them is a vector of
+/// 16-byte views into the shared buffers, so no string bytes are copied.
+#[derive(Debug, Clone)]
+pub struct Pool {
+    views: Vec<u128>,
+    buffers: Arc<[Buffer]>,
+}
+
+impl Pool {
+    pub fn new<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> Self {
+        let a = StringViewArray::from_iter_values(values);
+        let (views, buffers, _) = a.into_parts();
+        Pool {
+            views: views.to_vec(),
+            buffers,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.views.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.views.is_empty()
+    }
+
+    /// The index of the empty string in [`column`](Self::column).
+    pub const EMPTY: u32 = u32::MAX;
+
+    /// A column of entries `idx` ([`EMPTY`](Self::EMPTY) for `""`), with
+    /// optional nulls. Panics on an index past the end.
+    pub fn column(&self, idx: &[u32], nulls: Option<NullBuffer>) -> ArrayRef {
+        let views: Vec<u128> = idx
+            .iter()
+            .map(|&i| {
+                if i == Self::EMPTY {
+                    0
+                } else {
+                    self.views[i as usize]
+                }
+            })
+            .collect();
+        // SAFETY: every view is a copy of one of `self.views`, which are
+        // valid views into `self.buffers` (or the empty string)
+        Arc::new(unsafe {
+            StringViewArray::new_unchecked(ScalarBuffer::from(views), self.buffers.clone(), nulls)
+        })
+    }
+}
+
+/// Builds a `Utf8View` column of freshly written strings: bytes go into one
+/// buffer, and each row's view is computed as it is written. One column
+/// holds at most 4 GiB of (non-inline) string bytes.
+#[derive(Debug, Default)]
+pub struct ViewWriter {
+    bytes: Vec<u8>,
+    views: Vec<u128>,
+}
+
+impl ViewWriter {
+    pub fn with_capacity(rows: usize, bytes: usize) -> Self {
+        ViewWriter {
+            bytes: Vec::with_capacity(bytes),
+            views: Vec::with_capacity(rows),
+        }
+    }
+
+    /// The buffer to append the next value to.
+    #[inline(always)]
+    pub fn buf(&mut self) -> &mut Vec<u8> {
+        &mut self.bytes
+    }
+
+    /// Finish the value appended since the last call (it starts at `start`,
+    /// the buffer length before writing).
+    #[inline(always)]
+    pub fn finish_value(&mut self, start: usize) {
+        let len = self.bytes.len() - start;
+        let v = &self.bytes[start..];
+        let view = if len <= 12 {
+            let mut raw = [0u8; 16];
+            raw[..4].copy_from_slice(&(len as u32).to_le_bytes());
+            raw[4..4 + len].copy_from_slice(v);
+            // inline: the bytes don't stay in the buffer
+            self.bytes.truncate(start);
+            u128::from_le_bytes(raw)
+        } else {
+            let prefix = u32::from_le_bytes([v[0], v[1], v[2], v[3]]);
+            (len as u128) | ((prefix as u128) << 32) | ((start as u128) << 96)
+        };
+        self.views.push(view);
+    }
+
+    /// Append an empty string.
+    #[inline(always)]
+    pub fn push_empty(&mut self) {
+        self.views.push(0);
+    }
+
+    pub fn finish(self, nulls: Option<NullBuffer>) -> ArrayRef {
+        assert!(
+            self.bytes.len() <= u32::MAX as usize,
+            "string buffer over 4 GiB"
+        );
+        let buffers = if self.bytes.is_empty() {
+            vec![]
+        } else {
+            vec![Buffer::from_vec(self.bytes)]
+        };
+        Arc::new(StringViewArray::new(
+            ScalarBuffer::from(self.views),
+            buffers,
+            nulls,
+        ))
+    }
+}
+
+/// Append the decimal digits of `v`.
+#[inline]
+pub fn push_u64(out: &mut Vec<u8>, mut v: u64) {
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    loop {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&tmp[i..]);
+}
+
+/// Round to cents (non-negative inputs; `+ 0.5` then truncate, which
+/// vectorises where `round` does not).
+#[inline(always)]
+pub fn cents(x: f64) -> f64 {
+    ((x * 100.0 + 0.5) as i64) as f64 * 0.01
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use populate_table::Stream;
+
+    #[test]
+    fn normal_quantiles_have_the_right_moments() {
+        let q = Quantiles::normal(3.0, 2.0);
+        let s = Stream::new(1, "n");
+        let n = 200_000;
+        let v: Vec<f64> = (0..n).map(|r| q.sample(s.at(r))).collect();
+        let mean = v.iter().sum::<f64>() / n as f64;
+        let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        assert!((mean - 3.0).abs() < 0.02, "{mean}");
+        assert!((var.sqrt() - 2.0).abs() < 0.02, "{}", var.sqrt());
+    }
+
+    #[test]
+    fn zipf_is_skewed_and_in_range() {
+        let z = Zipf::new(1000, 1.1);
+        let s = Stream::new(2, "z");
+        let mut counts = vec![0u32; 1000];
+        for r in 0..100_000 {
+            counts[z.sample(s.at(r)) as usize] += 1;
+        }
+        assert!(counts[0] > counts[9] && counts[9] > counts[99] && counts[99] > counts[999]);
+    }
+
+    #[test]
+    fn weighted_matches_weights() {
+        let w = Weighted::new(&[(1, 0.7), (2, 0.2), (3, 0.1)]);
+        let s = Stream::new(3, "w");
+        let mut c = [0u32; 4];
+        for r in 0..100_000 {
+            c[w.sample(s.at(r)) as usize] += 1;
+        }
+        assert!((69_000..71_000).contains(&c[1]), "{c:?}");
+        assert!((19_000..21_000).contains(&c[2]), "{c:?}");
+        assert!((9_000..11_000).contains(&c[3]), "{c:?}");
+    }
+
+    #[test]
+    fn view_writer_inline_and_out_of_line() {
+        let mut w = ViewWriter::default();
+        for s in ["short", "a value longer than twelve", ""] {
+            let start = w.buf().len();
+            w.buf().extend_from_slice(s.as_bytes());
+            w.finish_value(start);
+        }
+        let a = w.finish(None);
+        let a = a.as_any().downcast_ref::<StringViewArray>().unwrap();
+        let got: Vec<&str> = a.iter().map(|v| v.unwrap()).collect();
+        assert_eq!(got, ["short", "a value longer than twelve", ""]);
+    }
+}

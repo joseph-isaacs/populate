@@ -8,6 +8,7 @@ members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-h2o",
     "populate-oltp",
     "populate-synth",
     "populate-bench",
@@ -24,6 +25,7 @@ default-members = [
     "populate-table",
     "populate-tpcds",
     "populate-tpch",
+    "populate-h2o",
     "populate-oltp",
     "populate-synth",
 ]
@@ -51,6 +53,7 @@ populate-sink-parquet = { path = "populate-sink-parquet" }
 populate-table = { path = "populate-table" }
 populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
+populate-h2o = { path = "populate-h2o" }
 populate-oltp = { path = "populate-oltp" }
 populate-synth = { path = "populate-synth" }
 
@@ -60,3 +63,8 @@ populate-synth = { path = "populate-synth" }
 [profile.bench]
 codegen-units = 1
 debug = true
+
+# populate-h2o's tests generate the 1e7-row join tables (the smallest the
+# datagen allows); unoptimised that takes minutes.
+[profile.test.package.populate-h2o]
+opt-level = 3

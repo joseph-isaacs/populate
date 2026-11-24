@@ -42,7 +42,7 @@ use parquet::file::writer::{SerializedPageWriter, TrackedWrite};
 use parquet::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath};
 use std::mem::take;
 use std::ops::Range;
-use std::ptr::null;
+use std::ptr::{copy_nonoverlapping, null};
 use std::slice::from_raw_parts;
 
 /// Whether a flat column of type `dt`, stored as `descr`, can be encoded
@@ -1127,18 +1127,29 @@ fn encode_bytes(
                         body.reserve(need);
                         if let Some((&first, _)) = vals.split_first() {
                             let (mut lo, mut hi) = (first, first);
+                            let start = body.len();
+                            let mut at = body.as_mut_ptr().wrapping_add(start);
                             for (i, &x) in vals.iter().enumerate() {
                                 if let Some(ahead) = vals.get(i + 16) {
                                     prefetch(ahead);
                                 }
-                                put_bytes(x, body);
+                                // SAFETY: `need` bytes were reserved for the
+                                // lengths and bytes of all of `vals`.
+                                unsafe {
+                                    at.cast::<[u8; 4]>()
+                                        .write_unaligned((x.len() as u32).to_le_bytes());
+                                    copy_nonoverlapping(x.as_ptr(), at.add(4), x.len());
+                                    at = at.add(4 + x.len());
+                                }
                                 if less(x, lo) {
                                     lo = x;
                                 } else if less(hi, x) {
                                     hi = x;
                                 }
-                                strings += x.len() as i64;
                             }
+                            // SAFETY: all `need` bytes were written
+                            unsafe { body.set_len(start + need) };
+                            strings = (need - 4 * vals.len()) as i64;
                             mm = Some((lo, hi));
                         }
                     }

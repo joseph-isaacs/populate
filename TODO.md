@@ -9,8 +9,8 @@ multi-threaded output equals one sequential run.
 - [x] **TPC-H, byte-identical to dbgen** (`populate-tpch`)
   - Done with its own column-at-a-time generators on dbgen's skip-ahead
     streams (tpchgen 4.0 for distributions and tests). All 8 SF 1 `.tbl`
-    files equal `tpchgen-cli`'s; 1.4–2.6x faster than `tpcgen-cli` (see
-    [`populate-tpch/README.md`](populate-tpch/README.md)). `tpcgen-cli`
+    files equal `tpchgen-cli`'s; 1.4–2.6x faster than `tpchgen-cli` (see
+    [`populate-tpch/README.md`](populate-tpch/README.md)). `tpchgen-cli`
     splits a table into at most `--num-threads` parts.
   - [ ] Switch `populate-bench` to real TPC-H data.
 - [ ] **SSB** (`populate-ssb`)
@@ -41,6 +41,9 @@ multi-threaded output equals one sequential run.
 - [ ] **LDBC SNB** (spike only)
   - Prototype `Person` and `knows` to see whether the multi-pass, sorted
     generation fits `Chunks` at all, before committing to the full schema.
-- [ ] **Synthetic shapes** (examples, not benchmarks)
+- [x] **Synthetic shapes** (examples, not benchmarks) (`populate-synth`)
   - NYC-taxi-like trips, ClickBench-like web hits, ML feature tables, and
-    vector embeddings as `FixedSizeList<f32>`.
+    vector embeddings as `FixedSizeList<f32>`. Every value is a function of
+    `(seed, column, row)`, so chunked output equals sequential and Parquet
+    is byte-identical for any thread count (see
+    [`populate-synth/README.md`](populate-synth/README.md)).

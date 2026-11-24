@@ -501,12 +501,12 @@ fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     if v.is_empty() {
         return None;
     }
-    if T::FLOAT {
-        if let Some(r) = T::min_max_numbers(v) {
-            return Some(r);
-        }
-        // every value is NaN: their total-order extremes
+    if T::FLOAT
+        && let Some(r) = T::min_max_numbers(v)
+    {
+        return Some(r);
     }
+    // floats with every value NaN: their total-order extremes
     // two plain folds: each vectorizes, a fold over a pair does not
     let lo = v.iter().copied().fold(T::MAX, Ord::min);
     let hi = v.iter().copied().fold(T::MIN, Ord::max);

@@ -6,7 +6,7 @@
 //! gets the same multi-core [`for_each_batch`] and Parquet writer
 //! (`write_parquet`, feature `parquet`).
 
-use crate::table::par_ordered;
+use crate::sched::par_ordered;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use std::convert::Infallible;

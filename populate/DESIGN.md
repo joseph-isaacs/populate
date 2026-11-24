@@ -1,236 +1,113 @@
-# Data-Comb Design Document
+# populate: design
 
-## Overview
+`populate` generates tabular data column by column. You describe a row
+with combinators; collecting writes each column straight into the buffer
+it will be stored in.
 
-A combinator library for generating tabular datasets. Distributions compose to describe table schemas, and data can be collected in different orders depending on the output format.
+## The three traits
 
-## Core Concepts
-
-### Distribution
-
-A **Distribution** describes how to generate values for one or more columns. Distributions compose:
-
-- **Scalar**: Single column (`Constant<T>`, `Range`, `Uniform<T>`, `Map<D, F>`)
-- **Tuple**: Multiple columns (`(D1, D2)`, `(D1, D2, D3)`, nested `((D1, D2), D3)`)
-
-The distribution structure mirrors the table schema:
+All of the core is in `populate-core` (re-exported from `populate`).
 
 ```rust
-// Schema: id (i64), name (String), age (i32)
-let dist = (range(0, 1), constant("Alice"), uniform(18..65));
-```
+/// A stream of rows.
+pub trait Distribution {
+    type Item: Columnar;
 
-### Collection Modes
+    /// The next row.
+    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item;
 
-**Row-by-row**: Produce complete rows one at a time.
+    /// The next `n` rows, appended column by column. Defaults to `n`
+    /// samples; leaves override it to fill a whole column at once.
+    fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl Rng, n: usize);
 
-```
-Row 0: (id_0, name_0, age_0)
-Row 1: (id_1, name_1, age_1)
-Row 2: (id_2, name_2, age_2)
-```
+    /// The next `n` rows as new columns.
+    fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item>;
+}
 
-Use case: JSON, CSV, row-oriented databases, streaming.
+/// A row type and the columns that hold many of it.
+pub trait Columnar: Sized {
+    type Columns: Sink<Self> + Default;
+}
 
-**Col-by-col**: Fill each column completely before moving to the next.
-
-```
-Column 0: id_0, id_1, id_2
-Column 1: name_0, name_1, name_2
-Column 2: age_0, age_1, age_2
-```
-
-Use case: Arrow, Parquet, columnar databases. More cache-friendly for columnar storage.
-
-### Sinks
-
-A **Sink** receives generated values. Different sink types for different use cases:
-
-- `Vec<T>` - simple collection
-- Arrow array builders - columnar format
-- Custom collectors - streaming, aggregation, etc.
-
-Sink structure must match distribution structure:
-
-```
-Distribution          Sink
------------           ----
-Constant<i32>    →    Vec<i32>
-(D1, D2)         →    (S1, S2)
-((D1, D2), D3)   →    ((S1, S2), S3)
-```
-
-## Requirements
-
-### Functional
-
-1. **Row iteration**: Any distribution can produce rows via an iterator
-2. **Col collection**: Tuple distributions can fill columns independently
-3. **Composability**: Distributions nest arbitrarily: `((D1, D2), (D3, D4))`
-4. **Multiple sinks**: Same distribution works with Vec, Arrow, custom sinks
-
-### Ergonomic
-
-5. **Simple trait bounds**: Users write `D: Distribution`, not complex parameterized bounds
-6. **Minimal distribution boilerplate**: New scalar distributions need minimal code
-7. **Minimal sink boilerplate**: New sink types need minimal code
-
-### Technical
-
-8. **Rust coherence**: No unstable features (specialization, negative impls)
-9. **Type safety**: Sink/distribution structure mismatch is a compile error
-
-## Design Questions
-
-### Q1: What is the minimal Distribution trait?
-
-Row iteration is straightforward:
-
-```rust
-trait Distribution {
-    type Item;
-    type RowIter: SampleIter<Item = Self::Item>;
-
-    fn row_iter(&mut self) -> Self::RowIter;
+/// Something values are appended to.
+pub trait Sink<T> {
+    fn push(&mut self, value: T);
+    fn reserve(&mut self, additional: usize);
+    fn push_n(&mut self, values: impl Iterator<Item = T>);
 }
 ```
 
-But how do we support col-by-col collection?
+`Columns<T>` is short for `<T as Columnar>::Columns`.
 
-### Q2: Where does col-by-col logic live?
+## Rows and their columns
 
-Options:
+| row type                  | columns                                          |
+|---------------------------|--------------------------------------------------|
+| `i32`, `f64`, `bool`, ... | `Vec<T>`                                         |
+| `String`, `&'static str`  | `StrCol`: `i32` offsets and bytes (Arrow `Utf8`) |
+| `Vec<T>`                  | `ListCol<Columns<T>>`: `i32` offsets and `T`'s columns (Arrow `List`) |
+| `(A, B, ...)`             | `(Columns<A>, Columns<B>, ...)`                  |
 
-**A. Method on Distribution**
-```rust
-trait Distribution {
-    fn collect_into<S: ???>(&mut self, sink: &mut S, n: usize, rng: &mut impl Rng);
-}
-```
-Problem: What bound on S? Varies by distribution structure.
+The columns nest the way the rows do, and they are already in Arrow's
+memory layout. `populate-sink-arrow` moves the buffers into Arrow arrays
+without copying (nested tuples become flat columns at the top level and
+struct fields inside a list), and `populate-sink-parquet` encodes Parquet
+pages straight out of them.
 
-**B. Method on Sink**
-```rust
-trait Sink<D: Distribution> {
-    fn collect_from(&mut self, dist: &mut D, n: usize, rng: &mut impl Rng);
-}
-```
-Problem: Users work with sinks, not distributions. Less discoverable.
+## Two ways to get rows
 
-**C. Free function / external**
-```rust
-fn collect<D, S>(dist: &mut D, sink: &mut S, n: usize, rng: &mut impl Rng)
-where
-    // constraints
-```
-Problem: Same constraint problem, just moved.
+- `sample` gives one row. A tuple samples each field in turn, so the
+  draws interleave: `a0 b0 a1 b1 ...`.
+- `collect_into` gives many. A tuple fills its first column completely,
+  then the second: `a0 a1 ... b0 b1 ...`. A list collects all its lengths
+  into the offsets, then hands the element columns to the element
+  distribution for the total count, so nesting stays columnar all the way
+  down.
 
-**D. Distribution controls its own collection**
-```rust
-trait Distribution {
-    type Sink;
-    fn collect_into(&mut self, sink: &mut Self::Sink, n: usize, rng: &mut impl Rng);
-}
-```
-Problem: Only one sink type per distribution. Loses flexibility.
+Both give valid rows, but for the same seeded RNG they are different
+rows, because the draws happen in a different order.
 
-### Q3: How do we express "sink matches distribution"?
+`map` has only `sample`: it needs a whole row of its source to call the
+closure. `with_column` is the columnar alternative: the parent collects
+its columns, then the new column is computed in one pass over them.
 
-The constraint is recursive:
+## A distribution is a stream
 
-- Scalar `D` with `Item = T` needs `S: Sink<T>`
-- Tuple `(D1, D2)` needs `S` splittable into `(S1, S2)` where:
-  - `S1` matches `D1`
-  - `S2` matches `D2`
+Sampling moves a distribution on. `range(0, 1)` collected twice gives
+`0..n` and then `n..2n`, and the random leaves keep unused random bits
+between calls. Clone a distribution to start again from the same point
+(`Table::col` clones it for every batch, so a batch depends only on its
+index and seed).
 
-Rust can't express this as a trait bound without:
-- Per-distribution sink impls (boilerplate)
-- Coherence conflicts (blanket impls overlap)
-- Unstable features
+## Writing a leaf
 
-### Q4: Is splitting necessary?
+Implement `sample`. That is enough: the default `collect_into` reserves
+`n` once and pushes `n` samples with one `push_n`, which for a `Vec` is a
+single `extend` of known length.
 
-Col-by-col requires iterating each sub-distribution independently. For `(D1, D2)`:
+The default runs its loop inside `in_local`, which moves the distribution
+into a local variable for the loop and back afterwards. Through `&mut
+self` the compiler must assume each value written to a column could
+overwrite the distribution's own state, so it would store and reload that
+state for every value; in a local the state stays in registers and the
+loop vectorises. This is why `range` and `map` need no hand-written
+`collect_into` to be as fast as a hand-written loop.
 
-```rust
-// Conceptually:
-for _ in 0..n { sink.0.push(d1.next(rng)); }
-for _ in 0..n { sink.1.push(d2.next(rng)); }
-```
+Override `collect_into` when a column can be made faster than one value
+at a time: the random leaves draw indices in batches (`fill_indices` in
+`populate-builtins/src/random.rs`), and strings write their bytes
+straight into the `StrCol` buffer.
 
-This requires:
-1. Accessing sub-distributions (`d1`, `d2`)
-2. Accessing sub-sinks (`sink.0`, `sink.1`)
+## Crates
 
-"Splitting" is one way to express this. Are there others?
+| crate                   | contents                                              |
+|-------------------------|-------------------------------------------------------|
+| `populate-core`         | the three traits, `StrCol`, `ListCol`, tuple impls    |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, random leaves |
+| `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`             |
+| `populate-sink-parquet` | columns to Parquet without copying                    |
+| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `Chunks` and the drivers every benchmark generator runs on |
+| `populate`              | facade re-exporting the above                         |
 
-## Approaches Under Consideration
-
-### Approach 1: SinkFor<D> trait
-
-```rust
-trait SinkFor<D: Distribution> {
-    fn accept(&mut self, dist: &mut D, n: usize, rng: &mut impl Rng);
-}
-
-trait Distribution {
-    fn collect_into<S: SinkFor<Self>>(&mut self, sink: &mut S, ...);
-}
-```
-
-Pros: Clean method on Distribution, bound references Self.
-
-Cons: Need impl `SinkFor<D>` for each (sink, distribution) pair. Blanket impls conflict.
-
-### Approach 2: Associated Sink type
-
-```rust
-trait Distribution {
-    type Sink;
-    fn collect_into(&mut self, sink: &mut Self::Sink, ...);
-}
-```
-
-Pros: Simple, no complex bounds.
-
-Cons: Only one sink type per distribution.
-
-### Approach 3: External collection
-
-Keep Distribution minimal. Collection logic lives outside:
-
-```rust
-trait Distribution {
-    type Item;
-    fn row_iter(&mut self) -> impl SampleIter<Item = Self::Item>;
-}
-
-// Separate functions/traits for collection
-fn collect_scalar<D: Distribution, S: Sink<D::Item>>(...);
-fn collect_tuple<D1, D2, S1, S2>(...);
-```
-
-Pros: Distribution stays simple. No coherence issues.
-
-Cons: Less unified API. Users must choose the right function.
-
-### Approach 4: Macro-based
-
-Use macros to generate the boilerplate:
-
-```rust
-scalar_distribution!(Constant<T: Copy>, T);
-scalar_distribution!(Range, i64);
-tuple_distribution!((D1, D2));
-```
-
-Pros: Reduces visible boilerplate.
-
-Cons: Magic. Harder to understand. Still boilerplate under the hood.
-
-## Next Steps
-
-1. Decide: Does `collect_into` belong on `Distribution`?
-2. Decide: One sink type (associated) vs many (generic with constraints)?
-3. Prototype the most promising approach
-4. Validate with real use cases (Arrow integration)
+The benchmark generators (TPC-H, TPC-DS and the rest) implement `Chunks`
+from `populate-table` directly and do not use `Distribution`.

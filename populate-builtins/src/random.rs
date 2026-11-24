@@ -7,8 +7,7 @@
 //! so no per-value `String` is ever allocated.
 
 use crate::bounded::Bounded;
-use populate_core::string::{StrBuf, StrCol};
-use populate_core::traits::{Backend, DefaultSink, Distribution, HCons, HNil, SampleIter, Sink};
+use populate_core::{Columnar, Columns, Distribution, Sink, StrBuf, StrCol, in_local};
 use rand::Rng;
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
 use std::sync::Arc;
@@ -167,37 +166,16 @@ pub fn uniform<T: UniformValue>(lo: T, hi: T) -> Uniform<T> {
     }
 }
 
-pub struct UniformIter<T: UniformValue>(T::Sampler);
-
-impl<T: UniformValue> SampleIter for UniformIter<T> {
+impl<T: UniformValue + Columnar> Distribution for Uniform<T> {
     type Item = T;
 
     #[inline]
-    fn next(&mut self, rng: &mut impl Rng) -> T {
-        T::sample(&mut self.0, rng)
-    }
-}
-
-impl<B: Backend, T> Distribution<B> for Uniform<T>
-where
-    T: UniformValue + DefaultSink<B>,
-    <T as DefaultSink<B>>::Sink: Sink<T>,
-{
-    type Item = T;
-    type RowIter = UniformIter<T>;
-
-    fn row_iter(&mut self) -> UniformIter<T> {
-        UniformIter(self.sampler.clone())
+    fn sample(&mut self, rng: &mut impl Rng) -> T {
+        T::sample(&mut self.sampler, rng)
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: <T as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <T as DefaultSink<B>>::Sink {
-        T::fill(&mut self.sampler, rng, &mut sink, n);
-        sink
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
+        T::fill(&mut self.sampler, rng, cols, n);
     }
 }
 
@@ -222,35 +200,17 @@ pub fn choose<T: Copy>(values: &'static [T]) -> Choose<T> {
     }
 }
 
-impl<T: Copy> SampleIter for Choose<T> {
+impl<T: Copy + Columnar> Distribution for Choose<T> {
     type Item = T;
 
     #[inline]
-    fn next(&mut self, rng: &mut impl Rng) -> T {
+    fn sample(&mut self, rng: &mut impl Rng) -> T {
         self.values[self.idx.next(rng) as usize]
     }
-}
 
-impl<B: Backend, T: Copy + DefaultSink<B>> Distribution<B> for Choose<T>
-where
-    <T as DefaultSink<B>>::Sink: Sink<T>,
-{
-    type Item = T;
-    type RowIter = Choose<T>;
-
-    fn row_iter(&mut self) -> Choose<T> {
-        self.clone()
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: <T as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <T as DefaultSink<B>>::Sink {
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
-        fill_indices(&mut self.idx, rng, &mut sink, n, |i| values[i as usize]);
-        sink
+        fill_indices(&mut self.idx, rng, cols, n, |i| values[i as usize]);
     }
 }
 
@@ -309,11 +269,11 @@ pub fn weighted<T: Copy>(values: &'static [(T, u32)]) -> Weighted<T> {
     }
 }
 
-impl<T: Copy> SampleIter for Weighted<T> {
+impl<T: Copy + Columnar> Distribution for Weighted<T> {
     type Item = T;
 
     #[inline]
-    fn next(&mut self, rng: &mut impl Rng) -> T {
+    fn sample(&mut self, rng: &mut impl Rng) -> T {
         let x = self.draw.next(rng) as u32;
         let i = match &self.pick {
             Pick::Table(t) => t[x as usize] as usize,
@@ -321,41 +281,23 @@ impl<T: Copy> SampleIter for Weighted<T> {
         };
         self.values[i].0
     }
-}
 
-impl<B: Backend, T: Copy + DefaultSink<B>> Distribution<B> for Weighted<T>
-where
-    <T as DefaultSink<B>>::Sink: Sink<T>,
-{
-    type Item = T;
-    type RowIter = Weighted<T>;
-
-    fn row_iter(&mut self) -> Weighted<T> {
-        self.clone()
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: <T as DefaultSink<B>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <T as DefaultSink<B>>::Sink {
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
         match &self.pick {
             Pick::Table(t) => {
                 let t = &**t;
-                fill_indices(&mut self.draw, rng, &mut sink, n, |x| {
+                fill_indices(&mut self.draw, rng, cols, n, |x| {
                     values[t[x as usize] as usize].0
                 })
             }
             Pick::Search(c) => {
                 let c = &**c;
-                fill_indices(&mut self.draw, rng, &mut sink, n, |x| {
+                fill_indices(&mut self.draw, rng, cols, n, |x| {
                     values[c.partition_point(|&c| c as u64 <= x)].0
                 })
             }
         }
-        sink
     }
 }
 
@@ -376,49 +318,22 @@ trait WriteStr {
     fn mean_len(&self) -> usize;
 }
 
-fn collect_str<W: WriteStr>(
-    w: &mut W,
-    sink: HCons<StrCol, HNil>,
-    rng: &mut impl Rng,
-    n: usize,
-) -> HCons<StrCol, HNil> {
-    let HCons(mut col, HNil) = sink;
-    col.reserve_bytes(n * w.mean_len());
-    col.push_n_with(n, |b| w.write(rng, b));
-    HCons(col, HNil)
-}
-
-/// Row-mode iterator for the string generators (allocates one `String` per
-/// row; columnar collection never uses it).
-pub struct StrIter<W>(W);
-
-impl<W: WriteStr> SampleIter for StrIter<W> {
-    type Item = String;
-
-    fn next(&mut self, rng: &mut impl Rng) -> String {
-        let mut col = StrCol::new();
-        col.push_with(|b| self.0.write(rng, b));
-        col.get(0).to_owned()
-    }
-}
-
 macro_rules! string_distribution {
     ($t:ty) => {
-        impl<B: Backend> Distribution<B> for $t {
+        impl Distribution for $t {
             type Item = String;
-            type RowIter = StrIter<$t>;
 
-            fn row_iter(&mut self) -> Self::RowIter {
-                StrIter(self.clone())
+            /// Allocates a `String`; collecting writes into the column's
+            /// buffer instead.
+            fn sample(&mut self, rng: &mut impl Rng) -> String {
+                let mut col = StrCol::new();
+                col.push_with(|b| self.write(rng, b));
+                col.get(0).to_owned()
             }
 
-            fn collect_into(
-                &mut self,
-                sink: HCons<StrCol, HNil>,
-                rng: &mut impl Rng,
-                n: usize,
-            ) -> HCons<StrCol, HNil> {
-                collect_str(self, sink, rng, n)
+            fn collect_into(&mut self, cols: &mut StrCol, rng: &mut impl Rng, n: usize) {
+                cols.reserve_bytes(n * self.mean_len());
+                in_local(self, |w| cols.push_n_with(n, |b| w.write(rng, b)));
             }
         }
     };

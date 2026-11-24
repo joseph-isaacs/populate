@@ -7,7 +7,10 @@
 > was merged; they're at commit `6e3a7d9` (`populate/examples/realistic_today.rs`,
 > `populate/examples/realistic_combinators.rs`). The `derive` combinator
 > described here shipped as `with_column`; see `populate/examples/realistic.rs`
-> and `cargo bench -p populate --bench with_column`.
+> and `cargo bench -p populate --bench with_column`. The core trait has
+> also been reworked since (no backend parameter, no HLists, `sample` in
+> place of `row_iter`), which settles findings 4 and 8 below; the current
+> design is in `populate/DESIGN.md`.
 
 Eight "interesting data" scenarios, each written three ways:
 

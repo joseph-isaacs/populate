@@ -7,8 +7,9 @@
 //! [`StrCol::push_with`], so a string column costs two allocations in total,
 //! not one per value, and both buffers move into Arrow without a copy.
 
-use crate::hlist::{HCons, HNil, ValueHList};
-use crate::traits::{Backend, DefaultSink, Sink};
+use crate::columnar::Columnar;
+use crate::list::offset;
+use crate::sink::Sink;
 
 /// String column in Arrow `Utf8` layout.
 ///
@@ -46,13 +47,6 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     let start = v.len();
     v.extend_from_slice(&b);
     v.truncate(start + n);
-}
-
-/// A byte length as an `i32` offset.
-#[inline]
-fn offset(len: usize) -> i32 {
-    i32::try_from(len)
-        .expect("string column exceeds i32 offsets (2 GiB per batch); use smaller batches")
 }
 
 /// Write access to the value being appended by [`StrCol::push_with`].
@@ -284,26 +278,12 @@ impl<'a> Sink<&'a str> for StrCol {
     }
 }
 
-impl<B: Backend> DefaultSink<B> for String {
-    type Sink = HCons<StrCol, HNil>;
+impl Columnar for String {
+    type Columns = StrCol;
 }
 
-impl<B: Backend> DefaultSink<B> for &'static str {
-    type Sink = HCons<StrCol, HNil>;
-}
-
-impl ValueHList for String {
-    type HList = HCons<String, HNil>;
-    fn into_hlist(self) -> Self::HList {
-        HCons(self, HNil)
-    }
-}
-
-impl ValueHList for &'static str {
-    type HList = HCons<&'static str, HNil>;
-    fn into_hlist(self) -> Self::HList {
-        HCons(self, HNil)
-    }
+impl Columnar for &'static str {
+    type Columns = StrCol;
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@
 //! in any order and on any number of threads with identical output:
 //! [`Table::for_each_batch`] does that and hands batches back in order.
 
+use crate::sched::par_ordered;
 use crate::stream::{hash_str, mix64};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Date32Type, Decimal64Type, Decimal128Type, Int32Type, Int64Type};
@@ -47,20 +48,14 @@ use arrow_array::{Array, ArrayRef, PrimitiveArray, RecordBatch, make_array};
 use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use populate_core::string::{StrBuf, StrCol};
-use populate_core::traits::{DefaultSink, Distribution};
-use populate_sink_arrow::{
-    ArrowBackend, ArrowNative, IntoArrowArray, IntoArrowColumns, columns_to_value_array,
-};
+use populate_core::{Columns, Distribution, Sink, StrBuf, StrCol};
+use populate_sink_arrow::{ArrowNative, IntoArrowArray, IntoArrowColumns, columns_to_value_array};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc::sync_channel;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, OnceLock};
-use std::thread;
 
 /// Everything a column generator sees for one batch.
 pub struct BatchCtx<'a> {
@@ -230,17 +225,13 @@ impl Table {
     /// A tuple-valued distribution becomes a `Struct` column.
     pub fn col<D>(self, name: &str, dist: D) -> Self
     where
-        D: Distribution<ArrowBackend> + Clone + Send + Sync + 'static,
-        <D::Item as DefaultSink<ArrowBackend>>::Sink: Default + IntoArrowColumns,
+        D: Distribution + Clone + Send + Sync + 'static,
+        Columns<D::Item>: IntoArrowColumns,
     {
         self.push(
             name,
-            Box::new(move |ctx| {
-                let sink = dist
-                    .clone()
-                    .collect_into(Default::default(), ctx.rng, ctx.len);
-                columns_to_value_array(sink)
-            }),
+            // every batch starts from the distribution as it was declared
+            Box::new(move |ctx| columns_to_value_array(dist.clone().collect(ctx.rng, ctx.len))),
         )
     }
 
@@ -273,7 +264,7 @@ impl Table {
             name,
             Box::new(move |ctx| {
                 let mut col = StrCol::new();
-                populate_core::traits::Sink::<&str>::reserve(&mut col, ctx.len);
+                Sink::<&str>::reserve(&mut col, ctx.len);
                 col.reserve_bytes(hint.load(Relaxed) * ctx.len);
                 let mut bytes = 0;
                 for r in ctx.rows() {
@@ -594,59 +585,6 @@ impl Table {
             f,
         )
     }
-}
-
-/// Run `work(0..n)` on `threads` threads (0 = all cores) and feed the
-/// results to `consume` in index order on the calling thread, stopping at
-/// the first error. Workers run at most about `2 * threads` tasks ahead.
-pub fn par_ordered<T: Send, E>(
-    n: u64,
-    threads: usize,
-    work: impl Fn(u64) -> T + Sync,
-    mut consume: impl FnMut(T) -> Result<(), E>,
-) -> Result<(), E> {
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-    .min(n.max(1) as usize);
-    if threads <= 1 {
-        return (0..n).try_for_each(|i| consume(work(i)));
-    }
-    let next = AtomicU64::new(0);
-    let stop = AtomicBool::new(false);
-    thread::scope(|s| {
-        let (tx, rx) = sync_channel::<(u64, T)>(threads * 2);
-        for _ in 0..threads {
-            let tx = tx.clone();
-            let (next, stop, work) = (&next, &stop, &work);
-            s.spawn(move || {
-                while !stop.load(Relaxed) {
-                    let i = next.fetch_add(1, Relaxed);
-                    if i >= n || tx.send((i, work(i))).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-        // Reorder. `rx` is dropped when this closure returns, before the
-        // scope joins, so a worker blocked on a full channel wakes up (its
-        // send fails) when we stop early.
-        let mut pending = BTreeMap::new();
-        let mut want = 0u64;
-        for (i, t) in rx.iter() {
-            pending.insert(i, t);
-            while let Some(t) = pending.remove(&want) {
-                want += 1;
-                if let Err(e) = consume(t) {
-                    stop.store(true, Relaxed);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(())
-    })
 }
 
 /// Attach a validity bitmap (about `rate` random nulls, plus rows where

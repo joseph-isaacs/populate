@@ -1,23 +1,23 @@
 //! Zero-copy list generation.
 //!
 //! A counting global allocator (scoped to the current thread by a flag) proves
-//! that, with `ArrowBackend`:
+//! that:
 //!
 //! 1. collecting a list column performs exactly one allocation per buffer
 //!    (offsets, values) at its final size, and never reallocates;
-//! 2. turning the sink into a `RecordBatch` allocates no data-sized buffer,
-//!    and the arrays point at the very same memory that was generated into.
+//! 2. turning the columns into a `RecordBatch` allocates no data-sized
+//!    buffer, and the arrays point at the very same memory that was
+//!    generated into.
 //!
-//! The `VecBackend` control test shows the harness does catch a copy.
+//! The `ArrowWriter` control test (feature `parquet`) shows the harness does
+//! catch a copy.
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{ListArray, RecordBatch, StructArray};
-use populate::arrow::{ArrowBackend, ArrowOffsets, IntoArrowColumns, into_record_batch};
+use populate::arrow::{IntoArrowColumns, into_record_batch};
 use populate::dist::{constant, list, map, range};
-use populate::traits::{
-    Backend, DefaultSink, Distribution, HCons, HNil, ListCol, Sink, VecBackend,
-};
+use populate::{Columns, Distribution};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -105,16 +105,12 @@ fn row_len(i: usize) -> usize {
 }
 
 /// list<i64>: lengths cycle 0..8, values 0, 1, 2, ...
-fn gen_list<B: Backend>() -> impl Distribution<B, Item = Vec<i64>>
-where
-    <usize as DefaultSink<B>>::Sink: Sink<usize>,
-    <i64 as DefaultSink<B>>::Sink: Sink<i64>,
-{
+fn gen_list() -> impl Distribution<Item = Vec<i64>> {
     list(map(range(0usize, 1), row_len), range(0i64, 1))
 }
 
 /// list<{ id: i32, tags: list<i64> }>: 2 structs per row, tag lens cycle 0..8
-fn gen_list_of_struct_of_list() -> impl Distribution<ArrowBackend, Item = Vec<(i32, Vec<i64>)>> {
+fn gen_list_of_struct_of_list() -> impl Distribution<Item = Vec<(i32, Vec<i64>)>> {
     list(
         constant(2usize),
         (
@@ -133,18 +129,13 @@ fn expected_offsets(rows: usize) -> Vec<i32> {
     out
 }
 
-fn collect<B: Backend, D: Distribution<B>>(d: &mut D, n: usize) -> <D::Item as DefaultSink<B>>::Sink
-where
-    <D::Item as DefaultSink<B>>::Sink: Default,
-{
-    d.collect_into(Default::default(), &mut rand::rng(), n)
+fn collect<D: Distribution>(d: &mut D, n: usize) -> Columns<D::Item> {
+    d.collect(&mut rand::rng(), n)
 }
 
 fn to_batch<S: IntoArrowColumns>(sink: S) -> RecordBatch {
     into_record_batch(sink).expect("valid record batch")
 }
-
-type ArrowList<V> = HCons<ListCol<ArrowOffsets, V>, HNil>;
 
 // ============================================================================
 // Tests
@@ -152,12 +143,11 @@ type ArrowList<V> = HCons<ListCol<ArrowOffsets, V>, HNil>;
 
 #[test]
 fn list_is_generated_into_two_buffers_and_moved_into_arrow() {
-    let mut d = gen_list::<ArrowBackend>();
+    let mut d = gen_list();
     let _ = rand::rng(); // init thread rng outside the measured region
 
     // 1. Generation: exactly two allocations (offsets, values), no growth.
-    let (sink, gen_allocs): (ArrowList<HCons<Vec<i64>, HNil>>, _) =
-        count_allocs(|| collect(&mut d, N));
+    let (col, gen_allocs) = count_allocs(|| collect(&mut d, N));
     let offsets = expected_offsets(N);
     let total = *offsets.last().unwrap() as usize;
     assert_eq!(
@@ -168,16 +158,15 @@ fn list_is_generated_into_two_buffers_and_moved_into_arrow() {
             max_size: total * size_of::<i64>(),
         }
     );
-    let col = &sink.0;
-    assert_eq!(col.offsets.as_slice(), offsets.as_slice());
-    assert_eq!(col.values.0, (0..total as i64).collect::<Vec<_>>());
+    assert_eq!(col.offsets(), offsets.as_slice());
+    assert_eq!(col.values, (0..total as i64).collect::<Vec<_>>());
     // buffers are exactly sized: nothing over-allocated, nothing to shrink
-    assert_eq!(col.values.0.capacity(), total);
-    let offsets_ptr = col.offsets.as_slice().as_ptr();
-    let values_ptr = col.values.0.as_ptr();
+    assert_eq!(col.values.capacity(), total);
+    let offsets_ptr = col.offsets().as_ptr();
+    let values_ptr = col.values.as_ptr();
 
     // 2. Arrow conversion: no data-sized allocation, same memory.
-    let (batch, conv_allocs) = count_allocs(|| to_batch(sink));
+    let (batch, conv_allocs) = count_allocs(|| to_batch(col));
     assert_eq!(conv_allocs.reallocs, 0);
     assert!(
         conv_allocs.max_size < DATA_SIZED,
@@ -204,13 +193,13 @@ fn nested_list_of_struct_is_zero_copy() {
     let (sink, gen_allocs) = count_allocs(|| collect(&mut d, N));
     assert_eq!((gen_allocs.allocs, gen_allocs.reallocs), (4, 0));
 
-    let outer = &sink.0;
-    let HCons(ids, HCons(tags, HNil)) = &outer.values;
+    let outer = &sink;
+    let (ids, tags) = &outer.values;
     let ptrs = (
-        outer.offsets.as_slice().as_ptr(),
+        outer.offsets().as_ptr(),
         ids.as_ptr(),
-        tags.offsets.as_slice().as_ptr(),
-        tags.values.0.as_ptr(),
+        tags.offsets().as_ptr(),
+        tags.values.as_ptr(),
     );
 
     let (batch, conv_allocs) = count_allocs(|| to_batch(sink));
@@ -248,23 +237,6 @@ fn nested_list_of_struct_is_zero_copy() {
     assert_eq!(&tag_vals[..], (0..total).collect::<Vec<_>>().as_slice());
 }
 
-/// Control: `VecBackend` stores `usize` end offsets, so conversion has to
-/// build a new `i32` offsets buffer. The allocator must see that.
-#[test]
-fn vec_backend_offsets_are_copied_control() {
-    let mut d = gen_list::<VecBackend>();
-    let _ = rand::rng();
-    let sink = collect(&mut d, N);
-
-    let (batch, conv_allocs) = count_allocs(|| to_batch(sink));
-    assert!(
-        conv_allocs.max_size >= (N + 1) * size_of::<i32>(),
-        "expected an offsets copy: {conv_allocs:?}"
-    );
-    let l: &ListArray = batch.column(0).as_list();
-    assert_eq!(l.value_offsets(), expected_offsets(N).as_slice());
-}
-
 // ============================================================================
 // Parquet (optional `parquet` feature)
 // ============================================================================
@@ -278,8 +250,8 @@ mod parquet_out {
     use populate::parquet::{DistributionParquet, write_columns, write_parquet};
 
     /// id: i64, tags: list<i64>
-    fn gen_table() -> impl Distribution<ArrowBackend, Item = (i64, Vec<i64>)> {
-        (range(0i64, 1), gen_list::<ArrowBackend>())
+    fn gen_table() -> impl Distribution<Item = (i64, Vec<i64>)> {
+        (range(0i64, 1), gen_list())
     }
 
     /// 64 KiB pages: the writer's working memory is a page, not a column.
@@ -323,11 +295,11 @@ mod parquet_out {
     fn list_to_parquet_without_copies() {
         let mut d = gen_table();
         let sink = collect(&mut d, N);
-        let HCons(ids, HCons(tags, HNil)) = &sink;
+        let (ids, tags) = &sink;
         let data_bytes = size_of_val(ids.as_slice())
-            + size_of_val(tags.values.0.as_slice())
-            + size_of_val(tags.offsets.as_slice());
-        let ptrs = (ids.as_ptr(), tags.values.0.as_ptr());
+            + size_of_val(tags.values.as_slice())
+            + size_of_val(tags.offsets());
+        let ptrs = (ids.as_ptr(), tags.values.as_ptr());
 
         let (_, allocs) =
             count_allocs(|| write_columns(&sink, std::io::sink(), Some(small_pages())).unwrap());
@@ -338,14 +310,14 @@ mod parquet_out {
         assert!(allocs.max_size * 8 < data_bytes);
 
         // nothing moved: the sink still owns the same buffers
-        let HCons(ids, HCons(tags, HNil)) = &sink;
-        assert_eq!((ids.as_ptr(), tags.values.0.as_ptr()), ptrs);
+        let (ids, tags) = &sink;
+        assert_eq!((ids.as_ptr(), tags.values.as_ptr()), ptrs);
 
         let bytes = write_columns(&sink, Vec::new(), Some(small_pages())).unwrap();
         assert_table(&read_back(bytes));
     }
 
-    /// `collect_parquet` = generate into `ArrowBackend` + `write_columns`.
+    /// `collect_parquet` = `collect` + `write_columns`.
     #[test]
     fn collect_parquet_roundtrip() {
         let mut d = gen_table();

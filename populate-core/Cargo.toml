@@ -1,6 +1,6 @@
 [package]
 name = "populate-core"
-description = "Core traits for populate: Distribution, SampleIter, Sink, Backend and HLists"
+description = "Core traits for populate: Distribution, Columnar and Sink, and the string and list columns"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

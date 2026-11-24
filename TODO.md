@@ -41,6 +41,9 @@ multi-threaded output equals one sequential run.
 - [ ] **LDBC SNB** (spike only)
   - Prototype `Person` and `knows` to see whether the multi-pass, sorted
     generation fits `Chunks` at all, before committing to the full schema.
-- [ ] **Synthetic shapes** (examples, not benchmarks)
+- [x] **Synthetic shapes** (examples, not benchmarks) (`populate-synth`)
   - NYC-taxi-like trips, ClickBench-like web hits, ML feature tables, and
-    vector embeddings as `FixedSizeList<f32>`.
+    vector embeddings as `FixedSizeList<f32>`. Every value is a function of
+    `(seed, column, row)`, so chunked output equals sequential and Parquet
+    is byte-identical for any thread count (see
+    [`populate-synth/README.md`](populate-synth/README.md)).

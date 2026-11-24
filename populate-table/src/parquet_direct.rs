@@ -1,5 +1,5 @@
-//! Parquet column chunks for flat integer columns, encoded here instead of
-//! by arrow-rs's column writer.
+//! Parquet column chunks for flat integer, timestamp, float and string
+//! columns, encoded here instead of by arrow-rs's column writer.
 //!
 //! arrow-rs is general: it builds definition levels and a list of non-null
 //! indexes per batch, gathers values through it, and dictionary-encodes
@@ -20,10 +20,14 @@
 //! It is appended to the row group as a finished chunk.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
+    Int64Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+    TimestampSecondType,
+};
 use arrow_array::{Array, ArrayRef};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, TimeUnit};
 use bytes::Bytes;
 use parquet::basic::{BoundaryOrder, Compression, Encoding, Type as PhysicalType};
 use parquet::column::page::{CompressedPage, Page, PageWriter};
@@ -43,8 +47,13 @@ use std::ops::Range;
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
     let type_ok = match (dt, descr.physical_type()) {
-        (DataType::Int32 | DataType::Date32, PhysicalType::INT32) => true,
-        (DataType::Int64, PhysicalType::INT64) => true,
+        (
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Date32,
+            PhysicalType::INT32,
+        ) => true,
+        (DataType::Int64 | DataType::Timestamp(..), PhysicalType::INT64) => true,
+        (DataType::Float32, PhysicalType::FLOAT) => true,
+        (DataType::Float64, PhysicalType::DOUBLE) => true,
         (DataType::Decimal128(p, _), PhysicalType::INT32) => *p <= 9,
         (DataType::Decimal128(p, _), PhysicalType::INT64) => *p <= 18,
         (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
@@ -87,6 +96,12 @@ impl DirectColumn {
                 let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int32 => extend(out, a.as_primitive::<Int32Type>().values(), a),
                     DataType::Date32 => extend(out, a.as_primitive::<Date32Type>().values(), a),
+                    DataType::Int16 => {
+                        extend_map(out, a.as_primitive::<Int16Type>().values(), a, i32::from)
+                    }
+                    DataType::Int8 => {
+                        extend_map(out, a.as_primitive::<Int8Type>().values(), a, i32::from)
+                    }
                     _ => extend_map(out, a.as_primitive::<Decimal128Type>().values(), a, |d| {
                         d as i32
                     }),
@@ -105,9 +120,40 @@ impl DirectColumn {
                 });
                 encode_bytes(&self.descr, props, &v)
             }
+            PhysicalType::FLOAT => {
+                let v = Values::<F32>::gather(&self.arrays, |a, out| {
+                    extend_map(out, a.as_primitive::<Float32Type>().values(), a, |x| {
+                        F32(x.to_bits())
+                    })
+                });
+                encode(&self.descr, props, &v)
+            }
+            PhysicalType::DOUBLE => {
+                let v = Values::<F64>::gather(&self.arrays, |a, out| {
+                    extend_map(out, a.as_primitive::<Float64Type>().values(), a, |x| {
+                        F64(x.to_bits())
+                    })
+                });
+                encode(&self.descr, props, &v)
+            }
             _ => {
                 let v = Values::<i64>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int64 => extend(out, a.as_primitive::<Int64Type>().values(), a),
+                    DataType::Timestamp(unit, _) => {
+                        let values = match unit {
+                            TimeUnit::Second => a.as_primitive::<TimestampSecondType>().values(),
+                            TimeUnit::Millisecond => {
+                                a.as_primitive::<TimestampMillisecondType>().values()
+                            }
+                            TimeUnit::Microsecond => {
+                                a.as_primitive::<TimestampMicrosecondType>().values()
+                            }
+                            TimeUnit::Nanosecond => {
+                                a.as_primitive::<TimestampNanosecondType>().values()
+                            }
+                        };
+                        extend(out, values, a)
+                    }
                     _ => extend_map(out, a.as_primitive::<Decimal128Type>().values(), a, |d| {
                         d as i64
                     }),
@@ -126,7 +172,14 @@ trait Native: Copy + Ord + Default + Send + 'static {
     /// Order-preserving: `a <= b` iff `a.key() <= b.key()`.
     fn key(self) -> u64;
     fn put(self, out: &mut Vec<u8>);
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics;
+    /// Chunk statistics; `nans` is the NaN count (floats only).
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, nans: Option<u64>) -> Statistics;
+    /// Floating point: NaNs are left out of min / max unless every value
+    /// is NaN, and pages and chunks count them, as arrow-rs does.
+    const FLOAT: bool = false;
+    fn is_nan(self) -> bool {
+        false
+    }
 }
 
 impl Native for i32 {
@@ -139,7 +192,7 @@ impl Native for i32 {
     fn put(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
     }
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics {
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, _: Option<u64>) -> Statistics {
         Statistics::int32(min, max, None, Some(nulls), false)
     }
 }
@@ -154,10 +207,83 @@ impl Native for i64 {
     fn put(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
     }
-    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64) -> Statistics {
+    fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, _: Option<u64>) -> Statistics {
         Statistics::int64(min, max, None, Some(nulls), false)
     }
 }
+
+/// An `f32` by its bits: equal when the bits are (as arrow-rs's
+/// dictionary compares them), ordered by IEEE 754 total order (as its
+/// statistics are).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct F32(u32);
+
+/// An `f64` by its bits, as [`F32`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct F64(u64);
+
+macro_rules! float_native {
+    ($t:ident, $bits:ty, $f:ty, $size:expr, $variant:ident) => {
+        impl $t {
+            /// Total-order key: flip all bits of negatives, the sign of
+            /// positives.
+            #[inline(always)]
+            fn total(self) -> $bits {
+                const SIGN: $bits = 1 << (<$bits>::BITS - 1);
+                if self.0 & SIGN != 0 {
+                    !self.0
+                } else {
+                    self.0 | SIGN
+                }
+            }
+        }
+
+        impl Ord for $t {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.total().cmp(&other.total())
+            }
+        }
+
+        impl PartialOrd for $t {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Native for $t {
+            const SIZE: usize = $size;
+            // the extremes of the total order: -NaN and +NaN with every
+            // payload bit set
+            const MIN: Self = $t(<$bits>::MAX);
+            const MAX: Self = $t(<$bits>::MAX >> 1);
+            const FLOAT: bool = true;
+            fn key(self) -> u64 {
+                self.total() as u64
+            }
+            fn put(self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&self.0.to_le_bytes());
+            }
+            fn stats(
+                min: Option<Self>,
+                max: Option<Self>,
+                nulls: u64,
+                nans: Option<u64>,
+            ) -> Statistics {
+                let f = |x: Option<Self>| x.map(|x| <$f>::from_bits(x.0));
+                Statistics::$variant(
+                    ValueStatistics::new(f(min), f(max), None, Some(nulls), false)
+                        .with_nan_count(nans),
+                )
+            }
+            fn is_nan(self) -> bool {
+                <$f>::from_bits(self.0).is_nan()
+            }
+        }
+    };
+}
+
+float_native!(F32, u32, f32, 4, Float);
+float_native!(F64, u64, f64, 8, Double);
 
 /// A chunk's non-null values, its validity bitmap (the definition levels,
 /// bit-packed at width 1) if any row is null, and its arrays' lengths.
@@ -235,10 +361,20 @@ fn extend_map<S: Copy, T: Copy>(out: &mut Vec<T>, values: &[S], a: &ArrayRef, f:
     }
 }
 
-/// Smallest and largest of `v`.
+/// Smallest and largest of `v` (for floats, of its non-NaN values if it
+/// has any).
 fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
     if v.is_empty() {
         return None;
+    }
+    if T::FLOAT {
+        let numbers = v.iter().copied().filter(|x| !x.is_nan());
+        let lo = numbers.clone().fold(T::MAX, Ord::min);
+        let hi = numbers.fold(T::MIN, Ord::max);
+        if lo <= hi {
+            return Some((lo, hi));
+        }
+        // every value is NaN: their total-order extremes
     }
     // two plain folds: each vectorizes, a fold over a pair does not
     let lo = v.iter().copied().fold(T::MAX, Ord::min);
@@ -344,6 +480,7 @@ impl<'a> ChunkWriter<'a> {
         vals: usize,
         valid: Option<&BooleanBuffer>,
         encoding: Encoding,
+        nans: Option<i64>,
         put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
         let (r0, r1) = (rows.start, rows.end);
@@ -382,7 +519,7 @@ impl<'a> ChunkWriter<'a> {
         let page_nulls = ((r1 - r0) - vals) as i64;
         let (lo, hi) = min_max.unwrap_or_default();
         self.column_index
-            .append(vals == 0, lo, hi, page_nulls, None);
+            .append(vals == 0, lo, hi, page_nulls, nans);
         if self.histograms {
             let h = LevelHistogram::from(vec![page_nulls, vals as i64]);
             self.column_index.append_histograms(&None, &Some(h));
@@ -495,11 +632,13 @@ fn encode<T: Native>(
             Some(n) => (Encoding::RLE_DICTIONARY, Some((n, &plan.idx[v0..v1]))),
             None => (Encoding::PLAIN, None),
         };
+        let nans = T::FLOAT.then(|| vals.iter().filter(|x| x.is_nan()).count() as i64);
         w.data_page(
             p.rows.clone(),
             vals.len(),
             v.valid.as_ref(),
             encoding,
+            nans,
             |body| {
                 match idx {
                     Some((n, idx)) => {
@@ -520,7 +659,9 @@ fn encode<T: Native>(
     }
     let order = boundary_order(page_ranges.into_iter());
     let nulls = (v.rows - v.vals.len()) as u64;
-    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls), order)?;
+    let nans = (T::FLOAT && !v.vals.is_empty())
+        .then(|| v.vals.iter().filter(|x| x.is_nan()).count() as u64);
+    let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls, nans), order)?;
     Ok((Bytes::from(sink.into_inner()?), close))
 }
 
@@ -803,6 +944,7 @@ fn encode_bytes(
             vals.len(),
             v.valid.as_ref(),
             encoding,
+            None,
             |body| {
                 match ix {
                     Some((n, ix)) => {
@@ -914,7 +1056,7 @@ fn plan<T: Native>(
     let dict_limit = props.dictionary_page_size_limit();
     let mut dict = range
         .filter(|_| props.dictionary_enabled(path))
-        .map(|(lo, hi)| Dict::new(lo, hi, v.vals.len()));
+        .map(|(lo, hi)| Dict::new(lo, hi, v.vals.len(), dict_limit / T::SIZE + batch));
     let mut idx = Vec::with_capacity(if dict.is_some() { v.vals.len() } else { 0 });
     let mut pages = Vec::new();
     let (mut r0, mut v0, mut row, mut val) = (0, 0, 0, 0);
@@ -967,28 +1109,43 @@ fn plan<T: Native>(
 
 /// Dictionary entries in first-seen order. Values spanning a small range
 /// index a table by `value - min`; others go through an open-addressing
-/// hash table.
+/// hash table of `(value, index)` slots (one cache line per probe), sized
+/// up front for the most entries the chunk can reach before the dictionary
+/// page size limit, so it rarely has to grow.
 struct Dict<T> {
     entries: Vec<T>,
     lo: T,
+    /// Direct mode: entry index by `value - lo`.
     table: Vec<u32>,
-    keys: Vec<T>,
+    /// Hash mode: `(value, entry index)`, `u32::MAX` for empty.
+    slots: Vec<(T, u32)>,
     bits: u32,
 }
 
 impl<T: Native> Dict<T> {
-    fn new(lo: T, hi: T, n: usize) -> Self {
+    /// For `n` values, of which at most about `cap` become entries.
+    fn new(lo: T, hi: T, n: usize, cap: usize) -> Self {
         let span = hi.key() - lo.key();
         let direct = span < (n as u64).max(1024);
-        let bits = if direct { 0 } else { 10 };
+        let bits = if direct {
+            0
+        } else {
+            // load factor at most 1/2 for the entries the chunk can reach
+            let most = n.min(cap).max(1);
+            (2 * most).next_power_of_two().trailing_zeros().max(10)
+        };
         Self {
             entries: Vec::new(),
             lo,
-            table: vec![u32::MAX; if direct { span as usize + 1 } else { 1 << bits }],
-            keys: if direct {
+            table: if direct {
+                vec![u32::MAX; span as usize + 1]
+            } else {
+                Vec::new()
+            },
+            slots: if direct {
                 Vec::new()
             } else {
-                vec![T::default(); 1 << bits]
+                vec![(T::default(), u32::MAX); 1 << bits]
             },
             bits,
         }
@@ -1007,21 +1164,27 @@ impl<T: Native> Dict<T> {
             }
             return;
         }
-        for &x in xs {
+        // how far ahead to prefetch slots: tables past the caches miss on
+        // nearly every new value
+        const AHEAD: usize = 16;
+        for (k, &x) in xs.iter().enumerate() {
+            if let Some(&next) = xs.get(k + AHEAD) {
+                prefetch_slot(&self.slots[hash(next.key(), self.bits)]);
+            }
             let mask = (1usize << self.bits) - 1;
             let mut h = hash(x.key(), self.bits);
             let i = loop {
-                match self.table[h] {
-                    u32::MAX => {
-                        let i = self.entries.len() as u32;
-                        self.table[h] = i;
-                        self.keys[h] = x;
-                        self.entries.push(x);
-                        break i;
-                    }
-                    i if self.keys[h] == x => break i,
-                    _ => h = (h + 1) & mask,
+                let (key, i) = self.slots[h];
+                if i == u32::MAX {
+                    let i = self.entries.len() as u32;
+                    self.slots[h] = (x, i);
+                    self.entries.push(x);
+                    break i;
                 }
+                if key == x {
+                    break i;
+                }
+                h = (h + 1) & mask;
             };
             idx.push(i);
             if self.entries.len() * 2 > 1 << self.bits {
@@ -1033,17 +1196,28 @@ impl<T: Native> Dict<T> {
     fn grow(&mut self) {
         self.bits += 1;
         let mask = (1usize << self.bits) - 1;
-        self.table = vec![u32::MAX; 1 << self.bits];
-        self.keys = vec![T::default(); 1 << self.bits];
+        self.slots = vec![(T::default(), u32::MAX); 1 << self.bits];
         for (i, &e) in self.entries.iter().enumerate() {
             let mut h = hash(e.key(), self.bits);
-            while self.table[h] != u32::MAX {
+            while self.slots[h].1 != u32::MAX {
                 h = (h + 1) & mask;
             }
-            self.table[h] = i as u32;
-            self.keys[h] = e;
+            self.slots[h] = (e, i as u32);
         }
     }
+}
+
+/// Start loading a hash slot into cache.
+#[inline(always)]
+fn prefetch_slot<S>(s: &S) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch is only a hint; it never faults.
+    unsafe {
+        use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        _mm_prefetch::<_MM_HINT_T0>((s as *const S).cast());
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = s;
 }
 
 fn hash(k: u64, bits: u32) -> usize {

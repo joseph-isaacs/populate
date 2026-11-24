@@ -1,14 +1,18 @@
-//! Integer, date and decimal columns are encoded by populate-table, not
+//! Integer, date, timestamp, decimal, float and string columns are encoded by populate-table, not
 //! arrow-rs: they must read back exactly, with the statistics and page
 //! arrow-rs would write and correct page indexes.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
-use arrow_array::{
-    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, StringViewArray,
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampMicrosecondType, TimestampSecondType,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::{
+    Array, ArrayRef, Date32Array, Decimal128Array, Float32Array, Float64Array, Int8Array,
+    Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
+    TimestampMicrosecondArray, TimestampSecondArray,
+};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{
@@ -51,6 +55,18 @@ fn schema() -> SchemaRef {
         Field::new("view", DataType::Utf8View, true),
         Field::new("long_view", DataType::Utf8View, true),
         Field::new("required_view", DataType::Utf8View, false),
+        Field::new("tiny", DataType::Int16, true),
+        Field::new("byte", DataType::Int8, false),
+        Field::new(
+            "ts_us",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), false),
+        Field::new("f32", DataType::Float32, true),
+        Field::new("f64", DataType::Float64, true),
+        Field::new("f32_distinct", DataType::Float32, false),
+        Field::new("f64_required", DataType::Float64, false),
     ]))
 }
 
@@ -121,6 +137,48 @@ fn batch(start: i64, n: usize) -> RecordBatch {
         }))),
         Arc::new(StringViewArray::from_iter_values(
             rows.clone().map(|r| format!("v{}", r % 1000)),
+        )),
+        Arc::new(Int16Array::from_iter(
+            col(&|r| r % 300 - 150)
+                .into_iter()
+                .map(|v| v.map(|v| v as i16)),
+        )),
+        Arc::new(Int8Array::from_iter_values(
+            rows.clone().map(|r| (r % 200 - 100) as i8),
+        )),
+        Arc::new(TimestampMicrosecondArray::from(col(&|r| {
+            r * 1_000_003 - (1 << 41)
+        }))),
+        Arc::new(TimestampSecondArray::from_iter_values(
+            rows.clone().map(|r| 1_372_636_800 + r / 3),
+        )),
+        // NaNs scattered and a page of only NaN, -0.0 and +0.0, infinities
+        Arc::new(Float32Array::from_iter(rows.clone().map(|r| {
+            (!null(r)).then(|| {
+                if r % 97 == 5 || (40_000..41_000).contains(&r) {
+                    f32::NAN
+                } else if r % 89 == 1 {
+                    -0.0
+                } else {
+                    (r % 1000) as f32 * 0.25 - 100.0
+                }
+            })
+        }))),
+        Arc::new(Float64Array::from_iter(rows.clone().map(|r| {
+            (!null(r)).then(|| match r % 1009 {
+                0 => f64::INFINITY,
+                1 => f64::NEG_INFINITY,
+                2 => -f64::NAN,
+                _ => r as f64 * 1.37 - 1e5,
+            })
+        }))),
+        // too distinct for the dictionary page size limit
+        Arc::new(Float32Array::from_iter_values(
+            rows.clone()
+                .map(|r| ((r * 2_654_435_761) % 1_000_003) as f32 / 7.0),
+        )),
+        Arc::new(Float64Array::from_iter_values(
+            rows.clone().map(|r| (r % 17) as f64 * 0.5),
         )),
     ];
     RecordBatch::try_new(schema(), columns).unwrap()
@@ -260,6 +318,14 @@ fn raw(a: &dyn Array) -> Vec<Option<i64>> {
             DataType::Int32 => a.as_primitive::<Int32Type>().value(i) as i64,
             DataType::Date32 => a.as_primitive::<Date32Type>().value(i) as i64,
             DataType::Int64 => a.as_primitive::<Int64Type>().value(i),
+            DataType::Int16 => a.as_primitive::<Int16Type>().value(i) as i64,
+            DataType::Int8 => a.as_primitive::<Int8Type>().value(i) as i64,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                a.as_primitive::<TimestampMicrosecondType>().value(i)
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                a.as_primitive::<TimestampSecondType>().value(i)
+            }
             DataType::Decimal128(..) => a.as_primitive::<Decimal128Type>().value(i) as i64,
             _ => 0,
         }
@@ -279,4 +345,37 @@ fn no_dictionary_and_no_statistics() {
         .build();
     let ours = write_parquet(&d, Vec::new(), 1, Some(props)).unwrap();
     assert_eq!(read(&ours, None), read(&arrow_rs(&d), None));
+}
+
+#[test]
+fn float_column_indexes_match_arrow_rs() {
+    // nullable columns: arrow-rs's pages are the ones planned here, so the
+    // column indexes (min, max, null and NaN counts per page) must be equal
+    let d = data();
+    let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let theirs = arrow_rs(&d);
+    let open = |f: &[u8]| {
+        let opts = ReadOptionsBuilder::new().with_page_index().build();
+        SerializedFileReader::new_with_options(Bytes::from(f.to_vec()), opts).unwrap()
+    };
+    let (a, b) = (open(&ours), open(&theirs));
+    let (a, b) = (a.metadata(), b.metadata());
+    let names = ["f32", "f64", "tiny", "ts_us"];
+    let mut checked = 0;
+    for g in 0..a.num_row_groups() {
+        for (c, col) in a.row_group(g).columns().iter().enumerate() {
+            if !names.contains(&col.column_path().string().as_str()) {
+                continue;
+            }
+            let (pa, pb) = (a.page_index_for_row_group(g), b.page_index_for_row_group(g));
+            assert_eq!(
+                format!("{:?}", pa.column_index(c)),
+                format!("{:?}", pb.column_index(c)),
+                "group {g} column {}",
+                col.column_path()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 4 * a.num_row_groups());
 }

@@ -87,6 +87,10 @@ impl Shape for Embeddings {
         "embeddings"
     }
 
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "id" | "embedding")
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

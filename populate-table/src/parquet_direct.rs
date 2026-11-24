@@ -986,7 +986,14 @@ fn encode_list<T: Native>(
         // per record: a run of one 0, then a run of `n - 1` ones
         _ => total / n * (2 + varint_len(((n - 1) as u64) << 1) + 1),
     };
-    let cap = total * T::SIZE + rep_bytes + pages * PAGE_OVERHEAD;
+    // only uncompressed: a compressed chunk's size isn't known (smaller
+    // for most data, a little larger for incompressible data)
+    let plain = props.compression(descr.path()) == Compression::UNCOMPRESSED;
+    let cap = if plain {
+        total * T::SIZE + rep_bytes + pages * PAGE_OVERHEAD
+    } else {
+        0
+    };
     let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     w.list = Some(n);
@@ -1021,7 +1028,7 @@ fn encode_list<T: Native>(
     let close = w.finish(levels, levels, T::stats(lo, hi, 0, nans), order)?;
     let out = sink.into_inner()?;
     debug_assert!(
-        out.len() <= cap,
+        !plain || out.len() <= cap,
         "list chunk {} > estimate {cap}",
         out.len()
     );

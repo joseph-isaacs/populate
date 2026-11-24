@@ -43,6 +43,14 @@ pub trait Sim: Clone + Send + Sync {
     fn epoch_progress(&self) -> u64 {
         0
     }
+
+    /// Keep what a clone taken earlier needs to replay this simulator's
+    /// sequential work instead of redoing it (the frontier calls this).
+    fn record(&mut self) {}
+
+    /// Move what `frontier` recorded since `self` was cloned from it into
+    /// `self`, which replays it.
+    fn hand_over(&mut self, _frontier: &mut Self) {}
 }
 
 /// `epochHosts` after `epoch` ticks: `init + uint64(missing * epoch /
@@ -111,5 +119,15 @@ impl Sim for AnySim {
     }
     fn epoch_progress(&self) -> u64 {
         each!(self, s => s.epoch_progress())
+    }
+    fn record(&mut self) {
+        each!(self, s => s.record())
+    }
+    fn hand_over(&mut self, frontier: &mut Self) {
+        match (self, frontier) {
+            (AnySim::Devops(s), AnySim::Devops(f)) => s.hand_over(f),
+            (AnySim::Iot(s), AnySim::Iot(f)) => s.hand_over(f),
+            _ => unreachable!("a checkpoint and its frontier are one use case"),
+        }
     }
 }

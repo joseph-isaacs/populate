@@ -9,7 +9,7 @@ use crate::gorand::{GoRand, go_f64_to_i64};
 use crate::model::{Measurement, NO_TAG, Point, Statics, TagVal, Type, Val};
 use crate::sim::{Sim, epoch_generators};
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const BATCH: usize = 10;
 const READINGS: [&str; 7] = [
@@ -282,6 +282,7 @@ impl IotSim {
         tag_types.extend([Type::F32; 3]);
         let statics = Statics {
             start: cfg.start,
+            tag_cache: OnceLock::new(),
             tag_keys: TRUCK_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types,
             measurements,

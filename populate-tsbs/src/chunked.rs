@@ -93,7 +93,14 @@ impl<S: Sim> Chunked<S> {
             group_id: cfg.group_id,
             groups: cfg.groups,
             frontier: Mutex::new(Frontier {
-                cur: Cursor { sim, group: 0 },
+                cur: Cursor {
+                    sim: {
+                        let mut sim = sim;
+                        sim.record();
+                        sim
+                    },
+                    group: 0,
+                },
                 next: 0,
             }),
             ready: Mutex::new(BTreeMap::new()),
@@ -164,11 +171,13 @@ impl<S: Sim> Chunked<S> {
                     .expect("checkpoint left by the frontier");
             }
             let here = f.next;
-            let c = f.cur.clone();
+            let mut c = f.cur.clone();
             if here + 1 < self.n {
                 let end = self.threshold(here + 1);
                 self.skip(&mut f.cur, end);
             }
+            // (for the last chunk: nothing recorded, and `c` stops recording)
+            c.sim.hand_over(&mut f.cur.sim);
             f.next += 1;
             if here == k {
                 return c;

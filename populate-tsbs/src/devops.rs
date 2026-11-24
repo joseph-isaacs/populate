@@ -11,7 +11,9 @@ use crate::config::{Config, UseCase};
 use crate::gorand::{GoRand, Zipf, go_f64_to_i64};
 use crate::model::{Measurement, Point, Statics, TagVal, Type, Val};
 use crate::sim::{Sim, epoch_generators};
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::mem::take;
+use std::sync::{Arc, OnceLock};
 
 /// How a distribution advances: `step = NormFloat64() * std + mean`, then
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -394,6 +396,13 @@ pub struct DevopsSim {
     epochs: u64,
     epoch_hosts: u64,
     init_hosts: u64,
+    /// The frontier keeps every tick's state (`record`) and hands them to
+    /// the checkpoint it took before them, which replays them instead of
+    /// ticking: a worker then only formats.
+    record: bool,
+    log: Vec<Arc<Vec<f64>>>,
+    tape: Vec<Arc<Vec<f64>>>,
+    tape_pos: usize,
 }
 
 /// Per-host values built with the measurements.
@@ -587,6 +596,7 @@ impl DevopsSim {
         let header_fields = measurements.iter().map(|m| m.fields.clone()).collect();
         let statics = Statics {
             start: cfg.start,
+            tag_cache: OnceLock::new(),
             tag_keys: HOST_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types: vec![Type::Str; HOST_TAG_KEYS.len()],
             measurements,
@@ -655,6 +665,10 @@ impl DevopsSim {
         DevopsSim {
             st: Arc::new(st),
             rng,
+            record: false,
+            log: Vec::new(),
+            tape: Vec::new(),
+            tape_pos: 0,
             state: Arc::new(state),
             made: 0,
             max,
@@ -669,35 +683,32 @@ impl DevopsSim {
 
     /// `TickAll` on every host, then `adjustNumHostsForEpoch`.
     fn tick(&mut self) {
-        let st = &*self.st;
-        let rng = &mut self.rng;
-        let state = Arc::make_mut(&mut self.state);
-        if st.generic {
-            for v in state.iter_mut() {
-                let step = rng.norm_float64() * 1.0 + 0.0;
-                *v = clamp(*v + step, 0.0, 1000.0);
-            }
+        if let Some(s) = self.tape.get(self.tape_pos) {
+            // the frontier's state after this tick (its generator state
+            // isn't needed: devops draws only in ticks, and a checkpoint
+            // with a tape stops before its tape runs out)
+            self.state = s.clone();
+            self.tape_pos += 1;
         } else {
-            let d = st.specs.len();
-            for (h, vals) in state.chunks_exact_mut(d).enumerate() {
-                let total = st.mem_total[h] as f64;
-                for (v, s) in vals.iter_mut().zip(&st.specs) {
-                    *v = match s.kind {
-                        Kind::Clamped => {
-                            clamp(*v + (rng.norm_float64() * s.std + s.mean), s.min, s.max)
-                        }
-                        Kind::Monotonic => *v + (rng.norm_float64() * s.std + s.mean).abs(),
-                        Kind::Walk => *v + (rng.norm_float64() * s.std + s.mean),
-                        Kind::Mem => {
-                            clamp(*v + (rng.norm_float64() * (total / 64.0) + 0.0), 0.0, total)
-                        }
-                    };
-                }
+            self.compute_tick();
+            if self.record {
+                self.log.push(self.state.clone());
             }
         }
         self.epoch += 1;
         self.epoch_hosts =
             epoch_generators(self.init_hosts, self.st.hosts, self.epoch, self.epochs);
+    }
+
+    fn compute_tick(&mut self) {
+        let st = &*self.st;
+        let rng = &mut self.rng;
+        let state = Arc::make_mut(&mut self.state);
+        NORMALS.with_borrow_mut(|z| {
+            z.resize(state.len(), 0.0);
+            rng.fill_norm(z);
+            tick_state(st, state, z);
+        });
     }
 
     /// `ToPoint` of measurement `mi` of the current host.
@@ -807,6 +818,33 @@ impl DevopsSim {
     }
 }
 
+thread_local! {
+    /// A tick's normal draws.
+    static NORMALS: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One tick of every host's state, given the tick's normal draws in order.
+fn tick_state(st: &Static, state: &mut [f64], z: &[f64]) {
+    if st.generic {
+        for (v, z) in state.iter_mut().zip(z) {
+            *v = clamp(*v + (z * 1.0 + 0.0), 0.0, 1000.0);
+        }
+        return;
+    }
+    let d = st.specs.len();
+    for (h, (vals, z)) in state.chunks_exact_mut(d).zip(z.chunks_exact(d)).enumerate() {
+        let total = st.mem_total[h] as f64;
+        for ((v, s), z) in vals.iter_mut().zip(&st.specs).zip(z) {
+            *v = match s.kind {
+                Kind::Clamped => clamp(*v + (z * s.std + s.mean), s.min, s.max),
+                Kind::Monotonic => *v + (z * s.std + s.mean).abs(),
+                Kind::Walk => *v + (z * s.std + s.mean),
+                Kind::Mem => clamp(*v + (z * (total / 64.0) + 0.0), 0.0, total),
+            };
+        }
+    }
+}
+
 #[inline(always)]
 fn clamp(mut v: f64, min: f64, max: f64) -> f64 {
     if v > max {
@@ -868,6 +906,16 @@ impl Sim for DevopsSim {
         if !self.finished() {
             self.wrap();
         }
+    }
+
+    fn record(&mut self) {
+        self.record = true;
+    }
+
+    fn hand_over(&mut self, frontier: &mut Self) {
+        self.record = false;
+        self.tape = take(&mut frontier.log);
+        self.tape_pos = 0;
     }
 
     fn epoch_progress(&self) -> u64 {

@@ -1,6 +1,8 @@
 //! What a simulator emits: [`Point`]s, plus the [`Statics`] they refer to
 //! (measurement names, field and tag keys, each host's tag values).
 
+use std::sync::OnceLock;
+
 /// A field value, as TSBS's `interface{}` holds it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Val {
@@ -80,6 +82,24 @@ pub struct Statics {
     /// Field keys for the header line, per measurement: devops-generic's
     /// header lists the host with the most metrics.
     pub header_fields: Vec<Vec<Box<str>>>,
+    /// Each generator's tags, formatted once for the text serializers.
+    pub tag_cache: OnceLock<TagCache>,
+}
+
+/// Per generator, its tags as the serializers write them when none is
+/// cleared.
+#[derive(Debug, Clone, Default)]
+pub struct TagCache {
+    /// `,k=v` for the string tags (influx: numeric tags go to the fields).
+    pub kv_str: Vec<Box<[u8]>>,
+    /// `,k=v` for every tag (timescaledb, cassandra).
+    pub kv_all: Vec<Box<[u8]>>,
+    /// `"k":"v"` for every tag, comma-separated (cratedb).
+    pub json: Vec<Box<[u8]>>,
+    /// Whether any generator tag is numeric.
+    pub has_f32: bool,
+    /// Per measurement, per field: `,k=`.
+    pub field_kv: Vec<Vec<Box<[u8]>>>,
 }
 
 /// No zeroed tag.

@@ -11,6 +11,7 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # shortest round-trip float digits with ties to even, as Go's strconv
+itoa = "1"
 ryu = "1"
 
 [dev-dependencies]

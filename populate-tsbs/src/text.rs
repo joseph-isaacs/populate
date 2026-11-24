@@ -3,7 +3,7 @@
 //! ClickHouse and Timestream), CrateDB's TSV and Cassandra's CSV.
 
 use crate::config::civil_from_days;
-use crate::model::{NO_TAG, Point, Statics, TagVal, Type, Val};
+use crate::model::{NO_TAG, Point, Statics, TagCache, TagVal, Type, Val};
 use std::fmt;
 use std::str::FromStr;
 
@@ -93,21 +93,7 @@ impl fmt::Display for Format {
 /// `strconv.AppendInt(buf, v, 10)`.
 #[inline]
 pub fn push_i64(out: &mut Vec<u8>, v: i64) {
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    let mut n = v.unsigned_abs();
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
-        }
-    }
-    if v < 0 {
-        out.push(b'-');
-    }
-    out.extend_from_slice(&buf[i..]);
+    out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
 }
 
 /// `strconv.AppendFloat(buf, v, 'f', -1, 64)`: the shortest digits that
@@ -208,6 +194,75 @@ fn push_tag(out: &mut Vec<u8>, v: Option<&TagVal>) {
 }
 
 /// The point's tags in order: the generator's, then the measurement's.
+impl TagCache {
+    /// Format every generator's tags.
+    pub fn new(st: &Statics) -> Self {
+        let mut c = TagCache {
+            has_f32: st
+                .gen_tags
+                .iter()
+                .flatten()
+                .any(|v| matches!(v, TagVal::F32(_))),
+            field_kv: st
+                .measurements
+                .iter()
+                .map(|m| {
+                    m.fields
+                        .iter()
+                        .map(|k| format!(",{k}=").into_bytes().into())
+                        .collect()
+                })
+                .collect(),
+            ..TagCache::default()
+        };
+        for tags in &st.gen_tags {
+            let (mut kv_str, mut kv_all, mut json) = (Vec::new(), Vec::new(), Vec::new());
+            for (k, v) in st.tag_keys.iter().zip(tags) {
+                let at = kv_all.len();
+                kv_all.push(b',');
+                kv_all.extend_from_slice(k.as_bytes());
+                kv_all.push(b'=');
+                push_tag(&mut kv_all, Some(v));
+                if !matches!(v, TagVal::F32(_)) {
+                    kv_str.extend_from_slice(&kv_all[at..]);
+                }
+                if !json.is_empty() {
+                    json.push(b',');
+                }
+                json.push(b'"');
+                json.extend_from_slice(k.as_bytes());
+                json.extend_from_slice(b"\":\"");
+                push_tag(&mut json, Some(v));
+                json.push(b'"');
+            }
+            c.kv_str.push(kv_str.into());
+            c.kv_all.push(kv_all.into());
+            c.json.push(json.into());
+        }
+        c
+    }
+}
+
+fn cache(st: &Statics) -> &TagCache {
+    st.tag_cache.get_or_init(|| TagCache::new(st))
+}
+
+/// The measurement's extra tags of point `p`, as `,k=v`.
+#[inline]
+fn push_extra_kv(st: &Statics, p: &Point, out: &mut Vec<u8>) {
+    let m = p.meas as usize;
+    for (k, v) in st.measurements[m]
+        .extra_tags
+        .iter()
+        .zip(&st.extra_tags[p.source as usize][m])
+    {
+        out.push(b',');
+        out.extend_from_slice(k.as_bytes());
+        out.push(b'=');
+        out.extend_from_slice(v.as_bytes());
+    }
+}
+
 fn tags<'a>(
     st: &'a Statics,
     p: &'a Point,
@@ -270,29 +325,39 @@ pub fn write_point(format: Format, st: &Statics, p: &Point, out: &mut Vec<u8>) {
     }
 }
 
-fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
-    let start = out.len();
-    let m = &st.measurements[p.meas as usize];
-    out.extend_from_slice(m.name.as_bytes());
+fn push_kv(out: &mut Vec<u8>, k: &str, v: &str) {
+    out.push(b',');
+    out.extend_from_slice(k.as_bytes());
+    out.push(b'=');
+    out.extend_from_slice(v.as_bytes());
+}
+
+fn influx_tags_slow(st: &Statics, p: &Point, out: &mut Vec<u8>) -> bool {
     let mut fake = false;
     for (k, v, extra) in tags(st, p) {
         match (v, extra) {
-            (Some(TagVal::Str(s)), _) => {
-                out.push(b',');
-                out.extend_from_slice(k.as_bytes());
-                out.push(b'=');
-                out.extend_from_slice(s.as_bytes());
-            }
-            (None, Some(s)) => {
-                out.push(b',');
-                out.extend_from_slice(k.as_bytes());
-                out.push(b'=');
-                out.extend_from_slice(s.as_bytes());
-            }
+            (Some(TagVal::Str(s)), _) => push_kv(out, k, s),
+            (None, Some(s)) => push_kv(out, k, s),
             (Some(TagVal::F32(_)), _) => fake = true,
             (None, None) => {}
         }
     }
+    fake
+}
+
+fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
+    let start = out.len();
+    let m = &st.measurements[p.meas as usize];
+    out.extend_from_slice(m.name.as_bytes());
+    let g = p.source as usize;
+    let c = cache(st);
+    let fake = if p.zero_tag == NO_TAG {
+        out.extend_from_slice(&c.kv_str[g]);
+        push_extra_kv(st, p, out);
+        c.has_f32 && st.gen_tags[g].iter().any(|v| matches!(v, TagVal::F32(_)))
+    } else {
+        influx_tags_slow(st, p, out)
+    };
     if fake || !p.fields.is_empty() {
         out.push(b' ');
     }
@@ -310,20 +375,21 @@ fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
             }
         }
     }
-    for (k, &v) in m.fields.iter().zip(&p.fields) {
-        if v == Val::Nil {
-            continue;
-        }
-        if first {
-            out.push(b',');
+    for (k, &v) in c.field_kv[p.meas as usize].iter().zip(&p.fields) {
+        let k = &k[usize::from(!first)..];
+        match v {
+            Val::Nil => continue,
+            Val::I(i) => {
+                out.extend_from_slice(k);
+                push_i64(out, i);
+                out.push(b'i');
+            }
+            Val::F(f) => {
+                out.extend_from_slice(k);
+                push_f64(out, f);
+            }
         }
         first = true;
-        out.extend_from_slice(k.as_bytes());
-        out.push(b'=');
-        push_val(out, v);
-        if let Val::I(_) = v {
-            out.push(b'i');
-        }
     }
     if !first {
         out.truncate(start);
@@ -334,8 +400,14 @@ fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     out.push(b'\n');
 }
 
-fn timescale(st: &Statics, p: &Point, out: &mut Vec<u8>) {
-    out.extend_from_slice(b"tags");
+/// Every tag of `p` as `,k=v` (numeric ones formatted, cleared ones
+/// empty), then the measurement's extra tags.
+fn push_kv_all(st: &Statics, p: &Point, out: &mut Vec<u8>) {
+    if p.zero_tag == NO_TAG {
+        out.extend_from_slice(&cache(st).kv_all[p.source as usize]);
+        push_extra_kv(st, p, out);
+        return;
+    }
     for (k, v, extra) in tags(st, p) {
         out.push(b',');
         out.extend_from_slice(k.as_bytes());
@@ -345,6 +417,11 @@ fn timescale(st: &Statics, p: &Point, out: &mut Vec<u8>) {
             None => push_tag(out, v),
         }
     }
+}
+
+fn timescale(st: &Statics, p: &Point, out: &mut Vec<u8>) {
+    out.extend_from_slice(b"tags");
+    push_kv_all(st, p, out);
     out.push(b'\n');
     out.extend_from_slice(st.measurements[p.meas as usize].name.as_bytes());
     out.push(b',');
@@ -360,7 +437,18 @@ fn crate_db(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     out.extend_from_slice(st.measurements[p.meas as usize].name.as_bytes());
     out.push(b'\t');
     let mut any = false;
+    if p.zero_tag == NO_TAG {
+        let json = &cache(st).json[p.source as usize];
+        if !json.is_empty() {
+            out.push(b'{');
+            out.extend_from_slice(json);
+            any = true;
+        }
+    }
     for (k, v, extra) in tags(st, p) {
+        if p.zero_tag == NO_TAG && extra.is_none() {
+            continue;
+        }
         out.push(if any { b',' } else { b'{' });
         any = true;
         out.push(b'"');
@@ -417,17 +505,12 @@ fn cassandra(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     let m = &st.measurements[p.meas as usize];
     let mut prefix = Vec::with_capacity(256);
     prefix.extend_from_slice(m.name.as_bytes());
-    for (k, v, extra) in tags(st, p) {
-        prefix.push(b',');
-        prefix.extend_from_slice(k.as_bytes());
-        prefix.push(b'=');
-        match extra {
-            Some(s) => prefix.extend_from_slice(s.as_bytes()),
-            None => push_tag(&mut prefix, v),
-        }
-    }
+    push_kv_all(st, p, &mut prefix);
     let mut date = Vec::with_capacity(10);
     push_date(&mut date, st.start, p.ts);
+    date.push(b',');
+    push_i64(&mut date, p.ts);
+    date.push(b',');
     for (k, &v) in m.fields.iter().zip(&p.fields) {
         let table: &[u8] = match v {
             Val::Nil => continue,
@@ -441,9 +524,6 @@ fn cassandra(st: &Statics, p: &Point, out: &mut Vec<u8>) {
         out.extend_from_slice(k.as_bytes());
         out.push(b',');
         out.extend_from_slice(&date);
-        out.push(b',');
-        push_i64(out, p.ts);
-        out.push(b',');
         push_val(out, v);
         out.push(b'\n');
     }

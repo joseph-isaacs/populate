@@ -17,17 +17,30 @@ const INT32_MAX: i64 = (1 << 31) - 1;
 /// top-level `rand.*` functions.
 #[derive(Clone)]
 pub struct GoRand {
-    tap: usize,
+    /// Go's `feed` (its `tap` is always `feed + 273` mod 607), here in
+    /// `1..=607` once `ahead > 0`.
     feed: usize,
+    /// Steps already applied to `vec` past `feed`: positions `feed - 1`
+    /// down to `feed - ahead` hold their next values, computed in one
+    /// vectorised pass (no step in the batch reads another's output while
+    /// the batch is at most 273 long).
+    ahead: usize,
     vec: Box<[i64; RNG_LEN]>,
 }
 
 impl Debug for GoRand {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GoRand")
-            .field("tap", &self.tap)
             .field("feed", &self.feed)
+            .field("ahead", &self.ahead)
             .finish_non_exhaustive()
+    }
+}
+
+#[inline(always)]
+fn add(w: &mut [i64], r: &[i64]) {
+    for (w, r) in w.iter_mut().zip(r) {
+        *w = w.wrapping_add(*r);
     }
 }
 
@@ -70,8 +83,8 @@ impl GoRand {
             }
         }
         GoRand {
-            tap: 0,
             feed: RNG_LEN - RNG_TAP,
+            ahead: 0,
             vec,
         }
     }
@@ -79,19 +92,33 @@ impl GoRand {
     /// `Uint64`: one step of the generator.
     #[inline(always)]
     pub fn uint64(&mut self) -> u64 {
-        self.tap = if self.tap == 0 {
-            RNG_LEN - 1
+        if self.ahead == 0 {
+            self.refill();
+        }
+        self.ahead -= 1;
+        self.feed -= 1;
+        self.vec[self.feed] as u64
+    }
+
+    /// Apply the next `min(273, feed, tap)` steps at once: Go's step is
+    /// `feed--; tap--; vec[feed] += vec[tap]`.
+    #[inline(never)]
+    fn refill(&mut self) {
+        let wrap = |i: usize| if i == 0 { RNG_LEN } else { i };
+        let f = wrap(self.feed);
+        let t = wrap((self.feed + RNG_TAP) % RNG_LEN);
+        let k = RNG_TAP.min(f).min(t);
+        // writes vec[f-k..f], reads vec[t-k..t]: disjoint
+        let v = &mut self.vec[..];
+        if t > f {
+            let (lo, hi) = v.split_at_mut(f);
+            add(&mut lo[f - k..], &hi[t - k - f..t - f]);
         } else {
-            self.tap - 1
-        };
-        self.feed = if self.feed == 0 {
-            RNG_LEN - 1
-        } else {
-            self.feed - 1
-        };
-        let x = self.vec[self.feed].wrapping_add(self.vec[self.tap]);
-        self.vec[self.feed] = x;
-        x as u64
+            let (lo, hi) = v.split_at_mut(t);
+            add(&mut hi[f - k - t..f - t], &lo[t - k..]);
+        }
+        self.feed = f;
+        self.ahead = k;
     }
 
     /// `Int63`.
@@ -174,6 +201,33 @@ impl GoRand {
     }
 
     #[cold]
+    /// `NormFloat64` into every element of `out`, in order.
+    pub fn fill_norm(&mut self, out: &mut [f64]) {
+        let mut feed = self.feed;
+        let mut ahead = self.ahead;
+        for o in out {
+            if ahead == 0 {
+                self.feed = feed;
+                self.refill();
+                (feed, ahead) = (self.feed, self.ahead);
+            }
+            ahead -= 1;
+            feed -= 1;
+            let j = ((self.vec[feed] & i64::MAX) >> 31) as u32 as i32;
+            let i = (j & 0x7F) as usize;
+            let x = j as f64 * WN[i] as f64;
+            *o = if j.unsigned_abs() < KN[i] {
+                x
+            } else {
+                (self.feed, self.ahead) = (feed, ahead);
+                let v = self.norm_slow(j, i, x);
+                (feed, ahead) = (self.feed, self.ahead);
+                v
+            };
+        }
+        (self.feed, self.ahead) = (feed, ahead);
+    }
+
     fn norm_slow(&mut self, mut j: i32, mut i: usize, mut x: f64) -> f64 {
         const RN: f64 = 3.442619855899;
         // the constant expression `1.0 / rn`, rounded once
@@ -430,6 +484,19 @@ pub fn go_log(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fill_norm_is_norm_float64() {
+        let (mut a, mut b) = (GoRand::new(7), GoRand::new(7));
+        let mut buf = vec![0.0; 100_000];
+        for n in [0, 1, 272, 273, 274, 606, 607, 5000] {
+            a.fill_norm(&mut buf[..n]);
+            for &v in &buf[..n] {
+                assert_eq!(v.to_bits(), b.norm_float64().to_bits());
+            }
+            assert_eq!(a.int63(), b.int63());
+        }
+    }
 
     #[test]
     fn exp_log_basics() {

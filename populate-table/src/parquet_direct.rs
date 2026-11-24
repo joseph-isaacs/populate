@@ -662,7 +662,13 @@ fn encode<T: Native>(
         lo.zip(hi)
     };
     let plan = plan(v, props, path, span);
-    let mut sink = TrackedWrite::new(Vec::new());
+    // all PLAIN: room for the whole chunk up front (an upper bound when
+    // compressed), so it isn't copied as it grows
+    let cap = match plan.entries {
+        None => v.vals.len() * T::SIZE + v.rows / 8 + 64 * plan.pages.len() + 1024,
+        Some(_) => 0,
+    };
+    let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(entries) = &plan.entries {
         let mut body = Vec::with_capacity(entries.len() * T::SIZE);
@@ -1078,7 +1084,15 @@ fn encode_bytes(
 ) -> Result<(Bytes, ColumnCloseResult)> {
     let path = descr.path();
     let (pages, dict, idx) = plan_bytes(v, keys, props, path);
-    let mut sink = TrackedWrite::new(Vec::new());
+    // as in `encode`: room for an all-PLAIN chunk up front
+    let cap = match dict {
+        None => {
+            let bytes: usize = v.vals.iter().map(|x| 4 + x.len()).sum();
+            bytes + v.rows / 8 + 64 * pages.len() + 1024
+        }
+        Some(_) => 0,
+    };
+    let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(d) = &dict {
         let mut body = Vec::with_capacity(d.bytes);

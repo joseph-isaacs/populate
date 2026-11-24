@@ -975,12 +975,18 @@ fn encode_list<T: Native>(
         .data_page_row_count_limit()
         .min(props.data_page_size_limit() / (n * T::SIZE))
         .max(1);
-    // presized: the values plus a page header and levels per page, so a
-    // chunk of hundreds of MB is not grown (copied) by doubling
+    // presized: the values, the repetition levels and a bound on each
+    // page's header and other levels, so a chunk of hundreds of MB is not
+    // grown (copied) by doubling
     let total: usize = parts.iter().map(|p| p.len()).sum();
-    let pages = total.div_ceil(per_page * n) + parts.len();
-    let level_bytes = if (2..16).contains(&n) { total / 8 } else { 0 };
-    let cap = total * T::SIZE + level_bytes + pages * (64 + 3 * per_page.min(total));
+    let pages: usize = parts.iter().map(|p| p.len().div_ceil(per_page * n)).sum();
+    let rep_bytes = match n {
+        1 => 0,
+        2..16 => total.div_ceil(8),
+        // per record: a run of one 0, then a run of `n - 1` ones
+        _ => total / n * (2 + varint_len(((n - 1) as u64) << 1) + 1),
+    };
+    let cap = total * T::SIZE + rep_bytes + pages * PAGE_OVERHEAD;
     let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     w.list = Some(n);
@@ -1013,7 +1019,23 @@ fn encode_list<T: Native>(
     let order = boundary_order(page_ranges.into_iter());
     let nans = (T::FLOAT && levels > 0).then_some(nans);
     let close = w.finish(levels, levels, T::stats(lo, hi, 0, nans), order)?;
-    Ok((Bytes::from(sink.into_inner()?), close))
+    let out = sink.into_inner()?;
+    debug_assert!(
+        out.len() <= cap,
+        "list chunk {} > estimate {cap}",
+        out.len()
+    );
+    Ok((Bytes::from(out), close))
+}
+
+/// A bound on a list page's bytes besides its values and repetition
+/// levels: the page header (no statistics), two level length prefixes, a
+/// short-list page's bit-packed run header, the run of definition levels.
+const PAGE_OVERHEAD: usize = 128;
+
+/// Bytes of `x` as a ULEB128 varint.
+fn varint_len(x: u64) -> usize {
+    (64 - (x | 1).leading_zeros() as usize).div_ceil(7)
 }
 
 // ---------------------------------------------------------------------------

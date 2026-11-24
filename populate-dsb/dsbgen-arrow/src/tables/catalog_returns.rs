@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatchReader;
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{CatalogReturnsRow, CatalogReturnsRowGenerator};
 use dsbgen::types::{Decimal, Pricing};
+use std::mem::take;
 use std::sync::{Arc, LazyLock};
 
 /// Generate [`CatalogReturnsRow`]s in [`RecordBatch`] format
@@ -17,7 +18,8 @@ use std::sync::{Arc, LazyLock};
 /// Buffers can be recycled if the consumer drops each [`RecordBatch`] before
 /// generating the next one.
 pub struct CatalogReturnsArrow {
-    inner: CatalogReturnsRowGenerator,
+    /// `None` for a [`Self::converter`].
+    inner: Option<CatalogReturnsRowGenerator>,
     batch_size: usize,
     // reused allocations across batches
     scratch: Vec<CatalogReturnsRow>,
@@ -59,7 +61,16 @@ impl CatalogReturnsArrow {
     pub fn new(session: Session) -> Self {
         let row_count = session.get_scaling().get_row_count(Table::CatalogReturns);
         Self {
-            inner: CatalogReturnsRowGenerator::new(session, row_count),
+            inner: Some(CatalogReturnsRowGenerator::new(session, row_count)),
+            ..Self::converter()
+        }
+    }
+
+    /// Converts rows made elsewhere ([`Self::batch_from_rows`]); it
+    /// generates none itself.
+    pub fn converter() -> Self {
+        Self {
+            inner: None,
             batch_size: DEFAULT_BATCH_SIZE,
             scratch: Vec::with_capacity(DEFAULT_BATCH_SIZE),
             cr_returned_date_sk: PrimitiveArrayRecycler::new(),
@@ -93,6 +104,8 @@ impl CatalogReturnsArrow {
     }
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .skip_rows_until_starting_row_number(starting_row_number);
     }
 
@@ -105,6 +118,8 @@ impl CatalogReturnsArrow {
         ending_row_number: u64,
     ) -> Self {
         self.inner
+            .as_mut()
+            .expect("a generator")
             .set_source_row_range(starting_row_number, ending_row_number);
         self
     }
@@ -127,12 +142,23 @@ impl Iterator for CatalogReturnsArrow {
     fn next(&mut self) -> Option<Self::Item> {
         self.scratch.clear();
         self.scratch
-            .extend(self.inner.by_ref().take(self.batch_size));
-        let rows = &self.scratch;
-        if rows.is_empty() {
+            .extend(self.inner.as_mut()?.by_ref().take(self.batch_size));
+        if self.scratch.is_empty() {
             return None;
         }
+        let rows = take(&mut self.scratch);
+        let batch = self.batch_from_rows(&rows);
+        self.scratch = rows;
+        Some(batch)
+    }
+}
 
+impl CatalogReturnsArrow {
+    /// The batch of `rows`, made with this generator's recycled buffers.
+    pub fn batch_from_rows(
+        &mut self,
+        rows: &[CatalogReturnsRow],
+    ) -> Result<RecordBatch, ArrowError> {
         let schema = self.schema();
         let Self {
             cr_returned_date_sk,
@@ -256,7 +282,7 @@ impl Iterator for CatalogReturnsArrow {
         let cr_store_credit = dec(cr_store_credit, 25, Pricing::get_store_credit);
         let cr_net_loss = dec(cr_net_loss, 26, Pricing::get_net_loss);
 
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(cr_returned_date_sk),
@@ -287,8 +313,7 @@ impl Iterator for CatalogReturnsArrow {
                 Arc::new(cr_store_credit),
                 Arc::new(cr_net_loss),
             ],
-        );
-        Some(batch)
+        )
     }
 }
 

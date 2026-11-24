@@ -11,7 +11,7 @@
 use super::uniform_int;
 use crate::config::{Session, Table};
 use crate::distribution::items_distributions::{category_count, colors_distribution};
-use crate::distribution::FipsCountyDistribution;
+use crate::distribution::{DemographicsDistributions, FipsCountyDistribution};
 use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
 use crate::row::{
@@ -129,22 +129,47 @@ pub enum MapName {
     CustomerState,
 }
 
-type Cache = Mutex<HashMap<(MapName, u64), Arc<AttributeKeyMap>>>;
+/// The maps one [`build`] makes.
+type Built = Vec<(MapName, Arc<AttributeKeyMap>)>;
+
+type Cache = Mutex<HashMap<(MapName, u64), Arc<OnceLock<Built>>>>;
 
 /// The attribute key map `name` at `session`'s scale, built on first use.
+/// Callers that ask at once wait for one build.
 pub fn attribute_map(name: MapName, session: &Session) -> Arc<AttributeKeyMap> {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    let key = (name, session.get_scaling().get_scale().to_bits());
-    if let Some(m) = cache.lock().expect("attribute map cache").get(&key) {
-        return m.clone();
+    let key = (group(name), session.get_scaling().get_scale().to_bits());
+    let cell = cache
+        .lock()
+        .expect("attribute map cache")
+        .entry(key)
+        .or_default()
+        .clone();
+    let built = cell.get_or_init(|| {
+        build(name, session)
+            .into_iter()
+            .map(|(n, m)| (n, Arc::new(m)))
+            .collect()
+    });
+    built
+        .iter()
+        .find(|(n, _)| *n == name)
+        .expect("built with its group")
+        .1
+        .clone()
+}
+
+/// The first of the maps [`build`] makes together with `name`.
+fn group(name: MapName) -> MapName {
+    match name {
+        MapName::ItemCategory | MapName::ItemColor => MapName::ItemCategory,
+        MapName::CustomerAddressCounty | MapName::CustomerAddressState => {
+            MapName::CustomerAddressCounty
+        }
+        MapName::CustomerCounty | MapName::CustomerState => MapName::CustomerCounty,
+        n => n,
     }
-    let built = build(name, session);
-    let mut c = cache.lock().expect("attribute map cache");
-    for (n, m) in built {
-        c.entry((n, key.1)).or_insert_with(|| Arc::new(m));
-    }
-    c[&key].clone()
 }
 
 fn rows(session: &Session, table: Table) -> u64 {
@@ -194,18 +219,27 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
             ]
         }
         CustomerDemographics => {
-            let n = rows(session, Table::CustomerDemographics);
+            // Gender, marital status and education are the key's lowest
+            // mixed-radix digits, so the attributes repeat with that period:
+            // generate one period and repeat it.
+            let n = rows(session, Table::CustomerDemographics) as usize;
+            let period = (DemographicsDistributions::get_gender_size()
+                * DemographicsDistributions::get_marital_status_size()
+                * DemographicsDistributions::get_education_size())
+            .min(n);
             let mut ids = FirstAppearance::default();
             let mut value = String::new();
-            let attrs: Vec<i32> = CustomerDemographicsRowGenerator::new(session.clone(), n)
-                .map(|r| {
-                    value.clear();
-                    value.push_str(r.get_cd_gender());
-                    value.push_str(r.get_cd_education_status());
-                    value.push_str(r.get_cd_marital_status());
-                    ids.id(&value)
-                })
-                .collect();
+            let one: Vec<i32> =
+                CustomerDemographicsRowGenerator::new(session.clone(), period as u64)
+                    .map(|r| {
+                        value.clear();
+                        value.push_str(r.get_cd_gender());
+                        value.push_str(r.get_cd_education_status());
+                        value.push_str(r.get_cd_marital_status());
+                        ids.id(&value)
+                    })
+                    .collect();
+            let attrs: Vec<i32> = (0..n).map(|k| one[k % period]).collect();
             vec![(name, AttributeKeyMap::from_attributes(ids.count(), attrs))]
         }
         HouseholdDemographics => {

@@ -589,14 +589,6 @@ fn fill(g: &Grammar, k: u64, buf: &mut [u8], exact: bool) {
     buf[at..].copy_from_slice(&tail[..end - at]);
 }
 
-/// dbgen's text pool (tpchgen's `TextPool::new`): sentences from one stream
-/// until there are `POOL_SIZE` bytes. Tested equal to tpchgen's pool.
-///
-/// The parse is sequential: where a sentence starts depends on every
-/// earlier one. [`POOL_INDEX`] holds, for evenly spaced points of the pool,
-/// the draw and byte at which a sentence starts there (tested against the
-/// serial parse), so the parts between them are generated independently,
-/// on all cores, each straight into its place.
 /// Ask Linux to back `buf` with 2 MiB pages where it can (before it is
 /// first written, so the pages come in huge). Comments are read from random
 /// places in the 300 MiB pool, and with 4 KiB pages nearly every read also
@@ -619,6 +611,14 @@ fn huge_pages(buf: &mut [u8]) {
     let _ = buf;
 }
 
+/// dbgen's text pool (tpchgen's `TextPool::new`): sentences from one stream
+/// until there are `POOL_SIZE` bytes. Tested equal to tpchgen's pool.
+///
+/// The parse is sequential: where a sentence starts depends on every
+/// earlier one. [`POOL_INDEX`] holds, for evenly spaced points of the pool,
+/// the draw and byte at which a sentence starts there (tested against the
+/// serial parse), so the parts between them are generated independently,
+/// on all cores, each straight into its place.
 pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
     let g = Grammar::new(d);
     let threads = match threads {

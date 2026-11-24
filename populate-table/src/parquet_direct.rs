@@ -36,7 +36,10 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersi
 use parquet::file::statistics::{Statistics, ValueStatistics};
 use parquet::file::writer::{SerializedPageWriter, TrackedWrite};
 use parquet::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath};
+use std::mem::take;
 use std::ops::Range;
+use std::ptr::null;
+use std::slice::from_raw_parts;
 
 /// Whether a flat column of type `dt`, stored as `descr`, can be encoded
 /// here under `props` (anything else goes to arrow-rs).
@@ -106,7 +109,7 @@ impl DirectColumn {
                     // (lengths are often mixed, so it would mispredict)
                     let mut bufs: Vec<*const u8> =
                         sv.data_buffers().iter().map(|b| b.as_ptr()).collect();
-                    bufs.push(std::ptr::null());
+                    bufs.push(null());
                     let get = |i: usize| {
                         let v = views[i];
                         let len = v as u32 as usize;
@@ -119,7 +122,7 @@ impl DirectColumn {
                         // bytes are in the view itself.
                         unsafe {
                             let long_ptr = (*bufs.get_unchecked(b)).wrapping_add(off);
-                            std::slice::from_raw_parts(if long { long_ptr } else { inline }, len)
+                            from_raw_parts(if long { long_ptr } else { inline }, len)
                         }
                     };
                     match a.logical_nulls().filter(|n| n.null_count() > 0) {
@@ -668,11 +671,15 @@ struct BytesDict<'a> {
     /// [`view_key`]s already seen and their entries, in an open-addressing
     /// table (`views[h]` is empty when `view_ids[h]` is `u32::MAX`). Many
     /// views can share an entry (the same string at different places).
-    /// Dropped once it holds [`MAX_VIEWS`] views.
+    /// Freed, and no longer used, once it stops paying (see
+    /// [`Self::encode_keyed`]).
     views: Vec<u128>,
     view_ids: Vec<u32>,
     view_bits: u32,
     view_count: usize,
+    /// Values looked up through `views`.
+    view_lookups: usize,
+    keyed: bool,
 }
 
 /// Most views [`BytesDict`] keeps; past that the column has so many
@@ -731,23 +738,35 @@ impl<'a> BytesDict<'a> {
             view_ids: vec![u32::MAX; 1 << 10],
             view_bits: 10,
             view_count: 0,
+            view_lookups: 0,
+            keyed: true,
         }
     }
 
-    /// [`Self::encode`], with `keys` the Arrow views of `xs` (or empty).
+    /// [`Self::encode`], with `keys` the [`view_key`]s of `xs` (or empty).
+    /// The view table is a cache: once most views turn out new (long
+    /// strings each at their own address) or there are too many, it is
+    /// freed and only the bytes are looked up.
     fn encode_keyed(&mut self, xs: &[&'a [u8]], keys: &[u128], idx: &mut Vec<u32>) {
-        if keys.is_empty() || self.view_count >= MAX_VIEWS {
+        if self.keyed
+            && (self.view_count >= MAX_VIEWS
+                || self.view_lookups >= 4096 && self.view_count * 4 > self.view_lookups)
+        {
+            self.keyed = false;
+            self.views = Vec::new();
+            self.view_ids = Vec::new();
+        }
+        if keys.is_empty() || !self.keyed {
             return self.encode(xs, idx);
         }
+        self.view_lookups += xs.len();
         for (&x, &k) in xs.iter().zip(keys) {
             let mask = (1usize << self.view_bits) - 1;
             let mut h = view_hash(k, self.view_bits);
             let i = loop {
                 match self.view_ids[h] {
                     u32::MAX => {
-                        let mut i = Vec::new();
-                        self.encode(std::slice::from_ref(&x), &mut i);
-                        let i = i[0];
+                        let i = self.lookup(x);
                         (self.views[h], self.view_ids[h]) = (k, i);
                         self.view_count += 1;
                         if self.view_count * 2 > 1 << self.view_bits {
@@ -764,8 +783,8 @@ impl<'a> BytesDict<'a> {
     }
 
     fn grow_views(&mut self) {
-        let old = std::mem::take(&mut self.views);
-        let old_ids = std::mem::take(&mut self.view_ids);
+        let old = take(&mut self.views);
+        let old_ids = take(&mut self.view_ids);
         self.view_bits += 1;
         let mask = (1usize << self.view_bits) - 1;
         self.views = vec![0; 1 << self.view_bits];
@@ -782,27 +801,31 @@ impl<'a> BytesDict<'a> {
     }
 
     fn encode(&mut self, xs: &[&'a [u8]], idx: &mut Vec<u32>) {
-        for &x in xs {
-            let mask = (1usize << self.bits) - 1;
-            let mut h = bytes_hash(x, self.bits);
-            let i = loop {
-                match self.table[h] {
-                    u32::MAX => {
-                        let i = self.entries.len() as u32;
-                        self.table[h] = i;
-                        self.entries.push(x);
-                        self.bytes += 4 + x.len();
-                        break i;
-                    }
-                    i if self.entries[i as usize] == x => break i,
-                    _ => h = (h + 1) & mask,
+        idx.extend(xs.iter().map(|&x| self.lookup(x)));
+    }
+
+    /// The entry of `x`, added if new.
+    #[inline]
+    fn lookup(&mut self, x: &'a [u8]) -> u32 {
+        let mask = (1usize << self.bits) - 1;
+        let mut h = bytes_hash(x, self.bits);
+        let i = loop {
+            match self.table[h] {
+                u32::MAX => {
+                    let i = self.entries.len() as u32;
+                    self.table[h] = i;
+                    self.entries.push(x);
+                    self.bytes += 4 + x.len();
+                    break i;
                 }
-            };
-            idx.push(i);
-            if self.entries.len() * 2 > 1 << self.bits {
-                self.grow();
+                i if self.entries[i as usize] == x => break i,
+                _ => h = (h + 1) & mask,
             }
+        };
+        if self.entries.len() * 2 > 1 << self.bits {
+            self.grow();
         }
+        i
     }
 
     fn grow(&mut self) {

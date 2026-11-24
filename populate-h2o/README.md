@@ -47,8 +47,8 @@ Arrow types: groupby `id1`–`id3` `Utf8View`, `id4`–`id6`, `v1`, `v2`
 The reference is R 4.3.3 with data.table 1.14.10. Every data set the
 benchmark uses at 1e7 rows (groupby `1e2_0_0`, `1e1_0_0`, `2e0_0_0`,
 `1e2_0_1`, `1e2_5_0`; join `0_0`, `5_0`, `0_1`, all four tables each) is
-byte-identical to the scripts' output, and so is groupby
-`G1_1e8_1e2_0_0` (5.2 GB). The tests check those hashes, small groupby
+byte-identical to the scripts' output, and so are groupby
+`G1_1e8_1e2_0_0` (5.2 GB) and `G1_1e8_1e1_5_1` (NAs and sorted, 5.0 GB). The tests check those hashes, small groupby
 data sets covering every knob (NAs from 5 to 100%, sorting, K = 1, K =
 1000 where `"id1000" < "id101"`), and that the output is the same for any
 chunk size and thread count, as CSV and as Arrow.
@@ -98,12 +98,15 @@ too):
 | groupby `G1_1e7_1e2_0_0` (509 MB) | 5.6 s | 0.75 s |
 | groupby `G1_1e8_1e2_0_0` (5.2 GB) | 61.6 s | 6.2 s |
 | groupby `G1_1e7_1e2_0_1` (sorted) | 6.6 s | 3.4 s |
+| groupby `G1_1e8_1e1_5_1` (NAs, sorted) | 156 s | 75 s |
 | join `J1_1e7_NA_0_0` (4 tables, 923 MB) | 54 s | 3.2 s |
 
 ## Limits
 
-- `N` up to `2^31 - 1` (R's integer vectors); the join script needs
-  `N >= 1e7`.
+- `N` up to `2^31 - 1` (R's integer vectors). Join takes what the script
+  takes: `N >= 1e7`, a multiple of 1e6, and `N <= 1e8` or `N = 1e9`.
+- Join at 1e8 is not compared with R: `Rscript join-datagen.R 1e8` runs
+  out of memory on the 15 GB test machine.
 - Sorted groupby data and all join data are held in memory (about 36
   bytes a row for sorted groupby, 20 for join), as R holds them.
 - At `N = 1e9` the join script writes in batches of 1e8 rows with one

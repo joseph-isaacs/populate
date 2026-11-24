@@ -16,7 +16,9 @@ use populate_h2o::{GroupBy, Join};
 use populate_table::chunks::for_each_batch;
 use populate_table::text::{TextChunks, write_text_many};
 use populate_table::{Chunks, write_parquet};
-use std::fs::File;
+use std::env::args;
+use std::fmt::Display;
+use std::fs::{File, create_dir_all, metadata};
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::process::exit;
@@ -53,7 +55,7 @@ fn num(s: &str) -> Result<u64, String> {
 }
 
 fn parse() -> Result<Args, String> {
-    let mut it = std::env::args().skip(1);
+    let mut it = args().skip(1);
     let join = match it.next().as_deref() {
         Some("groupby") => false,
         Some("join") => true,
@@ -79,8 +81,19 @@ fn parse() -> Result<Args, String> {
         match flag.as_str() {
             "--n" => a.n = num(&val()?)?,
             "--k" => a.k = num(&val()?)?,
-            "--nas" => a.nas = num(&val()?)? as u32,
-            "--sort" => a.sort = num(&val()?)? == 1,
+            "--nas" => {
+                a.nas = match num(&val()?)? {
+                    v @ 0..=100 => v as u32,
+                    v => return Err(format!("--nas must be in 0..=100, not {v}")),
+                }
+            }
+            "--sort" => {
+                a.sort = match num(&val()?)? {
+                    0 => false,
+                    1 => true,
+                    v => return Err(format!("--sort must be 0 or 1, not {v}")),
+                }
+            }
             "--out" => a.out = val()?.into(),
             "--format" => {
                 a.format = match val()?.as_str() {
@@ -101,7 +114,7 @@ fn parse() -> Result<Args, String> {
     Ok(a)
 }
 
-fn fail(what: &dyn std::fmt::Display, e: &dyn std::fmt::Display) -> ! {
+fn fail(what: &dyn Display, e: &dyn Display) -> ! {
     eprintln!("{what}: {e}");
     exit(1);
 }
@@ -131,7 +144,7 @@ fn emit<T: Chunks + TextChunks>(a: &Args, name: &str, t: &T) {
             for_each_batch(t, a.threads, |b| rows += b.num_rows());
         }
     }
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let size = metadata(&path).map(|m| m.len()).unwrap_or(0);
     eprintln!(
         "{name}: {:.2}s, {:.1} MB",
         t1.elapsed().as_secs_f64(),
@@ -145,7 +158,7 @@ fn main() {
         exit(2);
     });
     if a.format != Format::None {
-        std::fs::create_dir_all(&a.out).unwrap_or_else(|e| fail(&a.out.display(), &e));
+        create_dir_all(&a.out).unwrap_or_else(|e| fail(&a.out.display(), &e));
     }
     let t0 = Instant::now();
     if a.join {

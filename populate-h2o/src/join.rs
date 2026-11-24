@@ -16,6 +16,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_table::Chunks;
 use populate_table::text::TextChunks;
+use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
 
 use crate::cols::{
@@ -51,8 +52,8 @@ pub struct JoinTable {
     batch_size: usize,
 }
 
-impl std::fmt::Debug for JoinTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for JoinTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("JoinTable")
             .field("name", &self.tab().name)
             .finish()
@@ -138,8 +139,16 @@ impl Join {
 
     /// [`new`](Self::new) with `chunk_rows` rows per chunk.
     pub fn with_chunk_rows(n: u64, nas: u32, sort: bool, chunk_rows: u64) -> Self {
-        assert!(n >= 10_000_000, "the join datagen needs N >= 1e7");
-        assert!(n <= i32::MAX as u64, "N must fit R's integer vectors");
+        // the script's own limits: N >= 1e7, uniqueN(id1) == N/1e6, and
+        // handle_batches takes N <= 1e8 or exactly 1e9
+        assert!(
+            n >= 10_000_000 && n.is_multiple_of(1_000_000),
+            "the join datagen needs N >= 1e7, a multiple of 1e6"
+        );
+        assert!(
+            n <= 100_000_000 || n == 1_000_000_000,
+            "the join datagen takes N <= 1e8 or N = 1e9"
+        );
         assert!(nas <= 100 && chunk_rows > 0);
         let data = Arc::new(generate(n, nas, sort));
         Join {
@@ -163,7 +172,13 @@ impl Join {
 fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
     let nf = n as f64;
     let mut rng = RMt::set_seed(SEED);
-    let data_name = format!("J1_{}_NA_{}_{}", pretty_sci(nf), nas, sort as u8);
+    let data_name = format!("J1_{}_NA_{}_{}", pretty_sci(n), nas, sort as u8);
+    // join_to_tbls: the right tables are named from the left's name,
+    // `<d>e<p>`, as `<d>e<p - 6>`, `<d>e<p - 3>`, `<d>e<p>`
+    let x_name = pretty_sci(n);
+    let (d, p) = x_name.split_once('e').expect("pretty name");
+    let p: u32 = p.parse().expect("exponent");
+    let right_names = [p - 6, p - 3, p].map(|e| format!("{d}e{e}"));
     let sizes = [nf / 1e6, nf / 1e3, nf];
     let keys: Vec<Xlr> = sizes.iter().map(|&s| split_xlr(&mut rng, s)).collect();
 
@@ -221,7 +236,7 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
         }
         let v = values(&mut rng, ids[0].len());
         tabs.push(Tab {
-            name: data_name.replace("NA", &pretty_sci(size)),
+            name: data_name.replace("NA", &right_names[t]),
             ids,
             v,
             v_name: "v2",

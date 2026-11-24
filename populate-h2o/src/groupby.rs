@@ -26,10 +26,14 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_table::Chunks;
 use populate_table::table::par_ordered;
 use populate_table::text::TextChunks;
+use std::convert::Infallible;
+use std::fmt::{self, Debug, Formatter};
+use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::cols::{
-    Bits, NA, counting_pass, first_appearance, gather, id_strings, int32, micros, write_with,
+    Bits, Cursor, NA, counting_pass, first_appearance, gather, id_strings, int32, micros,
+    write_with,
 };
 use crate::fwrite::{digits, round6_micros};
 use crate::rng::{RMt, sample_int};
@@ -55,8 +59,8 @@ pub struct GroupBy {
     plan: Arc<Plan>,
 }
 
-impl std::fmt::Debug for GroupBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for GroupBy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupBy")
             .field("n", &self.n)
             .field("k", &self.k)
@@ -139,23 +143,31 @@ impl GroupBy {
     pub fn file_name(&self) -> String {
         format!(
             "G1_{}_{}_{}_{}.csv",
-            pretty_sci(self.n as f64),
-            pretty_sci(self.k as f64),
+            pretty_sci(self.n),
+            pretty_sci(self.k),
             self.nas,
             self.sort as u8
         )
     }
 
-    /// `N / K` as R's `1:(N/K)` and `sample(N/K, ...)` see it.
+    /// `N / K` as `sample(N/K, ...)` sees it (id6): `(int) (N/K)`.
     fn groups(&self) -> u64 {
-        ((self.n as f64) / (self.k as f64)).floor() as u64
+        ((self.n as f64) / (self.k as f64)) as u64
+    }
+
+    /// `length(1:(N/K))` (id3): R's `:` counts `(int)(N/K - 1 + 1 +
+    /// FLT_EPSILON)` values for a fractional `N/K`, one more than
+    /// [`groups`](Self::groups) when `N/K` is just below a whole number.
+    fn id3_groups(&self) -> u64 {
+        colon_len((self.n as f64) / (self.k as f64))
     }
 
     /// Range of `sample()` for column `c`.
     fn range(&self, c: usize) -> u64 {
         match c {
             0 | 1 | 3 | 4 => self.k,
-            2 | 5 => self.groups(),
+            2 => self.id3_groups(),
+            5 => self.groups(),
             6 => 5,
             7 => 15,
             _ => unreachable!(),
@@ -209,9 +221,20 @@ impl GroupBy {
                 .map(|(c, ucol)| {
                     let nna = (ucol.len() as f64 * frac) as u64;
                     (nna > 0).then(|| {
-                        let mut b = Bits::new(self.range(c) + 1);
-                        for i in sample_int(&mut rng, ucol.len() as u64, nna) {
-                            b.set(ucol[i as usize - 1] as u64);
+                        let domain = self.range(c);
+                        let mut b = Bits::new(domain + 1);
+                        if c >= 3 && ucol.len() == 1 {
+                            // sample(ucol, nna) on one number v is
+                            // sample.int(v, nna): NA the values drawn
+                            for v in sample_int(&mut rng, ucol[0] as u64, nna) {
+                                if v as u64 <= domain {
+                                    b.set(v as u64);
+                                }
+                            }
+                        } else {
+                            for i in sample_int(&mut rng, ucol.len() as u64, nna) {
+                                b.set(ucol[i as usize - 1] as u64);
+                            }
                         }
                         b
                     })
@@ -300,7 +323,7 @@ impl GroupBy {
                 for (c, v) in cols.iter_mut().zip(chunk) {
                     c.extend_from_slice(&v);
                 }
-                Ok::<(), std::convert::Infallible>(())
+                Ok::<(), Infallible>(())
             },
         )
         .unwrap_or_else(|e| match e {});
@@ -403,7 +426,7 @@ impl GroupBy {
         let rows = cols[0].len();
         let id_w = |w: usize, r: u64| 2 + w.max(digits(r as u32));
         let line = 2 * id_w(3, self.k)
-            + id_w(10, self.groups())
+            + id_w(10, self.id3_groups())
             + 2 * digits(self.k as u32)
             + digits(self.groups() as u32)
             + 1
@@ -412,7 +435,7 @@ impl GroupBy {
             + COLS;
         write_with(out, rows * line, |w| unsafe {
             for r in 0..rows {
-                let id = |w: &mut crate::cols::Cursor, v: u32, width| {
+                let id = |w: &mut Cursor, v: u32, width| {
                     if v != NA {
                         w.bytes(b"id");
                         w.padded(v, width);
@@ -441,9 +464,18 @@ impl GroupBy {
     }
 
     /// Write the CSV `fwrite` writes, on `threads` threads (0 = all cores).
-    pub fn write_csv<W: std::io::Write + Send>(&self, w: W, threads: usize) -> std::io::Result<W> {
+    pub fn write_csv<W: Write + Send>(&self, w: W, threads: usize) -> io::Result<W> {
         let mut v = populate_table::text::write_text_many(&[self], vec![w], threads)?;
         Ok(v.pop().expect("one writer"))
+    }
+}
+
+/// `length(1:x)` for `x >= 1` (R's `seq_colon`).
+fn colon_len(x: f64) -> u64 {
+    if x == x.trunc() {
+        x as u64
+    } else {
+        ((x - 1.0) + 1.0 + f32::EPSILON as f64) as u64
     }
 }
 
@@ -479,5 +511,19 @@ impl TextChunks for GroupBy {
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
         self.chunk_csv(i, &mut bufs[0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::colon_len;
+
+    // length(1:(19999999/1e7)) is 2 in R, sample(19999999/1e7, ..) draws 1s
+    #[test]
+    fn colon_rounds_like_r() {
+        assert_eq!(colon_len(19_999_999.0 / 1e7), 2);
+        assert_eq!((19_999_999.0f64 / 1e7) as u64, 1);
+        assert_eq!(colon_len(1e5), 100_000);
+        assert_eq!(colon_len(10.0 / 3.0), 3);
     }
 }

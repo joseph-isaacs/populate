@@ -3,9 +3,10 @@
 
 use arrow_array::{ArrayRef, Float64Array, Int32Array, StringViewArray};
 use arrow_buffer::{NullBuffer, ScalarBuffer};
+use std::ptr::copy_nonoverlapping;
 use std::sync::Arc;
 
-use crate::fwrite::{write_u32, write_u32_padded};
+use crate::fwrite::{write_micros, write_u32, write_u32_padded};
 
 /// NA in a `u32` column.
 pub const NA: u32 = u32::MAX;
@@ -129,7 +130,7 @@ pub fn id_strings(col: &[u32], prefix: &[u8], width: usize) -> ArrayRef {
 
 /// A raw output cursor over a `Vec<u8>`'s spare capacity.
 pub struct Cursor {
-    pub p: *mut u8,
+    p: *mut u8,
 }
 
 impl Cursor {
@@ -148,7 +149,7 @@ impl Cursor {
     #[inline(always)]
     pub unsafe fn bytes(&mut self, b: &[u8]) {
         unsafe {
-            std::ptr::copy_nonoverlapping(b.as_ptr(), self.p, b.len());
+            copy_nonoverlapping(b.as_ptr(), self.p, b.len());
             self.p = self.p.add(b.len());
         }
     }
@@ -173,7 +174,7 @@ impl Cursor {
     /// Room for 16 bytes.
     #[inline(always)]
     pub unsafe fn micros(&mut self, v: u32) {
-        unsafe { self.p = self.p.add(crate::fwrite::write_micros(v as u64, self.p)) }
+        unsafe { self.p = self.p.add(write_micros(v as u64, self.p)) }
     }
 }
 

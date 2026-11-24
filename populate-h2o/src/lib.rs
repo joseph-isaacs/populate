@@ -27,25 +27,12 @@ pub use join::{Join, JoinTable};
 /// The scripts' `set.seed(108)`.
 pub const SEED: u32 = 108;
 
-/// The scripts' `pretty_sci(x)`: R's `as.character(x)` of a whole number,
-/// shortened to `<first digit>e<digits - 1>` (`100` → `1e2`) or, when R
-/// prints it in scientific notation, with the exponent's `+` and leading
-/// zeros dropped (`1e+07` → `1e7`).
-pub fn pretty_sci(x: f64) -> String {
-    let fixed = format!("{x:.0}");
-    // R's scientific form: mantissa with trailing zeros dropped, e+XX
-    let sci = {
-        let s = format!("{x:e}"); // e.g. "1.5e7"
-        let (m, e) = s.split_once('e').expect("exponent");
-        let e: i32 = e.parse().expect("exponent");
-        format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs())
-    };
-    if fixed.len() <= sci.len() {
-        format!("{}e{}", &fixed[..1], fixed.len() - 1)
-    } else {
-        let (m, e) = sci.split_once("e+").expect("positive exponent");
-        format!("{m}e{}", e.parse::<i32>().expect("exponent"))
-    }
+/// The scripts' `pretty_sci(x)` of an integer `N` or `K`: R prints an
+/// integer in full, which the script shortens to `<first digit>e<digits -
+/// 1>` (`100` → `1e2`, `15000000` → `1e7`).
+pub fn pretty_sci(x: u64) -> String {
+    let s = x.to_string();
+    format!("{}e{}", &s[..1], s.len() - 1)
 }
 
 #[cfg(test)]
@@ -55,15 +42,14 @@ mod tests {
     #[test]
     fn pretty_names() {
         for (x, s) in [
-            (1e7, "1e7"),
-            (1e2, "1e2"),
-            (2.0, "2e0"),
-            (10.0, "1e1"),
-            (1e4, "1e4"),
-            (1e5, "1e5"),
-            (1e9, "1e9"),
-            (5e6, "5e6"),
-            (1.5e7, "1.5e7"),
+            (10_000_000, "1e7"),
+            (100, "1e2"),
+            (2, "2e0"),
+            (10, "1e1"),
+            (100_000, "1e5"),
+            (1_000_000_000, "1e9"),
+            (15_000_000, "1e7"),
+            (1500, "1e3"),
         ] {
             assert_eq!(pretty_sci(x), s, "{x}");
         }

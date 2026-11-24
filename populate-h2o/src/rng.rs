@@ -10,6 +10,8 @@
 //!   top 16 bits of `y`), as `bits / 16 + 1` draws, and rejects values
 //!   `>= n`. So every attempt for one `n` takes the same number of draws.
 
+use std::fmt::{self, Debug, Formatter};
+
 /// MT19937 state size.
 pub const N: usize = 624;
 const M: usize = 397;
@@ -24,8 +26,8 @@ pub struct RMt {
     mti: usize,
 }
 
-impl std::fmt::Debug for RMt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for RMt {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RMt").field("mti", &self.mti).finish()
     }
 }
@@ -103,8 +105,8 @@ impl RMt {
         self.mti = n as usize;
     }
 
-    /// Pass up to `want` tempered outputs, as slices, to `f`, without
-    /// copying; `f` returns how many of the slice it used.
+    /// Pass the remaining raw (untempered) state words of the current
+    /// block to `f`, without copying; `f` returns how many it used.
     #[inline(always)]
     fn with_block(&mut self, f: impl FnOnce(&[u32]) -> usize) {
         if self.mti >= N {

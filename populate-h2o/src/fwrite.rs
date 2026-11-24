@@ -9,6 +9,8 @@
 //! decimals, which the tests check equals `write_f64(k / 1e6)` for every
 //! such `k`.
 
+use std::ptr::copy_nonoverlapping;
+
 use crate::fwrite_tables::{EXPPOW, EXPSIG};
 
 /// R's `round(x, 6)` for finite `x > 0` with `log10(x) + 6 <= 15`, as the
@@ -67,8 +69,6 @@ pub fn write_f64(x: f64, out: &mut Vec<u8>) {
             if fraction & 1 == 1 {
                 // sigparts[i] = 2^-i, exactly
                 acc += f64::from_bits(((1023 - i) as u64) << 52);
-            } else {
-                acc += 0.0;
             }
             i -= 1;
             fraction >>= 1;
@@ -228,7 +228,7 @@ pub unsafe fn write_micros(k: u64, out: *mut u8) -> usize {
 unsafe fn write_micros_small(k: u64, out: *mut u8) -> usize {
     let mut v = Vec::with_capacity(16);
     write_f64(k as f64 / 1e6, &mut v);
-    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len()) };
+    unsafe { copy_nonoverlapping(v.as_ptr(), out, v.len()) };
     v.len()
 }
 
@@ -246,11 +246,11 @@ pub unsafe fn write_u32(mut v: u32, out: *mut u8) -> usize {
             let d = (v % 100) as usize * 2;
             v /= 100;
             p -= 2;
-            std::ptr::copy_nonoverlapping(PAIRS.as_ptr().add(d), out.add(p), 2);
+            copy_nonoverlapping(PAIRS.as_ptr().add(d), out.add(p), 2);
         }
         if v >= 10 {
             let d = v as usize * 2;
-            std::ptr::copy_nonoverlapping(PAIRS.as_ptr().add(d), out, 2);
+            copy_nonoverlapping(PAIRS.as_ptr().add(d), out, 2);
         } else {
             *out = b'0' + v as u8;
         }
@@ -272,7 +272,7 @@ pub unsafe fn write_u32_padded(mut v: u32, width: usize, out: *mut u8) -> usize 
             let d = (v % 100) as usize * 2;
             v /= 100;
             p -= 2;
-            std::ptr::copy_nonoverlapping(PAIRS.as_ptr().add(d), out.add(p), 2);
+            copy_nonoverlapping(PAIRS.as_ptr().add(d), out.add(p), 2);
         }
         while p > 0 {
             p -= 1;
@@ -318,6 +318,7 @@ static PAIRS: [u8; 200] = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rng::RMt;
 
     fn fw(x: f64) -> String {
         let mut v = Vec::new();
@@ -363,7 +364,7 @@ mod tests {
     #[test]
     fn round6_matches_r() {
         // set.seed(108); sprintf("%.17g", round(runif(3, max=100), 6))
-        let mut r = crate::rng::RMt::set_seed(108);
+        let mut r = RMt::set_seed(108);
         let got: Vec<u64> = (0..3)
             .map(|_| round6_micros(100.0 * r.unif_rand()))
             .collect();

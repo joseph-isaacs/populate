@@ -597,6 +597,28 @@ fn fill(g: &Grammar, k: u64, buf: &mut [u8], exact: bool) {
 /// the draw and byte at which a sentence starts there (tested against the
 /// serial parse), so the parts between them are generated independently,
 /// on all cores, each straight into its place.
+/// Ask Linux to back `buf` with 2 MiB pages where it can (before it is
+/// first written, so the pages come in huge). Comments are read from random
+/// places in the 300 MiB pool, and with 4 KiB pages nearly every read also
+/// misses the TLB.
+fn huge_pages(buf: &mut [u8]) {
+    #[cfg(target_os = "linux")]
+    {
+        const HUGE: usize = 2 << 20;
+        let start = (buf.as_ptr() as usize).next_multiple_of(HUGE);
+        let end = (buf.as_ptr() as usize + buf.len()) / HUGE * HUGE;
+        if end > start {
+            // SAFETY: the range is inside `buf`, page-aligned; MADV_HUGEPAGE
+            // is advice only and never changes the memory's contents.
+            unsafe {
+                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_HUGEPAGE);
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = buf;
+}
+
 pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
     let g = Grammar::new(d);
     let threads = match threads {
@@ -611,6 +633,7 @@ pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
         .map(|&(k, b)| (k, b as usize))
         .collect();
     let mut out = vec![0u8; POOL_SIZE];
+    huge_pages(&mut out);
     let mut parts = Vec::new();
     let mut rest: &mut [u8] = &mut out;
     for (i, &(k, b)) in marks.iter().enumerate() {

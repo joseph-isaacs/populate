@@ -4,9 +4,10 @@
 //! `cargo run -p populate-tpch --release --example tpch_columns -- [table] [sf]`
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
+use parquet::basic::Compression;
+use parquet::schema::types::ColumnPath;
 use populate_table::{Chunks, write_parquet};
 use populate_tpch::{TableName, Tpch, parquet_props};
-use std::io::sink;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -54,11 +55,20 @@ fn main() {
                 .map(|b| RecordBatch::try_new(s.clone(), vec![b.column(i).clone()]).unwrap())
                 .collect(),
         );
+        let mut props = parquet_props();
+        if let Ok(on) = std::env::var("DICT") {
+            for c in on.split(',') {
+                props = props.set_column_dictionary_enabled(ColumnPath::from(c), true);
+            }
+        }
+        if std::env::var("NOCOMP").is_ok() {
+            props = props.set_compression(Compression::UNCOMPRESSED);
+        }
         let start = Instant::now();
-        write_parquet(&col, sink(), 1, Some(parquet_props().build())).unwrap();
+        let out = write_parquet(&col, Vec::new(), 1, Some(props.build())).unwrap();
         let secs = start.elapsed().as_secs_f64();
         total += secs;
-        println!("{:<18} {secs:.3} s", f.name());
+        println!("{:<18} {secs:.3} s {:>10} bytes", f.name(), out.len());
     }
     println!("all columns: {total:.3} s");
 }

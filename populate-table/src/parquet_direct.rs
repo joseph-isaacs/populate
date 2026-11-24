@@ -94,16 +94,54 @@ impl DirectColumn {
                 encode(&self.descr, props, &v)
             }
             PhysicalType::BYTE_ARRAY => {
+                // the views of the valid values too, if a dictionary may be
+                // built: equal views are equal strings, so they look up
+                // entries by one 16-byte key instead of by the bytes
+                let keyed = props.dictionary_enabled(self.descr.path());
+                let mut keys = Vec::new();
                 let v = Values::<&[u8]>::gather(&self.arrays, |a, out| {
                     let sv = a.as_string_view();
-                    let get = |i: usize| unsafe { sv.value_unchecked(i) }.as_bytes();
+                    let views = sv.views();
+                    // the bytes of value `i` without a branch on its length
+                    // (lengths are often mixed, so it would mispredict)
+                    let mut bufs: Vec<*const u8> =
+                        sv.data_buffers().iter().map(|b| b.as_ptr()).collect();
+                    bufs.push(std::ptr::null());
+                    let get = |i: usize| {
+                        let v = views[i];
+                        let len = v as u32 as usize;
+                        let long = len > 12;
+                        let b = if long { (v >> 64) as u32 as usize } else { 0 };
+                        let off = if long { (v >> 96) as u32 as usize } else { 0 };
+                        let inline = views[i..].as_ptr().cast::<u8>().wrapping_add(4);
+                        // SAFETY: a valid view array: a long view's buffer
+                        // index and range are in bounds, and a short view's
+                        // bytes are in the view itself.
+                        unsafe {
+                            let long_ptr = (*bufs.get_unchecked(b)).wrapping_add(off);
+                            std::slice::from_raw_parts(if long { long_ptr } else { inline }, len)
+                        }
+                    };
                     match a.logical_nulls().filter(|n| n.null_count() > 0) {
                         // SAFETY: `i` is a row of `sv`
-                        None => out.extend((0..sv.len()).map(get)),
-                        Some(n) => out.extend(n.valid_indices().map(get)),
+                        None => {
+                            let start = out.len();
+                            out.extend((0..sv.len()).map(get));
+                            if keyed {
+                                keys.extend(views.iter().zip(&out[start..]).map(view_key));
+                            }
+                        }
+                        Some(n) => {
+                            let start = out.len();
+                            out.extend(n.valid_indices().map(get));
+                            if keyed {
+                                let views = n.valid_indices().map(|i| &views[i]);
+                                keys.extend(views.zip(&out[start..]).map(view_key));
+                            }
+                        }
                     }
                 });
-                encode_bytes(&self.descr, props, &v)
+                encode_bytes(&self.descr, props, &v, &keys)
             }
             _ => {
                 let v = Values::<i64>::gather(&self.arrays, |a, out| match a.data_type() {
@@ -627,6 +665,40 @@ struct BytesDict<'a> {
     bytes: usize,
     table: Vec<u32>,
     bits: u32,
+    /// [`view_key`]s already seen and their entries, in an open-addressing
+    /// table (`views[h]` is empty when `view_ids[h]` is `u32::MAX`). Many
+    /// views can share an entry (the same string at different places).
+    /// Dropped once it holds [`MAX_VIEWS`] views.
+    views: Vec<u128>,
+    view_ids: Vec<u32>,
+    view_bits: u32,
+    view_count: usize,
+}
+
+/// Most views [`BytesDict`] keeps; past that the column has so many
+/// distinct strings that looking up the bytes alone is cheaper.
+const MAX_VIEWS: usize = 1 << 16;
+
+/// A key for a string from its Arrow view `v` and its bytes `x`: the view
+/// itself for a short string (its bytes are in it), else its length, prefix
+/// and address. Equal keys are equal strings, across arrays too (a long
+/// view's buffer index is only meaningful within its array).
+#[inline(always)]
+fn view_key((&v, x): (&u128, &&[u8])) -> u128 {
+    let addr = (x.as_ptr() as usize as u128) << 64;
+    if v as u32 > 12 {
+        v as u64 as u128 | addr
+    } else {
+        v
+    }
+}
+
+/// A hash of a [`view_key`]: no branch on the string's length.
+#[inline(always)]
+fn view_hash(v: u128, bits: u32) -> usize {
+    let (lo, hi) = (v as u64, (v >> 64) as u64);
+    let k = (lo.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hi).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    (k >> (64 - bits)) as usize
 }
 
 /// A cheap hash of a string: its length and its first and last 8 bytes.
@@ -655,6 +727,57 @@ impl<'a> BytesDict<'a> {
             bytes: 0,
             table: vec![u32::MAX; 1 << 10],
             bits: 10,
+            views: vec![0; 1 << 10],
+            view_ids: vec![u32::MAX; 1 << 10],
+            view_bits: 10,
+            view_count: 0,
+        }
+    }
+
+    /// [`Self::encode`], with `keys` the Arrow views of `xs` (or empty).
+    fn encode_keyed(&mut self, xs: &[&'a [u8]], keys: &[u128], idx: &mut Vec<u32>) {
+        if keys.is_empty() || self.view_count >= MAX_VIEWS {
+            return self.encode(xs, idx);
+        }
+        for (&x, &k) in xs.iter().zip(keys) {
+            let mask = (1usize << self.view_bits) - 1;
+            let mut h = view_hash(k, self.view_bits);
+            let i = loop {
+                match self.view_ids[h] {
+                    u32::MAX => {
+                        let mut i = Vec::new();
+                        self.encode(std::slice::from_ref(&x), &mut i);
+                        let i = i[0];
+                        (self.views[h], self.view_ids[h]) = (k, i);
+                        self.view_count += 1;
+                        if self.view_count * 2 > 1 << self.view_bits {
+                            self.grow_views();
+                        }
+                        break i;
+                    }
+                    i if self.views[h] == k => break i,
+                    _ => h = (h + 1) & mask,
+                }
+            };
+            idx.push(i);
+        }
+    }
+
+    fn grow_views(&mut self) {
+        let old = std::mem::take(&mut self.views);
+        let old_ids = std::mem::take(&mut self.view_ids);
+        self.view_bits += 1;
+        let mask = (1usize << self.view_bits) - 1;
+        self.views = vec![0; 1 << self.view_bits];
+        self.view_ids = vec![u32::MAX; 1 << self.view_bits];
+        for (k, i) in old.into_iter().zip(old_ids) {
+            if i != u32::MAX {
+                let mut h = view_hash(k, self.view_bits);
+                while self.view_ids[h] != u32::MAX {
+                    h = (h + 1) & mask;
+                }
+                (self.views[h], self.view_ids[h]) = (k, i);
+            }
         }
     }
 
@@ -701,6 +824,7 @@ impl<'a> BytesDict<'a> {
 /// indexes), and the dictionary falls back to PLAIN at its page size limit.
 fn plan_bytes<'a>(
     v: &Values<&'a [u8]>,
+    keys: &[u128],
     props: &WriterProperties,
     path: &ColumnPath,
 ) -> (Vec<PageSpan>, Option<BytesDict<'a>>, Vec<u32>) {
@@ -724,7 +848,7 @@ fn plan_bytes<'a>(
                 .map_or(step, |b| b.slice(row, step).count_set_bits());
             let xs = &v.vals[val..val + n];
             match dict.as_mut().filter(|_| !fell_back) {
-                Some(d) => d.encode(xs, &mut idx),
+                Some(d) => d.encode_keyed(xs, keys.get(val..val + n).unwrap_or(&[]), &mut idx),
                 None => plain_bytes += xs.iter().map(|x| 4 + x.len()).sum::<usize>(),
             }
             (row, val, left) = (row + step, val + n, left - step);
@@ -775,9 +899,10 @@ fn encode_bytes(
     descr: &ColumnDescPtr,
     props: &WriterProperties,
     v: &Values<&[u8]>,
+    keys: &[u128],
 ) -> Result<(Bytes, ColumnCloseResult)> {
     let path = descr.path();
-    let (pages, dict, idx) = plan_bytes(v, props, path);
+    let (pages, dict, idx) = plan_bytes(v, keys, props, path);
     let mut sink = TrackedWrite::new(Vec::new());
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(d) = &dict {
@@ -1055,23 +1180,33 @@ fn hash(k: u64, bits: u32) -> usize {
 /// multiple of 8) are RLE runs, the rest bit-packed.
 fn hybrid<V: Copy + Eq + Into<u64>>(v: &[V], w: u32, out: &mut Vec<u8>) {
     let n = v.len();
-    let (mut lit, mut i) = (0, 0);
-    while i < n {
-        let x = v[i];
-        let mut j = i + 1;
-        while j < n && v[j] == x {
-            j += 1;
-        }
-        let pad = (8 - (i - lit) % 8) % 8;
-        if j - i >= pad + 8 {
-            let s = i + pad;
+    // at most one bit-packed group header per 8 values, plus the packed bits
+    out.reserve(n.div_ceil(8) * (w as usize + 2) + 16);
+    // A run of `x` is RLE'd when it covers a whole group of 8 counted from
+    // the end of the last RLE run (`lit`): from the first group boundary in
+    // it to its end. So look only at those groups; the first one whose 8
+    // values are equal starts the next RLE run.
+    let (mut lit, mut g) = (0, 0);
+    while g + 8 <= n {
+        let x = v[g];
+        if v[g + 1..g + 8].iter().all(|&y| y == x) {
+            let mut r = g;
+            while r > lit && v[r - 1] == x {
+                r -= 1;
+            }
+            let s = lit + (r - lit).div_ceil(8) * 8;
+            let mut j = g + 8;
+            while j < n && v[j] == x {
+                j += 1;
+            }
             if s > lit {
                 bitpack(&v[lit..s], w, out);
             }
             rle(x.into(), j - s, w, out);
-            lit = j;
+            (lit, g) = (j, j);
+        } else {
+            g += 8;
         }
-        i = j;
     }
     if lit < n {
         bitpack(&v[lit..], w, out);
@@ -1125,22 +1260,28 @@ fn rle(x: u64, count: usize, w: u32, out: &mut Vec<u8>) {
 fn bitpack<V: Copy + Into<u64>>(v: &[V], w: u32, out: &mut Vec<u8>) {
     let groups = v.len().div_ceil(8);
     varint(((groups as u64) << 1) | 1, out);
-    out.reserve(groups * w as usize);
-    let (mut acc, mut bits) = (0u64, 0u32);
-    let pad = groups * 8 - v.len();
-    for x in v
-        .iter()
-        .map(|&x| x.into())
-        .chain(std::iter::repeat_n(0, pad))
-    {
+    let len = groups * w as usize;
+    let start = out.len();
+    // 8 bytes of slack: every store below writes a whole word
+    out.resize(start + len + 8, 0);
+    let buf = &mut out[start..];
+    let (mut acc, mut bits, mut at) = (0u64, 0u32, 0usize);
+    let mut store = |at: usize, acc: u64| buf[at..at + 8].copy_from_slice(&acc.to_le_bytes());
+    for &x in v {
+        let x: u64 = x.into();
         acc |= x << bits;
         bits += w;
-        while bits >= 8 {
-            out.push(acc as u8);
-            acc >>= 8;
-            bits -= 8;
+        if bits >= 64 {
+            store(at, acc);
+            at += 8;
+            bits -= 64;
+            // the bits of `x` that did not fit (none if it ended the word)
+            acc = if bits == 0 { 0 } else { x >> (w - bits) };
         }
     }
+    // the last partial word; padding values are zero bits
+    store(at, acc);
+    out.truncate(start + len);
 }
 
 fn varint(mut x: u64, out: &mut Vec<u8>) {
@@ -1149,4 +1290,97 @@ fn varint(mut x: u64, out: &mut Vec<u8>) {
         x >>= 7;
     }
     out.push(x as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bitpack, hybrid, rle, varint};
+
+    /// The straightforward RLE / bit-packing hybrid: scan each run, emit it
+    /// as RLE when it covers a whole group, pack one bit at a time.
+    fn hybrid_ref(v: &[u32], w: u32, out: &mut Vec<u8>) {
+        let pack = |v: &[u32], out: &mut Vec<u8>| {
+            let groups = v.len().div_ceil(8);
+            varint(((groups as u64) << 1) | 1, out);
+            let (mut acc, mut bits) = (0u64, 0u32);
+            let pad = groups * 8 - v.len();
+            for x in v
+                .iter()
+                .map(|&x| x as u64)
+                .chain(std::iter::repeat_n(0, pad))
+            {
+                acc |= x << bits;
+                bits += w;
+                while bits >= 8 {
+                    out.push(acc as u8);
+                    acc >>= 8;
+                    bits -= 8;
+                }
+            }
+        };
+        let n = v.len();
+        let (mut lit, mut i) = (0, 0);
+        while i < n {
+            let x = v[i];
+            let mut j = i + 1;
+            while j < n && v[j] == x {
+                j += 1;
+            }
+            let pad = (8 - (i - lit) % 8) % 8;
+            if j - i >= pad + 8 {
+                let s = i + pad;
+                if s > lit {
+                    pack(&v[lit..s], out);
+                }
+                rle(x.into(), j - s, w, out);
+                lit = j;
+            }
+            i = j;
+        }
+        if lit < n {
+            pack(&v[lit..], out);
+        }
+    }
+
+    /// xorshift: deterministic test data without a dependency
+    fn next(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    #[test]
+    fn hybrid_matches_the_reference_encoding() {
+        let mut s = 0x9E37_79B9_7F4A_7C15;
+        for w in 0..=32u32 {
+            let max = if w == 0 { 0 } else { u32::MAX >> (32 - w) };
+            for len in (0..80).chain([255, 256, 257, 1000, 4097]) {
+                for runs in [1u64, 2, 5, 13, 40] {
+                    // runs of random length (mean `runs`) of random values
+                    let mut v = Vec::with_capacity(len);
+                    while v.len() < len {
+                        let x = (next(&mut s) as u32) & max;
+                        let k = (next(&mut s) % (2 * runs)) as usize + 1;
+                        v.extend(std::iter::repeat_n(x, k.min(len - v.len())));
+                    }
+                    let (mut got, mut want) = (Vec::new(), Vec::new());
+                    hybrid(&v, w, &mut got);
+                    hybrid_ref(&v, w, &mut want);
+                    assert_eq!(got, want, "w {w} len {len} runs {runs}");
+                    if !v.is_empty() {
+                        let (mut got, mut want) = (Vec::new(), Vec::new());
+                        bitpack(&v, w, &mut got);
+                        // a single literal run of all of `v`
+                        let mut only = v.clone();
+                        only.dedup();
+                        if only.len() == v.len() {
+                            hybrid_ref(&v, w, &mut want);
+                            assert_eq!(got, want, "bitpack w {w} len {len}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

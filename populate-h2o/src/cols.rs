@@ -1,10 +1,14 @@
-//! Shared pieces: NA-able `u32` columns, bit sets, the stable counting sort
-//! data.table's `setkey` amounts to, and Arrow arrays from columns.
+//! Shared pieces: NA-able `u32` columns, bit sets, the stable parallel
+//! sort data.table's `setkey` amounts to, and Arrow arrays from columns.
 
 use arrow_array::{ArrayRef, Float64Array, Int32Array, StringViewArray};
 use arrow_buffer::{NullBuffer, ScalarBuffer};
+use std::cmp::Reverse;
 use std::ptr::copy_nonoverlapping;
-use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, Mutex};
+use std::thread::{available_parallelism, scope};
 
 use crate::fwrite::{write_micros, write_u32, write_u32_padded};
 
@@ -41,25 +45,6 @@ pub fn first_appearance(col: &[u32], seen: &mut Bits, order: &mut Vec<u32>) {
             order.push(v);
         }
     }
-}
-
-/// One stable counting-sort pass: reorder `perm` (row numbers) by
-/// `key(row)` in `0..domain`, ties in their current order.
-pub fn counting_pass(perm: &mut Vec<u32>, domain: usize, key: impl Fn(u32) -> u32) {
-    let mut count = vec![0u32; domain + 1];
-    for &r in perm.iter() {
-        count[key(r) as usize + 1] += 1;
-    }
-    for i in 1..=domain {
-        count[i] += count[i - 1];
-    }
-    let mut out = vec![0u32; perm.len()];
-    for &r in perm.iter() {
-        let k = key(r) as usize;
-        out[count[k] as usize] = r;
-        count[k] += 1;
-    }
-    *perm = out;
 }
 
 /// `col[perm]`.
@@ -192,18 +177,205 @@ pub fn write_with(out: &mut Vec<u8>, bound: usize, f: impl FnOnce(&mut Cursor)) 
     unsafe { out.set_len(start + n) };
 }
 
+/// Most buckets [`sort_rows`] splits rows into.
+const MAX_BUCKETS: u64 = 1 << 12;
+
+/// Number of threads for `threads` (0 = all cores).
+pub fn thread_count(threads: usize) -> usize {
+    match threads {
+        0 => available_parallelism().map_or(1, |t| t.get()),
+        t => t,
+    }
+}
+
+/// The row order of a stable sort of `n` rows by columns `get(c, r)`
+/// (first most significant), each value mapped by its rank table (if any), NA first.
+///
+/// The leading columns whose combined domain is small (at most
+/// [`MAX_BUCKETS`]), and the top of the next column's key, form a bucket
+/// number; the rest pack into one `u64` (or `u128`) key per row.
+/// One counting pass scatters `(key, row)` pairs into their buckets, which
+/// keeps rows in order within each bucket, and the buckets are then sorted
+/// by `(key, row)`, independently, on all threads. Rows are unique, so
+/// that is the stable order.
+pub fn sort_rows(
+    n: usize,
+    get: impl Fn(usize, usize) -> u32 + Sync,
+    ranks: &[Option<Vec<u32>>],
+    domains: &[u64],
+    threads: usize,
+) -> Vec<u32> {
+    let cols = domains.len();
+    let key = |c: usize, r: usize| -> u64 {
+        let v = get(c, r);
+        if v == NA {
+            0
+        } else if let Some(rk) = &ranks[c] {
+            rk[v as usize] as u64
+        } else {
+            v as u64
+        }
+    };
+    let mut lead = 0;
+    let mut buckets = 1u64;
+    while lead < cols && buckets * domains[lead] <= MAX_BUCKETS {
+        buckets *= domains[lead];
+        lead += 1;
+    }
+    // and the top of the next column's key, so buckets stay small; the
+    // rest key still holds all of that column, so order within a bucket
+    // is right
+    let split = (lead < cols && buckets * 2 <= MAX_BUCKETS).then(|| {
+        let parts = MAX_BUCKETS / buckets;
+        let step = domains[lead].div_ceil(parts);
+        (step, domains[lead].div_ceil(step))
+    });
+    let rest_from = lead;
+    if let Some((_, parts)) = split {
+        buckets *= parts;
+    }
+    let rest_bits: f64 = domains[rest_from..]
+        .iter()
+        .map(|&d| (d as f64).log2())
+        .sum();
+    let threads = thread_count(threads);
+    let bucket_of = |r: usize| -> usize {
+        let mut b = 0;
+        for (c, &d) in domains[..lead].iter().enumerate() {
+            b = b * d + key(c, r);
+        }
+        if let Some((step, parts)) = split {
+            b = b * parts + key(lead, r) / step;
+        }
+        b as usize
+    };
+    macro_rules! run {
+        ($t:ty) => {{
+            let rest_of = |r: usize| -> $t {
+                let mut k: $t = 0;
+                for c in rest_from..cols {
+                    k = k * domains[c] as $t + key(c, r) as $t;
+                }
+                k
+            };
+            bucket_sort::<$t>(n, buckets as usize, threads, bucket_of, rest_of)
+        }};
+    }
+    if rest_bits < 63.0 {
+        run!(u64)
+    } else {
+        run!(u128)
+    }
+}
+
+fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
+    n: usize,
+    buckets: usize,
+    threads: usize,
+    bucket_of: impl Fn(usize) -> usize + Sync,
+    rest_of: impl Fn(usize) -> T + Sync,
+) -> Vec<u32> {
+    // A parallel counting sort: each thread takes a contiguous run of
+    // rows, counts its buckets, and scatters its rows to its own offsets
+    // (after every earlier thread's rows of the same bucket), so rows stay
+    // in order within a bucket.
+    let per = n.div_ceil(threads).max(1);
+    let parts = n.div_ceil(per);
+    let counts: Vec<Vec<usize>> = scope(|s| {
+        let hs: Vec<_> = (0..parts)
+            .map(|t| {
+                let f = &bucket_of;
+                s.spawn(move || {
+                    let mut c = vec![0usize; buckets];
+                    for r in t * per..((t + 1) * per).min(n) {
+                        c[f(r)] += 1;
+                    }
+                    c
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().expect("count")).collect()
+    });
+    let mut start = vec![0usize; buckets + 1];
+    let mut offsets: Vec<Vec<usize>> = vec![vec![0; buckets]; parts];
+    let mut at = 0;
+    for b in 0..buckets {
+        start[b] = at;
+        for t in 0..parts {
+            offsets[t][b] = at;
+            at += counts[t][b];
+        }
+    }
+    start[buckets] = at;
+    drop(counts);
+    let mut pairs = vec![(T::default(), 0u32); n];
+    {
+        let out = SharedSlice(pairs.as_mut_ptr());
+        scope(|s| {
+            for (t, mut off) in offsets.into_iter().enumerate() {
+                let (f, g, out) = (&bucket_of, &rest_of, &out);
+                s.spawn(move || {
+                    for r in t * per..((t + 1) * per).min(n) {
+                        let i = &mut off[f(r)];
+                        // SAFETY: the offsets give every row its own slot
+                        unsafe { out.write(*i, (g(r), r as u32)) };
+                        *i += 1;
+                    }
+                });
+            }
+        });
+    }
+    // sort the buckets on all threads, biggest first: with NAs one bucket
+    // (key 0) holds nas% of the rows
+    let mut order: Vec<usize> = (0..buckets).collect();
+    order.sort_unstable_by_key(|&b| Reverse(start[b + 1] - start[b]));
+    let next = AtomicUsize::new(0);
+    let slices: Vec<&mut [(T, u32)]> = {
+        let mut out = Vec::with_capacity(buckets);
+        let mut rest: &mut [(T, u32)] = &mut pairs;
+        for b in 0..buckets {
+            let (h, t) = rest.split_at_mut(start[b + 1] - start[b]);
+            out.push(h);
+            rest = t;
+        }
+        out
+    };
+    let slices: Vec<Mutex<&mut [(T, u32)]>> = slices.into_iter().map(Mutex::new).collect();
+    scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Relaxed);
+                    let Some(&b) = order.get(i) else {
+                        break;
+                    };
+                    slices[b].lock().expect("bucket").sort_unstable();
+                }
+            });
+        }
+    });
+    drop(slices);
+    pairs.into_iter().map(|(_, r)| r).collect()
+}
+
+/// A slice threads write disjoint elements of.
+struct SharedSlice<T>(*mut T);
+
+// SAFETY: writers only touch disjoint indices (see `write`).
+unsafe impl<T: Send> Sync for SharedSlice<T> {}
+
+impl<T> SharedSlice<T> {
+    /// # Safety
+    /// `i` in bounds, and no other thread writes or reads it meanwhile.
+    unsafe fn write(&self, i: usize, v: T) {
+        unsafe { self.0.add(i).write(v) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use arrow_array::Array;
-
-    #[test]
-    fn stable_counting_sort() {
-        let keys = [3u32, 1, 3, 0, 1, 2];
-        let mut perm: Vec<u32> = (0..6).collect();
-        counting_pass(&mut perm, 4, |r| keys[r as usize]);
-        assert_eq!(perm, [3, 1, 4, 5, 0, 2]);
-    }
 
     #[test]
     fn appearance_order() {

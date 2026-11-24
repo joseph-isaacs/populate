@@ -18,22 +18,23 @@
 //! start of every chunk of every column (2.5 KB each); chunks then
 //! regenerate their rows independently, on any thread. NAs need the
 //! columns' distinct values in order of first appearance, which the same
-//! pass collects. Sorted output is generated in full, NA'd, sorted by a
-//! stable counting sort (data.table's order, NA first) and sliced.
+//! pass collects. Sorted output is generated in full (row-major), NA'd,
+//! sorted by a stable parallel bucket sort (data.table's order, NA first),
+//! and gathered chunk by chunk.
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_table::Chunks;
 use populate_table::table::par_ordered;
 use populate_table::text::{TextChunks, write_text_many};
+use std::array::from_fn;
 use std::convert::Infallible;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::cols::{
-    Bits, Cursor, NA, counting_pass, first_appearance, gather, id_strings, int32, micros,
-    write_with,
+    Bits, Cursor, NA, first_appearance, id_strings, int32, micros, sort_rows, write_with,
 };
 use crate::fwrite::{digits, round6_micros};
 use crate::rng::{RMt, sample_int};
@@ -80,7 +81,8 @@ struct Plan {
     /// NA'd values of each id column (by value) and rows of each v column.
     na: Option<Nas>,
     /// The sorted columns, when `sort`.
-    sorted: Option<Vec<Vec<u32>>>,
+    /// The whole table, NA'd, row-major, and its sorted row order.
+    sorted: Option<(Vec<[u32; COLS]>, Vec<u32>)>,
 }
 
 struct Nas {
@@ -196,7 +198,8 @@ impl GroupBy {
             for j in 0..chunks {
                 snaps[(j as usize) * COLS + c] = rng.clone();
                 let (s, e) = self.chunk_range(j);
-                if track && c < 6 {
+                // once every value has appeared, the order is complete
+                if track && c < 6 && (orders[c].len() as u64) < range {
                     let b = &mut buf[..(e - s) as usize];
                     rng.fill_index(range, b);
                     for v in b.iter_mut() {
@@ -312,17 +315,24 @@ impl GroupBy {
     }
 
     /// The whole table, NA'd, in `setkey(id1, ..., id6)` order.
-    fn sorted(&self, plan: &Plan, threads: usize) -> Vec<Vec<u32>> {
+    ///
+    /// Rows are kept row-major (36 bytes, about one cache line each), so
+    /// reading them in sorted order costs one random access per row, not
+    /// one per value; chunks gather their rows when they are written.
+    fn sorted(&self, plan: &Plan, threads: usize) -> (Vec<[u32; COLS]>, Vec<u32>) {
         let n = self.n as usize;
-        let mut cols: Vec<Vec<u32>> = (0..COLS).map(|_| Vec::with_capacity(n)).collect();
+        let mut rows: Vec<[u32; COLS]> = Vec::with_capacity(n);
         par_ordered(
             self.num_chunks(),
             threads,
-            |j| self.generate(plan, j),
+            |j| {
+                let cols = self.generate(plan, j);
+                (0..cols[0].len())
+                    .map(|r| from_fn(|c| cols[c][r]))
+                    .collect::<Vec<[u32; COLS]>>()
+            },
             |chunk| {
-                for (c, v) in cols.iter_mut().zip(chunk) {
-                    c.extend_from_slice(&v);
-                }
+                rows.extend_from_slice(&chunk);
                 Ok::<(), Infallible>(())
             },
         )
@@ -331,47 +341,42 @@ impl GroupBy {
         let rank = |width: usize, range: u64| -> Vec<u32> {
             // rank[v] for v in 1..=range of sprintf("id%0<width>d", v)
             let mut vs: Vec<u32> = (1..=range as u32).collect();
-            if digits(range as u32) > width {
-                vs.sort_by_cached_key(|&v| format!("{v:0width$}"));
-            }
+            vs.sort_by_cached_key(|&v| format!("{v:0width$}"));
             let mut rank = vec![0u32; range as usize + 1];
             for (i, &v) in vs.iter().enumerate() {
                 rank[v as usize] = i as u32 + 1;
             }
             rank
         };
-        let mut perm: Vec<u32> = (0..n as u32).collect();
-        for c in (0..6).rev() {
-            let range = self.range(c);
-            let col = &cols[c];
-            let ranks = match c {
-                0 | 1 => Some(rank(3, range)),
-                2 => Some(rank(10, range)),
+        // per column: sort key of a value (NA 0), and its domain size
+        let ranks: Vec<Option<Vec<u32>>> = (0..6)
+            .map(|c| match c {
+                // string order is numeric order unless some ids are wider
+                0 | 1 if digits(self.range(c) as u32) > 3 => Some(rank(3, self.range(c))),
+                2 if digits(self.range(c) as u32) > 10 => Some(rank(10, self.range(c))),
                 _ => None,
-            };
-            let key = |r: u32| {
-                let v = col[r as usize];
-                if v == NA {
-                    0
-                } else if let Some(rk) = &ranks {
-                    rk[v as usize]
-                } else {
-                    v
-                }
-            };
-            counting_pass(&mut perm, range as usize + 1, key);
-        }
-        cols.into_iter().map(|c| gather(&c, &perm)).collect()
+            })
+            .collect();
+        let domains: Vec<u64> = (0..6).map(|c| self.range(c) + 1).collect();
+        let perm = sort_rows(n, |c, r| rows[r][c], &ranks, &domains, threads);
+        (rows, perm)
     }
 
     /// Chunk `j`'s columns: generated, or sliced from the sorted table.
     fn columns(&self, j: u64) -> Vec<Vec<u32>> {
         match &self.plan.sorted {
-            Some(s) => {
+            Some((rows, perm)) => {
                 let (a, b) = self.chunk_range(j);
-                s.iter()
-                    .map(|c| c[a as usize..b as usize].to_vec())
-                    .collect()
+                let perm = &perm[a as usize..b as usize];
+                let mut cols: Vec<Vec<u32>> =
+                    (0..COLS).map(|_| Vec::with_capacity(perm.len())).collect();
+                for &r in perm {
+                    let row = &rows[r as usize];
+                    for (c, col) in cols.iter_mut().enumerate() {
+                        col.push(row[c]);
+                    }
+                }
+                cols
             }
             None => {
                 debug_assert_eq!(self.plan.chunk_rows, self.chunk_rows);

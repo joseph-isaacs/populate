@@ -95,11 +95,27 @@ too):
 
 | data set | R | h2o-gen |
 |---|---|---|
-| groupby `G1_1e7_1e2_0_0` (509 MB) | 5.6 s | 0.75 s |
-| groupby `G1_1e8_1e2_0_0` (5.2 GB) | 61.6 s | 6.2 s |
-| groupby `G1_1e7_1e2_0_1` (sorted) | 6.6 s | 3.4 s |
-| groupby `G1_1e8_1e1_5_1` (NAs, sorted) | 156 s | 75 s |
-| join `J1_1e7_NA_0_0` (4 tables, 923 MB) | 54 s | 3.2 s |
+| groupby `G1_1e7_1e2_0_0` (509 MB) | 5.6 s | 0.41 s |
+| groupby `G1_1e7_1e2_0_1` (sorted) | 6.6 s | 0.93 s |
+| groupby `G1_1e8_1e2_0_0` (5.2 GB) | 61.6 s | 3.7 s |
+| groupby `G1_1e8_1e1_5_1` (NAs, sorted) | 156 s | 13.3 s |
+| join `J1_1e7_NA_0_0` (4 tables, 923 MB) | 54 s | 1.4 s |
+| join `J1_1e8_NA_5_0` (4 tables, 9 GB) | out of memory | 20 s |
+| join `J1_1e8_NA_0_1` (sorted) | out of memory | 32 s |
+
+What makes the sequential parts fast:
+
+- **The stream pass** counts accepted draws over whole 624-word
+  generator blocks in a vectorisable loop (no exit test) and only scans
+  for the exact end in the block where a chunk ends.
+- **Shuffles** (`sample.int(n)`): the draws depend only on the generator,
+  so they are made first (branch-free, a block at a time) and the swaps,
+  which are random accesses into a large array, are applied with
+  prefetching on another thread while the next column's draws are made.
+- **Sorting** (`setkey`): a parallel counting sort scatters `(key, row)`
+  pairs into buckets of the leading key columns, then the buckets are
+  sorted on all threads. Sorted groupby rows are kept row-major, so
+  reading them in sorted order costs one random access per row.
 
 ## Limits
 

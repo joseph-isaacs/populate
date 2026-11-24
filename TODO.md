@@ -21,10 +21,11 @@ multi-threaded output equals one sequential run.
 - [x] **H2O db-benchmark groupby and join** (`populate-h2o`)
   - Matches R's `set.seed(108)` output byte for byte (R's Mersenne
     Twister, `sample()`, `round()`, data.table `fwrite`): every 1e7 data
-    set the benchmark uses and groupby `1e8_1e2_0_0`. 8–17x faster than
-    `Rscript` (see [`populate-h2o/README.md`](populate-h2o/README.md)).
-  - [ ] Parallelise the remaining sequential steps: the groupby stream
-    pass and the join key permutations.
+    set the benchmark uses and groupby `1e8_1e2_0_0` / `1e8_1e1_5_1`.
+    12–40x faster than `Rscript` (see
+    [`populate-h2o/README.md`](populate-h2o/README.md)).
+  - [ ] Parallelise the join key shuffles themselves (draws are
+    sequential; only the swaps overlap).
 - [ ] **DSB** (skewed TPC-DS, on `populate-tpcds`)
   - Find out whether DSB's code forks tpcds-kit's dsdgen.
   - Port its skew and correlation changes into the `tpcdsgen` path, and

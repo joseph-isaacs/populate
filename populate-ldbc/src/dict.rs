@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread::{available_parallelism, scope};
 use unicode_normalization::UnicodeNormalization;
 
 fn read(dir: &Path, rel: &str) -> io::Result<String> {
@@ -31,6 +32,36 @@ pub fn power_inverse(a: f64, b: f64, c: f64, u: f64) -> f64 {
     } else {
         a + (b - a) * u.powf(1.0 / c)
     }
+}
+
+/// `f` of every line of `txt` (as [`lines`] splits it), parsed in pieces on
+/// all cores: the pieces' results, in file order.
+fn parallel_lines<T: Send>(txt: &str, f: impl Fn(&str) -> T + Sync) -> Vec<Vec<T>> {
+    let n = available_parallelism().map_or(1, |t| t.get());
+    let b = txt.as_bytes();
+    let mut cuts = vec![0];
+    for k in 1..n {
+        let mut i = (b.len() * k / n)
+            .max(*cuts.last().expect("cut"))
+            .clamp(1.min(b.len()), b.len());
+        // cut after a line feed
+        while i < b.len() && b[i - 1] != b'\n' {
+            i += 1;
+        }
+        cuts.push(i);
+    }
+    cuts.push(b.len());
+    scope(|s| {
+        let hs: Vec<_> = cuts
+            .windows(2)
+            .map(|w| {
+                let piece = &txt[w[0]..w[1]];
+                let f = &f;
+                s.spawn(move || lines(piece).into_iter().map(f).collect::<Vec<T>>())
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().expect("parser")).collect()
+    })
 }
 
 /// `PowerDistribution`: a power law on `[a, b]`.
@@ -644,13 +675,10 @@ impl Browsers {
         max as i32
     }
 
-    pub fn post_browser(&self, diff: &mut Farm, person_browser: i32) -> i32 {
+    /// A message's browser: a random one, or `None` for its author's.
+    pub fn post_browser(&self, diff: &mut Farm) -> Option<i32> {
         let prob = diff.get(Aspect::DiffBrowser).next_double();
-        if prob < self.prob_another {
-            self.random(diff.get(Aspect::Browser))
-        } else {
-            person_browser
-        }
+        (prob < self.prob_another).then(|| self.random(diff.get(Aspect::Browser)))
     }
 }
 
@@ -827,7 +855,9 @@ impl Tags {
 pub struct TagMatrix {
     /// `[start, end)` of each tag's related list, empty if none.
     ranges: Vec<(u32, u32)>,
-    related: Vec<i32>,
+    /// Related tag ids, as `u16` (there are ~16,000 tags): half the cache
+    /// footprint of the hot random reads.
+    related: Vec<u16>,
     cum: Vec<f64>,
     non_zero: Vec<i32>,
 }
@@ -835,37 +865,46 @@ pub struct TagMatrix {
 impl TagMatrix {
     fn load(dir: &Path) -> io::Result<Self> {
         let txt = read(dir, "dictionaries/tagMatrix.txt")?;
-        // celebrity ids appear in runs; a TreeMap groups them by id
-        let mut rows: Vec<(i32, i32, f64)> = Vec::with_capacity(1 << 21);
-        for line in lines(&txt) {
+        // ~2 M lines: parsed in pieces on all cores, in file order
+        let parts = parallel_lines(&txt, |line| {
             let mut it = line.split(' ');
             let a = parse_i32(it.next().expect("celebrity"));
             let b = parse_i32(it.next().expect("topic"));
             let c = parse_f64(it.next().expect("cumulative"));
-            rows.push((a, b, c));
+            (a, b, c)
+        });
+        // celebrity ids appear in runs; a TreeMap groups them by id, each
+        // id's rows in file order: a counting sort
+        let rows = || parts.iter().flatten();
+        let max = rows().map(|r| r.0).max().unwrap_or(0) as usize;
+        let mut ranges = vec![(0u32, 0u32); max + 1];
+        for r in rows() {
+            ranges[r.0 as usize].1 += 1;
         }
-        // stable: keeps each celebrity's rows in file order
-        rows.sort_by_key(|r| r.0);
-        let max = rows.iter().map(|r| r.0).max().unwrap_or(0) as usize;
-        let mut m = TagMatrix {
-            ranges: vec![(0, 0); max + 1],
-            related: Vec::with_capacity(rows.len()),
-            cum: Vec::with_capacity(rows.len()),
-            non_zero: Vec::new(),
-        };
-        let mut i = 0;
-        while i < rows.len() {
-            let tag = rows[i].0;
-            let start = m.related.len() as u32;
-            while i < rows.len() && rows[i].0 == tag {
-                m.related.push(rows[i].1);
-                m.cum.push(rows[i].2);
-                i += 1;
+        let mut at = 0u32;
+        let mut non_zero = Vec::new();
+        for (tag, r) in ranges.iter_mut().enumerate() {
+            let n = r.1;
+            *r = (at, at);
+            if n > 0 {
+                non_zero.push(tag as i32);
             }
-            m.ranges[tag as usize] = (start, m.related.len() as u32);
-            m.non_zero.push(tag);
+            at += n;
         }
-        Ok(m)
+        let total = at as usize;
+        let (mut related, mut cum) = (vec![0u16; total], vec![0f64; total]);
+        for &(a, b, c) in rows() {
+            let r = &mut ranges[a as usize];
+            related[r.1 as usize] = u16::try_from(b).expect("tag ids fit in u16");
+            cum[r.1 as usize] = c;
+            r.1 += 1;
+        }
+        Ok(TagMatrix {
+            ranges,
+            related,
+            cum,
+            non_zero,
+        })
     }
 
     fn range(&self, tag: i32) -> Option<(usize, usize)> {
@@ -877,6 +916,13 @@ impl TagMatrix {
 
     /// `getRandomRelated`.
     pub fn random_related(&self, r: &mut JavaRandom, tag: i32) -> i32 {
+        self.related_at(self.random_related_index(r, tag))
+    }
+
+    /// The draws of [`Self::random_related`]: the related tag's position,
+    /// for [`Self::related_at`].
+    #[inline]
+    pub fn random_related_index(&self, r: &mut JavaRandom, tag: i32) -> u32 {
         let (s, e) = match self.range(tag) {
             Some(x) => x,
             None => {
@@ -884,7 +930,12 @@ impl TagMatrix {
                 self.range(t).expect("non-zero tag")
             }
         };
-        self.related[s + r.next_int_bound((e - s) as i32) as usize]
+        (s + r.next_int_bound((e - s) as i32) as usize) as u32
+    }
+
+    #[inline]
+    pub fn related_at(&self, k: u32) -> i32 {
+        self.related[k as usize] as i32
     }
 
     /// `getSetofTags`: a sorted set of `num` tags around `popular`.
@@ -909,7 +960,7 @@ impl TagMatrix {
                 }
                 mid = (hi + lo) / 2;
             }
-            let t = self.related[s + mid];
+            let t = self.related[s + mid] as i32;
             if let Err(pos) = set.binary_search(&t) {
                 set.insert(pos, t);
             }
@@ -924,6 +975,12 @@ pub struct TagText {
     pub text: Vec<Vec<u16>>,
     /// "About <name>, " of each tag, UTF-16.
     pub prefix: Vec<Vec<u16>>,
+    /// The lengths of each tag's text and prefix, packed (most draws need
+    /// only these), and where the tag's bits start in `dots`.
+    lens: Vec<(u32, u32, u32)>,
+    /// One bit per character of every tag's text: is it a `.`? (A text's
+    /// length needs only its last character's.)
+    dots: Vec<u64>,
     reduced_ratio: f64,
 }
 
@@ -931,15 +988,20 @@ impl TagText {
     fn load(dir: &Path, tags: &Tags, p: &Params) -> io::Result<Self> {
         let txt = read(dir, "dictionaries/tagText.txt")?;
         let mut text: Vec<Vec<u16>> = vec![Vec::new(); tags.names.len()];
-        for line in lines(&txt) {
+        let parts = parallel_lines(&txt, |line| {
             let d = split(line, "  ");
-            let id = parse_i32(d[0]) as usize;
+            (
+                parse_i32(d[0]) as usize,
+                d[1].encode_utf16().collect::<Vec<u16>>(),
+            )
+        });
+        for (id, t) in parts.into_iter().flatten() {
             if text.len() <= id {
                 text.resize(id + 1, Vec::new());
             }
-            text[id] = d[1].encode_utf16().collect();
+            text[id] = t;
         }
-        let prefix = tags
+        let prefix: Vec<Vec<u16>> = tags
             .names
             .iter()
             .map(|n| {
@@ -947,9 +1009,31 @@ impl TagText {
                 format!("About {n}, ").encode_utf16().collect()
             })
             .collect();
+        let mut dots = Vec::new();
+        let mut bits = 0usize;
+        let lens = (0..text.len().max(prefix.len()))
+            .map(|t| {
+                let n = |v: &Vec<Vec<u16>>| v.get(t).map_or(0, |x| x.len() as u32);
+                let at = u32::try_from(bits).expect("tag texts under 4 G characters");
+                for &c in text.get(t).into_iter().flatten() {
+                    if bits.is_multiple_of(64) {
+                        dots.push(0u64);
+                    }
+                    if c == b'.' as u16 {
+                        dots[bits / 64] |= 1 << (bits % 64);
+                    }
+                    bits += 1;
+                }
+                (n(&text), n(&prefix), at)
+            })
+            .collect();
+        // every prefix ends in a space, so a piece ending in one is no dot
+        debug_assert!(prefix.iter().all(|p| p.last() == Some(&(b' ' as u16))));
         Ok(TagText {
             text,
             prefix,
+            lens,
+            dots,
             reduced_ratio: p.ratio_reduce_text,
         })
     }
@@ -969,31 +1053,34 @@ impl TagText {
     /// The length of the text [`Self::generate`] makes, with the same
     /// draws, without building it.
     pub fn generated_len(&self, r: &mut JavaRandom, tags: &[i32], size: i32) -> usize {
-        const DOT: u16 = b'.' as u16;
         let size = size as usize;
         let per_tag = (size as f64 / tags.len() as f64).ceil() as usize;
-        let (mut len, mut last) = (0usize, None);
+        // only the text's last character matters (is it a dot?): keep its
+        // bit in `dots` (`None` for a prefix's last, a space)
+        let (mut len, mut last): (usize, Option<Option<usize>>) = (0, None);
         while len < size {
             for &tag in tags {
                 if len >= size {
                     break;
                 }
-                let content = &self.text[tag as usize];
-                let prefix = &self.prefix[tag as usize];
-                let this = per_tag.min(size - len) + prefix.len();
-                if this >= content.len() {
-                    len += content.len();
-                    last = content.last().copied().or(last);
+                let (content, prefix, at) = self.lens[tag as usize];
+                let (content, prefix, at) = (content as usize, prefix as usize, at as usize);
+                let this = per_tag.min(size - len) + prefix;
+                if this >= content {
+                    len += content;
+                    if content > 0 {
+                        last = Some(Some(at + content - 1));
+                    }
                 } else {
-                    let start =
-                        r.next_int_bound((content.len() - this + prefix.len()) as i32) as usize;
-                    let piece = &content[start..start + this - prefix.len()];
+                    let start = r.next_int_bound((content - this + prefix) as i32) as usize;
                     len += this;
-                    last = piece.last().or(prefix.last()).copied().or(last);
+                    // the piece's last character, or the prefix's if empty
+                    last = Some((this > prefix).then(|| at + start + this - prefix - 1));
                 }
             }
         }
-        if last != Some(DOT) {
+        let dot = matches!(last, Some(Some(b)) if self.dots[b / 64] >> (b % 64) & 1 == 1);
+        if !dot {
             len += 1;
         }
         if len + 1 < size {
@@ -1296,23 +1383,40 @@ pub struct Dictionaries {
 impl Dictionaries {
     /// Load every dictionary from `dir` (the datagen's `src/main/resources`).
     pub fn load(dir: &Path, p: &Params, dates: &Dates) -> io::Result<Self> {
-        let (places, tag_matrix) = std::thread::scope(|s| {
+        let (places, tag_matrix) = scope(|s| {
             let m = s.spawn(|| TagMatrix::load(dir));
             (Places::load(dir), m.join().expect("tag matrix"))
         });
         let places = places?;
         let tag_matrix = tag_matrix?;
         let tags = Tags::load(dir, places.num_countries(), p)?;
-        let tag_text = TagText::load(dir, &tags, p)?;
-        let mut popular_places = vec![0; places.num_countries()];
-        for line in lines(&read(dir, "dictionaries/popularPlacesByCountry.txt")?) {
-            let d = split(line, "  ");
-            let c = places.country_id(d[0]);
-            if c != -1 {
-                popular_places[c as usize] += 1;
-            }
-        }
-        let companies = Companies::load(dir, &places, p)?;
+        // the rest depend only on places and tags: load them side by side
+        let (tag_text, companies, ips, names, popular_places) = scope(|s| {
+            let tag_text = s.spawn(|| TagText::load(dir, &tags, p));
+            let companies = s.spawn(|| Companies::load(dir, &places, p));
+            let ips = s.spawn(|| Ips::load(dir, &places));
+            let names = s.spawn(|| Names::load(dir, &places));
+            let popular = || -> io::Result<Vec<i32>> {
+                let mut popular_places = vec![0; places.num_countries()];
+                for line in lines(&read(dir, "dictionaries/popularPlacesByCountry.txt")?) {
+                    let d = split(line, "  ");
+                    let c = places.country_id(d[0]);
+                    if c != -1 {
+                        popular_places[c as usize] += 1;
+                    }
+                }
+                Ok(popular_places)
+            };
+            let popular_places = popular();
+            (
+                tag_text.join().expect("tag text"),
+                companies.join().expect("companies"),
+                ips.join().expect("ips"),
+                names.join().expect("names"),
+                popular_places,
+            )
+        });
+        let (tag_text, companies, popular_places) = (tag_text?, companies?, popular_places?);
         let universities = Universities::load(dir, &places, p, companies.name.len() as i64)?;
         let flashmobs = Flashmobs::new(&tags, dates, p);
         let fb_buckets = lines(&read(dir, "dictionaries/facebookBucket100.dat")?)
@@ -1323,9 +1427,9 @@ impl Dictionaries {
             })
             .collect();
         Ok(Dictionaries {
-            ips: Ips::load(dir, &places)?,
+            ips: ips?,
             languages: Languages::load(dir, &places, p)?,
-            names: Names::load(dir, &places)?,
+            names: names?,
             popular_places,
             browsers: Browsers::load(dir, p)?,
             emails: Emails::load(dir)?,

@@ -91,6 +91,10 @@ impl Shape for Embeddings {
         matches!(column, "id" | "embedding")
     }
 
+    fn is_random(&self, column: &str) -> bool {
+        column == "embedding"
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

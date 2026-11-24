@@ -80,6 +80,14 @@ pub trait Shape: Sync {
         let _ = column;
         false
     }
+
+    /// Whether a column is written uncompressed by default: random bits
+    /// (continuous floats, vectors) that Snappy cannot shrink but still
+    /// spends time on.
+    fn is_random(&self, column: &str) -> bool {
+        let _ = column;
+        false
+    }
 }
 
 /// A [`Shape`] of `rows` rows, cut into chunks of batches: a [`Chunks`]
@@ -186,15 +194,20 @@ impl<S: Shape> Synth<S> {
     }
 
     /// [`parquet_props`], with dictionaries off for the shape's
-    /// [`is_plain`](Shape::is_plain) columns (every leaf under them).
+    /// [`is_plain`](Shape::is_plain) columns and compression off for
+    /// [`is_random`](Shape::is_random) ones (every leaf under them).
     pub fn parquet_props(&self) -> WriterProperties {
         let mut b = WriterProperties::builder().set_compression(Compression::SNAPPY);
         let descr = ArrowSchemaConverter::new()
             .convert(&self.shape.schema())
             .expect("shape schemas convert to Parquet");
         for c in descr.columns() {
-            if self.shape.is_plain(&c.path().parts()[0]) {
+            let root = &c.path().parts()[0];
+            if self.shape.is_plain(root) {
                 b = b.set_column_dictionary_enabled(c.path().clone(), false);
+            }
+            if self.shape.is_random(root) {
+                b = b.set_column_compression(c.path().clone(), Compression::UNCOMPRESSED);
             }
         }
         b.build()

@@ -78,6 +78,19 @@ cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --forma
 
 See [`populate-tpch/README.md`](populate-tpch/README.md).
 
+## SSB
+
+`populate-ssb` generates the five Star Schema Benchmark tables
+byte-identical to `ssb-dbgen`, plus the denormalised `lineorder_flat`, as
+Arrow, Parquet or `.tbl` text, on all cores, on TPC-H's random streams.
+
+```sh
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb              # Parquet
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl # ssb-dbgen text
+```
+
+See [`populate-ssb/README.md`](populate-ssb/README.md).
+
 ## Crates
 
 | crate                   | contents                                            |
@@ -90,5 +103,6 @@ See [`populate-tpch/README.md`](populate-tpch/README.md).
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
+| `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 
 See `populate/DESIGN.md` for the design.

@@ -13,12 +13,11 @@ multi-threaded output equals one sequential run.
     [`populate-tpch/README.md`](populate-tpch/README.md)). `tpcgen-cli`
     splits a table into at most `--num-threads` parts.
   - [ ] Switch `populate-bench` to real TPC-H data.
-- [ ] **SSB** (`populate-ssb`)
-  - `lineorder`, `customer`, `supplier`, `part`, `date`, plus an optional
-    flattened SSB-flat table.
-  - Reuse the TPC-H streams. Clean re-implementation only, no code copied from
-    `ssb-dbgen` until its licence is confirmed.
-  - Test against `ssb-dbgen` output.
+- [x] **SSB** (`populate-ssb`)
+  - All five tables plus `lineorder_flat`; every `.tbl` file equals
+    `ssb-dbgen`'s (`cmp`, SF 0.01 to 10), on TPC-H's streams (see
+    [`populate-ssb/README.md`](populate-ssb/README.md)). Clean
+    re-implementation, no ssb-dbgen code.
 - [ ] **H2O db-benchmark groupby and join** (`populate-h2o`)
   - groupby: `id1`–`id6`, `v1`–`v3`, with N, K, NA % and sort knobs.
   - join: LHS of N rows, RHS small / medium / big (N/1e6, N/1e3, N).

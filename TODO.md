@@ -34,10 +34,12 @@ multi-threaded output equals one sequential run.
     determinism.
   - Output Arrow / Parquet. Test against `tsbs_generate_data` with a fixed
     seed.
-- [ ] **TPC-C and YCSB initial load** (`populate-oltp`)
-  - TPC-C tables with NURand and random strings, and YCSB `usertable`.
-  - No canonical bytes: test row counts, key ranges and distributions against
-    the spec.
+- [x] **TPC-C and YCSB initial load** (`populate-oltp`)
+  - All 9 TPC-C tables with NURand and random strings, tested against the
+    spec (no loader has reproducible output: all seed from the clock).
+  - YCSB `usertable`, byte-identical to YCSB 0.17.0's own `ycsb load`
+    (keys, `dataintegrity` values, and random values given the client
+    thread's seed). See [`populate-oltp/README.md`](populate-oltp/README.md).
 - [ ] **LDBC SNB** (spike only)
   - Prototype `Person` and `knows` to see whether the multi-pass, sorted
     generation fits `Chunks` at all, before committing to the full schema.

@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# the CLI's allocator: tpcdsgen's row generators allocate per row
+mimalloc = { version = "0.1", default-features = false }
 populate-table = { workspace = true, features = ["parquet"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

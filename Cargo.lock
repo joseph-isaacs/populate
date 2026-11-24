@@ -807,22 +807,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-oltp"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "divan",
- "itoa",
- "mimalloc",
- "parquet",
- "populate-table",
-]
-
-[[package]]
 name = "populate-sink-arrow"
 version = "0.1.0"
 dependencies = [
@@ -894,6 +878,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-tpcc"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "divan",
+ "itoa",
+ "mimalloc",
+ "parquet",
+ "populate-table",
+]
+
+[[package]]
 name = "populate-tpcds"
 version = "0.1.0"
 dependencies = [
@@ -927,6 +926,20 @@ dependencies = [
  "populate-table",
  "tpchgen",
  "tpchgen-arrow",
+]
+
+[[package]]
+name = "populate-ycsb"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "divan",
+ "itoa",
+ "mimalloc",
+ "parquet",
+ "populate-table",
 ]
 
 [[package]]

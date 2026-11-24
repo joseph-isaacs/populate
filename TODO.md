@@ -36,12 +36,13 @@ multi-threaded output equals one sequential run.
     determinism.
   - Output Arrow / Parquet. Test against `tsbs_generate_data` with a fixed
     seed.
-- [x] **TPC-C and YCSB initial load** (`populate-oltp`)
+- [x] **TPC-C and YCSB initial load** (`populate-tpcc`, `populate-ycsb`)
   - All 9 TPC-C tables with NURand and random strings, tested against the
     spec (no loader has reproducible output: all seed from the clock).
   - YCSB `usertable`, byte-identical to YCSB 0.17.0's own `ycsb load`
     (keys, `dataintegrity` values, and random values given the client
-    thread's seed). See [`populate-oltp/README.md`](populate-oltp/README.md).
+    thread's seed). See [`populate-tpcc/README.md`](populate-tpcc/README.md) and
+    [`populate-ycsb/README.md`](populate-ycsb/README.md).
 - [x] **LDBC SNB, identical to the LDBC Spark datagen** (`populate-ldbc`)
   - All 14 dynamic and 4 static tables of `--mode raw`. Byte-identical CSV
     at SF 0.1 and 1; value-identical to the datagen's raw Parquet, row by

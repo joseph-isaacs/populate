@@ -41,5 +41,9 @@ harness = false
 required-features = ["arrow"]
 
 [[bench]]
+name = "leaves"
+harness = false
+
+[[bench]]
 name = "with_column"
 harness = false

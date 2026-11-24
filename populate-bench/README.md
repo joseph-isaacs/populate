@@ -43,8 +43,10 @@ After an adversarial review, the honest summary is:
 - **What the populate side doesn't do:** tpchgen's values are spec-correct and
   correlated (for example `extendedprice` is derived from the part price, and
   the dates from the order date). populate's side draws independent uniform
-  values over the same ranges. The `Uniform` leaf is defined in this crate,
-  because populate doesn't ship a random leaf yet.
+  values over the same ranges, with populate's own `uniform` leaf. That leaf
+  takes several small-range values from each RNG call (see
+  `populate-builtins/src/bounded.rs`), so it makes about half the RNG calls
+  of the hand-written baselines, which draw one rand `Uniform` per value.
 
 ## Vectorised TPC-H RNG: same bytes, ~1.8x faster
 

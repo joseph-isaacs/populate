@@ -17,12 +17,13 @@ use arrow_buffer::NullBuffer;
 use arrow_schema::{DataType, Field};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Condvar, Mutex};
 use std::thread;
+use std::time::Instant;
 
-use crate::chunks::Jobs;
+use crate::sched::Schedule;
 
 /// Text encoding of `.dat` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -495,7 +496,8 @@ pub trait TextChunks: Sync {
 
 /// Write every source's chunks, in order, to its writers (one per output,
 /// sources in order, each source's outputs in order), on one pool of
-/// `threads` threads (0 = all cores). Every chunk of every source is a job.
+/// `threads` threads (0 = all cores). Every chunk of every source is a job,
+/// biggest remaining work first ([`Schedule`]).
 ///
 /// The workers write the files themselves: a finished chunk is queued on its
 /// file, and whichever worker finds the file idle writes everything queued
@@ -518,7 +520,10 @@ pub fn write_text_many<W: Write + Send>(
         0 => thread::available_parallelism().map_or(1, |t| t.get()),
         t => t,
     };
-    let jobs = Jobs::new(srcs.iter().map(|s| s.num_chunks()));
+    let chunks: Vec<u64> = srcs.iter().map(|s| s.num_chunks()).collect();
+    let jobs: u64 = chunks.iter().sum();
+    // biggest remaining work first, as in [`par_sources`]
+    let schedule = Mutex::new(Schedule::new(&chunks));
     let files: Vec<Mutex<TextFile<W>>> = writers
         .into_iter()
         .map(|w| Mutex::new(TextFile::new(w)))
@@ -527,20 +532,20 @@ pub fn write_text_many<W: Write + Send>(
     // per chunk costs more in page faults than formatting it.
     let pool = Mutex::new(Vec::<Vec<u8>>::new());
     let queued = (Mutex::new(0usize), Condvar::new());
-    let next = AtomicU64::new(0);
     let failed = AtomicBool::new(false);
     let work = || {
         while !failed.load(Relaxed) {
-            let j = next.fetch_add(1, Relaxed);
-            if j >= jobs.total() {
+            let Some((s, i)) = schedule.lock().expect("schedule").pick() else {
                 break;
-            }
-            let (s, i) = jobs.locate(j);
+            };
+            let t0 = Instant::now();
             let src = srcs[s];
             let mut bufs: Vec<Vec<u8>> = (0..src.outputs())
                 .map(|_| pool.lock().expect("pool").pop().unwrap_or_default())
                 .collect();
             src.chunk_text(i, &mut bufs);
+            let secs = t0.elapsed().as_secs_f64();
+            schedule.lock().expect("schedule").finished(s, secs);
             for (k, buf) in bufs.into_iter().enumerate() {
                 *queued.0.lock().expect("queued") += 1;
                 let written = TextFile::push(&files[first[s] + k], i, buf, |b| {
@@ -563,7 +568,7 @@ pub fn write_text_many<W: Write + Send>(
         work();
     } else {
         thread::scope(|s| {
-            for _ in 0..threads.min(jobs.total() as usize) {
+            for _ in 0..threads.min(jobs as usize) {
                 s.spawn(work);
             }
         });

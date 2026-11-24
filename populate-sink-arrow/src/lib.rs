@@ -99,6 +99,13 @@ impl Sink<usize> for ArrowOffsets {
             self.0.reserve(additional);
         }
     }
+
+    fn push_n(&mut self, ends: impl Iterator<Item = usize>) {
+        self.start(0);
+        self.0.extend(ends.map(|end| {
+            i32::try_from(end).expect("list values exceed i32 offsets; LargeList not supported yet")
+        }));
+    }
 }
 
 // ============================================================================

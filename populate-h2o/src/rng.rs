@@ -148,18 +148,32 @@ impl RMt {
                 while i < out.len() {
                     let o = &mut out[i..];
                     self.with_block(|ys| {
-                        let mut used = 0;
-                        let mut k = 0;
-                        for &y in ys {
-                            used += 1;
-                            let v = (temper(y) >> shift) & mask;
-                            // branch-free store, advance only on accept
-                            o[k] = v;
-                            k += (v < n) as usize;
-                            if k == o.len() {
-                                break;
-                            }
+                        let mut vals = [0u32; N];
+                        for (v, &y) in vals.iter_mut().zip(ys) {
+                            *v = (temper(y) >> shift) & mask;
                         }
+                        let vals = &vals[..ys.len()];
+                        let mut k = 0;
+                        // branch-free store, advance only on accept
+                        let used = if o.len() > vals.len() {
+                            // room for every value: no exit test
+                            for &v in vals {
+                                o[k] = v;
+                                k += (v < n) as usize;
+                            }
+                            vals.len()
+                        } else {
+                            let mut used = 0;
+                            for &v in vals {
+                                used += 1;
+                                o[k] = v;
+                                k += (v < n) as usize;
+                                if k == o.len() {
+                                    break;
+                                }
+                            }
+                            used
+                        };
                         i += k;
                         used
                     });
@@ -179,17 +193,37 @@ impl RMt {
                     }
                     let o = &mut out[i..];
                     let ys = &self.mt[self.mti..];
-                    let mut used = 0;
-                    let mut k = 0;
-                    for p in ys.chunks_exact(2) {
-                        used += 2;
-                        let v = (((temper(p[0]) >> 16) << 16) | (temper(p[1]) >> 16)) & mask;
-                        o[k] = v;
-                        k += (v < n) as usize;
-                        if k == o.len() {
-                            break;
-                        }
+                    let pairs = ys.len() / 2;
+                    // the block's attempt values, tempered in one pass
+                    let mut t = [0u32; N];
+                    for (t, &y) in t.iter_mut().zip(ys) {
+                        *t = temper(y);
                     }
+                    let mut vals = [0u32; N / 2];
+                    for (v, p) in vals.iter_mut().zip(t.chunks_exact(2)) {
+                        *v = ((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask;
+                    }
+                    let vals = &vals[..pairs];
+                    let mut k = 0;
+                    let used = if o.len() > pairs {
+                        // room for every value: no exit test
+                        for &v in vals {
+                            o[k] = v;
+                            k += (v < n) as usize;
+                        }
+                        2 * pairs
+                    } else {
+                        let mut used = 0;
+                        for &v in vals {
+                            used += 2;
+                            o[k] = v;
+                            k += (v < n) as usize;
+                            if k == o.len() {
+                                break;
+                            }
+                        }
+                        used
+                    };
                     self.mti += used;
                     i += k;
                 }

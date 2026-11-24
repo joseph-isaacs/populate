@@ -12,6 +12,9 @@ members = [
     "populate-h2o",
     "populate-oltp",
     "populate-synth",
+    "populate-dsb",
+    "populate-dsb/dsbgen",
+    "populate-dsb/dsbgen-arrow",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -30,6 +33,9 @@ default-members = [
     "populate-h2o",
     "populate-oltp",
     "populate-synth",
+    "populate-dsb",
+    "populate-dsb/dsbgen",
+    "populate-dsb/dsbgen-arrow",
 ]
 resolver = "2"
 

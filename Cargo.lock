@@ -393,6 +393,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsbgen"
+version = "0.1.0"
+
+[[package]]
+name = "dsbgen-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "dsbgen",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -753,6 +765,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-dsb"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "dsbgen",
+ "dsbgen-arrow",
+ "parquet",
+ "populate-table",
+]
+
+[[package]]
 name = "populate-h2o"
 version = "0.1.0"
 dependencies = [
@@ -828,6 +857,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "divan",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]

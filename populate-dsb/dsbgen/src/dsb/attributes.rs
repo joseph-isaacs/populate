@@ -11,7 +11,7 @@
 use super::uniform_int;
 use crate::config::{Session, Table};
 use crate::distribution::items_distributions::{category_count, colors_distribution};
-use crate::distribution::FipsCountyDistribution;
+use crate::distribution::{DemographicsDistributions, FipsCountyDistribution};
 use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
 use crate::row::{
@@ -194,18 +194,27 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
             ]
         }
         CustomerDemographics => {
-            let n = rows(session, Table::CustomerDemographics);
+            // Gender, marital status and education are the key's lowest
+            // mixed-radix digits, so the attributes repeat with that period:
+            // generate one period and repeat it.
+            let n = rows(session, Table::CustomerDemographics) as usize;
+            let period = (DemographicsDistributions::get_gender_size()
+                * DemographicsDistributions::get_marital_status_size()
+                * DemographicsDistributions::get_education_size())
+            .min(n);
             let mut ids = FirstAppearance::default();
             let mut value = String::new();
-            let attrs: Vec<i32> = CustomerDemographicsRowGenerator::new(session.clone(), n)
-                .map(|r| {
-                    value.clear();
-                    value.push_str(r.get_cd_gender());
-                    value.push_str(r.get_cd_education_status());
-                    value.push_str(r.get_cd_marital_status());
-                    ids.id(&value)
-                })
-                .collect();
+            let one: Vec<i32> =
+                CustomerDemographicsRowGenerator::new(session.clone(), period as u64)
+                    .map(|r| {
+                        value.clear();
+                        value.push_str(r.get_cd_gender());
+                        value.push_str(r.get_cd_education_status());
+                        value.push_str(r.get_cd_marital_status());
+                        ids.id(&value)
+                    })
+                    .collect();
+            let attrs: Vec<i32> = (0..n).map(|k| one[k % period]).collect();
             vec![(name, AttributeKeyMap::from_attributes(ids.count(), attrs))]
         }
         HouseholdDemographics => {

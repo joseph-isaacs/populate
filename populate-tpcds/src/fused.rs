@@ -19,8 +19,9 @@ use crate::dat;
 use crate::seeds;
 use arrow_array::types::{Decimal128Type, Int32Type, Int64Type};
 use arrow_array::{ArrayRef, PrimitiveArray, RecordBatch};
-use arrow_buffer::{BooleanBufferBuilder, NullBuffer, ScalarBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow_schema::SchemaRef;
+use std::mem::replace;
 use std::sync::Arc;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::distribution::hours_distribution::HoursWeights;
@@ -55,32 +56,40 @@ const SR_RETURN_PCT: i32 = 10;
 /// Percentage of returns made by the customer who bought the item.
 const SR_SAME_CUSTOMER: i32 = 80;
 
-/// One nullable column being built.
+/// One nullable column being built. The validity bits are set by hand in
+/// words: `BooleanBufferBuilder::append`, with its capacity check and
+/// growth, was a sixth of the sales tables' generation time.
 struct Col<T> {
     values: Vec<T>,
-    valid: BooleanBufferBuilder,
+    valid: Vec<u64>,
 }
 
 impl<T: arrow_buffer::ArrowNativeType> Col<T> {
     fn new(cap: usize) -> Self {
         Col {
             values: Vec::with_capacity(cap),
-            valid: BooleanBufferBuilder::new(cap),
+            valid: vec![0; cap.div_ceil(64)],
         }
     }
 
     #[inline(always)]
     fn push(&mut self, v: T, valid: bool) {
+        let i = self.values.len();
         self.values.push(v);
-        self.valid.append(valid);
+        if i / 64 == self.valid.len() {
+            self.valid.push(0);
+        }
+        self.valid[i / 64] |= (valid as u64) << (i % 64);
     }
 
     fn finish<A>(&mut self, cap: usize) -> PrimitiveArray<A>
     where
         A: arrow_array::ArrowPrimitiveType<Native = T>,
     {
-        let values = std::mem::replace(&mut self.values, Vec::with_capacity(cap));
-        let nulls = NullBuffer::new(self.valid.finish());
+        let values = replace(&mut self.values, Vec::with_capacity(cap));
+        let len = values.len();
+        let valid = replace(&mut self.valid, vec![0; cap.div_ceil(64)]);
+        let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(valid), 0, len));
         PrimitiveArray::new(ScalarBuffer::from(values), Some(nulls))
     }
 }

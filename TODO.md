@@ -29,7 +29,8 @@ multi-threaded output equals one sequential run.
 - [x] **DSB** (`populate-dsb`): DSB's dsdgen is a fork of TPC-DS dsdgen;
   its changes are ported into a copy of tpcdsgen. All 24 tables match DSB
   dsdgen byte for byte at SF 1, 2 and 5, chunked on all cores.
-  - Next: a DSB-aware fused sales path, as populate-tpcds has.
+  - Next: build the sales columns directly (no row structs), as
+    populate-tpcds' fused channels do.
 - [ ] **TSBS devops / IoT** (`populate-tsbs`)
   - Reproduce Go `math/rand` and the per-host simulation for `--seed`
     determinism.

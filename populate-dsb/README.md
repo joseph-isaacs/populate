@@ -61,4 +61,25 @@ word, so that row's `i_brand_id` and `i_class_id` change from run to run
 with address space randomisation. `populate-dsb` matches dsdgen run with
 randomisation off (`setarch -R dsdgen ...`).
 
+## Speed
+
+SF 1 on 4 cores: about 0.8 s to generate all 24 tables (`--format none`),
+about 2 s to write them as `.dat` or Parquet. DSB's dsdgen takes 68 s on
+one core.
+
+- **Sales and returns in one pass.** dsbgen's returns generators replay
+  every sales line item. When a sales table and its returns are asked for
+  with the same chunks, one pass makes both (`src/pairs.rs`).
+- **Exponential ranks by lookup.** `genrand_exp_rank` takes a logarithm a
+  draw. The rank only steps at fixed draws (checked monotone over every
+  31-bit draw, `exp_ratio_is_monotone`), so for ranges up to 4096 it is a
+  lookup in a per-thread table of those draws (indexed by the draw's top
+  12 bits), with the same results.
+- **End-of-row seeds in one multiplication**, instead of one draw at a time.
+- **mimalloc** as `dsb-gen`'s allocator (feature `mimalloc`, on by default).
+- **Shared, checkpointed state.** The attribute maps, the per-order prefix
+  sums and `customer`'s birth-day stream positions are built once per
+  scale, by one thread, and checkpointed so a chunk start replays at most
+  64Ki orders or rows.
+
 See [NOTICE.md](NOTICE.md) for licences.

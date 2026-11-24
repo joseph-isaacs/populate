@@ -450,16 +450,25 @@ pub fn order_facts(channel: Channel, first: u64, last: u64) -> OrderFacts {
 /// Orders per checkpoint of [`orders_before`]'s prefix sums.
 const CHECKPOINT: u64 = 1 << 16;
 
-type PrefixCache = Mutex<HashMap<(Channel, u64), Arc<Vec<OrderFacts>>>>;
+type PrefixCache = Mutex<HashMap<(Channel, u64), Arc<OnceLock<Vec<OrderFacts>>>>>;
 
 /// Prefix sums of [`OrderFacts`] at every [`CHECKPOINT`] orders of a
-/// channel with `orders` orders, built in parallel on first use.
-fn checkpoints(channel: Channel, orders: u64) -> Arc<Vec<OrderFacts>> {
+/// channel with `orders` orders, built in parallel on first use (callers
+/// that ask at once wait for one build).
+fn checkpoints(channel: Channel, orders: u64) -> Arc<OnceLock<Vec<OrderFacts>>> {
     static CACHE: OnceLock<PrefixCache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(c) = cache.lock().expect("prefix cache").get(&(channel, orders)) {
-        return c.clone();
-    }
+    let cell = cache
+        .lock()
+        .expect("prefix cache")
+        .entry((channel, orders))
+        .or_default()
+        .clone();
+    cell.get_or_init(|| build_checkpoints(channel, orders));
+    cell
+}
+
+fn build_checkpoints(channel: Channel, orders: u64) -> Vec<OrderFacts> {
     let blocks = orders.div_ceil(CHECKPOINT);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u64;
     let mut sums = vec![OrderFacts::default(); blocks as usize];
@@ -483,11 +492,6 @@ fn checkpoints(channel: Channel, orders: u64) -> Arc<Vec<OrderFacts>> {
         run.add(s);
         prefix.push(run);
     }
-    let prefix = Arc::new(prefix);
-    cache
-        .lock()
-        .expect("prefix cache")
-        .insert((channel, orders), prefix.clone());
     prefix
 }
 
@@ -497,7 +501,8 @@ pub fn orders_before(channel: Channel, orders: u64, order: u64) -> OrderFacts {
     if done < CHECKPOINT {
         return order_facts(channel, 1, done);
     }
-    let prefix = checkpoints(channel, orders);
+    let cell = checkpoints(channel, orders);
+    let prefix = cell.get().expect("built");
     let k = (done / CHECKPOINT) as usize;
     let mut f = prefix[k];
     f.add(&order_facts(channel, k as u64 * CHECKPOINT + 1, done));

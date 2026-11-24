@@ -302,3 +302,34 @@ fn dat_write_error_is_returned() {
     let err = populate_dsb::write_dat_many(&tables, writers, 4, Utf8).err();
     assert_eq!(err.map(|e| e.to_string()), Some("disk full".into()));
 }
+
+/// A sales table generated with its returns gives the same batches
+/// (sizes included) as each table alone.
+#[test]
+fn paired_channels_batch_like_single_tables() {
+    let ds = Dsb::new(1.0);
+    let sizes = |tables: &[populate_dsb::DsTable]| {
+        let mut v = vec![Vec::new(); tables.len()];
+        populate_dsb::for_each_batch_many(tables, 4, |i, b| v[i].push(b.num_rows()));
+        v
+    };
+    for batch in [1000, 3000, 8192] {
+        let t = |n| {
+            ds.table(n)
+                .limit_source_rows(6000)
+                .chunk_source_rows(2500)
+                .batch_size(batch)
+        };
+        let paired = sizes(&[t(StoreSales), t(StoreReturns)]);
+        assert_eq!(
+            paired[0],
+            sizes(&[t(StoreSales)])[0],
+            "sales, batch {batch}"
+        );
+        assert_eq!(
+            paired[1],
+            sizes(&[t(StoreReturns)])[0],
+            "returns, batch {batch}"
+        );
+    }
+}

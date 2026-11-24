@@ -17,6 +17,7 @@ pub mod sales;
 
 use crate::random::RandomNumberStream;
 use crate::types::{Date, Decimal};
+use std::cell::RefCell;
 
 /// `DIST_EXP_LAMBDA_LOW`: the skew DSB uses almost everywhere.
 pub const LAMBDA_LOW: f64 = 0.1;
@@ -33,16 +34,121 @@ pub const MARKUP_BUCKET_COUNT: i32 = 20;
 
 /// `genrand_exp_rank`: a rank in `[min, max]`, exponentially skewed towards
 /// `min`. One draw.
+///
+/// The rank is a non-decreasing function of the draw (checked for every
+/// 31-bit draw at both lambdas: `exp_ratio_is_monotone`), so for ranges up
+/// to [`TABLE_MAX_RANGE`] it is looked up from the draws where it steps
+/// instead of computed with a logarithm. The result is the same.
 pub fn exp_rank(min: i64, max: i64, lambda: f64, stream: &mut RandomNumberStream) -> i64 {
-    let prob = stream.next_random_double();
+    let draw = stream.next_random();
+    let range = max - min;
+    if (0..=TABLE_MAX_RANGE).contains(&range) {
+        let which = if lambda == LAMBDA_LOW {
+            Some(0)
+        } else if lambda == LAMBDA_HIGH {
+            Some(1)
+        } else {
+            None
+        };
+        if let Some(w) = which {
+            return min + EXP_STEPS.with(|t| t.borrow_mut()[w].steps(range, lambda, draw));
+        }
+    }
+    min + exp_offset(draw, range, lambda)
+}
+
+/// `genrand_exp_rank`'s rank above `min` for `draw`, computed.
+#[inline]
+fn exp_offset(draw: i64, range: i64, lambda: f64) -> i64 {
+    (0.5 + range as f64 * exp_ratio(draw, lambda)) as i64
+}
+
+#[inline]
+fn exp_ratio(draw: i64, lambda: f64) -> f64 {
+    let prob = draw as f64 / i32::MAX as f64;
     let cdf_min = 1.0 - (-lambda * X_MIN).exp();
     let cdf_max = 1.0 - (-lambda * X_MAX).exp();
     let cdf = cdf_min + (cdf_max - cdf_min) * prob;
     let x = -(1.0 - cdf).ln() / lambda;
     let ratio = (x - X_MIN) / (X_MAX - X_MIN);
     let ratio = f64_max(0.0, ratio);
-    let ratio = f64_min(1.0, ratio);
-    min + (0.5 + (max - min) as f64 * ratio) as i64
+    f64_min(1.0, ratio)
+}
+
+/// Largest `max - min` [`exp_rank`] looks up.
+const TABLE_MAX_RANGE: i64 = 4096;
+
+/// Bits of a draw the step index looks up by (`draw >> INDEX_SHIFT`).
+const INDEX_SHIFT: u32 = 31 - 12;
+
+/// The draws where one range's rank steps, and where to start looking.
+struct Steps {
+    /// The smallest draw of each offset above `min`: `draws[k - 1]` is
+    /// where the offset reaches `k`.
+    draws: Box<[i32]>,
+    /// For each `draw >> INDEX_SHIFT`, the offset of the smallest draw
+    /// with those high bits.
+    index: Box<[u16]>,
+}
+
+impl Steps {
+    fn new(range: i64, lambda: f64) -> Self {
+        let draws: Box<[i32]> = (1..=range)
+            .map(|k| {
+                // smallest draw in [0, i32::MAX] with offset >= k
+                let (mut lo, mut hi) = (0i64, i32::MAX as i64 + 1);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if exp_offset(mid, range, lambda) >= k {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                lo.min(i32::MAX as i64) as i32
+            })
+            .collect();
+        let index = (0..1usize << (31 - INDEX_SHIFT))
+            .map(|b| {
+                let d = (b << INDEX_SHIFT) as i32;
+                draws.partition_point(|&s| s <= d) as u16
+            })
+            .collect();
+        Steps { draws, index }
+    }
+
+    #[inline]
+    fn offset(&self, draw: i64) -> i64 {
+        let d = draw as i32;
+        let mut k = self.index[(d >> INDEX_SHIFT) as usize] as usize;
+        while k < self.draws.len() && self.draws[k] <= d {
+            k += 1;
+        }
+        k as i64
+    }
+}
+
+/// Per range, its [`Steps`], built on first use.
+#[derive(Default)]
+struct ExpSteps {
+    by_range: Vec<Option<Steps>>,
+}
+
+impl ExpSteps {
+    #[inline]
+    fn steps(&mut self, range: i64, lambda: f64, draw: i64) -> i64 {
+        let r = range as usize;
+        if self.by_range.len() <= r {
+            self.by_range.resize_with(r + 1, || None);
+        }
+        self.by_range[r]
+            .get_or_insert_with(|| Steps::new(range, lambda))
+            .offset(draw)
+    }
+}
+
+thread_local! {
+    static EXP_STEPS: RefCell<[ExpSteps; 2]> = RefCell::default();
 }
 
 // C's fmax/fmin (no NaNs reach them here).
@@ -289,4 +395,62 @@ pub fn correlated_attribute(
     let v = exp_key(lo, hi, stream);
     let v = v % count as i64 + 1;
     map_key_perm(v, perm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The looked-up ranks equal the computed ones, at every step and
+    /// either side of it, and on a spread of draws.
+    #[test]
+    fn exp_rank_lookup_matches_formula() {
+        for lambda in [LAMBDA_LOW, LAMBDA_HIGH] {
+            for range in [0i64, 1, 2, 11, 19, 30, 49, 99, 999, 4096] {
+                let mut t = ExpSteps::default();
+                t.steps(range, lambda, 1);
+                let steps = t.by_range[range as usize].as_ref().unwrap().draws.clone();
+                let mut draws: Vec<i64> =
+                    (1..20_000).map(|i| i * 107_351 % i32::MAX as i64).collect();
+                for &s in steps.iter() {
+                    draws.extend([s as i64 - 1, s as i64, s as i64 + 1]);
+                }
+                draws.extend([1, i32::MAX as i64 - 1]);
+                for d in draws
+                    .into_iter()
+                    .filter(|&d| (1..i32::MAX as i64).contains(&d))
+                {
+                    assert_eq!(
+                        t.steps(range, lambda, d),
+                        exp_offset(d, range, lambda),
+                        "lambda {lambda} range {range} draw {d}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The lookup's premise, over every draw: slow (`--ignored`).
+    #[test]
+    #[ignore]
+    fn exp_ratio_is_monotone() {
+        for lambda in [LAMBDA_LOW, LAMBDA_HIGH] {
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as i64;
+            let n = i32::MAX as i64;
+            let per = n / threads + 1;
+            std::thread::scope(|s| {
+                for t in 0..threads {
+                    s.spawn(move || {
+                        let (lo, hi) = (t * per, ((t + 1) * per + 1).min(n));
+                        let mut prev = exp_ratio(lo, lambda);
+                        for d in lo + 1..hi {
+                            let r = exp_ratio(d, lambda);
+                            assert!(r >= prev, "lambda {lambda} draw {d}");
+                            prev = r;
+                        }
+                    });
+                }
+            });
+        }
+    }
 }

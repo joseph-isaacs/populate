@@ -4,6 +4,7 @@
 use crate::TableName;
 use crate::dat::{self, Encoding};
 use crate::direct;
+use crate::pairs::Channel;
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
@@ -403,8 +404,8 @@ pub fn for_each_batch_many(
     r.unwrap_or_else(|e| match e {});
 }
 
-/// One job source: a table. `idx` lists its outputs, so that a sales
-/// table and its returns could share one pass; today each unit has one.
+/// One job source: a table, or a sales table and its returns generated
+/// together.
 struct Unit<'a> {
     tables: &'a [DsTable],
     /// Indexes into `tables` of this unit's outputs.
@@ -414,20 +415,59 @@ struct Unit<'a> {
     raw: bool,
 }
 
-/// Units for `tables`, in order: one per table.
+/// Units for `tables`, in order; a sales table and its returns with the
+/// same chunks and batch size become one unit (sales first) at the first
+/// one's place.
 fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
-    (0..tables.len())
-        .map(|i| Unit {
-            tables,
-            idx: vec![i],
-            raw,
-        })
-        .collect()
+    // partner[i]: the table generated together with tables[i]
+    let mut partner = vec![None; tables.len()];
+    for (i, a) in tables.iter().enumerate() {
+        for (j, b) in tables.iter().enumerate() {
+            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
+                (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
+                _ => false,
+            };
+            if same_channel
+                && a.session.get_scaling().get_scale() == b.session.get_scaling().get_scale()
+                && a.chunk_source_rows == b.chunk_source_rows
+                && a.source_rows == b.source_rows
+                && a.batch_size == b.batch_size
+            {
+                partner[i] = Some(j);
+            }
+        }
+    }
+    // pair only tables that chose each other (a table listed twice pairs once)
+    let partner: Vec<Option<usize>> = (0..tables.len())
+        .map(|i| partner[i].filter(|&j| partner[j] == Some(i)))
+        .collect();
+    let mut units = Vec::new();
+    for (i, t) in tables.iter().enumerate() {
+        let idx = match partner[i] {
+            Some(j) if j < i => continue,
+            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
+            Some(j) => vec![j, i],
+            None => vec![i],
+        };
+        units.push(Unit { tables, idx, raw });
+    }
+    units
 }
 
 impl Unit<'_> {
     /// Chunk `i` as `.dat` text, appended to `bufs` (one per output).
     fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        if let [s, r] = self.idx[..] {
+            // sales and returns hold only numbers: text straight from the rows
+            let t = &self.tables[s];
+            let (first, last) = t.range(i);
+            let (channel, _) = Channel::of(t.name).expect("a channel");
+            let [sales, returns] = bufs else {
+                unreachable!("a pair has two outputs")
+            };
+            debug_assert_eq!(self.tables[r].range(i), (first, last));
+            return channel.run_dat(&t.session, t.source_rows, first, last, sales, returns);
+        }
         self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
     }
 }
@@ -444,6 +484,49 @@ impl MultiChunks for Unit<'_> {
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
+        if self.idx.len() == 2 {
+            // `idx` is sales, returns: the channel's outputs 0 and 1
+            let (channel, _) = Channel::of(t.name).expect("a channel");
+            if self.raw || t.batch_size <= GEN_BATCH {
+                let batch = if self.raw { GEN_BATCH } else { t.batch_size };
+                return channel.run(&t.session, t.source_rows, first, last, batch, emit);
+            }
+            // as `Chunks::chunk`: generation batches joined into at least
+            // `batch_size` rows, per output
+            let schemas = self.schemas();
+            let mut pending: [(Vec<RecordBatch>, usize); 2] = Default::default();
+            let mut flush = |k: usize, pending: &mut Vec<RecordBatch>| {
+                if pending.len() == 1 {
+                    emit(k, pending.pop().expect("one batch"));
+                } else if !pending.is_empty() {
+                    emit(
+                        k,
+                        concat_batches(&schemas[k], pending.iter()).expect("same schema"),
+                    );
+                    pending.clear();
+                }
+            };
+            channel.run(
+                &t.session,
+                t.source_rows,
+                first,
+                last,
+                GEN_BATCH,
+                &mut |k, b| {
+                    let (p, rows) = &mut pending[k];
+                    *rows += b.num_rows();
+                    p.push(b);
+                    if *rows >= t.batch_size {
+                        flush(k, p);
+                        *rows = 0;
+                    }
+                },
+            );
+            for (k, (p, _)) in pending.iter_mut().enumerate() {
+                flush(k, p);
+            }
+            return;
+        }
         if self.raw {
             t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
         } else {

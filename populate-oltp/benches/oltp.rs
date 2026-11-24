@@ -2,13 +2,14 @@
 //!
 //! `cargo bench -p populate-oltp`. TPC-C samples generate a prefix of a
 //! table at 1 warehouse (16Ki source rows, ~160Ki lines of `order_line`);
-//! YCSB samples 16Ki records of the default `usertable`. Throughput is in
+//! YCSB samples 16Ki records of the default `usertable`, and 256Ki
+//! operations of workloads A and E on 100,000 records. Throughput is in
 //! output rows/s, and bytes/s for Parquet and text.
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
 use populate_oltp::TpccTableName::{self, *};
-use populate_oltp::{Tpcc, TpccTable, Ycsb};
+use populate_oltp::{Tpcc, TpccTable, Ycsb, YcsbRun};
 
 fn main() {
     divan::main();
@@ -73,4 +74,14 @@ fn ycsb_tsv(b: Bencher, threads: usize) {
     let size = y.write_tsv(Vec::new(), 1).expect("tsv").len();
     b.counter(BytesCount::new(size))
         .bench(|| y.write_tsv(Vec::new(), threads).expect("tsv"));
+}
+
+#[divan::bench(sample_count = 5, args = ['a', 'e'])]
+fn ycsb_run_tsv(b: Bencher, workload: char) {
+    let r = || YcsbRun::workload(workload, Ycsb::new(100_000), 256 * 1024);
+    let size = r().write_tsv(Vec::new(), 1).expect("tsv").len();
+    // a fresh run each sample: the chunk start states are found once per run
+    b.counter(BytesCount::new(size))
+        .with_inputs(r)
+        .bench_values(|r| r.write_tsv(Vec::new(), 0).expect("tsv"));
 }

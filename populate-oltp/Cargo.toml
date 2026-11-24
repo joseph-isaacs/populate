@@ -6,12 +6,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# the CLI's allocator (feature `mimalloc`, on by default; the library
+# itself doesn't use it)
+mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-table = { workspace = true, features = ["parquet"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
 parquet = { workspace = true, features = ["arrow", "snap"] }
 itoa = "1"
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 divan = { workspace = true }

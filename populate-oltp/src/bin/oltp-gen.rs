@@ -7,6 +7,12 @@
 //!               [--field-count 10] [--field-length 100] [--field-prefix field]
 //!               [--ordered] [--zero-padding 1] [--data-integrity]
 //!               [--java-seed 0] [--java-thread 1] [common flags]
+//! oltp-gen ycsb-run [ycsb flags] [--operations 1000] [--workload a-f]
+//!               [--read P] [--update P] [--insert P] [--scan P] [--rmw P]
+//!               [--distribution uniform|zipfian|latest|hotspot]
+//!               [--hotspot-data 0.2] [--hotspot-ops 0.8] [--read-one-field]
+//!               [--write-all-fields] [--scan-length MIN,MAX] [--scan-zipfian]
+//!               [common flags]
 //!
 //! common flags: [--out DIR] [--format parquet|text|none] [--threads N]
 //!               [--batch ROWS] [--row-group ROWS] [--compression snappy|none]
@@ -15,20 +21,24 @@
 //!
 //! `--format parquet` (the default) writes `DIR/<table>.parquet`; `--format
 //! text` writes TPC-C as `DIR/<table>.csv` (go-tpc's CSV layout) and YCSB as
-//! `DIR/usertable.tsv` (`key\tfield0\t...`); `--format none` only generates.
+//! `DIR/usertable.tsv` (`key\tfield0\t...`), and the YCSB run as
+//! `DIR/transactions.{parquet,tsv}` (one row per binding call: `op`, key, scan
+//! length, fields read, values written); `--format none` only generates.
 //! Every chunk of every table is a job on one pool of `--threads` threads
 //! (default: all cores); the data is the same for any thread count and
 //! `--row-group`.
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
 use populate_oltp::{
-    JavaTlr, Tpcc, TpccTable, TpccTableName, Ycsb, for_each_batch_many, tpcc, write_parquet_many,
-    write_text_many,
+    JavaTlr, RequestDistribution, Tpcc, TpccTable, TpccTableName, Ycsb, YcsbRun,
+    for_each_batch_many, tpcc, write_parquet_many, write_text_many,
 };
 use populate_table::Chunks;
 use populate_table::text::TextChunks;
@@ -39,13 +49,24 @@ use std::process::exit;
 use std::str::FromStr;
 use std::time::Instant;
 
-const USAGE: &str = "usage: oltp-gen tpcc|ycsb [flags]  (see --help)";
+/// mimalloc: buffers are reused instead of returned to the OS and faulted
+/// in again
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+const USAGE: &str = "usage: oltp-gen tpcc|ycsb|ycsb-run [flags]  (see --help)";
 
 const HELP: &str =
     "oltp-gen tpcc [--warehouses 1] [--tables a,b,...] [--seed 0] [--load-time MICROS]
 oltp-gen ycsb [--records 1000] [--insert-start 0] [--insert-count N] [--field-count 10]
               [--field-length 100] [--field-prefix field] [--ordered] [--zero-padding 1]
               [--data-integrity] [--java-seed 0] [--java-thread 1]
+oltp-gen ycsb-run [ycsb flags] [--operations 1000] [--workload a-f]
+              [--read P] [--update P] [--insert P] [--scan P] [--rmw P]
+              [--distribution uniform|zipfian|latest|hotspot] [--hotspot-data 0.2]
+              [--hotspot-ops 0.8] [--read-one-field] [--write-all-fields]
+              [--scan-length MIN,MAX] [--scan-zipfian]
 common: [--out DIR] [--format parquet|text|none] [--threads N] [--batch ROWS]
         [--row-group ROWS] [--compression snappy|none] [--no-dictionary]";
 
@@ -79,6 +100,7 @@ fn main() {
     let r = match cmd.as_str() {
         "tpcc" => tpcc(args),
         "ycsb" => ycsb(args),
+        "ycsb-run" => ycsb_run(args),
         "-h" | "--help" => {
             println!("{HELP}");
             exit(0);
@@ -195,13 +217,33 @@ fn tpcc(args: impl Iterator<Item = String>) -> Result<(), String> {
 }
 
 fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
+    ycsb_cmd(args, false)
+}
+
+fn ycsb_run(args: impl Iterator<Item = String>) -> Result<(), String> {
+    ycsb_cmd(args, true)
+}
+
+type RunSet = Box<dyn FnOnce(YcsbRun) -> YcsbRun>;
+
+/// `ycsb` (the load) and `ycsb-run` (the transactions on top of it).
+fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<(), String> {
     let mut tlr = JavaTlr {
         seed: 0,
         thread_id: 1,
     };
     let mut records = 1000;
+    let mut operations: u64 = 1000;
+    let mut workload: Option<char> = None;
     let mut sets: Vec<Box<dyn FnOnce(Ycsb) -> Ycsb>> = Vec::new();
+    let mut run_sets: Vec<RunSet> = Vec::new();
+    let mut proportions: Option<[f64; 5]> = None;
+    let mut distribution: Option<String> = None;
+    let mut hotspot = (0.2, 0.8);
     let c = parse(args, |flag, val| {
+        let mut prop = |k: usize, v: f64| {
+            proportions.get_or_insert([0.0; 5])[k] = v;
+        };
         match flag {
             "--records" => records = num(flag, val()?)?,
             "--insert-start" => {
@@ -235,6 +277,44 @@ fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
             "--data-integrity" => sets.push(Box::new(|y| y.data_integrity(true))),
             "--java-seed" => tlr.seed = num::<i64>(flag, val()?)? as u64,
             "--java-thread" => tlr.thread_id = num(flag, val()?)?,
+            "--operations" if transactions => operations = num(flag, val()?)?,
+            "--workload" if transactions => {
+                let w = val()?;
+                match w.as_str() {
+                    "a" | "b" | "c" | "d" | "e" | "f" => workload = w.chars().next(),
+                    _ => return Err(format!("--workload: `{w}` is not a to f")),
+                }
+            }
+            "--read" if transactions => prop(0, num(flag, val()?)?),
+            "--update" if transactions => prop(1, num(flag, val()?)?),
+            "--insert" if transactions => prop(2, num(flag, val()?)?),
+            "--scan" if transactions => prop(3, num(flag, val()?)?),
+            "--rmw" if transactions => prop(4, num(flag, val()?)?),
+            "--distribution" if transactions => distribution = Some(val()?),
+            "--hotspot-data" if transactions => hotspot.0 = num(flag, val()?)?,
+            "--hotspot-ops" if transactions => hotspot.1 = num(flag, val()?)?,
+            "--read-one-field" if transactions => {
+                run_sets.push(Box::new(|r| r.read_all_fields(false)))
+            }
+            "--write-all-fields" if transactions => {
+                run_sets.push(Box::new(|r| r.write_all_fields(true)))
+            }
+            "--scan-length" if transactions => {
+                let v = val()?;
+                let (a, b) = v.split_once(',').ok_or("--scan-length takes MIN,MAX")?;
+                let (a, b): (i64, i64) = (num(flag, a.into())?, num(flag, b.into())?);
+                if !(0 < a && a <= b) {
+                    return Err("--scan-length: need 0 < MIN <= MAX".into());
+                }
+                run_sets.push(Box::new(move |r| {
+                    let z = r.scan_zipfian();
+                    r.scan_length(a, b, z)
+                }))
+            }
+            "--scan-zipfian" if transactions => run_sets.push(Box::new(|r| {
+                let (a, b) = r.scan_lengths();
+                r.scan_length(a, b, true)
+            })),
             _ => return Ok(false),
         }
         Ok(true)
@@ -245,19 +325,65 @@ fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
     }
     y = y.java_random(tlr);
     y.check()?;
+    if !transactions {
+        if let Some(b) = c.batch {
+            y = y.batch_size(b);
+        }
+        if let Some(r) = c.row_group {
+            y = y.chunk_rows(r);
+        }
+        return run(
+            &c,
+            &[y],
+            &["usertable".to_string()],
+            "tsv",
+            "ycsb",
+            Ycsb::parquet_props(),
+        );
+    }
+    let mut r = match workload {
+        Some(w) => YcsbRun::workload(w, y, operations),
+        None => YcsbRun::new(y, operations),
+    };
+    if let Some([a, b, c, d, e]) = proportions {
+        if [a, b, c, d, e].iter().any(|&x| x < 0.0) || a + b + c + d + e <= 0.0 {
+            return Err("proportions must be >= 0, and one > 0".into());
+        }
+        r = r.proportions(a, b, c, d, e);
+    }
+    if let Some(d) = distribution {
+        let (h, o) = hotspot;
+        if !(0.0..=1.0).contains(&h) || !(0.0..=1.0).contains(&o) {
+            return Err("--hotspot-data and --hotspot-ops must be in 0..=1".into());
+        }
+        r = r.distribution(match d.as_str() {
+            "uniform" => RequestDistribution::Uniform,
+            "zipfian" => RequestDistribution::Zipfian,
+            "latest" => RequestDistribution::Latest,
+            "hotspot" => RequestDistribution::Hotspot {
+                data_fraction: h,
+                op_fraction: o,
+            },
+            _ => return Err(format!("--distribution: unknown `{d}`")),
+        });
+    }
+    for s in run_sets {
+        r = s(r);
+    }
     if let Some(b) = c.batch {
-        y = y.batch_size(b);
+        r = r.batch_size(b);
     }
-    if let Some(r) = c.row_group {
-        y = y.chunk_rows(r);
+    if let Some(n) = c.row_group {
+        r = r.chunk_ops(n);
     }
+    r.check()?;
     run(
         &c,
-        &[y],
-        &["usertable".to_string()],
+        &[r],
+        &["transactions".to_string()],
         "tsv",
-        "ycsb",
-        Ycsb::parquet_props(),
+        "ycsb-run",
+        YcsbRun::parquet_props(),
     )
 }
 

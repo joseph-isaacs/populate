@@ -1,17 +1,21 @@
 # populate-oltp
 
-The TPC-C initial database and the YCSB load, on all cores, as Arrow
-`RecordBatch`es, Parquet, or text, on `populate-table`'s `Chunks` engine.
+The TPC-C initial database, the YCSB load and the YCSB run (its request
+stream), on all cores, as Arrow `RecordBatch`es, Parquet, or text, on
+`populate-table`'s `Chunks` engine.
 
 ```text
 cargo run --release -p populate-oltp --bin oltp-gen -- tpcc --warehouses 100 --out tpcc
 cargo run --release -p populate-oltp --bin oltp-gen -- ycsb --records 10000000 --out ycsb
+cargo run --release -p populate-oltp --bin oltp-gen -- ycsb-run --records 10000000 \
+    --operations 10000000 --workload a --out ycsb-run
 ```
 
 | | Tables | Reference | How it is tested |
 |---|---|---|---|
 | TPC-C | all 9, any number of warehouses | TPC-C 5.11 clause 4.3.3.1 (no reference bytes exist) | row counts, keys, ranges and distributions against the spec |
 | YCSB | `usertable` of `ycsb load` (`CoreWorkload`) | YCSB 0.17.0 | byte-identical to YCSB's own output |
+| YCSB run | the operations of `ycsb run`, workloads A to F or any proportions | YCSB 0.17.0 | byte-identical to YCSB's own output |
 
 Output is identical for any thread count and chunk (row group) size: every
 random value is a function of its row, so each chunk is generated on its own.
@@ -101,6 +105,47 @@ independently), and multi-threaded YCSB loads (each YCSB thread interleaves
 its own key range; generate one `Ycsb` per thread with
 `insert_start`/`insert_count` and that thread's seed instead).
 
+## YCSB run
+
+`YcsbRun::new(load, operationcount)` or `YcsbRun::workload('a'..='f', load,
+operationcount)` (the proportions and distributions of YCSB's
+`workloads/workloada` ... `workloadf`), with `proportions` (read, update,
+insert, scan, read-modify-write), `distribution` (`Uniform`, `Zipfian`,
+`Latest`, `Hotspot`), `read_all_fields`, `write_all_fields` and
+`scan_length(min, max, zipfian)`. Each row is one call YCSB makes into the
+database binding: `op` (`READ`, `UPDATE`, `INSERT`, `SCAN`; a
+read-modify-write is a `READ` row then an `UPDATE` row), `ycsb_key`,
+`scan_length`, `read_fields` (comma-separated; NULL for all fields) and the
+values written (NULL where not written). Text output is that, tab-separated.
+
+Every choice draws a fixed number of values from the client thread's
+`ThreadLocalRandom`: the operation one `nextDouble` (two draws on OpenJDK
+21, which keeps `Random`'s `next(26) << 27 | next(27)`), a uniform key one
+`nextLong`, a zipfian key one `nextDouble` (YCSB's scrambled zipfian over
+10^10 items, then FNV), `latest` one `nextDouble` (a zipfian back from the
+newest key, whose zeta grows with the inserts), `hotspot` a `nextDouble`
+and a `nextLong`, and values as in the load. Only rejected keys (past the
+last insert) and inserts make an operation depend on the ones before it, so
+a quick pass that only advances the generators finds each chunk's start
+state (draw position, next insert, `latest`'s zeta), one chunk at a time by
+whichever thread first needs it, and chunks are generated in parallel. The
+zipfian's `pow(x, 1 / (1 - 0.99))` is computed as `x^100` by squaring, and
+only falls back to `pow` when the product is within 1e-12 of an integer.
+
+**Tested byte for byte against YCSB 0.17.0's `ycsb run`** (`YCSB_MODE=-t
+ycsb-ref/run.sh OUT -p refdb.run=true ...`, where `RefDB` writes each call
+it receives): `tests/ycsb_run.rs` holds a fixture and the FNV hashes of 19
+runs (workloads A to F; uniform, zipfian, latest and hotspot keys, with and
+without inserts; uniform and zipfian scan lengths; one field read, all
+fields written; `dataintegrity`; other field counts, lengths and prefixes;
+ordered keys with padding; `insertstart` / `insertcount`), each on 1 and 4
+threads with odd chunk and batch sizes; before merging, 1M-operation runs of
+workload A, latest with 50% inserts, workload E and zipfian scans of up to
+100,000 records were also compared whole with `cmp`.
+
+Not supported: the `exponential` and `sequential` request distributions,
+and `fieldlengthdistribution` other than `constant`.
+
 ## Speed
 
 4 cores, `--release`, best of 5, output to tmpfs (see also `cargo bench -p
@@ -108,12 +153,16 @@ populate-oltp`):
 
 | Workload | Generate (Arrow) | Parquet (snappy) | Text |
 |---|---|---|---|
-| TPC-C, 10 warehouses (5.1M rows) | 0.20 s | 0.59 s, 556 MiB | 0.37 s, 685 MiB CSV |
-| YCSB, 1M records (1 GiB) | 0.19 s | 0.69 s, 1,010 MiB | 0.53 s, 986 MiB TSV |
+| TPC-C, 10 warehouses (5.1M rows) | 0.17 s | 0.52 s, 556 MiB | 0.37 s, 685 MiB CSV |
+| YCSB, 1M records (1 GiB) | 0.14 s | 0.55 s, 1,010 MiB | 0.37 s, 986 MiB TSV |
+| YCSB run, workload A, 2M operations | 0.12 s | 0.25 s, 131 MiB | 0.11 s, 175 MiB TSV |
 
 For comparison, on the same machine: `go-tpc tpcc prepare --warehouses 10
 --threads 4 --output-type csv` takes 3.6 s, and YCSB 0.17.0's own load of 1M
-records (one client thread, the `ycsb-ref` binding writing TSV) 3.4 s.
+records (one client thread, the `ycsb-ref` binding writing TSV) 3.4 s, and
+its run of those 2M workload A operations 2.0 s.
+`oltp-gen` uses mimalloc (feature `mimalloc`, on by default; the library
+does not).
 
 YCSB text is written straight from the generators (no Arrow arrays), each
 random 6-byte group built in one word from YCSB's int; Parquet uses

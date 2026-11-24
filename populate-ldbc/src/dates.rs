@@ -1,9 +1,10 @@
 //! `DateGenerator` and `DateUtils`: epoch milliseconds, UTC.
 
 use crate::dict::PowerDistribution;
-use crate::java::{ms_of_ymd, ymd_of_ms};
+use crate::java::{MS_PER_DAY, ms_of_ymd, ymd_of_ms};
 use crate::jrand::JavaRandom;
 use crate::params::{ALPHA, Params};
+use std::sync::LazyLock;
 
 pub const ONE_DAY: i64 = 24 * 60 * 60 * 1000;
 pub const SEVEN_DAYS: i64 = 7 * ONE_DAY;
@@ -140,6 +141,26 @@ pub fn month(ms: i64) -> u32 {
 
 /// `DateUtils.isTravelSeason`.
 pub fn is_travel_season(ms: i64) -> bool {
+    // one bit per day of 1970 to 2059 (the datagen's dates are 2010 to
+    // 2020), the civil date only outside that
+    const DAYS: usize = 90 * 366;
+    static SEASON: LazyLock<Vec<u64>> = LazyLock::new(|| {
+        let mut v = vec![0u64; DAYS.div_ceil(64)];
+        for day in 0..DAYS {
+            if travel_season_of(day as i64 * MS_PER_DAY) {
+                v[day / 64] |= 1 << (day % 64);
+            }
+        }
+        v
+    });
+    let day = ms.div_euclid(MS_PER_DAY);
+    match usize::try_from(day) {
+        Ok(d) if d < DAYS => SEASON[d / 64] >> (d % 64) & 1 == 1,
+        _ => travel_season_of(ms),
+    }
+}
+
+fn travel_season_of(ms: i64) -> bool {
     let (_, m, d) = ymd_of_ms(ms);
     (m > 4 && m < 7) || (m == 11 && d > 23)
 }

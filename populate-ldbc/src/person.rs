@@ -38,6 +38,29 @@ pub struct Person {
     pub class_year: i64,
 }
 
+/// The fields of a [`Person`] the activity's draws read, packed (a
+/// `Person` is ~200 bytes; activity reads these for random members).
+#[derive(Debug, Clone, Copy)]
+pub struct Hot {
+    pub account_id: i64,
+    pub creation: i64,
+    pub deletion: i64,
+    pub message_deleter: bool,
+    pub large_poster: bool,
+}
+
+impl Hot {
+    pub fn of(p: &Person) -> Self {
+        Hot {
+            account_id: p.account_id,
+            creation: p.creation,
+            deletion: p.deletion,
+            message_deleter: p.message_deleter,
+            large_poster: p.large_poster,
+        }
+    }
+}
+
 /// `FacebookDegreeDistribution`, a `BucketedDistribution`.
 #[derive(Debug, Clone)]
 pub struct DegreeDistribution {

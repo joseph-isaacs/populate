@@ -54,7 +54,7 @@ use dict::{Dictionaries, PlaceType};
 use factors::{Factor, FactorInput};
 use knows::Knows;
 use params::Params;
-use person::{Person, PersonGenerator};
+use person::{Hot, Person, PersonGenerator};
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 use rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
@@ -123,6 +123,7 @@ pub struct Ldbc {
     dates: Dates,
     dicts: Dictionaries,
     persons: Vec<Person>,
+    hot: Vec<Hot>,
     knows: Vec<Vec<Knows>>,
     blocks: Vec<Vec<u32>>,
     /// Chunk `i` is persons `start..end` of block `b`: `(b, start, end)`.
@@ -224,6 +225,7 @@ impl Ldbc {
             params,
             dates,
             dicts,
+            hot: persons.iter().map(Hot::of).collect(),
             persons,
             knows,
             blocks,
@@ -292,6 +294,7 @@ impl Ldbc {
             d: &self.dicts,
             dates: &self.dates,
             persons: &self.persons,
+            hot: &self.hot,
             knows: &self.knows,
             num_bits: self.num_bits,
         }

@@ -729,6 +729,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-h2o"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "divan",
+ "parquet",
+ "populate-table",
+]
+
+[[package]]
 name = "populate-sink-arrow"
 version = "0.1.0"
 dependencies = [

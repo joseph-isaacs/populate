@@ -775,6 +775,7 @@ dependencies = [
  "bytes",
  "divan",
  "itoa",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]

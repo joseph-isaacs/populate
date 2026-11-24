@@ -219,10 +219,21 @@ pub(crate) fn customer_demographics(
     let mut row = first;
     while row <= last {
         let n = batch.min((last - row + 1) as usize);
-        // digit `d` of each row's index
+        // digit `d` of each row's index, counted up instead of divided out
+        // (two 64-bit divisions per digit per row were most of the table)
         let digit = |d: usize| {
             let div: u64 = radix[..d].iter().product();
-            (row - 1..row - 1 + n as u64).map(move |i| i / div % radix[d])
+            let i = row - 1;
+            let (mut v, mut left) = (i / div % radix[d], div - i % div);
+            (0..n).map(move |_| {
+                let x = v;
+                left -= 1;
+                if left == 0 {
+                    left = div;
+                    v = if v + 1 == radix[d] { 0 } else { v + 1 };
+                }
+                x
+            })
         };
         let ints = |d: usize| i32s(digit(d).map(|v| v as i32).collect());
         let cols = vec![

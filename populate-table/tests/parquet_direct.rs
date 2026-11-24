@@ -1,14 +1,19 @@
-//! Integer, date and decimal columns are encoded by populate-table, not
+//! Integer, date, timestamp, decimal, float and string columns are encoded by populate-table, not
 //! arrow-rs: they must read back exactly, with the statistics and page
 //! arrow-rs would write and correct page indexes.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Decimal128Type, Int32Type, Int64Type};
-use arrow_array::{
-    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, StringViewArray,
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
+    Int64Type, TimestampMicrosecondType, TimestampSecondType,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::{
+    Array, ArrayRef, Date32Array, Decimal128Array, FixedSizeListArray, Float32Array, Float64Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
+    TimestampMicrosecondArray, TimestampSecondArray,
+};
+use arrow_cast::cast;
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{
@@ -51,6 +56,18 @@ fn schema() -> SchemaRef {
         Field::new("view", DataType::Utf8View, true),
         Field::new("long_view", DataType::Utf8View, true),
         Field::new("required_view", DataType::Utf8View, false),
+        Field::new("tiny", DataType::Int16, true),
+        Field::new("byte", DataType::Int8, false),
+        Field::new(
+            "ts_us",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+        Field::new("ts_s", DataType::Timestamp(TimeUnit::Second, None), false),
+        Field::new("f32", DataType::Float32, true),
+        Field::new("f64", DataType::Float64, true),
+        Field::new("f32_distinct", DataType::Float32, false),
+        Field::new("f64_required", DataType::Float64, false),
     ]))
 }
 
@@ -121,6 +138,48 @@ fn batch(start: i64, n: usize) -> RecordBatch {
         }))),
         Arc::new(StringViewArray::from_iter_values(
             rows.clone().map(|r| format!("v{}", r % 1000)),
+        )),
+        Arc::new(Int16Array::from_iter(
+            col(&|r| r % 300 - 150)
+                .into_iter()
+                .map(|v| v.map(|v| v as i16)),
+        )),
+        Arc::new(Int8Array::from_iter_values(
+            rows.clone().map(|r| (r % 200 - 100) as i8),
+        )),
+        Arc::new(TimestampMicrosecondArray::from(col(&|r| {
+            r * 1_000_003 - (1 << 41)
+        }))),
+        Arc::new(TimestampSecondArray::from_iter_values(
+            rows.clone().map(|r| 1_372_636_800 + r / 3),
+        )),
+        // NaNs scattered and a page of only NaN, -0.0 and +0.0, infinities
+        Arc::new(Float32Array::from_iter(rows.clone().map(|r| {
+            (!null(r)).then(|| {
+                if r % 97 == 5 || (40_000..41_000).contains(&r) {
+                    f32::NAN
+                } else if r % 89 == 1 {
+                    -0.0
+                } else {
+                    (r % 1000) as f32 * 0.25 - 100.0
+                }
+            })
+        }))),
+        Arc::new(Float64Array::from_iter(rows.clone().map(|r| {
+            (!null(r)).then(|| match r % 1009 {
+                0 => f64::INFINITY,
+                1 => f64::NEG_INFINITY,
+                2 => -f64::NAN,
+                _ => r as f64 * 1.37 - 1e5,
+            })
+        }))),
+        // too distinct for the dictionary page size limit
+        Arc::new(Float32Array::from_iter_values(
+            rows.clone()
+                .map(|r| ((r * 2_654_435_761) % 1_000_003) as f32 / 7.0),
+        )),
+        Arc::new(Float64Array::from_iter_values(
+            rows.clone().map(|r| (r % 17) as f64 * 0.5),
         )),
     ];
     RecordBatch::try_new(schema(), columns).unwrap()
@@ -260,6 +319,14 @@ fn raw(a: &dyn Array) -> Vec<Option<i64>> {
             DataType::Int32 => a.as_primitive::<Int32Type>().value(i) as i64,
             DataType::Date32 => a.as_primitive::<Date32Type>().value(i) as i64,
             DataType::Int64 => a.as_primitive::<Int64Type>().value(i),
+            DataType::Int16 => a.as_primitive::<Int16Type>().value(i) as i64,
+            DataType::Int8 => a.as_primitive::<Int8Type>().value(i) as i64,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                a.as_primitive::<TimestampMicrosecondType>().value(i)
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                a.as_primitive::<TimestampSecondType>().value(i)
+            }
             DataType::Decimal128(..) => a.as_primitive::<Decimal128Type>().value(i) as i64,
             _ => 0,
         }
@@ -279,4 +346,345 @@ fn no_dictionary_and_no_statistics() {
         .build();
     let ours = write_parquet(&d, Vec::new(), 1, Some(props)).unwrap();
     assert_eq!(read(&ours, None), read(&arrow_rs(&d), None));
+}
+
+#[test]
+fn float_column_indexes_match_arrow_rs() {
+    // nullable columns: arrow-rs's pages are the ones planned here, so the
+    // column indexes (min, max, null and NaN counts per page) must be equal
+    let d = data();
+    let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let theirs = arrow_rs(&d);
+    let open = |f: &[u8]| {
+        let opts = ReadOptionsBuilder::new().with_page_index().build();
+        SerializedFileReader::new_with_options(Bytes::from(f.to_vec()), opts).unwrap()
+    };
+    let (a, b) = (open(&ours), open(&theirs));
+    let (a, b) = (a.metadata(), b.metadata());
+    let names = ["f32", "f64", "tiny", "ts_us"];
+    let mut checked = 0;
+    for g in 0..a.num_row_groups() {
+        for (c, col) in a.row_group(g).columns().iter().enumerate() {
+            if !names.contains(&col.column_path().string().as_str()) {
+                continue;
+            }
+            let (pa, pb) = (a.page_index_for_row_group(g), b.page_index_for_row_group(g));
+            assert_eq!(
+                format!("{:?}", pa.column_index(c)),
+                format!("{:?}", pb.column_index(c)),
+                "group {g} column {}",
+                col.column_path()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 4 * a.num_row_groups());
+}
+
+/// Long strings in different batches of one row group whose views are
+/// equal (same buffer index, offset, length and prefix) but whose bytes
+/// differ: the dictionary must tell them apart.
+#[test]
+fn equal_views_in_different_batches_are_different_strings() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "s",
+        DataType::Utf8View,
+        false,
+    )]));
+    let batch = |words: &[&str]| {
+        let a: StringViewArray = words.iter().map(|w| Some(*w)).collect();
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(a) as ArrayRef]).unwrap()
+    };
+    let one = batch(&[
+        "same prefix, first tail",
+        "short",
+        "same prefix, first tail",
+    ]);
+    let two = batch(&[
+        "same prefix, other tail",
+        "short",
+        "same prefix, other tail",
+    ]);
+    let views = |b: &RecordBatch| b.column(0).as_string_view().views().to_vec();
+    assert_eq!(views(&one)[0], views(&two)[0], "the test needs equal views");
+    let d = Groups(schema.clone(), vec![vec![one.clone(), two.clone()]]);
+    let file = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let opts = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Required);
+    let b = ParquetRecordBatchReaderBuilder::try_new_with_options(Bytes::from(file), opts).unwrap();
+    let got: Vec<RecordBatch> = b.build().unwrap().map(Result::unwrap).collect();
+    let got = arrow_select::concat::concat_batches(&schema, &got).unwrap();
+    let strings = |a: &ArrayRef| -> Vec<String> {
+        let a = cast(a, &DataType::Utf8).unwrap();
+        a.as_string::<i32>()
+            .iter()
+            .map(|s| s.unwrap().to_string())
+            .collect()
+    };
+    let want = [strings(one.column(0)), strings(two.column(0))].concat();
+    assert_eq!(strings(got.column(0)), want);
+}
+
+/// A NaN among values of a narrow range: the dictionary must still cover
+/// the NaN (statistics leave it out).
+#[test]
+fn nan_with_a_narrow_range() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Float32, false),
+        Field::new("b", DataType::Float64, true),
+    ]));
+    let a = Float32Array::from(vec![1.0, f32::NAN, 1.0, 1.5]);
+    let b = Float64Array::from(vec![Some(2.0), Some(-f64::NAN), None, Some(2.0)]);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap();
+    let d = Groups(schema, vec![vec![batch.clone()]]);
+    let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let back = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(ours))
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let bits = |b: &RecordBatch| {
+        let a: Vec<u32> = b
+            .column(0)
+            .as_primitive::<Float32Type>()
+            .values()
+            .iter()
+            .map(|x| x.to_bits())
+            .collect();
+        let c = b.column(1).as_primitive::<Float64Type>();
+        let b: Vec<Option<u64>> = c.iter().map(|x| x.map(f64::to_bits)).collect();
+        (a, b)
+    };
+    assert_eq!(bits(&back), bits(&batch));
+}
+
+/// A required `FixedSizeList<Float32>` (embeddings) column, encoded here
+/// when its dictionary is off: same values, statistics and level
+/// histograms as arrow-rs, page indexes that match the data.
+#[test]
+fn fixed_size_list_columns() {
+    let dim = 24;
+    let item = Arc::new(Field::new_list_field(DataType::Float32, false));
+    let item64 = Arc::new(Field::new_list_field(DataType::Int64, false));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("v", DataType::FixedSizeList(item.clone(), dim), false),
+        Field::new("w", DataType::FixedSizeList(item64.clone(), 3), false),
+    ]));
+    let batch = |start: usize, n: usize| {
+        let vals: Vec<f32> = (start * dim as usize..(start + n) * dim as usize)
+            .map(|i| match i % 1001 {
+                7 => f32::NAN,
+                8 => -0.0,
+                _ => ((i * 2_654_435_761) % 100_003) as f32 / 99.0 - 500.0,
+            })
+            .collect();
+        let v =
+            FixedSizeListArray::new(item.clone(), dim, Arc::new(Float32Array::from(vals)), None);
+        let w64: Vec<i64> = (start * 3..(start + n) * 3)
+            .map(|i| i as i64 * 7 - 1000)
+            .collect();
+        let w = FixedSizeListArray::new(item64.clone(), 3, Arc::new(Int64Array::from(w64)), None);
+        // slice so that the list arrays have a non-zero offset
+        let big = RecordBatch::try_new(schema.clone(), vec![Arc::new(v), Arc::new(w)]).unwrap();
+        big.slice(1, n - 1)
+    };
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for sizes in [vec![5000, 1, 3000], vec![20_000, 7]] {
+        let mut g = Vec::new();
+        for n in sizes {
+            g.push(batch(start, n + 1));
+            start += n + 1;
+        }
+        groups.push(g);
+    }
+    let d = Groups(schema.clone(), groups);
+    let props = || {
+        WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_data_page_size_limit(64 * 1024)
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .build()
+    };
+    let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props())).unwrap();
+    for g in &d.1 {
+        for b in g {
+            w.write(b).unwrap();
+        }
+        w.flush().unwrap();
+    }
+    let theirs = w.into_inner().unwrap();
+    let read_all = |f: &[u8]| {
+        let opts = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Required);
+        let b =
+            ParquetRecordBatchReaderBuilder::try_new_with_options(Bytes::from(f.to_vec()), opts)
+                .unwrap();
+        let got: Vec<RecordBatch> = b.build().unwrap().map(Result::unwrap).collect();
+        arrow_select::concat::concat_batches(&schema, &got).unwrap()
+    };
+    let (x, y) = (read_all(&ours), read_all(&theirs));
+    // NaN != NaN, so compare bits
+    let bits = |b: &RecordBatch| -> (Vec<u32>, Vec<i64>) {
+        let v = b
+            .column(0)
+            .as_fixed_size_list()
+            .values()
+            .as_primitive::<arrow_array::types::Float32Type>();
+        let w = b
+            .column(1)
+            .as_fixed_size_list()
+            .values()
+            .as_primitive::<Int64Type>();
+        (
+            v.values().iter().map(|f| f.to_bits()).collect(),
+            w.values().to_vec(),
+        )
+    };
+    assert_eq!(x.num_rows(), y.num_rows());
+    assert_eq!(bits(&x), bits(&y));
+    // with a row selection (pages of whole records, offset index in records)
+    let sel = RowSelection::from(vec![
+        RowSelector::skip(4_000),
+        RowSelector::select(2_000),
+        RowSelector::skip(10_000),
+        RowSelector::select(50),
+    ]);
+    let opts = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Required);
+    let picked: Vec<RecordBatch> =
+        ParquetRecordBatchReaderBuilder::try_new_with_options(Bytes::from(ours.clone()), opts)
+            .unwrap()
+            .with_row_selection(sel)
+            .build()
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+    let picked = arrow_select::concat::concat_batches(&schema, &picked).unwrap();
+    let want = arrow_select::concat::concat_batches(
+        &schema,
+        &[y.slice(4_000, 2_000), y.slice(16_000, 50)],
+    )
+    .unwrap();
+    assert_eq!(bits(&picked), bits(&want));
+
+    let open = |f: &[u8]| {
+        let opts = ReadOptionsBuilder::new().with_page_index().build();
+        SerializedFileReader::new_with_options(Bytes::from(f.to_vec()), opts).unwrap()
+    };
+    let (a, b) = (open(&ours), open(&theirs));
+    let (a, b) = (a.metadata(), b.metadata());
+    let mut start = 0;
+    for g in 0..a.num_row_groups() {
+        let (ga, gb) = (a.row_group(g), b.row_group(g));
+        assert_eq!(ga.num_rows(), gb.num_rows());
+        for (c, (ca, cb)) in ga.columns().iter().zip(gb.columns()).enumerate() {
+            assert_eq!(ca.statistics(), cb.statistics(), "group {g} column {c}");
+            assert_eq!(ca.num_values(), cb.num_values());
+            assert_eq!(
+                ca.definition_level_histogram(),
+                cb.definition_level_histogram()
+            );
+            assert_eq!(
+                ca.repetition_level_histogram(),
+                cb.repetition_level_histogram()
+            );
+            // each page's min and max are its records' values
+            let pi = a.page_index_for_row_group(g);
+            let pages = pi.offset_index(c).unwrap().page_locations();
+            assert!(pages.len() > 1, "several pages");
+            let rows = ga.num_rows() as usize;
+            for (p, loc) in pages.iter().enumerate() {
+                let from = start + loc.first_row_index as usize;
+                let to = pages
+                    .get(p + 1)
+                    .map_or(start + rows, |n| start + n.first_row_index as usize);
+                match pi.column_index(c).unwrap() {
+                    ColumnIndexMetaData::FLOAT(ix) => {
+                        let v = &bits(&x).0[from * dim as usize..to * dim as usize];
+                        let nums: Vec<f32> = v
+                            .iter()
+                            .map(|&b| f32::from_bits(b))
+                            .filter(|f| !f.is_nan())
+                            .collect();
+                        let lo = nums.iter().copied().fold(f32::INFINITY, f32::min);
+                        let hi = nums.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                        assert_eq!(ix.min_value(p).copied(), Some(lo));
+                        assert_eq!(ix.max_value(p).copied(), Some(hi));
+                        let nans = v.iter().filter(|&&b| f32::from_bits(b).is_nan()).count();
+                        assert_eq!(ix.nan_count(p), Some(nans as i64));
+                    }
+                    ColumnIndexMetaData::INT64(ix) => {
+                        let v = &bits(&x).1[from * 3..to * 3];
+                        assert_eq!(ix.min_value(p), v.iter().min());
+                        assert_eq!(ix.max_value(p), v.iter().max());
+                    }
+                    other => panic!("unexpected index {other:?}"),
+                }
+            }
+        }
+        start += ga.num_rows() as usize;
+    }
+}
+
+/// Short lists (bit-packed repetition levels) and lists of one value (a
+/// single run): same values and statistics as arrow-rs.
+#[test]
+fn short_fixed_size_lists() {
+    for n in [1, 2, 5, 15, 16] {
+        let item = Arc::new(Field::new_list_field(DataType::Float64, false));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            DataType::FixedSizeList(item.clone(), n),
+            false,
+        )]));
+        let rows = 3001;
+        let vals: Vec<f64> = (0..rows * n as usize)
+            .map(|i| (i % 97) as f64 - 40.0)
+            .collect();
+        let a = FixedSizeListArray::new(item, n, Arc::new(Float64Array::from(vals)), None);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(a)]).unwrap();
+        let d = Groups(schema.clone(), vec![vec![batch.clone()]]);
+        let props = || {
+            WriterProperties::builder()
+                .set_dictionary_enabled(false)
+                .set_data_page_size_limit(4096)
+                .build()
+        };
+        let ours = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+        let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props())).unwrap();
+        w.write(&batch).unwrap();
+        let theirs = w.into_inner().unwrap();
+        let back = |f: Vec<u8>| -> RecordBatch {
+            let r = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(f))
+                .unwrap()
+                .build()
+                .unwrap();
+            let b: Vec<RecordBatch> = r.map(Result::unwrap).collect();
+            arrow_select::concat::concat_batches(&schema, &b).unwrap()
+        };
+        let meta = |f: &[u8]| {
+            SerializedFileReader::new(Bytes::from(f.to_vec()))
+                .unwrap()
+                .metadata()
+                .row_group(0)
+                .column(0)
+                .clone()
+        };
+        assert_eq!(back(ours.clone()), batch, "n = {n}");
+        assert_eq!(back(theirs.clone()), batch);
+        let (a, b) = (meta(&ours), meta(&theirs));
+        assert_eq!(a.statistics(), b.statistics(), "n = {n}");
+        assert_eq!(
+            a.repetition_level_histogram(),
+            b.repetition_level_histogram()
+        );
+        // levels cost about what arrow-rs's do (pages split differently)
+        assert!(
+            ours.len() * 100 <= theirs.len() * 101,
+            "n = {n}: {} vs {}",
+            ours.len(),
+            theirs.len()
+        );
+    }
 }

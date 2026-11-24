@@ -212,6 +212,10 @@ impl Shape for Taxi {
         "taxi"
     }
 
+    fn is_plain(&self, column: &str) -> bool {
+        column.ends_with("_datetime")
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

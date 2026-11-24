@@ -64,6 +64,20 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --fo
 
 See [`populate-tpcds/README.md`](populate-tpcds/README.md).
 
+## DSB
+
+`populate-dsb` generates all 24 tables of Microsoft's
+[DSB](https://github.com/microsoft/dsb) (TPC-DS with skewed, correlated
+data) byte-identical to DSB's `dsdgen`, on all cores. Its generator is
+tpcdsgen with DSB's changes to dsdgen ported in, run through the same
+`Chunks` engine as populate-tpcds.
+
+```sh
+cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat # DSB dsdgen text
+```
+
+See [`populate-dsb/README.md`](populate-dsb/README.md).
+
 ## TPC-H
 
 `populate-tpch` generates all 8 TPC-H tables byte-identical to `dbgen` (and
@@ -78,6 +92,19 @@ cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --forma
 
 See [`populate-tpch/README.md`](populate-tpch/README.md).
 
+## SSB
+
+`populate-ssb` generates the five Star Schema Benchmark tables
+byte-identical to `ssb-dbgen`, plus the denormalised `lineorder_flat`, as
+Arrow, Parquet or `.tbl` text, on all cores, on TPC-H's random streams.
+
+```sh
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb              # Parquet
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl # ssb-dbgen text
+```
+
+See [`populate-ssb/README.md`](populate-ssb/README.md).
+
 ## Crates
 
 | crate                   | contents                                            |
@@ -89,6 +116,22 @@ See [`populate-tpch/README.md`](populate-tpch/README.md).
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
+| `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
+| `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 
 See `populate/DESIGN.md` for the design.
+
+## H2O db-benchmark
+
+`populate-h2o` generates the H2O db-benchmark groupby and join data sets,
+byte-identical to the CSV its R datagen scripts write (R's Mersenne
+Twister, `sample()`, `round()` and data.table `fwrite` reproduced), as CSV,
+Arrow or Parquet, on all cores.
+
+```sh
+cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 0 --sort 0
+cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
+```
+
+See [`populate-h2o/README.md`](populate-h2o/README.md).

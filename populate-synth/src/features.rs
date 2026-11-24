@@ -170,6 +170,14 @@ impl Shape for Features {
         "features"
     }
 
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "id" | "event_time" | "target") || column.starts_with("f_")
+    }
+
+    fn is_random(&self, column: &str) -> bool {
+        column == "target" || column.starts_with("f_")
+    }
+
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }

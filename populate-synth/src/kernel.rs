@@ -12,6 +12,7 @@
 use arrow_array::types::ArrowPrimitiveType;
 use arrow_array::{ArrayRef, PrimitiveArray, StringViewArray};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use populate_table::Stream;
 use std::sync::Arc;
 
 /// `[0, 1)` from the top 53 bits.
@@ -144,6 +145,43 @@ impl Quantiles {
         let (q, d) = self.knots[(bits >> (64 - QBITS)) as usize];
         let frac = ((bits << QBITS) >> 24) as f64 * (1.0 / (1u64 << 40) as f64);
         q + d * frac
+    }
+}
+
+/// Standard normal draws, five per 64-bit hash: each 12-bit field of the
+/// hash picks one of 4,096 equal-probability quantiles (an L1-resident
+/// table). Coarser than [`Quantiles`] but about five times cheaper per
+/// value, for bulk noise such as embedding coordinates.
+#[derive(Debug, Clone)]
+pub struct FastNormal {
+    table: Box<[f32; 4096]>,
+}
+
+impl Default for FastNormal {
+    fn default() -> Self {
+        let mut table = Box::new([0.0; 4096]);
+        for (i, t) in table.iter_mut().enumerate() {
+            *t = normal_icdf((i as f64 + 0.5) / 4096.0) as f32;
+        }
+        FastNormal { table }
+    }
+}
+
+impl FastNormal {
+    /// Hashes needed for `n` values.
+    pub fn hashes(n: usize) -> usize {
+        n.div_ceil(5)
+    }
+
+    /// Fill `out` from hashes `s.at(first)`, `s.at(first + 1)`, ...
+    #[inline]
+    pub fn fill(&self, s: Stream, first: u64, out: &mut [f32]) {
+        for (k, five) in out.chunks_mut(5).enumerate() {
+            let b = s.at(first + k as u64);
+            for (l, o) in five.iter_mut().enumerate() {
+                *o = self.table[((b >> (12 * l)) & 4095) as usize];
+            }
+        }
     }
 }
 
@@ -355,22 +393,6 @@ impl ViewWriter {
     }
 }
 
-/// Append the decimal digits of `v`.
-#[inline]
-pub fn push_u64(out: &mut Vec<u8>, mut v: u64) {
-    let mut tmp = [0u8; 20];
-    let mut i = tmp.len();
-    loop {
-        i -= 1;
-        tmp[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-        if v == 0 {
-            break;
-        }
-    }
-    out.extend_from_slice(&tmp[i..]);
-}
-
 /// Round to cents (non-negative inputs; `+ 0.5` then truncate, which
 /// vectorises where `round` does not).
 #[inline(always)]
@@ -381,7 +403,6 @@ pub fn cents(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use populate_table::Stream;
 
     #[test]
     fn normal_quantiles_have_the_right_moments() {
@@ -393,6 +414,18 @@ mod tests {
         let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
         assert!((mean - 3.0).abs() < 0.02, "{mean}");
         assert!((var.sqrt() - 2.0).abs() < 0.02, "{}", var.sqrt());
+    }
+
+    #[test]
+    fn fast_normal_has_the_right_moments() {
+        let f = FastNormal::default();
+        let mut v = vec![0.0f32; 500_000];
+        f.fill(Stream::new(4, "f"), 0, &mut v);
+        let n = v.len() as f64;
+        let mean = v.iter().map(|&x| x as f64).sum::<f64>() / n;
+        let var = v.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+        assert!(mean.abs() < 0.01, "{mean}");
+        assert!((var - 1.0).abs() < 0.01, "{var}");
     }
 
     #[test]

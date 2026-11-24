@@ -1,0 +1,25 @@
+[package]
+name = "populate-ssb"
+description = "Star Schema Benchmark (SSB) data byte-identical to ssb-dbgen, on all cores: Arrow, Parquet or .tbl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+# dbgen's skip-ahead random streams, shared with TPC-H
+populate-tpch = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-select = "60"
+parquet = { workspace = true, features = ["arrow", "snap"] }
+# dbgen's distributions (SSB's dists.dss values are TPC-H's), Apache-2.0
+tpchgen = "4.0"
+
+[dev-dependencies]
+bytes = "1"
+
+[[bin]]
+name = "ssb-gen"
+path = "src/bin/ssb-gen.rs"

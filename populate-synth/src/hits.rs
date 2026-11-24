@@ -19,9 +19,7 @@
 //!   daily profile), and `EventDate` is its day.
 
 use crate::Shape;
-use crate::kernel::{
-    Pool, Quantiles, ViewWriter, Weighted, Zipf, prim_ref, push_u64, threshold, unit,
-};
+use crate::kernel::{Pool, Quantiles, ViewWriter, Weighted, Zipf, prim_ref, threshold, unit};
 use arrow_array::types::{Date32Type, Int16Type, Int32Type, Int64Type, TimestampSecondType};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -231,6 +229,10 @@ pub struct Hits {
     desktop: Weighted<usize>,
     /// Domain of each site, by `CounterID - 1`.
     domains: Vec<String>,
+    /// `https://<domain>/` of each site.
+    site_prefix: Vec<Box<[u8]>>,
+    /// Each word with a `/` after it.
+    word_slash: Vec<Box<[u8]>>,
     titles: Pool,
     phrases: Pool,
     /// Each phrase as a query string (`+` for spaces).
@@ -300,7 +302,7 @@ impl Hits {
             p_path: st("hits.p_path"),
         };
         let word = |b: u64| WORDS[(b % WORDS.len() as u64) as usize];
-        let domains = (0..sites)
+        let domains: Vec<String> = (0..sites)
             .map(|c| {
                 let b = s.c_domain.at(c);
                 // two words plus the site number keeps every domain distinct
@@ -376,6 +378,14 @@ impl Hits {
                 (6, 0.05),
                 (7, 0.04),
             ]),
+            site_prefix: domains
+                .iter()
+                .map(|d| format!("https://{d}/").into_bytes().into())
+                .collect(),
+            word_slash: WORDS
+                .iter()
+                .map(|w| format!("{w}/").into_bytes().into())
+                .collect(),
             domains,
             titles: Pool::new((0..20_000).map(|i| gen_phrase(title_pool, i, 3, 5, true))),
             phrases: Pool::new(&phrases),
@@ -395,18 +405,26 @@ impl Hits {
         self.seed
     }
 
-    /// `https://<domain>/<word>/<word>/<page>.html` of `(counter, page)`.
+    /// `https://<domain>/<word>/<word>/<page>.html` of `(counter, page)`:
+    /// four copies (site prefix, two words with their slashes, then the
+    /// page number and suffix formatted on the stack).
     fn write_url(&self, out: &mut Vec<u8>, counter: u64, page: u64) {
         let b = self.s.p_path.at(counter << 20 ^ page);
-        out.extend_from_slice(b"https://");
-        out.extend_from_slice(self.domains[counter as usize].as_bytes());
-        out.push(b'/');
-        out.extend_from_slice(WORDS[(b & 127) as usize].as_bytes());
-        out.push(b'/');
-        out.extend_from_slice(WORDS[((b >> 7) & 127) as usize].as_bytes());
-        out.push(b'/');
-        push_u64(out, page);
-        out.extend_from_slice(b".html");
+        out.extend_from_slice(&self.site_prefix[counter as usize]);
+        out.extend_from_slice(&self.word_slash[(b & 127) as usize]);
+        out.extend_from_slice(&self.word_slash[((b >> 7) & 127) as usize]);
+        let mut tmp = [0u8; 25];
+        tmp[20..].copy_from_slice(b".html");
+        let (mut i, mut v) = (20, page);
+        loop {
+            i -= 1;
+            tmp[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        out.extend_from_slice(&tmp[i..]);
     }
 }
 
@@ -462,6 +480,10 @@ fn i16s(v: Vec<i16>) -> ArrayRef {
 impl Shape for Hits {
     fn name(&self) -> &'static str {
         "hits"
+    }
+
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "WatchID" | "ClientIP" | "UserID" | "URLHash")
     }
 
     fn schema(&self) -> SchemaRef {

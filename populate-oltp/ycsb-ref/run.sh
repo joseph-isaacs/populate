@@ -1,11 +1,14 @@
 #!/bin/sh
 # Run the real YCSB 0.17.0 load phase (one client thread) and write every
-# record as TSV, the format of `oltp-gen ycsb --format text`.
+# record as TSV, the format of `oltp-gen ycsb --format text`; or, with
+# YCSB_MODE=-t and `-p refdb.run=true`, the run phase, one line per binding
+# call, the format of `oltp-gen ycsb-run --format text`.
 #
 #   ycsb-ref/run.sh OUT.tsv [-p key=value ...]
+#   YCSB_MODE=-t ycsb-ref/run.sh OUT.tsv -p refdb.run=true -p operationcount=N ...
 #
 # `-p refdb.seed=S` sets the client thread's ThreadLocalRandom seed before
-# the first insert, so random values are reproducible; the thread id it
+# the first operation, so random values are reproducible; the thread id it
 # prints goes to `oltp-gen ycsb --java-thread`. Needs a JDK (17+) and curl;
 # YCSB's core sources and its dependencies are fetched from Maven Central
 # into $YCSB_REF_DIR (default: /tmp/ycsb-ref) once.
@@ -28,5 +31,5 @@ if [ ! -f "$DIR/classes/RefDB.class" ]; then
   cd - >/dev/null
 fi
 CP="$DIR/classes:$(ls "$DIR"/*.jar | tr '\n' :)"
-exec java --add-opens java.base/java.lang=ALL-UNNAMED -cp "$CP" site.ycsb.Client -load \
+exec java --add-opens java.base/java.lang=ALL-UNNAMED -cp "$CP" site.ycsb.Client "${YCSB_MODE:--load}" \
   -db RefDB -threads 1 -p workload=site.ycsb.workloads.CoreWorkload -p refdb.out="$OUT" "$@"

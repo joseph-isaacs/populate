@@ -1,5 +1,6 @@
-//! OLTP benchmark data: the TPC-C initial database and the YCSB load, on
-//! all cores, as Arrow `RecordBatch`es, Parquet, or text.
+//! OLTP benchmark data: the TPC-C initial database, the YCSB load and the
+//! YCSB run's operations, on all cores, as Arrow `RecordBatch`es, Parquet,
+//! or text.
 //!
 //! - [`Tpcc`]: all nine TPC-C tables for any number of warehouses,
 //!   following the population rules of TPC-C 5.11 clause 4.3.3.1 (NURand
@@ -11,6 +12,9 @@
 //! - [`Ycsb`]: the `usertable` of `ycsb load`, byte-identical to YCSB
 //!   0.17.0: its keys always, its values with `dataintegrity=true`, and its
 //!   random values given the loading thread's random seed.
+//! - [`YcsbRun`]: the operations of `ycsb run` (workloads A to F, or any
+//!   proportions and request distribution), byte-identical to YCSB 0.17.0
+//!   given the client thread's random seed.
 //!
 //! Each table is split into chunks of rows that are generated independently
 //! (every random value is a function of its row), so output is the same
@@ -32,6 +36,7 @@ mod strings;
 mod text;
 pub mod tpcc;
 pub mod ycsb;
+mod ycsb_run;
 
 pub use engine::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, for_each_batch_many, write_parquet_many,
@@ -40,3 +45,4 @@ pub use engine::{
 pub use rng::JavaTlr;
 pub use tpcc::{Tpcc, TpccTable, TpccTableName};
 pub use ycsb::Ycsb;
+pub use ycsb_run::{RequestDistribution, YcsbRun};

@@ -58,12 +58,15 @@ thread, 4-core container):
 
 | Shape | Arrow | Parquet |
 |---|---|---|
-| taxi | 12.4 M rows/s | 3.2 M rows/s |
-| hits | 4.6 M rows/s | 1.27 M rows/s |
-| features | 3.9 M rows/s | 1.44 M rows/s |
-| embeddings (384-d) | 0.54 M rows/s | 0.23 M rows/s |
+| taxi | 13.2 M rows/s | 3.5 M rows/s |
+| hits | 4.7 M rows/s | 1.19 M rows/s |
+| features | 3.8 M rows/s | 1.49 M rows/s |
+| embeddings (384-d) | 0.86 M rows/s | 0.30 M rows/s |
 
-Taxi scales to 34.6 M rows/s on 4 threads. Columns whose values are
+The benches use the system allocator; `synth-gen` uses mimalloc (feature
+`mimalloc`, on by default), which makes generation 20-65% faster here
+because glibc hands each batch's memory back to the OS and faults it in
+again. Taxi scales to 34.6 M rows/s on 4 threads. Columns whose values are
 nearly all distinct within a chunk (times, ids, continuous features,
 vectors) are written without a dictionary by default, and random floats
 without compression (`Synth::parquet_props`), which is faster and smaller.

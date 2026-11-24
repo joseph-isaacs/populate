@@ -58,9 +58,12 @@ thread, 4-core container):
 
 | Shape | Arrow | Parquet |
 |---|---|---|
-| taxi | 12.4 M rows/s | 2.9 M rows/s |
-| hits | 4.6 M rows/s | 1.0 M rows/s |
-| features | 3.9 M rows/s | 0.61 M rows/s |
-| embeddings (384-d) | 0.54 M rows/s | 0.16 M rows/s |
+| taxi | 12.4 M rows/s | 3.1 M rows/s |
+| hits | 4.6 M rows/s | 1.16 M rows/s |
+| features | 3.9 M rows/s | 1.36 M rows/s |
+| embeddings (384-d) | 0.54 M rows/s | 0.19 M rows/s |
 
-Taxi scales to 34.6 M rows/s on 4 threads.
+Taxi scales to 34.6 M rows/s on 4 threads. Columns whose values are
+nearly all distinct within a chunk (times, ids, continuous features,
+vectors) are written without a dictionary by default
+(`Synth::parquet_props`), which is both faster and smaller.

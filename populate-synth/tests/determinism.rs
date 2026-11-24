@@ -13,13 +13,15 @@ use arrow_array::types::{
     Date32Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
     TimestampMicrosecondType, TimestampSecondType,
 };
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, ArrowPrimitiveType, RecordBatch, StringViewArray};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
+use arrow_select::concat::concat as concat_arrays;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use populate_synth::{Embeddings, Features, Hits, Shape, Synth, Taxi};
 use populate_table::{Chunks, mix64};
+use std::collections::HashMap;
 
 const ROWS: u64 = 20_011;
 
@@ -37,7 +39,7 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
     let cols = (0..schema.fields().len())
         .map(|c| {
             let arrays: Vec<&dyn Array> = batches.iter().map(|b| b.column(c).as_ref()).collect();
-            arrow_select::concat::concat(&arrays).unwrap()
+            concat_arrays(&arrays).unwrap()
         })
         .collect();
     RecordBatch::try_new(schema, cols).unwrap()
@@ -111,7 +113,7 @@ fn fingerprint(b: &RecordBatch) -> u64 {
         let mut h = fnv(h, &(d.len() as u64).to_le_bytes());
         let t = d.data_type();
         if let DataType::Utf8View = t {
-            let a = arrow_array::StringViewArray::from(d.clone());
+            let a = StringViewArray::from(d.clone());
             for v in a.iter() {
                 h = fnv(h, v.map(str::as_bytes).unwrap_or(b"\xff"));
             }
@@ -181,7 +183,7 @@ fn parquet_bytes_identical_for_any_thread_count_and_pinned() {
     // Change these only on purpose: they pin the values for seed 7.
     let pinned: [u64; 4] = [
         0x6af6aa2a50bf68fa,
-        0xc2bea32354543f64,
+        0x69bbcd48d983f1cb,
         0x723509e790cfd903,
         0x6f574caed52324b0,
     ];
@@ -215,7 +217,7 @@ fn same_seed_same_data_other_seed_other_data() {
     }
 }
 
-fn col<'a, T: arrow_array::ArrowPrimitiveType>(b: &'a RecordBatch, name: &str) -> &'a [T::Native] {
+fn col<'a, T: ArrowPrimitiveType>(b: &'a RecordBatch, name: &str) -> &'a [T::Native] {
     b.column_by_name(name)
         .unwrap_or_else(|| panic!("no column {name}"))
         .as_primitive::<T>()
@@ -312,7 +314,7 @@ fn hits_invariants() {
     let hash = col::<Int64Type>(&b, "URLHash");
     let counter = col::<Int32Type>(&b, "CounterID");
     // URL and hash agree: same hash, same URL
-    let mut seen = std::collections::HashMap::new();
+    let mut seen = HashMap::new();
     for i in 0..b.num_rows() {
         let u = url.value(i);
         assert!(u.starts_with("https://") && u.ends_with(".html"), "{u}");
@@ -327,7 +329,7 @@ fn hits_invariants() {
     let user = col::<Int64Type>(&b, "UserID");
     let region = col::<Int32Type>(&b, "RegionID");
     let width = col::<Int16Type>(&b, "ResolutionWidth");
-    let mut users = std::collections::HashMap::new();
+    let mut users = HashMap::new();
     for i in 0..b.num_rows() {
         assert_eq!(
             *users.entry(user[i]).or_insert((region[i], width[i])),
@@ -400,14 +402,17 @@ fn features_invariants() {
     };
     // f_2 is built from f_1's normal draw (f_1 is its log-normal)
     let r = corr(col::<Float32Type>(&b, "f_1"), col::<Float32Type>(&b, "f_2"));
-    assert!(r.abs() > 0.3, "{r}");
+    // about 0.86 rho, rho in 0.5..0.95
+    assert!((0.4..0.85).contains(&r), "{r}");
     let r = corr(col::<Float32Type>(&b, "f_0"), col::<Float32Type>(&b, "f_4"));
     assert!(r.abs() < 0.03, "{r}");
     // the label is learnable: it moves with the signal features
     let label = col::<Int32Type>(&b, "label");
     let lf: Vec<f32> = label.iter().map(|&l| l as f32).collect();
-    let r = corr(&lf, col::<Float32Type>(&b, "f_0"));
-    assert!(r.abs() > 0.05, "{r}");
+    let best = (0..8)
+        .map(|i| corr(&lf, col::<Float32Type>(&b, &format!("f_{i}"))).abs())
+        .fold(0.0, f64::max);
+    assert!(best > 0.1, "{best}");
     let c4 = col::<Int32Type>(&b, "c_4");
     assert!(c4.iter().all(|&c| (0..100_000).contains(&c)));
 }

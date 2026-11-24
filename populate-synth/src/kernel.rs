@@ -10,9 +10,8 @@
 //! with no `exp`/`ln` in the hot loop.
 
 use arrow_array::types::ArrowPrimitiveType;
-use arrow_array::{ArrayRef, BooleanArray, PrimitiveArray, StringViewArray};
+use arrow_array::{ArrayRef, PrimitiveArray, StringViewArray};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
-use populate_table::Stream;
 use std::sync::Arc;
 
 /// `[0, 1)` from the top 53 bits.
@@ -227,17 +226,6 @@ pub fn threshold(p: f64) -> u64 {
     }
 }
 
-/// `f(stream.at(r))` for every row of `start..start + len`.
-#[inline]
-pub fn per_row<T>(s: Stream, start: u64, len: usize, mut f: impl FnMut(u64) -> T) -> Vec<T> {
-    (start..start + len as u64).map(|r| f(s.at(r))).collect()
-}
-
-/// A primitive array from a vector, no copy.
-pub fn prim<T: ArrowPrimitiveType>(v: Vec<T::Native>) -> PrimitiveArray<T> {
-    PrimitiveArray::new(ScalarBuffer::from(v), None)
-}
-
 /// Same, as an `ArrayRef`, with optional nulls.
 pub fn prim_ref<T: ArrowPrimitiveType>(v: Vec<T::Native>, nulls: Option<NullBuffer>) -> ArrayRef {
     Arc::new(PrimitiveArray::<T>::new(ScalarBuffer::from(v), nulls))
@@ -248,11 +236,6 @@ pub fn validity(start: u64, len: usize, valid: impl Fn(u64) -> bool) -> Option<N
     let bits = BooleanBuffer::collect_bool(len, |i| valid(start + i as u64));
     let n = NullBuffer::new(bits);
     (n.null_count() > 0).then_some(n)
-}
-
-/// A boolean array, no nulls.
-pub fn bools(len: usize, f: impl Fn(usize) -> bool) -> BooleanArray {
-    BooleanArray::new(BooleanBuffer::collect_bool(len, f), None)
 }
 
 /// A fixed set of strings stored once; a column of them is a vector of
@@ -281,14 +264,24 @@ impl Pool {
         self.views.is_empty()
     }
 
-    #[inline(always)]
-    pub fn view(&self, i: usize) -> u128 {
-        self.views[i]
-    }
+    /// The index of the empty string in [`column`](Self::column).
+    pub const EMPTY: u32 = u32::MAX;
 
-    /// A column of pool entries `idx`, with optional nulls.
-    pub fn column(&self, views: Vec<u128>, nulls: Option<NullBuffer>) -> ArrayRef {
-        // SAFETY: every view is a copy of a valid view into `self.buffers`
+    /// A column of entries `idx` ([`EMPTY`](Self::EMPTY) for `""`), with
+    /// optional nulls. Panics on an index past the end.
+    pub fn column(&self, idx: &[u32], nulls: Option<NullBuffer>) -> ArrayRef {
+        let views: Vec<u128> = idx
+            .iter()
+            .map(|&i| {
+                if i == Self::EMPTY {
+                    0
+                } else {
+                    self.views[i as usize]
+                }
+            })
+            .collect();
+        // SAFETY: every view is a copy of one of `self.views`, which are
+        // valid views into `self.buffers` (or the empty string)
         Arc::new(unsafe {
             StringViewArray::new_unchecked(ScalarBuffer::from(views), self.buffers.clone(), nulls)
         })
@@ -296,7 +289,8 @@ impl Pool {
 }
 
 /// Builds a `Utf8View` column of freshly written strings: bytes go into one
-/// buffer, and each row's view is computed as it is written.
+/// buffer, and each row's view is computed as it is written. One column
+/// holds at most 4 GiB of (non-inline) string bytes.
 #[derive(Debug, Default)]
 pub struct ViewWriter {
     bytes: Vec<u8>,
@@ -387,6 +381,7 @@ pub fn cents(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use populate_table::Stream;
 
     #[test]
     fn normal_quantiles_have_the_right_moments() {

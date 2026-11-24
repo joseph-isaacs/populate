@@ -41,7 +41,8 @@ user or a URL, hash the user or page instead of the row. So:
 - any slice of rows generated on its own equals those rows of the whole
   table, and chunked, multi-threaded output equals one sequential run for
   any batch size, chunk size and thread count;
-- Parquet files are byte-identical for any thread count;
+- Parquet files are byte-identical for any thread count (row groups are
+  chunks, so the file layout, not the data, depends on `chunk_rows`);
 - the same seed gives the same data, pinned in the tests by a hash of the
   values for seed 7.
 

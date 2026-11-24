@@ -4,15 +4,20 @@
 //!
 //! Numeric features `f_0..` are `Float32`, in four kinds by `i % 4`:
 //! normal with a per-feature mean and scale, log-normal (skewed, like
-//! amounts or counts), correlated with the feature before it (`rho` from
-//! 0.5 to 0.95), and uniform scores in `[0, 1)`. Each has a share of
+//! amounts or counts), correlated with the feature before it (its normal
+//! draw is `rho` times the previous feature's normal draw plus fresh noise,
+//! `rho` from 0.5 to 0.95; the previous feature is log-normal, so the
+//! Pearson correlation of the two columns is about `0.86 rho`), and uniform
+//! scores in `[0, 1)`. Each has a share of
 //! missing values (NULL). Categoricals `c_0..` are `Int32` codes, Zipf-
 //! skewed, with cardinalities 10, 100, 1,000, 10,000, 100,000 in turn.
 //!
 //! `label` is 0/1, drawn with probability `sigmoid(bias + w . z)` over the
 //! first eight features (in standard units) plus an effect of `c_0`;
-//! `target` is another linear function of them plus noise. So a model can
-//! learn something real from the table.
+//! `target` is another linear function of the same eight (without `c_0`)
+//! plus noise. Both use a feature's value even where it is NULL, as if the
+//! value were measured but lost. So a model can learn something real from
+//! the table.
 
 use crate::Shape;
 use crate::kernel::{Pool, Quantiles, Weighted, Zipf, prim_ref, threshold, unit, validity};
@@ -22,6 +27,8 @@ use arrow_array::types::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use populate_table::Stream;
+use std::array::from_fn;
+use std::mem::swap;
 use std::sync::Arc;
 
 /// 2025-01-01T00:00:00Z.
@@ -64,7 +71,7 @@ pub struct Features {
     numeric: Vec<Numeric>,
     categorical: Vec<Categorical>,
     normal: Quantiles,
-    split: Weighted<usize>,
+    split: Weighted<u32>,
     splits: Pool,
     s_time: Stream,
     s_split: Stream,
@@ -130,8 +137,8 @@ impl Features {
             s_label: st("features.label"),
             s_target: st("features.target"),
             bias: -0.5,
-            w_label: std::array::from_fn(|i| weight(i as u64)),
-            w_target: std::array::from_fn(|i| 3.0 * weight(100 + i as u64)),
+            w_label: from_fn(|i| weight(i as u64)),
+            w_target: from_fn(|i| 3.0 * weight(100 + i as u64)),
             c0_effect: (0..c0_card).map(|k| weight(1000 + k)).collect(),
         }
     }
@@ -182,9 +189,9 @@ impl Shape for Features {
         ));
         cols.push(
             self.splits.column(
-                rows()
-                    .map(|r| self.splits.view(self.split.sample(self.s_split.at(r))))
-                    .collect(),
+                &rows()
+                    .map(|r| self.split.sample(self.s_split.at(r)))
+                    .collect::<Vec<u32>>(),
                 None,
             ),
         );
@@ -223,7 +230,7 @@ impl Shape for Features {
                 out,
                 validity(start, len, |r| f.nulls.at(r) >= f.null_t),
             ));
-            std::mem::swap(&mut prev, &mut z);
+            swap(&mut prev, &mut z);
         }
 
         for (j, c) in self.categorical.iter().enumerate() {

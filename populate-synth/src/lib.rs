@@ -52,6 +52,7 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use populate_table::Chunks;
 use populate_table::chunks::{for_each_batch, try_for_each_batch};
+use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 
 /// Default rows per batch.
@@ -121,11 +122,17 @@ impl<S: Shape> Synth<S> {
 
     /// Rows `start..start + len` as one batch.
     pub fn slice(&self, start: u64, len: usize) -> RecordBatch {
-        assert!(start + len as u64 <= self.rows, "slice past the end");
+        assert!(
+            start
+                .checked_add(len as u64)
+                .is_some_and(|end| end <= self.rows),
+            "slice past the end"
+        );
         self.shape.batch(start, len)
     }
 
-    /// The whole table as one batch.
+    /// The whole table as one batch (`Hits` holds at most 4 GiB of URL
+    /// bytes in one batch, about 90 million rows).
     pub fn collect(&self) -> RecordBatch {
         self.slice(0, usize::try_from(self.rows).expect("table fits in memory"))
     }
@@ -232,8 +239,8 @@ impl ShapeName {
     }
 }
 
-impl std::fmt::Display for ShapeName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ShapeName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }

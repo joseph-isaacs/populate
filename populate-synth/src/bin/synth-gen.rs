@@ -6,8 +6,12 @@
 //! cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
 //! ```
 
-use populate_synth::{Embeddings, Features, Hits, Shape, ShapeName, Synth, Taxi};
-use std::fs::File;
+use populate_synth::{
+    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Synth,
+    Taxi,
+};
+use std::env::args;
+use std::fs::{File, metadata};
 use std::io::BufWriter;
 use std::process::exit;
 use std::time::Instant;
@@ -34,7 +38,7 @@ fn fail(msg: &str) -> ! {
 }
 
 fn parse() -> Args {
-    let mut it = std::env::args().skip(1);
+    let mut it = args().skip(1);
     let shape = it
         .next()
         .and_then(|s| ShapeName::parse(&s))
@@ -44,8 +48,8 @@ fn parse() -> Args {
         rows: 1_000_000,
         seed: 0,
         threads: 0,
-        batch_size: populate_synth::DEFAULT_BATCH_SIZE,
-        chunk_rows: populate_synth::DEFAULT_CHUNK_ROWS,
+        batch_size: DEFAULT_BATCH_SIZE,
+        chunk_rows: DEFAULT_CHUNK_ROWS,
         dim: 384,
         out: None,
     };
@@ -74,6 +78,9 @@ fn parse() -> Args {
             f => fail(&format!("unknown flag {f}")),
         }
     }
+    if a.batch_size == 0 || a.chunk_rows == 0 || a.dim == 0 {
+        fail("--batch-size, --chunk-rows and --dim must be > 0");
+    }
     a
 }
 
@@ -88,7 +95,7 @@ fn run<S: Shape>(shape: S, a: &Args) {
             t.write_parquet(BufWriter::with_capacity(1 << 20, f), a.threads, None)
                 .and_then(|w| w.into_inner().map_err(|e| e.into_error().into()))
                 .unwrap_or_else(|e| fail(&format!("writing {path}: {e}")));
-            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let bytes = metadata(path).map(|m| m.len()).unwrap_or(0);
             format!("{path} ({:.1} MB)", bytes as f64 / 1e6)
         }
         None => {

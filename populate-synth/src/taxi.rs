@@ -276,9 +276,7 @@ impl Shape for Taxi {
             .collect();
 
         let flag_y = threshold(0.005);
-        let flag: Vec<u128> = rows()
-            .map(|r| self.flag.view((s.flag.at(r) < flag_y) as usize))
-            .collect();
+        let flag: Vec<u32> = rows().map(|r| (s.flag.at(r) < flag_y) as u32).collect();
 
         let pu: Vec<i32> = rows()
             .map(|r| self.zone_of_rank[self.zone.sample(s.pu.at(r)) as usize])
@@ -376,7 +374,7 @@ impl Shape for Taxi {
             i32s(passengers, nulls.clone()),
             f64s(distance, None),
             i32s(rate, nulls.clone()),
-            self.flag.column(flag, nulls.clone()),
+            self.flag.column(&flag, nulls.clone()),
             i32s(pu, None),
             i32s(dropoff_zone, None),
             i32s(payment, None),

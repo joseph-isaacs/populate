@@ -13,8 +13,8 @@
 //!   is a function of the user, so it is consistent across their hits;
 //! - the traffic source decides the rest: search hits carry a search
 //!   engine, a search phrase and a search-results `Referer`, link hits the
-//!   URL of another site's page, ad hits an `AdvEngineID`, direct hits
-//!   nothing;
+//!   URL of a page on a uniformly drawn site (possibly the same one), ad
+//!   hits an `AdvEngineID`, direct hits nothing;
 //! - `EventTime` is non-decreasing over the rows (from 2013-07-01, with a
 //!   daily profile), and `EventDate` is its day.
 
@@ -501,15 +501,16 @@ impl Shape for Hits {
         let is_mobile: Vec<i16> = device.iter().map(|&d| (d < mobile_t) as i16).collect();
         let os: Vec<i16> = device.iter().map(|&d| self.os.sample(d << 8)).collect();
         let agent: Vec<i16> = device.iter().map(|&d| self.agent.sample(d << 16)).collect();
-        let java: Vec<i16> = device.iter().map(|&d| (d >> 63 == 0) as i16).collect();
-        let phone_view: Vec<u128> = device
+        // a middle bit: the top bits decide IsMobile
+        let java: Vec<i16> = device.iter().map(|&d| ((d >> 40) & 1) as i16).collect();
+        let phone_view: Vec<u32> = device
             .iter()
             .zip(&is_mobile)
             .map(|(&d, &m)| {
                 if m == 1 {
-                    self.phones.view(((d >> 24) % PHONES.len() as u64) as usize)
+                    ((d >> 24) % PHONES.len() as u64) as u32
                 } else {
-                    0
+                    Pool::EMPTY
                 }
             })
             .collect();
@@ -547,10 +548,10 @@ impl Shape for Hits {
         let phrase_idx: Vec<usize> = rows()
             .map(|r| self.phrase.sample(s.phrase.at(r)) as usize)
             .collect();
-        let phrase: Vec<u128> = engine
+        let phrase: Vec<u32> = engine
             .iter()
             .zip(&phrase_idx)
-            .map(|(&e, &p)| if e > 0 { self.phrases.view(p) } else { 0 })
+            .map(|(&e, &p)| if e > 0 { p as u32 } else { Pool::EMPTY })
             .collect();
         let adv: Vec<i16> = rows()
             .zip(&source)
@@ -564,15 +565,15 @@ impl Shape for Hits {
             .collect();
 
         let title_empty = threshold(0.06);
-        let title: Vec<u128> = counter
+        let title: Vec<u32> = counter
             .iter()
             .zip(&page)
             .map(|(&c, &p)| {
                 let b = s.p_title.at(c << 20 ^ p);
                 if b < title_empty {
-                    0
+                    Pool::EMPTY
                 } else {
-                    self.titles.view((b % self.titles.len() as u64) as usize)
+                    (b % self.titles.len() as u64) as u32
                 }
             })
             .collect();
@@ -628,7 +629,7 @@ impl Shape for Hits {
         let cols: Vec<ArrayRef> = vec![
             prim_ref::<Int64Type>(watch, None),
             i16s(java),
-            self.titles.column(title, None),
+            self.titles.column(&title, None),
             i16s(vec![1; len]),
             prim_ref::<TimestampSecondType>(time, None),
             prim_ref::<Date32Type>(date, None),
@@ -644,10 +645,10 @@ impl Shape for Hits {
             i16s(res_w),
             i16s(res_h),
             i16s(is_mobile),
-            self.phones.column(phone_view, None),
+            self.phones.column(&phone_view, None),
             i16s(source),
             i16s(engine),
-            self.phrases.column(phrase, None),
+            self.phrases.column(&phrase, None),
             i16s(adv),
             i16s(win_w),
             i16s(win_h),

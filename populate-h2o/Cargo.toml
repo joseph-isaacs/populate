@@ -1,0 +1,24 @@
+[package]
+name = "populate-h2o"
+description = "H2O db-benchmark groupby and join data byte-identical to the R datagen scripts, on all cores: Arrow, Parquet or CSV"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "snap"] }
+
+[dev-dependencies]
+divan = { workspace = true }
+
+[[bin]]
+name = "h2o-gen"
+path = "src/bin/h2o-gen.rs"
+
+[[bench]]
+name = "h2o"
+harness = false

@@ -201,6 +201,30 @@ fn whole_runs() {
             0x484f4b49fb42861c,
             3_547_215,
         ),
+        (
+            "insertcount=0, latest with inserts, seed 51",
+            YcsbRun::new(load(1000, 51).insert_count(0), 3000)
+                .proportions(0.95, 0.05, 0.1, 0.0, 0.0)
+                .distribution(Latest),
+            0x75f348336b1741c1,
+            419_509,
+        ),
+        (
+            "insertcount=0, zipfian with inserts, seed 52",
+            YcsbRun::new(load(1000, 52).insert_count(0), 3000)
+                .proportions(0.95, 0.05, 0.1, 0.0, 0.0)
+                .distribution(Zipfian),
+            0x71a2426b4f8a0f58,
+            396_433,
+        ),
+        (
+            "zipfian scan lengths 0..9, seed 53",
+            YcsbRun::new(load(1000, 53), 3000)
+                .proportions(0.0, 0.0, 0.0, 1.0, 0.0)
+                .scan_length(0, 9, true),
+            0xd54347f9a5e85ab0,
+            125_649,
+        ),
     ];
     for (props, r, hash, len) in cases {
         for threads in [1, 4] {
@@ -290,4 +314,24 @@ fn checks() {
     assert!(hot(1.0, 0.5).is_err(), "and by a zero cold set");
     assert!(hot(0.2, 0.8).is_ok());
     assert!(YcsbRun::workload('a', load(100, 1), 10).check().is_ok());
+    // a field is chosen for one-field updates; all-field writes need none
+    let no_fields = || YcsbRun::new(load(100, 1).field_count(0), 10);
+    assert!(no_fields().check().is_err());
+    assert!(
+        no_fields()
+            .proportions(0.0, 1.0, 0.0, 0.0, 0.0)
+            .write_all_fields(true)
+            .check()
+            .is_ok()
+    );
+    assert!(
+        YcsbRun::new(load(100, 1).insert_count(0), 10)
+            .check()
+            .is_err(),
+        "uniform keys from no records"
+    );
+    assert!(
+        YcsbRun::new(load(1 << 32, 1), 10).check().is_err(),
+        "insertcount is an int"
+    );
 }

@@ -29,7 +29,7 @@ use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::schema::types::ColumnPath;
 use populate_table::text::TextChunks;
 use populate_table::{Chunks, chunks};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Default operations per chunk.
 pub const YCSB_RUN_CHUNK_OPS: u64 = 64 * 1024;
@@ -83,6 +83,8 @@ pub struct YcsbRun {
     batch: usize,
     /// Generator states at the chunk starts, extended on demand.
     checkpoints: Arc<Mutex<Vec<State>>>,
+    /// The zipfian scan lengths' zeta, summed once per run.
+    scan_zeta: Arc<OnceLock<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,7 @@ impl YcsbRun {
             chunk_ops: YCSB_RUN_CHUNK_OPS,
             batch: DEFAULT_BATCH_SIZE,
             checkpoints: Arc::default(),
+            scan_zeta: Arc::default(),
         }
     }
 
@@ -146,6 +149,7 @@ impl YcsbRun {
 
     fn reset(mut self) -> Self {
         self.checkpoints = Arc::default();
+        self.scan_zeta = Arc::default();
         self
     }
 
@@ -154,8 +158,8 @@ impl YcsbRun {
     pub fn proportions(mut self, read: f64, update: f64, insert: f64, scan: f64, rmw: f64) -> Self {
         let p = [read, update, insert, scan, rmw];
         assert!(
-            p.iter().all(|&x| x >= 0.0) && p.iter().any(|&x| x > 0.0),
-            "proportions must be >= 0, and one > 0"
+            p.iter().all(|&x| x >= 0.0 && x.is_finite()) && p.iter().any(|&x| x > 0.0),
+            "proportions must be finite and >= 0, and one > 0"
         );
         self.proportions = p;
         self.reset()
@@ -192,7 +196,7 @@ impl YcsbRun {
     /// `minscanlength`, `maxscanlength`, and `scanlengthdistribution`
     /// (`zipfian` if true, else `uniform`).
     pub fn scan_length(mut self, min: i64, max: i64, zipfian: bool) -> Self {
-        assert!(0 < min && min <= max, "scan lengths: 0 < min <= max");
+        assert!(0 <= min && min <= max, "scan lengths: 0 <= min <= max");
         self.scan = (min, max);
         self.scan_zipfian = zipfian;
         self.reset()
@@ -210,6 +214,12 @@ impl YcsbRun {
         assert!(n > 0, "batch_size must be > 0");
         self.batch = n;
         self
+    }
+
+    /// `readproportion`, `updateproportion`, `insertproportion`,
+    /// `scanproportion`, `readmodifywriteproportion`.
+    pub fn proportion_values(&self) -> [f64; 5] {
+        self.proportions
     }
 
     /// `(minscanlength, maxscanlength)`.
@@ -252,9 +262,24 @@ impl YcsbRun {
         if self.distribution == RequestDistribution::Latest && self.load.record_count < 2 {
             return Err("latest needs at least 2 records".into());
         }
+        let default_count =
+            self.load.record_count - self.load.insert_start.min(self.load.record_count);
+        if self.load.insert_count.unwrap_or(default_count) > i32::MAX as u64 {
+            return Err("insertcount is an int in YCSB".into());
+        }
         let count = self.insert_count();
-        if count <= 0 {
+        let uniform_or_hot = matches!(
+            self.distribution,
+            RequestDistribution::Uniform | RequestDistribution::Hotspot { .. }
+        );
+        if count <= 0 && uniform_or_hot {
             return Err("no records to choose keys from (insertcount is 0)".into());
+        }
+        let p = &self.proportions;
+        let reads_one = !self.read_all_fields && (p[0] > 0.0 || p[3] > 0.0 || p[4] > 0.0);
+        let writes_one = !self.write_all_fields && (p[1] > 0.0 || p[4] > 0.0);
+        if self.load.field_count == 0 && (reads_one || writes_one) {
+            return Err("fieldcount 0: YCSB divides by it to choose a field".into());
         }
         if let RequestDistribution::Hotspot {
             data_fraction,
@@ -770,9 +795,11 @@ impl<'a> Gen<'a> {
             tlr: run.load.tlr,
             chooser: run.chooser(),
             scrambled: Zipf::new(0, SCRAMBLED_ITEMS, Some(SCRAMBLED_ZETAN)),
-            scan_zipf: run
-                .scan_zipfian
-                .then(|| Zipf::new(run.scan.0, run.scan.1, None)),
+            scan_zipf: run.scan_zipfian.then(|| {
+                let (min, max) = run.scan;
+                let zetan = *run.scan_zeta.get_or_init(|| zeta(0, max - min + 1, 0.0));
+                Zipf::new(min, max, Some(zetan))
+            }),
             per_field: (run.load.field_length as u64).div_ceil(6),
             rank,
             ops: {

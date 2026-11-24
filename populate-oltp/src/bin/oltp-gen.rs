@@ -237,12 +237,13 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
     let mut workload: Option<char> = None;
     let mut sets: Vec<Box<dyn FnOnce(Ycsb) -> Ycsb>> = Vec::new();
     let mut run_sets: Vec<RunSet> = Vec::new();
-    let mut proportions: Option<[f64; 5]> = None;
+    let mut proportions: [Option<f64>; 5] = [None; 5];
     let mut distribution: Option<String> = None;
     let mut hotspot = (0.2, 0.8);
+    let mut hotspot_set = false;
     let c = parse(args, |flag, val| {
         let mut prop = |k: usize, v: f64| {
-            proportions.get_or_insert([0.0; 5])[k] = v;
+            proportions[k] = Some(v);
         };
         match flag {
             "--records" => records = num(flag, val()?)?,
@@ -279,7 +280,7 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
             "--java-thread" => tlr.thread_id = num(flag, val()?)?,
             "--operations" if transactions => operations = num(flag, val()?)?,
             "--workload" if transactions => {
-                let w = val()?;
+                let w = val()?.to_ascii_lowercase();
                 match w.as_str() {
                     "a" | "b" | "c" | "d" | "e" | "f" => workload = w.chars().next(),
                     _ => return Err(format!("--workload: `{w}` is not a to f")),
@@ -291,8 +292,14 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
             "--scan" if transactions => prop(3, num(flag, val()?)?),
             "--rmw" if transactions => prop(4, num(flag, val()?)?),
             "--distribution" if transactions => distribution = Some(val()?),
-            "--hotspot-data" if transactions => hotspot.0 = num(flag, val()?)?,
-            "--hotspot-ops" if transactions => hotspot.1 = num(flag, val()?)?,
+            "--hotspot-data" if transactions => {
+                hotspot.0 = num(flag, val()?)?;
+                hotspot_set = true;
+            }
+            "--hotspot-ops" if transactions => {
+                hotspot.1 = num(flag, val()?)?;
+                hotspot_set = true;
+            }
             "--read-one-field" if transactions => {
                 run_sets.push(Box::new(|r| r.read_all_fields(false)))
             }
@@ -303,8 +310,8 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
                 let v = val()?;
                 let (a, b) = v.split_once(',').ok_or("--scan-length takes MIN,MAX")?;
                 let (a, b): (i64, i64) = (num(flag, a.into())?, num(flag, b.into())?);
-                if !(0 < a && a <= b) {
-                    return Err("--scan-length: need 0 < MIN <= MAX".into());
+                if !(0 <= a && a <= b) {
+                    return Err("--scan-length: need 0 <= MIN <= MAX".into());
                 }
                 run_sets.push(Box::new(move |r| {
                     let z = r.scan_zipfian();
@@ -345,15 +352,25 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
         Some(w) => YcsbRun::workload(w, y, operations),
         None => YcsbRun::new(y, operations),
     };
-    if let Some([a, b, c, d, e]) = proportions {
-        if [a, b, c, d, e].iter().any(|&x| x < 0.0) || a + b + c + d + e <= 0.0 {
-            return Err("proportions must be >= 0, and one > 0".into());
+    if hotspot_set && distribution.as_deref() != Some("hotspot") {
+        return Err("--hotspot-data and --hotspot-ops need --distribution hotspot".into());
+    }
+    if proportions.iter().any(Option::is_some) {
+        // override only the proportions given, as YCSB's -p does
+        let mut p = r.proportion_values();
+        for (v, o) in p.iter_mut().zip(proportions) {
+            if let Some(o) = o {
+                *v = o;
+            }
         }
-        r = r.proportions(a, b, c, d, e);
+        if p.iter().any(|x| !(x.is_finite() && *x >= 0.0)) || p.iter().all(|&x| x == 0.0) {
+            return Err("proportions must be finite and >= 0, and one > 0".into());
+        }
+        r = r.proportions(p[0], p[1], p[2], p[3], p[4]);
     }
     if let Some(d) = distribution {
         let (h, o) = hotspot;
-        if !(0.0..=1.0).contains(&h) || !(0.0..=1.0).contains(&o) {
+        if d == "hotspot" && (!(0.0..=1.0).contains(&h) || !(0.0..=1.0).contains(&o)) {
             return Err("--hotspot-data and --hotspot-ops must be in 0..=1".into());
         }
         r = r.distribution(match d.as_str() {

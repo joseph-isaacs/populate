@@ -134,7 +134,7 @@ only falls back to `pow` when the product is within 1e-12 of an integer.
 
 **Tested byte for byte against YCSB 0.17.0's `ycsb run`** (`YCSB_MODE=-t
 ycsb-ref/run.sh OUT -p refdb.run=true ...`, where `RefDB` writes each call
-it receives): `tests/ycsb_run.rs` holds a fixture and the FNV hashes of 19
+it receives): `tests/ycsb_run.rs` holds a fixture and the FNV hashes of 22
 runs (workloads A to F; uniform, zipfian, latest and hotspot keys, with and
 without inserts; uniform and zipfian scan lengths; one field read, all
 fields written; `dataintegrity`; other field counts, lengths and prefixes;
@@ -144,7 +144,10 @@ workload A, latest with 50% inserts, workload E and zipfian scans of up to
 100,000 records were also compared whole with `cmp`.
 
 Not supported: the `exponential` and `sequential` request distributions,
-and `fieldlengthdistribution` other than `constant`.
+and `fieldlengthdistribution` other than `constant`. Java's `Math.pow` and
+glibc's `pow` differ by an ulp on a few inputs (e.g. `pow(2.0 / 888, 0.01)`,
+in zipfian setup); no run tested diverged (2e8 zipfian draws checked), but
+one could in principle.
 
 ## Speed
 

@@ -18,8 +18,9 @@
 //! start of every chunk of every column (2.5 KB each); chunks then
 //! regenerate their rows independently, on any thread. NAs need the
 //! columns' distinct values in order of first appearance, which the same
-//! pass collects. Sorted output is generated in full, NA'd, sorted by a
-//! stable counting sort (data.table's order, NA first) and sliced.
+//! pass collects. Sorted output is generated in full (row-major), NA'd,
+//! sorted by a stable parallel bucket sort (data.table's order, NA first),
+//! and gathered chunk by chunk.
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};

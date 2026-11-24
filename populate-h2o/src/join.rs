@@ -127,18 +127,22 @@ impl SampleAll {
 /// `sample_all` for each of `keys`' columns: draws in order, then the
 /// columns built in parallel.
 fn sample_all_cols(rng: &mut RMt, keys: &[(&[u32], &[u32])], size: f64) -> Vec<Vec<u32>> {
+    // Each column is built while the next one's draws are made. Past 2^27
+    // rows a column (with its draws, ~16 bytes a row) is built before the
+    // next is drawn, to bound memory.
+    let overlap = size <= (1u64 << 27) as f64;
     scope(|s| {
-        // each column is built while the next one's draws are made
-        let hs: Vec<_> = keys
-            .iter()
-            .map(|(a, b)| {
-                let d = SampleAll::draw(rng, a, b, size);
-                s.spawn(|| d.build())
-            })
-            .collect();
-        hs.into_iter()
-            .map(|h| h.join().expect("sample_all"))
-            .collect()
+        let mut out = Vec::with_capacity(keys.len());
+        let mut pending = Vec::new();
+        for (a, b) in keys {
+            let d = SampleAll::draw(rng, a, b, size);
+            pending.push(s.spawn(|| d.build()));
+            if !overlap {
+                out.extend(pending.drain(..).map(|h| h.join().expect("sample_all")));
+            }
+        }
+        out.extend(pending.into_iter().map(|h| h.join().expect("sample_all")));
+        out
     })
 }
 

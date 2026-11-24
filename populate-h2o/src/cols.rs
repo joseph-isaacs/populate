@@ -1,8 +1,9 @@
-//! Shared pieces: NA-able `u32` columns, bit sets, the stable counting sort
-//! data.table's `setkey` amounts to, and Arrow arrays from columns.
+//! Shared pieces: NA-able `u32` columns, bit sets, the stable parallel
+//! sort data.table's `setkey` amounts to, and Arrow arrays from columns.
 
 use arrow_array::{ArrayRef, Float64Array, Int32Array, StringViewArray};
 use arrow_buffer::{NullBuffer, ScalarBuffer};
+use std::cmp::Reverse;
 use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -324,8 +325,10 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
             }
         });
     }
-    // sort the buckets, on all threads, biggest-first is not needed: the
-    // buckets are many and similar in size
+    // sort the buckets on all threads, biggest first: with NAs one bucket
+    // (key 0) holds nas% of the rows
+    let mut order: Vec<usize> = (0..buckets).collect();
+    order.sort_unstable_by_key(|&b| Reverse(start[b + 1] - start[b]));
     let next = AtomicUsize::new(0);
     let slices: Vec<&mut [(T, u32)]> = {
         let mut out = Vec::with_capacity(buckets);
@@ -342,10 +345,10 @@ fn bucket_sort<T: Ord + Copy + Default + Send + Sync>(
         for _ in 0..threads {
             s.spawn(|| {
                 loop {
-                    let b = next.fetch_add(1, Relaxed);
-                    if b >= slices.len() {
+                    let i = next.fetch_add(1, Relaxed);
+                    let Some(&b) = order.get(i) else {
                         break;
-                    }
+                    };
                     slices[b].lock().expect("bucket").sort_unstable();
                 }
             });

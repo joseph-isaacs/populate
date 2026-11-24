@@ -772,6 +772,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-synth"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-data",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "parquet",
+ "populate-table",
+]
+
+[[package]]
 name = "populate-table"
 version = "0.1.0"
 dependencies = [

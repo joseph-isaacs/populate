@@ -35,6 +35,15 @@ impl Channel {
         }
     }
 
+    /// The sales table.
+    pub fn table(self) -> crate::config::Table {
+        match self {
+            Channel::Catalog => crate::config::Table::CatalogSales,
+            Channel::Store => crate::config::Table::StoreSales,
+            Channel::Web => crate::config::Table::WebSales,
+        }
+    }
+
     /// The channel's table id in DSB's `tables.h`, which its pricing
     /// permutations use as a stream number.
     fn table_id(self) -> i32 {
@@ -238,6 +247,28 @@ pub fn pricing_stream() -> RandomNumberStream {
     RandomNumberStream::new_with_column(c.get_global_column_number(), c.get_seeds_per_row())
 }
 
+/// Line items of every order of `channel`.
+pub fn total_lines(channel: Channel, session: &Session) -> u64 {
+    let n = session.get_scaling().get_row_count(channel.table());
+    orders_before(channel, n, n + 1).lines
+}
+
+/// `WS_PRICING` at the first line item of `order` of catalog or store
+/// sales: catalog sales price first, then store sales, eight draws a line
+/// item. (Web sales own the stream and burn it per row.)
+pub fn pricing_stream_at(channel: Channel, session: &Session, order: u64) -> RandomNumberStream {
+    let mut lines = match channel {
+        Channel::Catalog => 0,
+        Channel::Store => total_lines(Channel::Catalog, session),
+        Channel::Web => unreachable!("web sales price from their own stream"),
+    };
+    let n = session.get_scaling().get_row_count(channel.table());
+    lines += orders_before(channel, n, order).lines;
+    let mut s = pricing_stream();
+    s.advance(PRICING_DRAWS * lines);
+    s
+}
+
 /// `genrandExpJointDistribution` with `JOINT_DISTRIBUTION_BUCKET_COUNT`:
 /// a cell of the attribute grid of `map1` x `map2` by an exponential,
 /// unpermuted bucket and an exponential value in it (DSB passes
@@ -312,7 +343,8 @@ impl OrderFacts {
 /// replayed on its own.
 struct FactStreams {
     lines: (RandomNumberStream, u64, i32, i32),
-    gift: Option<(RandomNumberStream, u64, i32)>,
+    /// The gift stream, its budget and whether a draw is a gift.
+    gift: Option<(RandomNumberStream, u64, fn(i32) -> bool)>,
     returned: (RandomNumberStream, u64, i32),
     return_budget: u64,
 }
@@ -335,12 +367,37 @@ impl FactStreams {
                 let (r, rb) = stream_of(Cs::CrIsReturned, first_order);
                 FactStreams {
                     lines: (l, lb, 4, 14),
-                    gift: Some((g, gb, 10)),
+                    gift: Some((g, gb, |v| v <= 10)),
                     returned: (r, rb, 15),
                     return_budget: Cr::CrReturningCdemoSk.get_seeds_per_row() as u64,
                 }
             }
-            Channel::Store | Channel::Web => unimplemented!("DSB {channel:?} order facts"),
+            Channel::Store => {
+                use crate::generator::StoreReturnsGeneratorColumn as Sr;
+                use crate::generator::StoreSalesGeneratorColumn as Ss;
+                let (l, lb) = stream_of(Ss::SsTicketNumber, first_order);
+                let (r, rb) = stream_of(Ss::SrIsReturned, first_order);
+                FactStreams {
+                    lines: (l, lb, 8, 16),
+                    gift: None,
+                    returned: (r, rb, 25),
+                    return_budget: Sr::SrCdemoSk.get_seeds_per_row() as u64,
+                }
+            }
+            Channel::Web => {
+                use crate::generator::WebReturnsGeneratorColumn as Wr;
+                use crate::generator::WebSalesGeneratorColumn as Ws;
+                let (l, lb) = stream_of(Ws::WsOrderNumber, first_order);
+                let (g, gb) = stream_of(Ws::WsShipCustomerSk, first_order);
+                let (r, rb) = stream_of(Ws::WrIsReturned, first_order);
+                FactStreams {
+                    lines: (l, lb, 8, 16),
+                    // dsdgen's inverted test: most web orders ship elsewhere.
+                    gift: Some((g, gb, |v| v > 7)),
+                    returned: (r, rb, 20),
+                    return_budget: Wr::WrRefundedCdemoSk.get_seeds_per_row() as u64,
+                }
+            }
         }
     }
 
@@ -349,8 +406,8 @@ impl FactStreams {
         let lines = RandomValueGenerator::generate_uniform_random_int(*lo, *hi, s) as u64;
         s.advance(*budget - 1);
         let gifts = match &mut self.gift {
-            Some((s, budget, pct)) => {
-                let g = RandomValueGenerator::generate_uniform_random_int(0, 99, s) <= *pct;
+            Some((s, budget, is_gift)) => {
+                let g = is_gift(RandomValueGenerator::generate_uniform_random_int(0, 99, s));
                 s.advance(*budget - 1);
                 g as u64
             }

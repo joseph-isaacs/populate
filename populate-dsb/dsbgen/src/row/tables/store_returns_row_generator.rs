@@ -16,6 +16,8 @@
 
 use crate::config::Session;
 use crate::generator::StoreReturnsGeneratorColumn;
+use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
+use crate::dsb::sales::{orders_before, Channel};
 use crate::join_key_utils::{
     generate_returns_date_join_key, generate_scd_join_key, generate_uniform_join_key,
     CS_MAX_SHIP_DELAY, CS_MIN_SHIP_DELAY,
@@ -58,6 +60,7 @@ impl StoreReturnsRowGenerator {
             .skip_rows_until_starting_row_number(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
+        self.position_variable_streams(starting_row_number);
     }
 
     /// Restrict generation to source rows
@@ -69,6 +72,26 @@ impl StoreReturnsRowGenerator {
             .set_source_row_range(starting_row_number, ending_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+        self.position_variable_streams(starting_row_number);
+    }
+
+    /// The returning demographics joins draw eight and four values per
+    /// return against a fixed budget per order: move them past the earlier
+    /// orders' overruns.
+    fn position_variable_streams(&mut self, start: u64) {
+        use StoreReturnsGeneratorColumn::*;
+        let orders = self
+            .sales
+            .session()
+            .get_scaling()
+            .get_row_count(crate::config::Table::StoreSales);
+        let before = orders_before(Channel::Store, orders, start);
+        self.abstract_generator
+            .get_random_number_stream(&SrCdemoSk)
+            .advance(before.return_cdemo_over);
+        self.abstract_generator
+            .get_random_number_stream(&SrHdemoSk)
+            .advance(before.return_hdemo_over);
     }
 
     /// Generate the return row for `sales_row`.
@@ -90,7 +113,7 @@ impl StoreReturnsRowGenerator {
             .abstract_generator
             .get_random_number_stream(&SrCustomerSk);
         let mut sr_customer_sk =
-            generate_uniform_join_key(crate::config::Table::Customer, stream, scaling);
+            join_key(crate::config::Table::Customer, stream, scaling, None);
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SrTicketNumber);
@@ -120,23 +143,23 @@ impl StoreReturnsRowGenerator {
 
         let stream = self.abstract_generator.get_random_number_stream(&SrCdemoSk);
         let sr_cdemo_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerDemographics, stream, scaling);
+            DemographicsJoin::customer().key(stream);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrHdemoSk);
         let sr_hdemo_sk =
-            generate_uniform_join_key(crate::config::Table::HouseholdDemographics, stream, scaling);
+            DemographicsJoin::household().key(stream);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrAddrSk);
         let sr_addr_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerAddress, stream, scaling);
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrStoreSk);
-        let sr_store_sk = generate_scd_join_key(crate::config::Table::Store, stream, 1, scaling);
+        let sr_store_sk = scd_join_key(crate::config::Table::Store, stream, 1, scaling, None);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SrReasonSk);
-        let sr_reason_sk = generate_uniform_join_key(crate::config::Table::Reason, stream, scaling);
+        let sr_reason_sk = join_key(crate::config::Table::Reason, stream, scaling, None);
 
         // Generate return quantity (1 to original sale quantity)
         let sales_pricing = sales_row.get_ss_pricing();

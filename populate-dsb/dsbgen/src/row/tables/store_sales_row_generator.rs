@@ -16,11 +16,15 @@
 
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
-use crate::generator::StoreSalesGeneratorColumn;
-use crate::join_key_utils::{
-    generate_sales_date_join_key, generate_scd_join_key, generate_time_join_key,
-    generate_uniform_join_key, skip_uniform_join_key,
+use crate::dsb::attributes::{attribute_map, AttributeKeyMap, MapName};
+use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
+use crate::dsb::make_key_perm;
+use crate::dsb::sales::{
+    exp_joint_keys, pricing_stream_at, sales_pricing, Channel, OrderDates, PricingPerms,
+    PRICING_DRAWS,
 };
+use crate::generator::StoreSalesGeneratorColumn;
+use crate::join_key_utils::generate_time_join_key;
 use crate::nulls::{create_null_bit_map, skip_null_bit_map};
 use crate::permutations::{get_permutation_entry, make_permutation};
 use crate::random::RandomValueGenerator;
@@ -28,12 +32,11 @@ use crate::row::store_sales_row::StoreSalesRow;
 use crate::row::{AbstractRowGenerator, LineItem};
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::table::Table;
-use crate::types::{
-    generate_pricing_for_sales_table, get_store_sales_pricing_limits, skip_pricing_for_sales_table,
-};
+use crate::random::RandomNumberStream;
+use std::sync::Arc;
 
-/// Percentage of sales that get returned
-const SR_RETURN_PCT: i32 = 10;
+/// Percentage of sales that get returned (DSB's `SR_RETURN_PCT`)
+const SR_RETURN_PCT: i32 = 25;
 
 /// Order information shared across line items in the same order
 struct OrderInfo {
@@ -93,31 +96,98 @@ impl OrderInfo {
 /// [`StoreReturnsRowGenerator`]: crate::row::StoreReturnsRowGenerator
 pub struct StoreSalesRowGenerator {
     abstract_generator: AbstractRowGenerator<StoreSalesGeneratorColumn>,
-    item_permutation: Option<Vec<i32>>,
+    item_permutation: Vec<i32>,
+    dates: OrderDates,
     remaining_line_items: i32,
     order_info: OrderInfo,
     item_index: i32,
     session: Session,
+    perms: Arc<Perms>,
+    /// `WS_PRICING`, shared with the other channels.
+    pricing: RandomNumberStream,
+}
+
+/// What DSB's store_sales `mk_master` sets up on its first call.
+struct Perms {
+    promotion: Vec<i64>,
+    store: Vec<i64>,
+    pricing: PricingPerms,
+    item_category: Arc<AttributeKeyMap>,
+    item_category_perm: Vec<i32>,
+    customer_state: Arc<AttributeKeyMap>,
+    customer_state_perm: Vec<i32>,
 }
 
 impl StoreSalesRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use crate::config::Table as T;
+        use StoreSalesGeneratorColumn::*;
+        let scaling = session.get_scaling();
+        let rows = |t: T| scaling.get_row_count(t) as i64;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        let item_permutation = make_permutation(
+            scaling.get_id_count(T::Item) as usize,
+            ag.get_random_number_stream(&SsPermutation),
+        );
+        // Drawn, unused: the customer comes from the joint distribution.
+        make_key_perm(rows(T::Customer), ag.get_random_number_stream(&SsSoldCustomerSk));
+        let promotion =
+            make_key_perm(rows(T::Promotion), ag.get_random_number_stream(&SsSoldPromoSk));
+        let store = make_key_perm(rows(T::Store), ag.get_random_number_stream(&SsSoldStoreSk));
+        let pricing = PricingPerms::new(Channel::Store, &session);
+        let item_category = attribute_map(MapName::ItemCategory, &session);
+        let item_category_perm = make_permutation(
+            item_category.attribute_count() as usize,
+            ag.get_random_number_stream(&SsSoldItemSk),
+        );
+        let county = attribute_map(MapName::CustomerCounty, &session);
+        let s = ag.get_random_number_stream(&SsSoldCustomerSk);
+        make_permutation(county.attribute_count() as usize, s);
+        let customer_state = attribute_map(MapName::CustomerState, &session);
+        let customer_state_perm = make_permutation(customer_state.attribute_count() as usize, s);
+        // The joint item and customer draw (four) and hierarchical
+        // demographics keys (eight and four coordinates).
+        ag.set_seeds_per_row(&SsSoldCustomerSk, 4);
+        ag.set_seeds_per_row(&SsSoldCdemoSk, 8);
+        ag.set_seeds_per_row(&SsSoldHdemoSk, 4);
+        ag.mark_row1();
         StoreSalesRowGenerator {
-            abstract_generator: AbstractRowGenerator::new(row_count),
-            item_permutation: None,
+            abstract_generator: ag,
+            item_permutation,
+            dates: OrderDates::new(Channel::Store, rows(T::StoreSales)),
             remaining_line_items: 0,
             order_info: OrderInfo::default(),
             item_index: 0,
+            pricing: pricing_stream_at(Channel::Store, &session, 1),
             session,
+            perms: Arc::new(Perms {
+                promotion,
+                store,
+                pricing,
+                item_category,
+                item_category_perm,
+                customer_state,
+                customer_state_perm,
+            }),
+        }
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            while first.next().is_some() {}
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
         }
     }
 
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
+        self.pricing = pricing_stream_at(Channel::Store, &self.session, starting_row_number);
     }
 
     /// Restrict generation to source rows
@@ -125,8 +195,10 @@ impl StoreSalesRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+        self.pricing = pricing_stream_at(Channel::Store, &self.session, starting_row_number);
     }
 
     pub(crate) fn session(&self) -> &Session {
@@ -143,13 +215,11 @@ impl StoreSalesRowGenerator {
         let stream = self.abstract_generator.get_random_number_stream(&SsNulls);
         skip_null_bit_map(stream);
 
-        let stream = self
-            .abstract_generator
-            .get_random_number_stream(&SsSoldPromoSk);
-        skip_uniform_join_key(stream);
+        self.abstract_generator
+            .get_random_number_stream(&SsSoldPromoSk)
+            .next_random();
 
-        let stream = self.abstract_generator.get_random_number_stream(&SsPricing);
-        skip_pricing_for_sales_table(stream);
+        self.pricing.advance(PRICING_DRAWS);
     }
 
     /// Generate the sales row for the current line item.
@@ -164,12 +234,14 @@ impl StoreSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldPromoSk);
-        let ss_sold_promo_sk =
-            generate_uniform_join_key(crate::config::Table::Promotion, stream, scaling);
+        let ss_sold_promo_sk = join_key(
+            crate::config::Table::Promotion,
+            stream,
+            scaling,
+            Some(&self.perms.promotion),
+        );
 
-        let stream = self.abstract_generator.get_random_number_stream(&SsPricing);
-        let ss_pricing =
-            generate_pricing_for_sales_table(&get_store_sales_pricing_limits(), stream);
+        let ss_pricing = sales_pricing(&self.perms.pricing, &mut self.pricing);
 
         StoreSalesRow::new(
             null_bit_map,
@@ -194,45 +266,48 @@ impl StoreSalesRowGenerator {
 
         let scaling = self.session.get_scaling();
 
+        let p = self.perms.clone();
+        let ss_sold_date_sk = self.dates.date_of(row_number_i64);
+
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldStoreSk);
         let ss_sold_store_sk =
-            generate_scd_join_key(crate::config::Table::Store, stream, 1, scaling);
+            scd_join_key(crate::config::Table::Store, stream, 1, scaling, Some(&p.store));
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldTimeSk);
         let ss_sold_time_sk = generate_time_join_key(HoursWeights::Store, stream);
 
-        let stream = self
-            .abstract_generator
-            .get_random_number_stream(&SsSoldDateSk);
-        let ss_sold_date_sk = generate_sales_date_join_key(stream);
-
+        // DSB: the first item and the customer, jointly by category and
+        // state.
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldCustomerSk);
-        let ss_sold_customer_sk =
-            generate_uniform_join_key(crate::config::Table::Customer, stream, scaling);
+        let (item, ss_sold_customer_sk) = exp_joint_keys(
+            &p.item_category,
+            &p.customer_state,
+            &p.item_category_perm,
+            &p.customer_state_perm,
+            stream,
+        );
+        self.item_index = item as i32;
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldCdemoSk);
-        let ss_sold_cdemo_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerDemographics, stream, scaling);
+        let ss_sold_cdemo_sk = DemographicsJoin::customer().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldHdemoSk);
-        let ss_sold_hdemo_sk =
-            generate_uniform_join_key(crate::config::Table::HouseholdDemographics, stream, scaling);
+        let ss_sold_hdemo_sk = DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldAddrSk);
-        let ss_sold_addr_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerAddress, stream, scaling);
+        let ss_sold_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         let ss_ticket_number = row_number_i64;
 
@@ -262,14 +337,6 @@ impl StoreSalesRowGenerator {
             .get_scaling()
             .get_id_count(crate::config::Table::Item) as usize;
 
-        // Initialize item permutation if needed
-        if self.item_permutation.is_none() {
-            let stream = self
-                .abstract_generator
-                .get_random_number_stream(&SsPermutation);
-            self.item_permutation = Some(make_permutation(item_count, stream));
-        }
-
         // Start a new order if we've finished the previous one
         if self.remaining_line_items == 0 {
             self.order_info = self.generate_order_info(row_number);
@@ -279,12 +346,6 @@ impl StoreSalesRowGenerator {
                 .get_random_number_stream(&SsTicketNumber);
             self.remaining_line_items =
                 RandomValueGenerator::generate_uniform_random_int(8, 16, stream);
-
-            let stream = self
-                .abstract_generator
-                .get_random_number_stream(&SsSoldItemSk);
-            self.item_index =
-                RandomValueGenerator::generate_uniform_random_int(1, item_count as i32, stream);
         }
 
         // Items need to be unique within an order
@@ -295,8 +356,7 @@ impl StoreSalesRowGenerator {
         }
 
         // Get item from permutation and match surrogate key for SCD
-        let permutation = self.item_permutation.as_ref().unwrap();
-        let item_key = get_permutation_entry(permutation, self.item_index);
+        let item_key = get_permutation_entry(&self.item_permutation, self.item_index);
         let item_sk = match_surrogate_key(
             item_key as i64,
             self.order_info.ss_sold_date_sk,
@@ -353,7 +413,7 @@ mod tests {
     #[test]
     fn test_store_sales_row_generator_creation() {
         let generator = StoreSalesRowGenerator::new(Session::default(), 1);
-        assert!(generator.item_permutation.is_none());
+        assert!(!generator.item_permutation.is_empty());
         assert_eq!(generator.remaining_line_items, 0);
     }
 

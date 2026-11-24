@@ -17,6 +17,8 @@
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
 use crate::generator::WebReturnsGeneratorColumn;
+use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
+use crate::dsb::sales::{orders_before, Channel};
 use crate::join_key_utils::{
     generate_returns_date_join_key, generate_time_join_key, generate_uniform_join_key,
     WS_MAX_SHIP_DELAY, WS_MIN_SHIP_DELAY,
@@ -56,6 +58,7 @@ impl WebReturnsRowGenerator {
             .skip_rows_until_starting_row_number(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
+        self.position_variable_streams(starting_row_number);
     }
 
     /// Restrict generation to source rows
@@ -67,6 +70,26 @@ impl WebReturnsRowGenerator {
             .set_source_row_range(starting_row_number, ending_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+        self.position_variable_streams(starting_row_number);
+    }
+
+    /// The returning demographics joins draw eight and four values per
+    /// return against a fixed budget per order: move them past the earlier
+    /// orders' overruns.
+    fn position_variable_streams(&mut self, start: u64) {
+        use WebReturnsGeneratorColumn::*;
+        let orders = self
+            .sales
+            .session()
+            .get_scaling()
+            .get_row_count(crate::config::Table::WebSales);
+        let before = orders_before(Channel::Web, orders, start);
+        self.abstract_generator
+            .get_random_number_stream(&WrRefundedCdemoSk)
+            .advance(before.return_cdemo_over);
+        self.abstract_generator
+            .get_random_number_stream(&WrRefundedHdemoSk)
+            .advance(before.return_hdemo_over);
     }
 
     /// Generate the return row for `sales_row`.
@@ -106,25 +129,25 @@ impl WebReturnsRowGenerator {
             .abstract_generator
             .get_random_number_stream(&WrRefundedCustomerSk);
         let mut wr_refunded_customer_sk =
-            generate_uniform_join_key(crate::config::Table::Customer, stream, scaling);
+            join_key(crate::config::Table::Customer, stream, scaling, None);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrRefundedCdemoSk);
         let mut wr_refunded_cdemo_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerDemographics, stream, scaling);
+            DemographicsJoin::customer().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrRefundedHdemoSk);
         let mut wr_refunded_hdemo_sk =
-            generate_uniform_join_key(crate::config::Table::HouseholdDemographics, stream, scaling);
+            DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrRefundedAddrSk);
         let mut wr_refunded_addr_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerAddress, stream, scaling);
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         // If below GIFT_PERCENTAGE, use ship info from sales row instead
         let stream = self
@@ -147,7 +170,7 @@ impl WebReturnsRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrReasonSk);
-        let wr_reason_sk = generate_uniform_join_key(crate::config::Table::Reason, stream, scaling);
+        let wr_reason_sk = join_key(crate::config::Table::Reason, stream, scaling, None);
 
         // Generate pricing for returns
         let stream = self.abstract_generator.get_random_number_stream(&WrPricing);

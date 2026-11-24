@@ -6,12 +6,11 @@
 //! The file's contents are the same for any thread count.
 
 use crate::chunks::{Chunks, MultiChunks};
-use crate::parquet_direct::{DirectColumn, eligible};
+use crate::parquet_direct::{DirectColumn, Rope, eligible};
 use crate::sched::par_sources;
 use crate::table::Table;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_writer::{ArrowColumnChunk, ArrowColumnWriter, compute_leaves};
 use parquet::column::writer::ColumnCloseResult;
@@ -150,7 +149,7 @@ struct Group {
 /// One encoded column chunk.
 enum Leaf {
     Arrow(ArrowColumnChunk),
-    Direct(Bytes, ColumnCloseResult),
+    Direct(Rope, ColumnCloseResult),
 }
 
 impl Group {

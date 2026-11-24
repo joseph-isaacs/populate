@@ -742,6 +742,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "divan",
+ "mimalloc",
  "parquet",
  "populate",
  "rand",

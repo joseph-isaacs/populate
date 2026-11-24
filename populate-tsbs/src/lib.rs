@@ -80,7 +80,9 @@ impl Tsbs {
         Chunked::new(&self.cfg, chunk_points)
     }
 
-    /// `format`'s text as a [`TextChunks`] source.
+    /// `format`'s text as a [`TextChunks`] source. For prometheus the
+    /// chunks hold the points only: write [`binary::PROMETHEUS_HEADER`]
+    /// before the first byte, as [`Tsbs::write_text`] does.
     pub fn text(&self, format: Format, chunk_points: u64) -> Result<TsbsText, String> {
         TsbsText::new(self.chunks(chunk_points), format)
     }

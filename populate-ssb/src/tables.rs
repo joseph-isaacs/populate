@@ -543,8 +543,12 @@ impl PartyRows {
         &self.addresses[start..self.ends[r] as usize]
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.nation.len()
+    /// Drop the names', addresses' and phones' bytes, once they are in
+    /// columns of their own: only the codes are left.
+    pub(crate) fn drop_unique(&mut self) {
+        self.ends = Vec::new();
+        self.addresses = Vec::new();
+        self.phones = Vec::new();
     }
 
     /// Name, address and phone of rows `rows` (indices into these),

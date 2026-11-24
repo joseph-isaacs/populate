@@ -229,21 +229,20 @@ fn no_dictionary(mut p: WriterPropertiesBuilder) -> WriterPropertiesBuilder {
     p
 }
 
-/// Arrow bytes of `b`, without the buffers string columns share (the
-/// dictionary, `lineorder_flat`'s dimension columns): 16 bytes a view plus
-/// the bytes of each string too long to live in its view.
+/// Arrow bytes of `b`, without the buffers string columns share: views,
+/// and a column's own bytes when it has them (its first buffer, next to
+/// the dictionary). `lineorder_flat`'s gathered dimension columns count
+/// their views only.
 fn batch_bytes(b: &RecordBatch) -> u64 {
     b.columns()
         .iter()
         .map(|c| match c.as_string_view_opt() {
             Some(s) => {
-                let long: usize = s
-                    .views()
-                    .iter()
-                    .map(|&v| v as u32 as usize)
-                    .filter(|&n| n > 12)
-                    .sum();
-                s.len() * 16 + long
+                let own = match &s.data_buffers()[..] {
+                    [data, _dict] => data.len(),
+                    _ => 0,
+                };
+                s.len() * 16 + own
             }
             None => c.get_array_memory_size(),
         } as u64)

@@ -12,7 +12,7 @@ use arrow_array::types::Int32Type;
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use populate_ssb::TableName::{Customer, Date, LineOrder, Part, Supplier};
+use populate_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
 use populate_ssb::{Ssb, TableName, write_tbl_many};
 use std::path::PathBuf;
 use std::process::Command;
@@ -78,7 +78,7 @@ fn lineorder_ranges_match_ssb_dbgen() {
         (100.0, 0, 1_000, 417_046, 0xb13a44469835b637),
         (1100.0, 0, 1_000, 427_359, 0x7366e035a9b44cf1),
     ] {
-        check(sf, TableName::LineOrder, first, end, len, hash);
+        check(sf, LineOrder, first, end, len, hash);
     }
 }
 
@@ -90,19 +90,19 @@ fn row_counts() {
         s.table(t).for_each_batch(0, |b| n += b.num_rows());
         n
     };
-    assert_eq!(rows(TableName::Date), 25);
-    assert_eq!(rows(TableName::LineOrder), 60_176);
-    assert_eq!(rows(TableName::LineOrderFlat), 60_176);
+    assert_eq!(rows(Date), 25);
+    assert_eq!(rows(LineOrder), 60_176);
+    assert_eq!(rows(LineOrderFlat), 60_176);
     // part grows with log2 of the scale factor
-    assert_eq!(Ssb::new(8.0).source_rows(TableName::Part), 800_000);
-    assert_eq!(Ssb::new(10.0).source_rows(TableName::Part), 800_000);
-    assert_eq!(Ssb::new(10.0).source_rows(TableName::Date), 2557);
+    assert_eq!(Ssb::new(8.0).source_rows(Part), 800_000);
+    assert_eq!(Ssb::new(10.0).source_rows(Part), 800_000);
+    assert_eq!(Ssb::new(10.0).source_rows(Date), 2557);
 }
 
 #[test]
 fn chunked_equals_sequential() {
     let s = Ssb::new(0.01);
-    for t in TableName::ALL.into_iter().chain([TableName::LineOrderFlat]) {
+    for t in TableName::ALL.into_iter().chain([LineOrderFlat]) {
         let whole = s.table(t);
         let want = whole.tbl_range(0, u64::MAX);
         for (chunk, batch, threads) in [(1, 1, 3), (7, 5, 2), (1_000, 64, 4), (100_000, 8192, 1)] {
@@ -151,7 +151,7 @@ fn flat_matches(sf: f64, orders: u64) {
     let s = Ssb::new(sf);
     let limit = |t: TableName| {
         let t = s.table(t);
-        if orders > 0 && matches!(t.name(), TableName::LineOrder | TableName::LineOrderFlat) {
+        if orders > 0 && matches!(t.name(), LineOrder | LineOrderFlat) {
             t.limit_source_rows(orders)
         } else {
             t
@@ -161,13 +161,8 @@ fn flat_matches(sf: f64, orders: u64) {
         let v = limit(t).collect(0);
         concat_batches(&t.schema(), &v).unwrap()
     };
-    let (lo, cust, supp, part) = (
-        one(TableName::LineOrder),
-        one(TableName::Customer),
-        one(TableName::Supplier),
-        one(TableName::Part),
-    );
-    let flat = one(TableName::LineOrderFlat);
+    let (lo, cust, supp, part) = (one(LineOrder), one(Customer), one(Supplier), one(Part));
+    let flat = one(LineOrderFlat);
     assert_eq!(flat.num_rows(), lo.num_rows());
     assert_eq!(flat.num_columns(), 17 + 21);
     // the lineorder columns are lineorder's
@@ -218,11 +213,7 @@ fn flat_matches(sf: f64, orders: u64) {
 #[test]
 fn parquet_round_trips() {
     let s = Ssb::new(0.01);
-    for t in [
-        TableName::LineOrder,
-        TableName::Customer,
-        TableName::LineOrderFlat,
-    ] {
+    for t in [LineOrder, Customer, LineOrderFlat] {
         let table = s.table(t).chunk_rows(10_000);
         let want = table.collect(2);
         let file = table.write_parquet(Vec::new(), 2, None).unwrap();

@@ -35,19 +35,21 @@ dists="$(dirname "$dbgen")/dists.dss"
 cargo build --release --quiet --manifest-path "$root/Cargo.toml" -p populate-ssb --bin ssb-gen
 ours="$root/target/release/ssb-gen"
 
-secs() { local t0 t1; t0=$(date +%s.%N); "$@" > /dev/null 2>&1; t1=$(date +%s.%N); echo "$t1 - $t0" | bc; }
+command -v bc > /dev/null || { echo "needs bc" >&2; exit 2; }
+secs() { local t0 t1; t0=$(date +%s.%N); "$@" > /dev/null 2>&1 || return 1; t1=$(date +%s.%N); echo "$t1 - $t0" | bc; }
 
 status=0
 echo "| SF | ssb-dbgen | populate-ssb | speedup | identical |"
 echo "|---:|---:|---:|---:|---|"
 for sf in $sfs; do
     rm -rf "$out/ref" "$out/ours"; mkdir -p "$out/ref" "$out/ours"
-    t_ref=$(cd "$out/ref" && secs "$dbgen" -q -f -s "$sf" -b "$dists")
-    t_ours=$(secs "$ours" --sf "$sf" --format tbl --threads "$threads" --out "$out/ours")
-    same=yes
+    t_ref=$(cd "$out/ref" && secs "$dbgen" -q -f -s "$sf" -b "$dists") || { echo "dbgen -s $sf failed" >&2; exit 1; }
+    t_ours=$(secs "$ours" --sf "$sf" --format tbl --threads "$threads" --out "$out/ours") || { echo "ssb-gen --sf $sf failed" >&2; exit 1; }
+    differ=""
     for t in part supplier customer date lineorder; do
-        cmp -s "$out/ref/$t.tbl" "$out/ours/$t.tbl" || { same="no ($t)"; status=1; }
+        cmp -s "$out/ref/$t.tbl" "$out/ours/$t.tbl" || { differ="$differ $t"; status=1; }
     done
+    same=$([ -z "$differ" ] && echo yes || echo "no:$differ")
     printf '| %s | %.2f s | %.2f s | %.1fx | %s |\n' "$sf" "$t_ref" "$t_ours" \
         "$(echo "$t_ref / $t_ours" | bc -l)" "$same"
     rm -rf "$out/ref" "$out/ours"

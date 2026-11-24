@@ -3,17 +3,20 @@
 //!
 //! The three dimension tables are drawn once (on all cores) and kept as
 //! small per-row codes (about 8 bytes a part, 3 a customer), and the
-//! columns unique per row (names, addresses, phone numbers) as whole
-//! `Utf8View` columns. Each `lineorder` batch is then joined by key:
+//! columns unique per row (names, addresses, phone numbers) as `Utf8View`
+//! columns with one buffer per 64Ki rows. Each `lineorder` batch is then joined by key:
 //! dictionary columns become views into the shared dictionary, and the
 //! unique columns are gathered as views into the dimension's buffers. So no
 //! text is copied, but those columns of every batch share (and keep alive)
 //! the dimension's whole buffer.
 
 use crate::dict::Dict;
-use crate::tables::{self, PartRows, Party, PartyRows, Scale, lineorder_fields};
+use crate::tables::{
+    CUSTOMER, PART, PartRows, Party, PartyRows, SUPPLIER, Scale, lineorder_fields,
+};
 use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, UInt32Array};
 use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_select::concat::concat;
 use arrow_select::take::take;
 use populate_table::par_ordered;
 use std::convert::Infallible;
@@ -26,7 +29,7 @@ const SUPPKEY: usize = 4;
 
 pub(crate) static FLAT: LazyLock<SchemaRef> = LazyLock::new(|| {
     let mut fields = lineorder_fields();
-    for t in [&tables::CUSTOMER, &tables::SUPPLIER, &tables::PART] {
+    for t in [&CUSTOMER, &SUPPLIER, &PART] {
         // every column but the key
         fields.extend(t.fields().iter().skip(1).map(|f| Field::clone(f)));
     }
@@ -50,13 +53,6 @@ struct Dim {
 }
 
 impl Dim {
-    fn new(d: &Dict, rows: PartyRows) -> Self {
-        let n = rows.len();
-        let all: Vec<u32> = (0..n as u32).collect();
-        let unique = rows.unique_columns(d, &all);
-        Dim { rows, unique }
-    }
-
     /// The columns after the key of rows `idx`.
     fn columns(&self, d: &Dict, idx: Vec<u32>) -> Vec<ArrayRef> {
         let at = UInt32Array::from(idx);
@@ -98,15 +94,33 @@ fn whole<T: Send>(
     r.unwrap_or_else(|e| match e {});
 }
 
-fn party(d: &Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> PartyRows {
+/// A whole supplier or customer table. Each job writes its rows' names,
+/// addresses and phones into its own buffers (so every buffer stays far
+/// below the 4 GiB a view's offset can reach) and keeps only the codes.
+fn party(d: &Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> Dim {
     let mut all = PartyRows::new(d, s, p, 0, 0);
+    let mut parts: [Vec<ArrayRef>; 3] = Default::default();
     whole(
         rows,
         threads,
-        |f, n| PartyRows::new(d, s, p, f, n),
-        |r| all.append(r),
+        |f, n| {
+            let mut r = PartyRows::new(d, s, p, f, n);
+            let unique = r.unique_columns(d, &(0..n as u32).collect::<Vec<_>>());
+            r.drop_unique();
+            (r, unique)
+        },
+        |(r, unique)| {
+            all.append(r);
+            for (v, a) in parts.iter_mut().zip(unique) {
+                v.push(a);
+            }
+        },
     );
-    all
+    let unique = parts.map(|v| {
+        let refs: Vec<&dyn Array> = v.iter().map(|a| a.as_ref()).collect();
+        concat(&refs).expect("same type")
+    });
+    Dim { rows: all, unique }
 }
 
 impl Dims {
@@ -120,8 +134,8 @@ impl Dims {
             |r| part.append(r),
         );
         Dims {
-            customer: Dim::new(d, party(d, s, Party::Customer, s.customers, threads)),
-            supplier: Dim::new(d, party(d, s, Party::Supplier, s.suppliers, threads)),
+            customer: party(d, s, Party::Customer, s.customers, threads),
+            supplier: party(d, s, Party::Supplier, s.suppliers, threads),
             part,
         }
     }

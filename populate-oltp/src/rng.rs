@@ -106,13 +106,23 @@ impl JavaTlr {
         GOLDEN_GAMMA.wrapping_add(self.thread_id << 1)
     }
 
-    /// The `n`th (0-based) `nextInt()`.
+    /// The seed state that the `n`th (0-based) `nextInt()` mixes.
     #[inline(always)]
-    pub(crate) fn int_at(self, n: u64) -> i32 {
-        let s = self
-            .seed
-            .wrapping_add(n.wrapping_add(1).wrapping_mul(self.gamma()));
+    pub(crate) fn state_at(self, n: u64) -> u64 {
+        self.seed
+            .wrapping_add(n.wrapping_add(1).wrapping_mul(self.gamma()))
+    }
+
+    /// `nextInt()` of seed state `s`.
+    #[inline(always)]
+    pub(crate) fn int_of(s: u64) -> i32 {
         (murmur_mix(s) >> 32) as i32
+    }
+
+    /// The `n`th (0-based) `nextInt()`.
+    #[cfg(test)]
+    pub(crate) fn int_at(self, n: u64) -> i32 {
+        Self::int_of(self.state_at(n))
     }
 }
 

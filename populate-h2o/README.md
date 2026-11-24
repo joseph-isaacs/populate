@@ -98,23 +98,28 @@ too):
 | groupby `G1_1e7_1e2_0_0` (509 MB) | 5.6 s | 0.41 s |
 | groupby `G1_1e7_1e2_0_1` (sorted) | 6.6 s | 0.93 s |
 | groupby `G1_1e8_1e2_0_0` (5.2 GB) | 61.6 s | 3.7 s |
-| groupby `G1_1e8_1e1_5_1` (NAs, sorted) | 156 s | 13.3 s |
+| groupby `G1_1e8_1e1_5_1` (NAs, sorted) | 156 s | 11.4 s |
 | join `J1_1e7_NA_0_0` (4 tables, 923 MB) | 54 s | 1.4 s |
-| join `J1_1e8_NA_5_0` (4 tables, 9 GB) | out of memory | 20 s |
-| join `J1_1e8_NA_0_1` (sorted) | out of memory | 32 s |
+| join `J1_1e8_NA_5_0` (4 tables, 10 GB) | out of memory | 16.5 s |
+| join `J1_1e8_NA_0_1` (sorted) | out of memory | 19.9 s |
+
+At 1e8 rows CSV output runs at about the disk's 1.1 GB/s.
 
 What makes the sequential parts fast:
 
 - **The stream pass** counts accepted draws over whole 624-word
   generator blocks in a vectorisable loop (no exit test) and only scans
   for the exact end in the block where a chunk ends.
-- **Shuffles** (`sample.int(n)`): the draws depend only on the generator,
-  so they are made first (branch-free, a block at a time) and the swaps,
-  which are random accesses into a large array, are applied with
-  prefetching on another thread while the next column's draws are made.
+- **Join draws first.** Every draw the join script makes depends only on
+  sizes known up front (the keys' counts, and the left table's distinct
+  values per column, which are all its keys), so one thread makes them
+  all, in R's order (shuffles branch-free a block at a time), while the
+  other threads build the tables from them: the permutations' swaps (with
+  prefetching), the resampled columns, sorting, values and NAs.
 - **Sorting** (`setkey`): a parallel counting sort scatters `(key, row)`
   pairs into buckets of the leading key columns, then the buckets are
-  sorted on all threads. Sorted groupby rows are kept row-major, so
+  sorted on all threads. The join's key columns and row number pack into
+  one `u64`, so only those are sorted. Sorted groupby rows are kept row-major, so
   reading them in sorted order costs one random access per row.
 
 ## Limits
@@ -123,8 +128,9 @@ What makes the sequential parts fast:
   takes: `N >= 1e7`, a multiple of 1e6, and `N <= 1e8` or `N = 1e9`.
 - Join at 1e8 is not compared with R: `Rscript join-datagen.R 1e8` runs
   out of memory on the 15 GB test machine.
-- Sorted groupby data and all join data are held in memory (about 36
-  bytes a row for sorted groupby, 20 for join), as R holds them.
+- Sorted groupby data and all join data are held in memory (peak about
+  60 bytes a row of the left table for join, 6.2 GB at 1e8), as R holds
+  them.
 - At `N = 1e9` the join script writes in batches of 1e8 rows with one
   header; the output here is the same file, but has not been compared
   with R's at that size.

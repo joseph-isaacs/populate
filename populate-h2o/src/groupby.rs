@@ -25,16 +25,18 @@
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_table::Chunks;
-use populate_table::table::par_ordered;
 use populate_table::text::{TextChunks, write_text_many};
 use std::array::from_fn;
-use std::convert::Infallible;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Write};
-use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, Mutex};
+use std::thread::scope;
 
 use crate::cols::{
-    Bits, Cursor, NA, first_appearance, id_strings, int32, micros, sort_rows, write_with,
+    Bits, Cursor, NA, first_appearance, id_strings, int32, micros, sort_rows, thread_count,
+    write_with,
 };
 use crate::fwrite::{digits, round6_micros};
 use crate::rng::{RMt, sample_int};
@@ -190,25 +192,12 @@ impl GroupBy {
         let mut rng = RMt::set_seed(SEED);
         let mut snaps = vec![rng.clone(); (chunks as usize) * COLS];
         let track = self.nas > 0;
-        let mut orders: Vec<Vec<u32>> = vec![vec![]; 6];
-        let mut buf = vec![0u32; if track { self.chunk_rows as usize } else { 0 }];
         for c in 0..8 {
             let range = self.range(c);
-            let mut seen = Bits::new(if track && c < 6 { range + 1 } else { 0 });
             for j in 0..chunks {
                 snaps[(j as usize) * COLS + c] = rng.clone();
                 let (s, e) = self.chunk_range(j);
-                // once every value has appeared, the order is complete
-                if track && c < 6 && (orders[c].len() as u64) < range {
-                    let b = &mut buf[..(e - s) as usize];
-                    rng.fill_index(range, b);
-                    for v in b.iter_mut() {
-                        *v += 1;
-                    }
-                    first_appearance(b, &mut seen, &mut orders[c]);
-                } else {
-                    rng.skip_index(range, e - s);
-                }
+                rng.skip_index(range, e - s);
             }
         }
         for j in 0..chunks {
@@ -217,6 +206,15 @@ impl GroupBy {
             rng.skip(e - s);
         }
         let na = track.then(|| {
+            // each id column's values in order of first appearance, from
+            // the snapshots, columns on parallel threads
+            let snaps = &snaps;
+            let orders: Vec<Vec<u32>> = scope(|s| {
+                let hs: Vec<_> = (0..6)
+                    .map(|c| s.spawn(move || self.appearance(snaps, c)))
+                    .collect();
+                hs.into_iter().map(|h| h.join().expect("unique")).collect()
+            });
             let frac = self.nas as f64 / 100.0;
             let ids = orders
                 .iter()
@@ -267,6 +265,29 @@ impl GroupBy {
             plan.sorted = Some(self.sorted(&plan, threads));
         }
         plan
+    }
+
+    /// Column `c`'s distinct values in order of first appearance (R's
+    /// `unique()`), regenerated chunk by chunk until every value has
+    /// appeared.
+    fn appearance(&self, snaps: &[RMt], c: usize) -> Vec<u32> {
+        let range = self.range(c);
+        let mut seen = Bits::new(range + 1);
+        let mut order = vec![];
+        let mut buf = vec![0u32; self.chunk_rows as usize];
+        for j in 0..self.num_chunks() {
+            if order.len() as u64 == range {
+                break;
+            }
+            let (s, e) = self.chunk_range(j);
+            let b = &mut buf[..(e - s) as usize];
+            snaps[(j as usize) * COLS + c].clone().fill_index(range, b);
+            for v in b.iter_mut() {
+                *v += 1;
+            }
+            first_appearance(b, &mut seen, &mut order);
+        }
+        order
     }
 
     /// Generate chunk `j`'s columns from the plan's snapshots, NAs applied.
@@ -321,22 +342,30 @@ impl GroupBy {
     /// one per value; chunks gather their rows when they are written.
     fn sorted(&self, plan: &Plan, threads: usize) -> (Vec<[u32; COLS]>, Vec<u32>) {
         let n = self.n as usize;
-        let mut rows: Vec<[u32; COLS]> = Vec::with_capacity(n);
-        par_ordered(
-            self.num_chunks(),
-            threads,
-            |j| {
-                let cols = self.generate(plan, j);
-                (0..cols[0].len())
-                    .map(|r| from_fn(|c| cols[c][r]))
-                    .collect::<Vec<[u32; COLS]>>()
-            },
-            |chunk| {
-                rows.extend_from_slice(&chunk);
-                Ok::<(), Infallible>(())
-            },
-        )
-        .unwrap_or_else(|e| match e {});
+        // every chunk generated straight into its rows, on all threads
+        let mut rows: Vec<[u32; COLS]> = vec![[0; COLS]; n];
+        {
+            let parts: Vec<Mutex<&mut [[u32; COLS]]>> = rows
+                .chunks_mut(self.chunk_rows as usize)
+                .map(Mutex::new)
+                .collect();
+            let next = AtomicUsize::new(0);
+            scope(|s| {
+                for _ in 0..thread_count(threads) {
+                    s.spawn(|| {
+                        loop {
+                            let j = next.fetch_add(1, Relaxed);
+                            let Some(part) = parts.get(j) else { break };
+                            let cols = self.generate(plan, j as u64);
+                            let mut part = part.lock().expect("rows");
+                            for (r, row) in part.iter_mut().enumerate() {
+                                *row = from_fn(|c| cols[c][r]);
+                            }
+                        }
+                    });
+                }
+            });
+        }
         // sort keys: NA first, then C-locale string order / numeric order
         let rank = |width: usize, range: u64| -> Vec<u32> {
             // rank[v] for v in 1..=range of sprintf("id%0<width>d", v)

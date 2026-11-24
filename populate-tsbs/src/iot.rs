@@ -6,7 +6,7 @@
 
 use crate::config::Config;
 use crate::gorand::{GoRand, go_f64_to_i64};
-use crate::model::{Measurement, NO_TAG, Point, Statics, TagVal, Type, Val};
+use crate::model::{Measurement, NO_TAG, POW10, Point, Statics, TagVal, Type, Val};
 use crate::sim::{Sim, epoch_generators};
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
@@ -45,15 +45,16 @@ const FLEETS: [&str; 4] = ["East", "West", "North", "South"];
 /// Per truck: the seven readings walks, fuel, status.
 const DISTS: usize = 9;
 
-/// Readings walks: `(step low, step high, min, max, precision)`.
-const WALKS: [(f64, f64, f64, f64, f64); 7] = [
-    (-0.005, 0.005, -90.0, 90.0, 100000.0),
-    (-0.005, 0.005, -180.0, 180.0, 100000.0),
-    (-10.0, 10.0, 0.0, 5000.0, 1.0),
-    (-10.0, 10.0, 0.0, 100.0, 1.0),
-    (-5.0, 5.0, 0.0, 360.0, 1.0),
-    (-5.0, 5.0, 0.0, 100.0, 1.0),
-    (-5.0, 5.0, 0.0, 50.0, 10.0),
+/// Readings walks: `(step low, step high, min, max, decimals)` (Go's
+/// precision is `10^decimals`).
+const WALKS: [(f64, f64, f64, f64, u8); 7] = [
+    (-0.005, 0.005, -90.0, 90.0, 5),
+    (-0.005, 0.005, -180.0, 180.0, 5),
+    (-10.0, 10.0, 0.0, 5000.0, 0),
+    (-10.0, 10.0, 0.0, 100.0, 0),
+    (-5.0, 5.0, 0.0, 360.0, 0),
+    (-5.0, 5.0, 0.0, 100.0, 0),
+    (-5.0, 5.0, 0.0, 50.0, 1),
 ];
 
 #[derive(Debug)]
@@ -167,14 +168,16 @@ impl Base {
         p.zero_tag = NO_TAG;
         p.fields.clear();
         let s = &self.state[t * DISTS..][..DISTS];
-        let fp = |v: f64, prec: f64| go_f64_to_i64(v * prec) as f64 / prec;
+        // Go: float64(int64(v*precision)) / precision
+        let fp = |v: f64, p: u8| Val::Fixed(go_f64_to_i64(v * POW10[p as usize]), p);
         if self.meas == 0 {
             p.fields
-                .extend(WALKS.iter().zip(s).map(|(w, &v)| Val::F(fp(v, w.4))));
+                .extend(WALKS.iter().zip(s).map(|(w, &v)| fp(v, w.4)));
         } else {
-            p.fields.push(Val::F(fp(s[7], 10.0)));
-            p.fields.push(Val::F(fp(self.load, 1.0)));
-            p.fields.push(Val::I(go_f64_to_i64(fp(s[8], 1.0))));
+            p.fields.push(fp(s[7], 1));
+            p.fields.push(fp(self.load, 0));
+            p.fields
+                .push(Val::I(go_f64_to_i64(go_f64_to_i64(s[8]) as f64)));
         }
         let ret = self.source < self.epoch_gens;
         self.made += 1;

@@ -5,6 +5,7 @@
 use crate::config::civil_from_days;
 use crate::model::{NO_TAG, Point, Statics, TagCache, TagVal, Type, Val};
 use std::fmt;
+use std::iter::repeat_n;
 use std::str::FromStr;
 
 /// A `--format` of `tsbs_generate_data`.
@@ -161,11 +162,11 @@ fn push_exp(out: &mut Vec<u8>, mant: &[u8], exp: &[u8]) {
     }
     if point <= 0 {
         out.extend_from_slice(b"0.");
-        out.extend(std::iter::repeat_n(b'0', (-point) as usize));
+        out.extend(repeat_n(b'0', (-point) as usize));
         out.extend_from_slice(&digits);
     } else if point as usize >= digits.len() {
         out.extend_from_slice(&digits);
-        out.extend(std::iter::repeat_n(b'0', point as usize - digits.len()));
+        out.extend(repeat_n(b'0', point as usize - digits.len()));
     } else {
         out.extend_from_slice(&digits[..point as usize]);
         out.push(b'.');
@@ -175,11 +176,43 @@ fn push_exp(out: &mut Vec<u8>, mant: &[u8], exp: &[u8]) {
 
 /// `FastFormatAppend` of a field.
 #[inline]
+/// `strconv.FormatFloat(float64(k) / 10^p, 'f', -1, 64)` for `|k| < 2^53`
+/// and `p <= 5`: `k`'s digits with the point `p` from the right, trailing
+/// fraction zeros dropped. (Any decimal with fewer fraction digits is at
+/// least `10^-p` away, far more than the float's spacing, so this is the
+/// shortest form that round-trips.)
+pub fn push_decimal(out: &mut Vec<u8>, k: i64, mut p: u8) {
+    let mut m = k.unsigned_abs();
+    while p > 0 && m.is_multiple_of(10) {
+        m /= 10;
+        p -= 1;
+    }
+    if k < 0 {
+        out.push(b'-');
+    }
+    let mut b = itoa::Buffer::new();
+    let s = b.format(m).as_bytes();
+    let p = p as usize;
+    if p == 0 {
+        out.extend_from_slice(s);
+    } else if s.len() > p {
+        let (int, frac) = s.split_at(s.len() - p);
+        out.extend_from_slice(int);
+        out.push(b'.');
+        out.extend_from_slice(frac);
+    } else {
+        out.extend_from_slice(b"0.");
+        out.extend(repeat_n(b'0', p - s.len()));
+        out.extend_from_slice(s);
+    }
+}
+
 fn push_val(out: &mut Vec<u8>, v: Val) {
     match v {
         Val::Nil => {}
         Val::I(i) => push_i64(out, i),
         Val::F(f) => push_f64(out, f),
+        Val::Fixed(k, p) => push_decimal(out, k, p),
     }
 }
 
@@ -193,16 +226,10 @@ fn push_tag(out: &mut Vec<u8>, v: Option<&TagVal>) {
     }
 }
 
-/// The point's tags in order: the generator's, then the measurement's.
 impl TagCache {
     /// Format every generator's tags.
     pub fn new(st: &Statics) -> Self {
         let mut c = TagCache {
-            has_f32: st
-                .gen_tags
-                .iter()
-                .flatten()
-                .any(|v| matches!(v, TagVal::F32(_))),
             field_kv: st
                 .measurements
                 .iter()
@@ -217,13 +244,16 @@ impl TagCache {
         };
         for tags in &st.gen_tags {
             let (mut kv_str, mut kv_all, mut json) = (Vec::new(), Vec::new(), Vec::new());
+            let mut f32_fields = Vec::new();
             for (k, v) in st.tag_keys.iter().zip(tags) {
                 let at = kv_all.len();
                 kv_all.push(b',');
                 kv_all.extend_from_slice(k.as_bytes());
                 kv_all.push(b'=');
                 push_tag(&mut kv_all, Some(v));
-                if !matches!(v, TagVal::F32(_)) {
+                if matches!(v, TagVal::F32(_)) {
+                    f32_fields.extend_from_slice(&kv_all[at..]);
+                } else {
                     kv_str.extend_from_slice(&kv_all[at..]);
                 }
                 if !json.is_empty() {
@@ -236,6 +266,8 @@ impl TagCache {
                 json.push(b'"');
             }
             c.kv_str.push(kv_str.into());
+            c.f32_fields
+                .push(f32_fields.get(1..).unwrap_or_default().into());
             c.kv_all.push(kv_all.into());
             c.json.push(json.into());
         }
@@ -263,6 +295,7 @@ fn push_extra_kv(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     }
 }
 
+/// The point's tags in order: the generator's, then the measurement's.
 fn tags<'a>(
     st: &'a Statics,
     p: &'a Point,
@@ -354,7 +387,7 @@ fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     let fake = if p.zero_tag == NO_TAG {
         out.extend_from_slice(&c.kv_str[g]);
         push_extra_kv(st, p, out);
-        c.has_f32 && st.gen_tags[g].iter().any(|v| matches!(v, TagVal::F32(_)))
+        !c.f32_fields[g].is_empty()
     } else {
         influx_tags_slow(st, p, out)
     };
@@ -362,7 +395,10 @@ fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
         out.push(b' ');
     }
     let mut first = false;
-    if fake {
+    if fake && p.zero_tag == NO_TAG {
+        out.extend_from_slice(&c.f32_fields[g]);
+        first = true;
+    } else if fake {
         for (k, v, _) in tags(st, p) {
             if let Some(TagVal::F32(f)) = v {
                 if first {
@@ -387,6 +423,10 @@ fn influx(st: &Statics, p: &Point, out: &mut Vec<u8>) {
             Val::F(f) => {
                 out.extend_from_slice(k);
                 push_f64(out, f);
+            }
+            Val::Fixed(i, d) => {
+                out.extend_from_slice(k);
+                push_decimal(out, i, d);
             }
         }
         first = true;
@@ -515,7 +555,7 @@ fn cassandra(st: &Statics, p: &Point, out: &mut Vec<u8>) {
         let table: &[u8] = match v {
             Val::Nil => continue,
             Val::I(_) => b"series_bigint",
-            Val::F(_) => b"series_double",
+            Val::F(_) | Val::Fixed(..) => b"series_double",
         };
         out.extend_from_slice(table);
         out.push(b',');
@@ -532,6 +572,7 @@ fn cassandra(st: &Statics, p: &Point, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::POW10;
 
     #[test]
     fn go_number_formats() {
@@ -560,6 +601,15 @@ mod tests {
         assert_eq!(s(&|o| push_f64(o, 1.25e17)), "125000000000000000");
         assert_eq!(s(&|o| push_f64(o, 0.0)), "0");
         assert_eq!(s(&|o| push_f32(o, 1.5e-6)), "0.0000015");
+        // push_decimal is push_f64 of the float Go computes
+        for k in [
+            0i64, 1, -1, 7, 10, -10, 123_456, -9_000_000, 18_000_000, 99_999, 100_001,
+        ] {
+            for p in 0..=5u8 {
+                let want = s(&|o| push_f64(o, k as f64 / POW10[p as usize]));
+                assert_eq!(s(&|o| push_decimal(o, k, p)), want, "{k} {p}");
+            }
+        }
         assert_eq!(
             s(&|o| push_date(o, 1_451_606_400_000_000_000, 1_451_606_400_000_000_000)),
             "2016-01-01"

@@ -111,7 +111,9 @@ impl Builder {
         for (i, c) in fields.iter_mut().enumerate() {
             match (c, p.fields.get(i).copied().unwrap_or(Val::Nil)) {
                 (Col::I64(b), Val::I(v)) => b.append_value(v),
-                (Col::F64(b), Val::F(v)) => b.append_value(v),
+                (Col::F64(b), v @ (Val::F(_) | Val::Fixed(..))) => {
+                    b.append_value(v.as_f64().expect("a float"))
+                }
                 (Col::I64(b), _) => b.append_null(),
                 (Col::F64(b), _) => b.append_null(),
                 _ => unreachable!("field columns are numeric"),

@@ -12,6 +12,25 @@ pub enum Val {
     I(i64),
     /// `float64`.
     F(f64),
+    /// The `float64` Go computes as `float64(k) / 10^p` (IoT's rounded
+    /// readings), kept as `(k, p)` so it is written from `k`'s digits:
+    /// with `|k| < 2^53` and `p <= 5` that is its shortest form.
+    Fixed(i64, u8),
+}
+
+/// Powers of ten for [`Val::Fixed`].
+pub const POW10: [f64; 6] = [1.0, 10.0, 100.0, 1000.0, 10_000.0, 100_000.0];
+
+impl Val {
+    /// The `float64` of a [`Val::F`] or [`Val::Fixed`].
+    #[inline]
+    pub fn as_f64(self) -> Option<f64> {
+        match self {
+            Val::F(f) => Some(f),
+            Val::Fixed(k, p) => Some(k as f64 / POW10[p as usize]),
+            _ => None,
+        }
+    }
 }
 
 /// The Go type of a field or tag.
@@ -96,8 +115,9 @@ pub struct TagCache {
     pub kv_all: Vec<Box<[u8]>>,
     /// `"k":"v"` for every tag, comma-separated (cratedb).
     pub json: Vec<Box<[u8]>>,
-    /// Whether any generator tag is numeric.
-    pub has_f32: bool,
+    /// `k=v` for the numeric tags, comma-separated (influx writes them
+    /// as the first fields).
+    pub f32_fields: Vec<Box<[u8]>>,
     /// Per measurement, per field: `,k=`.
     pub field_kv: Vec<Vec<Box<[u8]>>>,
 }

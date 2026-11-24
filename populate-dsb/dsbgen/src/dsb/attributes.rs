@@ -129,22 +129,46 @@ pub enum MapName {
     CustomerState,
 }
 
-type Cache = Mutex<HashMap<(MapName, u64), Arc<AttributeKeyMap>>>;
+/// The maps one [`build`] makes.
+type Built = Vec<(MapName, Arc<AttributeKeyMap>)>;
+
+type Cache = Mutex<HashMap<(MapName, u64), Arc<OnceLock<Built>>>>;
 
 /// The attribute key map `name` at `session`'s scale, built on first use.
+/// Callers that ask at once wait for one build.
 pub fn attribute_map(name: MapName, session: &Session) -> Arc<AttributeKeyMap> {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    let key = (name, session.get_scaling().get_scale().to_bits());
-    if let Some(m) = cache.lock().expect("attribute map cache").get(&key) {
-        return m.clone();
+    let key = (group(name), session.get_scaling().get_scale().to_bits());
+    let cell = cache
+        .lock()
+        .expect("attribute map cache")
+        .entry(key)
+        .or_default()
+        .clone();
+    let built = cell.get_or_init(|| {
+        build(name, session)
+            .into_iter()
+            .map(|(n, m)| (n, Arc::new(m)))
+            .collect()
+    });
+    built
+        .iter()
+        .find(|(n, _)| *n == name)
+        .expect("built with its group")
+        .1
+        .clone()
+}
+
+/// The first of the maps [`build`] makes together with `name`.
+fn group(name: MapName) -> MapName {
+    use MapName::*;
+    match name {
+        ItemCategory | ItemColor => ItemCategory,
+        CustomerAddressCounty | CustomerAddressState => CustomerAddressCounty,
+        CustomerCounty | CustomerState => CustomerCounty,
+        n => n,
     }
-    let built = build(name, session);
-    let mut c = cache.lock().expect("attribute map cache");
-    for (n, m) in built {
-        c.entry((n, key.1)).or_insert_with(|| Arc::new(m));
-    }
-    c[&key].clone()
 }
 
 fn rows(session: &Session, table: Table) -> u64 {

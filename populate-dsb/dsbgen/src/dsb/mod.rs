@@ -11,6 +11,7 @@
 //! tpcdsgen's own generators.
 
 pub mod address;
+pub mod attributes;
 pub mod join;
 
 use crate::random::RandomNumberStream;

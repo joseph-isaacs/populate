@@ -9,7 +9,7 @@
 //! `--format parquet` (the default) writes `DIR/<table>.parquet`, one file per
 //! table, generating and encoding row groups on all cores. `--format dat`
 //! writes `DIR/<table>.dat`, the same bytes `dsdgen -SCALE <sf>` writes
-//! (`--encoding utf8` for UTF-8 text, as `tpcgen-cli` writes).
+//! (UTF-8 by default, as DSB's dsdgen writes; `--encoding latin1` maps text to ISO-8859-1).
 //! `--format none` generates the Arrow batches and drops them, which
 //! measures generation alone. Rows and size per table and the overall time
 //! and throughput are printed.
@@ -58,7 +58,7 @@ const USAGE: &str = "usage: dsb-gen [--sf 1] [--out DIR] [--format parquet|dat|n
 fn parse() -> Result<Args, String> {
     let mut a = Args {
         sf: 1.0,
-        out: PathBuf::from("tpcds"),
+        out: PathBuf::from("dsb"),
         format: Format::Parquet,
         tables: TableName::ALL.to_vec(),
         threads: 0,
@@ -66,7 +66,7 @@ fn parse() -> Result<Args, String> {
         row_group: None,
         compression: Compression::SNAPPY,
         dictionary: true,
-        encoding: Encoding::Latin1,
+        encoding: Encoding::Utf8,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {

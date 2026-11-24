@@ -19,8 +19,8 @@ impl DistributionFileLoader {
             ))
         })?;
 
-        // Convert ISO-8859-1 to UTF-8 string
-        let content = bytes.iter().map(|&b| b as char).collect::<String>();
+        // DSB's tpcds.dst is UTF-8 (two country names carry U+FFFD).
+        let content = std::str::from_utf8(bytes).expect("distribution files are UTF-8");
 
         let mut parsed_lines = Vec::new();
 

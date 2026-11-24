@@ -20,7 +20,8 @@
 use crate::config::Session;
 use crate::generator::InventoryGeneratorColumn;
 use crate::nulls::create_null_bit_map;
-use crate::random::RandomValueGenerator;
+use crate::random::RandomNumberStream;
+use crate::dsb::{exp_bucketed_int, make_bucket, make_perm};
 use crate::row::inventory_row::InventoryRow;
 use crate::row::AbstractRowGenerator;
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
@@ -45,20 +46,47 @@ use crate::types::Date;
 pub struct InventoryRowGenerator {
     abstract_generator: AbstractRowGenerator<InventoryGeneratorColumn>,
     session: Session,
+    /// DSB's quantity buckets and their permutation.
+    quantity_bucket: (i32, i32),
+    quantity_perm: Vec<i32>,
 }
+
+const INV_QUANTITY_MIN: i32 = 0;
+const INV_QUANTITY_MAX: i32 = 1000;
 
 impl InventoryRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        let mut ag = AbstractRowGenerator::new(row_count);
+        // DSB sizes these buckets by hand; it agrees with `makeBucket`.
+        let quantity_bucket = make_bucket(20, INV_QUANTITY_MAX - INV_QUANTITY_MIN + 1);
+        let quantity_perm = make_perm(
+            quantity_bucket.1,
+            ag.get_random_number_stream(&InventoryGeneratorColumn::InvQuantityOnHand),
+        );
+        // An exponential bucket plus a uniform value: two draws every row.
+        ag.set_seeds_per_row(&InventoryGeneratorColumn::InvQuantityOnHand, 2);
+        ag.mark_row1();
         InventoryRowGenerator {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
             session,
+            quantity_bucket,
+            quantity_perm,
+        }
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
         }
     }
 
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
     }
@@ -68,8 +96,29 @@ impl InventoryRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+    }
+
+    /// The quantity sampler at the current row: its stream (positioned at
+    /// the row), bucket and permutation. Every row takes exactly two draws
+    /// after the first, so a caller can step the stream on itself.
+    pub fn quantity_sampler(&mut self) -> (RandomNumberStream, (i32, i32), Vec<i32>) {
+        let stream = self
+            .abstract_generator
+            .get_random_number_stream(&InventoryGeneratorColumn::InvQuantityOnHand)
+            .clone();
+        (stream, self.quantity_bucket, self.quantity_perm.clone())
+    }
+
+    /// `inv_quantity_on_hand` from a [`Self::quantity_sampler`].
+    pub fn sample_quantity(
+        stream: &mut RandomNumberStream,
+        bucket: (i32, i32),
+        perm: &[i32],
+    ) -> i32 {
+        exp_bucketed_int(INV_QUANTITY_MIN, INV_QUANTITY_MAX, bucket, perm, stream)
     }
 
     fn generate_inventory_row(&mut self, row_number: u64) -> InventoryRow {
@@ -118,8 +167,13 @@ impl InventoryRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&InvQuantityOnHand);
-        let inv_quantity_on_hand =
-            RandomValueGenerator::generate_uniform_random_int(0, 1000, stream);
+        let inv_quantity_on_hand = exp_bucketed_int(
+            INV_QUANTITY_MIN,
+            INV_QUANTITY_MAX,
+            self.quantity_bucket,
+            &self.quantity_perm,
+            stream,
+        );
 
         InventoryRow::new(
             null_bit_map,

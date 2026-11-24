@@ -5,9 +5,12 @@
 //! drawn with exponential skew instead of uniformly, and optionally mapped
 //! through a key permutation (`mk_join_permutation`).
 
-use super::{exp_key, map_key_perm};
+use super::{exp_key, hierarchical_key, make_perm, map_key_perm};
 use crate::config::{Scaling, Table};
+use crate::distribution::DemographicsDistributions as Demo;
+use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
+use std::sync::OnceLock;
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::types::Date;
 
@@ -48,3 +51,62 @@ pub fn scd_join_key(
         key
     }
 }
+
+/// The permutations of `household_demographics_join` or
+/// `customer_demographics_join`: one per coordinate of the demographics
+/// cross product, most significant first.
+pub struct DemographicsJoin {
+    pub sizes: Vec<i32>,
+    pub perms: Vec<Vec<i32>>,
+    /// Draws the permutations took.
+    pub draws: u64,
+}
+
+impl DemographicsJoin {
+    fn new(sizes: Vec<i32>, stream: &mut RandomNumberStream) -> Self {
+        let perms: Vec<Vec<i32>> = sizes.iter().map(|&n| make_perm(n, stream)).collect();
+        let draws = sizes.iter().map(|&n| n as u64).sum();
+        DemographicsJoin {
+            sizes,
+            perms,
+            draws,
+        }
+    }
+
+    /// `genrand_hierarchical_key`: one exponential draw per coordinate.
+    pub fn key(&self, stream: &mut RandomNumberStream) -> i64 {
+        hierarchical_key(&self.sizes, &self.perms, stream)
+    }
+
+    /// `household_demographics_join`'s permutations. dsdgen draws them on
+    /// the first hdemo join of a run: `customer`'s `C_CURRENT_HDEMO_SK` in
+    /// its first row, after `customer`'s own key permutation of the
+    /// household_demographics attributes.
+    pub fn household() -> &'static DemographicsJoin {
+        static JOIN: OnceLock<DemographicsJoin> = OnceLock::new();
+        JOIN.get_or_init(|| {
+            let c = CustomerGeneratorColumn::CCurrentHdemoSk;
+            let mut s = RandomNumberStream::new_with_column(
+                c.get_global_column_number(),
+                c.get_seeds_per_row(),
+            );
+            s.advance(HDEMO_ATTRIBUTES);
+            DemographicsJoin::new(
+                vec![
+                    Demo::get_vehicle_count_size() as i32,
+                    Demo::get_dep_count_size() as i32,
+                    Demo::get_buy_potential_size() as i32,
+                    Demo::get_income_band_size() as i32,
+                ],
+                &mut s,
+            )
+        })
+    }
+}
+
+/// Distinct buy potential and dependant count pairs: the attributes of
+/// the `household_demographics` map (its size is fixed by the
+/// distributions, not the scale).
+pub const HDEMO_ATTRIBUTES: u64 = 60;
+/// Distinct gender, education and marital status triples.
+pub const CDEMO_ATTRIBUTES: u64 = 70;

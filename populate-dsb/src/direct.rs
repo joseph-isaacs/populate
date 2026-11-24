@@ -16,7 +16,7 @@ use std::sync::Arc;
 use dsbgen::config::{Session, Table as Ds};
 use dsbgen::distribution::DemographicsDistributions as Demo;
 use dsbgen::generator::InventoryGeneratorColumn as Inv;
-use dsbgen::row::AbstractRowGenerator;
+use dsbgen::row::{AbstractRowGenerator, InventoryRowGenerator};
 use dsbgen::slowly_changing_dimension_utils::match_surrogate_key;
 use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
@@ -40,6 +40,11 @@ pub(crate) fn inventory(
     let last = last.min(total);
     let mut g = AbstractRowGenerator::<Inv>::new(total);
     g.set_source_row_range(first, last);
+    // DSB's quantity: an exponential, permuted bucket, then a uniform value
+    // (two draws a row, after the permutation row 1 also draws).
+    let mut rows = InventoryRowGenerator::new(session.clone(), total);
+    rows.set_source_row_range(first, last);
+    let (mut q_stream, q_bucket, q_perm) = rows.quantity_sampler();
     let items = scaling.get_id_count(Ds::Item);
     let warehouses = scaling.get_row_count(Ds::Warehouse);
     let index = first - 1;
@@ -52,9 +57,6 @@ pub(crate) fn inventory(
     // its budget (1 and 2 seeds), and the other streams are never read, so
     // the two streams just step on: read their first draws here and run
     // the Lehmer steps inline instead of through the generator per row.
-    let mut q = g
-        .get_random_number_stream(&Inv::InvQuantityOnHand)
-        .next_random() as u64;
     let nulls_stream = g.get_random_number_stream(&Inv::InvNulls);
     let mut n1 = nulls_stream.next_random() as u64;
     let mut n2 = nulls_stream.next_random() as u64;
@@ -90,8 +92,11 @@ pub(crate) fn inventory(
             wh.extend(repeat_n(warehouse as i32 + 1, run));
             item_sk.extend_from_slice(&keys[from..from + run]);
             for _ in 0..run {
-                // generate_uniform_random_int(0, 1000)
-                qty.push((q as i32) % 1001);
+                qty.push(InventoryRowGenerator::sample_quantity(
+                    &mut q_stream,
+                    q_bucket,
+                    &q_perm,
+                ));
                 // create_null_bit_map: a threshold in 0..10000, then a bitmap
                 // in 1..=i32::MAX; the date, item and warehouse are NOT NULL
                 let nbm = if (n1 as i32) % 10000 < basis {
@@ -100,7 +105,6 @@ pub(crate) fn inventory(
                     0
                 };
                 valid.push(nbm & (1 << 3) == 0);
-                q = seeds::lehmer(q);
                 n1 = seeds::lehmer2(n1);
                 n2 = seeds::lehmer2(n2);
             }

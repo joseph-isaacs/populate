@@ -16,13 +16,15 @@
 
 use crate::business_key_generator::make_business_key;
 use crate::config::Session;
-use crate::distribution::{
-    pick_random_country, FirstNamesWeights, NamesDistributions, SalutationsWeights,
-};
-use crate::generator::CustomerGeneratorColumn;
-use crate::join_key_utils::generate_uniform_join_key;
+use crate::distribution::address_distributions::countries_distribution;
+use crate::distribution::{FirstNamesWeights, NamesDistributions, SalutationsWeights};
+use crate::dsb::attributes::{attribute_map, one_sided_correlated_key, AttributeKeyMap, MapName};
+use crate::dsb::join::{join_key, DemographicsJoin};
+use crate::dsb::{exp_date, exp_pick_index, make_key_perm, make_perm, DatePerms};
+use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::nulls::create_null_bit_map;
-use crate::random::RandomValueGenerator;
+use crate::random::{RandomNumberStream, RandomValueGenerator};
+use std::sync::Arc;
 use crate::row::customer_row::CustomerRow;
 use crate::row::AbstractRowGenerator;
 use crate::table::Table;
@@ -32,14 +34,108 @@ use crate::types::Date;
 pub struct CustomerRowGenerator {
     abstract_generator: AbstractRowGenerator<CustomerGeneratorColumn>,
     session: Session,
+    perms: Arc<Perms>,
+}
+
+/// What DSB's `mk_w_customer` sets up on its first call: permutations and
+/// the attribute key maps of customer_address and the demographics.
+struct Perms {
+    country: Vec<i32>,
+    birth: DatePerms,
+    address_state: Arc<AttributeKeyMap>,
+    cdemo: Arc<AttributeKeyMap>,
+    cdemo_perm: Vec<i64>,
+    hdemo: Arc<AttributeKeyMap>,
+    hdemo_perm: Vec<i64>,
+}
+
+fn birth_min() -> Date {
+    Date::new(1924, 1, 1)
+}
+
+fn birth_max() -> Date {
+    Date::new(1992, 12, 31)
 }
 
 impl CustomerRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use CustomerGeneratorColumn::*;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        let country = make_perm(
+            countries_distribution().get_size() as i32,
+            ag.get_random_number_stream(&CBirthCountry),
+        );
+        let s = ag.get_random_number_stream(&CBirthDay);
+        let birth = DatePerms {
+            year: make_perm(birth_max().get_year() - birth_min().get_year() + 1, s),
+            month: make_perm(12, s),
+            day: make_perm(31, s),
+        };
+        let address_state = attribute_map(MapName::CustomerAddressState, &session);
+        let cdemo = attribute_map(MapName::CustomerDemographics, &session);
+        let cdemo_perm = make_key_perm(
+            cdemo.attribute_count() as i64,
+            ag.get_random_number_stream(&CCurrentCdemoSk),
+        );
+        let hdemo = attribute_map(MapName::HouseholdDemographics, &session);
+        let s = ag.get_random_number_stream(&CCurrentHdemoSk);
+        let hdemo_perm = make_key_perm(hdemo.attribute_count() as i64, s);
+        // Row 1's hdemo join draws the join's permutations.
+        let draws = DemographicsJoin::household().draws;
+        s.advance(draws);
+        s.set_seeds_used(s.get_seeds_used() + draws as u32);
+        // An hdemo join (four coordinates) plus a correlated key (two
+        // draws); the correlated cdemo key alone.
+        ag.set_seeds_per_row(&CCurrentHdemoSk, 6);
+        ag.set_seeds_per_row(&CCurrentCdemoSk, 2);
+        ag.mark_row1();
         CustomerRowGenerator {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
             session,
+            perms: Arc::new(Perms {
+                country,
+                birth,
+                address_state,
+                cdemo,
+                cdemo_perm,
+                hdemo,
+                hdemo_perm,
+            }),
+        }
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+        }
+    }
+
+    /// `C_BIRTH_DAY` at the start of `row`. Its rejection-sampled date takes
+    /// three or more draws a row, always over its budget of one, so the
+    /// stream is never burned and its position depends on every earlier
+    /// row's dates: replay them.
+    fn birth_day_stream(&self, row: u64) -> RandomNumberStream {
+        let c = CustomerGeneratorColumn::CBirthDay;
+        let mut s =
+            RandomNumberStream::new_with_column(c.get_global_column_number(), c.get_seeds_per_row());
+        let p = &self.perms.birth;
+        s.advance((p.year.len() + p.month.len() + p.day.len()) as u64);
+        for _ in 1..row {
+            exp_date(birth_min(), birth_max(), p, &mut s);
+        }
+        s.set_seeds_used(0);
+        s
+    }
+
+    fn position_birth_day(&mut self, row: u64) {
+        if row > 1 {
+            let s = self.birth_day_stream(row);
+            *self
+                .abstract_generator
+                .get_random_number_stream(&CustomerGeneratorColumn::CBirthDay) = s;
         }
     }
 
@@ -62,24 +158,22 @@ impl CustomerRowGenerator {
 
         let scaling = session.get_scaling();
 
-        // Generate join keys (matches Java order lines 77-79)
+        // DSB: the hdemo join's draws (its key is replaced below), then an
+        // exponential address.
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CCurrentHdemoSk);
-        let c_current_hdemo_sk =
-            generate_uniform_join_key(crate::config::Table::HouseholdDemographics, stream, scaling);
-
-        let stream = self
-            .abstract_generator
-            .get_random_number_stream(&CCurrentCdemoSk);
-        let c_current_cdemo_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerDemographics, stream, scaling);
+        DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CCurrentAddrSk);
-        let c_current_addr_sk =
-            generate_uniform_join_key(crate::config::Table::CustomerAddress, stream, scaling);
+        let c_current_addr_sk = join_key(
+            crate::config::Table::CustomerAddress,
+            stream,
+            scaling,
+            None,
+        );
 
         // Name generation (matches Java order lines 81-85)
         let stream = self
@@ -108,16 +202,12 @@ impl CustomerRowGenerator {
         let c_salutation =
             NamesDistributions::pick_random_salutation(salutation_weight, stream).to_string();
 
-        // Birthday generation (matches Java order lines 87-95)
-        let max_birthday = Date::new(1992, 12, 31);
-        let min_birthday = Date::new(1924, 1, 1);
         let one_year_ago = Date::from_julian_days(Date::JULIAN_TODAYS_DATE - 365);
         let ten_years_ago = Date::from_julian_days(Date::JULIAN_TODAYS_DATE - 3650);
         let today = Date::from_julian_days(Date::JULIAN_TODAYS_DATE);
 
         let stream = self.abstract_generator.get_random_number_stream(&CBirthDay);
-        let birthday =
-            RandomValueGenerator::generate_uniform_random_date(min_birthday, max_birthday, stream);
+        let birthday = exp_date(birth_min(), birth_max(), &self.perms.birth, stream);
         let c_birth_day = birthday.day();
         let c_birth_month = birthday.month();
         let c_birth_year = birthday.year();
@@ -146,11 +236,33 @@ impl CustomerRowGenerator {
         let c_first_sales_date_id = first_sales_date.to_julian_days();
         let c_first_shipto_date_id = c_first_sales_date_id + 30;
 
-        // Birth country (matches Java order line 104)
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CBirthCountry);
-        let c_birth_country = pick_random_country(stream).to_string();
+        let countries = countries_distribution();
+        let c_birth_country = countries
+            .get_value_at_index(
+                0,
+                exp_pick_index(countries.get_size() as i32, Some(&self.perms.country), stream),
+            )
+            .to_string();
+
+        // Demographics correlated with the address's state. DSB passes the
+        // drive arguments swapped: the state id as the count, the state
+        // count as the id.
+        let p = self.perms.clone();
+        let state = p.address_state.attribute_of(c_current_addr_sk);
+        let states = p.address_state.attribute_count();
+        let stream = self
+            .abstract_generator
+            .get_random_number_stream(&CCurrentCdemoSk);
+        let c_current_cdemo_sk =
+            one_sided_correlated_key(state, states, &p.cdemo, &p.cdemo_perm, 0.01, stream);
+        let stream = self
+            .abstract_generator
+            .get_random_number_stream(&CCurrentHdemoSk);
+        let c_current_hdemo_sk =
+            one_sided_correlated_key(state, states, &p.hdemo, &p.hdemo_perm, 0.1, stream);
 
         // Generate null bit map (matches Java order line 123)
         let stream = self.abstract_generator.get_random_number_stream(&CNulls);
@@ -181,8 +293,10 @@ impl CustomerRowGenerator {
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
+        self.position_birth_day(starting_row_number);
     }
 
     /// Restrict generation to source rows
@@ -190,8 +304,10 @@ impl CustomerRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+        self.position_birth_day(starting_row_number);
     }
 }
 

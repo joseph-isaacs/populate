@@ -6,6 +6,8 @@
 //! cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
 //! ```
 
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
 use populate_synth::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Synth,
     Taxi,
@@ -15,6 +17,12 @@ use std::fs::{File, metadata};
 use std::io::BufWriter;
 use std::process::exit;
 use std::time::Instant;
+
+/// mimalloc: batch buffers are reused instead of returned to the OS and
+/// faulted in again, as glibc does with a batch's worth of small frees
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const USAGE: &str = "usage: synth-gen <taxi|hits|features|embeddings> [--rows N] [--seed S] \
 [--threads T] [--batch-size B] [--chunk-rows C] [--dim D] [--out FILE.parquet]

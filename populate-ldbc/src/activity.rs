@@ -1252,13 +1252,11 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 parents.push(msg);
             }
         }
+        // the comments' tag lists back to the pool, as many as were taken
+        // (the post's own came from elsewhere), so the pool stays small
         self.tag_pool.push(tags);
-        self.tag_pool.extend(
-            parents
-                .drain(..)
-                .map(|p| p.tags)
-                .filter(|t| t.capacity() > 0),
-        );
+        self.tag_pool
+            .extend(parents.drain(..).skip(1).map(|p| p.tags));
         self.parents = parents;
         self.cached = cached;
     }

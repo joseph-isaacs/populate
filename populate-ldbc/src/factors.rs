@@ -171,6 +171,11 @@ pub struct FactorInput {
     counts: Mutex<Counts>,
 }
 
+/// Chunk `i` was taken in twice, or not at all.
+fn chunk_once(i: usize) -> String {
+    format!("chunk {i}: the factor tables need every chunk generated exactly once")
+}
+
 /// A factor table: its definition and rows, in the datagen's order.
 pub struct Factor {
     pub def: &'static TableDef,
@@ -255,7 +260,12 @@ impl FactorInput {
         count(&mut k.likes, raw[t::LIKES_COMMENT].cols[3].i64s());
         count(&mut k.forums, raw[t::FORUM_MEMBER].cols[4].i64s());
 
-        self.parts.lock().expect("parts")[i as usize] = Some(p);
+        {
+            let mut parts = self.parts.lock().expect("parts");
+            let slot = &mut parts[i as usize];
+            assert!(slot.is_none(), "{}", chunk_once(i as usize));
+            *slot = Some(p);
+        }
         self.counts.lock().expect("counts").merge(k);
     }
 
@@ -265,7 +275,8 @@ impl FactorInput {
         let parts = take(&mut *self.parts.lock().expect("parts"));
         let counts = take(&mut *self.counts.lock().expect("counts"));
         let mut all = Part::default();
-        for p in parts.into_iter().flatten() {
+        for (i, p) in parts.into_iter().enumerate() {
+            let p = p.unwrap_or_else(|| panic!("{}", chunk_once(i)));
             all.persons.extend(p.persons);
             all.knows.extend(p.knows);
             all.study.extend(p.study);
@@ -1081,8 +1092,13 @@ fn likes_messages(c: &Ctx) -> Rows {
 /// The friend-of-friend pattern: per person its direct count, the sum of
 /// its friends' direct counts and the sum of its friends' friend sums
 /// (sums over no friends are null).
-fn friends_of_friends(c: &Ctx, def: &TableDef, direct: impl Fn(&Person) -> i64) -> Rows {
-    let d: Vec<i64> = c.g.persons.iter().map(direct).collect();
+fn friends_of_friends(c: &Ctx, def: &TableDef, direct: impl Fn(usize, &Person) -> i64) -> Rows {
+    let d: Vec<i64> =
+        c.g.persons
+            .iter()
+            .enumerate()
+            .map(|(i, p)| direct(i, p))
+            .collect();
     let f1: Vec<Option<i64>> = c
         .adj
         .iter()
@@ -1103,30 +1119,30 @@ fn friends_of_friends(c: &Ctx, def: &TableDef, direct: impl Fn(&Person) -> i64) 
 }
 
 fn friends_3(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FRIENDS_3, |p| c.adj[c.idx[&p.id] as usize].len() as i64)
+    friends_of_friends(c, &FRIENDS_3, |i, _| c.adj[i].len() as i64)
 }
 
 fn fof_posts(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_POSTS, |p| {
+    friends_of_friends(c, &FOF_POSTS, |_, p| {
         c.k.posts.get(&p.id).copied().unwrap_or(0)
     })
 }
 
 fn fof_comments(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_COMMENTS, |p| {
+    friends_of_friends(c, &FOF_COMMENTS, |_, p| {
         c.k.comments.get(&p.id).copied().unwrap_or(0)
     })
 }
 
 fn fof_forums(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_FORUMS, |p| {
+    friends_of_friends(c, &FOF_FORUMS, |_, p| {
         c.k.forums.get(&p.id).copied().unwrap_or(0)
     })
 }
 
 fn fof_companies(c: &Ctx) -> Rows {
     let m = group_count(c.g.work.iter().map(|w| w[0]));
-    friends_of_friends(c, &FOF_COMPANIES, |p| m.get(&p.id).copied().unwrap_or(0))
+    friends_of_friends(c, &FOF_COMPANIES, |_, p| m.get(&p.id).copied().unwrap_or(0))
 }
 
 fn friend_tags(c: &Ctx) -> Rows {
@@ -1316,8 +1332,8 @@ fn hops(c: &Ctx, def: &TableDef, n: u8) -> Rows {
     let size = count.min(100f64.max(count / (1.0 + (count * 1e-3).exp()) * 2.0));
     let sources = bernoulli(&china, (size / count).min(1.0));
 
-    // one BFS per source, sources in parallel: `seen[x] == s + 1` marks
-    // `x` reached from source `s`
+    // one BFS per source, sources in parallel: `seen[x] == k` marks `x`
+    // reached from the `k`-th source
     let per = sources.len().div_ceil(64).max(1);
     let mut pairs: Vec<(i64, i64, u32)> = par_map(sources.len().div_ceil(per), c.threads, |b| {
         let n_persons = c.g.persons.len();
@@ -1381,10 +1397,10 @@ fn hops(c: &Ctx, def: &TableDef, n: u8) -> Rows {
 /// `BernoulliCellSampler` keeping the items whose `XORShiftRandom` draw is
 /// below `fraction`.
 fn bernoulli<T: Copy>(items: &[T], fraction: f64) -> Vec<T> {
-    let mut rng = XorShift::new(42);
     if fraction <= 0.0 {
         return Vec::new();
     }
+    let mut rng = XorShift::new(42);
     items
         .iter()
         .copied()

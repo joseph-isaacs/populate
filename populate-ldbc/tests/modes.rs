@@ -15,7 +15,7 @@
 use populate_ldbc::bi::{Batches, Bi, BiRun};
 use populate_ldbc::factors::{Factor, UNORDERED};
 use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
-use populate_ldbc::rows::TableDef;
+use populate_ldbc::rows::{Rows, TableDef};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
 use populate_table::text::write_text_many;
 use std::env::var_os;
@@ -69,7 +69,7 @@ fn split_header(f: &[u8]) -> (&[u8], &[u8]) {
     f.split_at(i)
 }
 
-fn with_header(def: &TableDef, rows: &populate_ldbc::rows::Rows) -> Vec<u8> {
+fn with_header(def: &TableDef, rows: &Rows) -> Vec<u8> {
     let mut f = Vec::new();
     csv::header(def, &mut f);
     csv::write(def, rows, &mut f);

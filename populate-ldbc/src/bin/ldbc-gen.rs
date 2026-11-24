@@ -113,9 +113,13 @@ fn parse() -> Result<Args, String> {
                 }
             }
             "--bulkload-portion" => {
-                bi.bulkload_portion = val()?
+                let v: f64 = val()?
                     .parse()
-                    .map_err(|e| format!("--bulkload-portion: {e}"))?
+                    .map_err(|e| format!("--bulkload-portion: {e}"))?;
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(format!("--bulkload-portion must be in [0, 1], not {v}"));
+                }
+                bi.bulkload_portion = v
             }
             "--batch-period" => {
                 let v = val()?;

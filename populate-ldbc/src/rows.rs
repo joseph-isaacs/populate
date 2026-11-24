@@ -148,10 +148,10 @@ impl Col {
     pub fn end_str(&mut self) {
         match self {
             Col::Str(d, o) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"))
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"))
             }
             Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
                 n.push(true);
             }
             _ => unreachable!("not a string column"),
@@ -168,7 +168,7 @@ impl Col {
     pub fn null_str(&mut self) {
         match self {
             Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB"));
+                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
                 n.push(false);
             }
             _ => unreachable!("not an optional string column"),
@@ -220,6 +220,29 @@ impl Col {
         }
     }
 
+    /// Append row `r` of `other` (a column of the same kind).
+    pub fn push_from(&mut self, other: &Col, r: usize) {
+        match (self, other) {
+            (Col::I64(a), Col::I64(b)) => a.push(b[r]),
+            (Col::I32(a), Col::I32(b)) => a.push(b[r]),
+            (Col::Bool(a), Col::Bool(b)) => a.push(b[r]),
+            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
+                a.push(b[r]);
+                n.push(m[r]);
+            }
+            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
+                a.push(b[r]);
+                n.push(m[r]);
+            }
+            (c @ Col::Str(..), o @ Col::Str(..)) => c.str(o.str_at(r).expect("str")),
+            (c @ Col::OptStr(..), o @ Col::OptStr(..)) => match o.str_at(r) {
+                Some(v) => c.str(v),
+                None => c.null_str(),
+            },
+            _ => unreachable!("columns of different kinds"),
+        }
+    }
+
     /// Row `r` of an optional `i32` column.
     pub fn opt_i32_at(&self, r: usize) -> Option<i32> {
         match self {
@@ -239,7 +262,7 @@ impl Col {
                 let i = i as usize;
                 let s = if i == 0 { 0 } else { o[i - 1] as usize };
                 nd.extend_from_slice(&d[s..o[i] as usize]);
-                no.push(u32::try_from(nd.len()).expect("a chunk's string column is over 4 GiB"));
+                no.push(u32::try_from(nd.len()).expect("a string column is over 4 GiB"));
             }
             (nd, no)
         }
@@ -266,12 +289,12 @@ impl Col {
     /// Append `other`'s values (a column of the same kind).
     pub fn append(&mut self, other: &Col) {
         fn strs(d: &mut Vec<u8>, o: &mut Vec<u32>, od: &[u8], oo: &[u32]) {
-            let base = u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB");
+            let base = u32::try_from(d.len()).expect("a string column is over 4 GiB");
             d.extend_from_slice(od);
-            o.extend(oo.iter().map(|&e| {
-                base.checked_add(e)
-                    .expect("a chunk's string column is over 4 GiB")
-            }));
+            o.extend(
+                oo.iter()
+                    .map(|&e| base.checked_add(e).expect("a string column is over 4 GiB")),
+            );
         }
         match (self, other) {
             (Col::I64(a), Col::I64(b)) => a.extend_from_slice(b),

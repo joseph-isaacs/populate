@@ -1,7 +1,7 @@
 //! `DateGenerator` and `DateUtils`: epoch milliseconds, UTC.
 
 use crate::dict::PowerDistribution;
-use crate::java::{MS_PER_DAY, ms_of_ymd, ymd_of_ms};
+use crate::java::{ms_of_ymd, ymd_of_ms};
 use crate::jrand::JavaRandom;
 use crate::params::{ALPHA, Params};
 use std::sync::LazyLock;
@@ -147,13 +147,13 @@ pub fn is_travel_season(ms: i64) -> bool {
     static SEASON: LazyLock<Vec<u64>> = LazyLock::new(|| {
         let mut v = vec![0u64; DAYS.div_ceil(64)];
         for day in 0..DAYS {
-            if travel_season_of(day as i64 * MS_PER_DAY) {
+            if travel_season_of(day as i64 * ONE_DAY) {
                 v[day / 64] |= 1 << (day % 64);
             }
         }
         v
     });
-    let day = ms.div_euclid(MS_PER_DAY);
+    let day = ms.div_euclid(ONE_DAY);
     match usize::try_from(day) {
         Ok(d) if d < DAYS => SEASON[d / 64] >> (d % 64) & 1 == 1,
         _ => travel_season_of(ms),

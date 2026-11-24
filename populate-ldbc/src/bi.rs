@@ -206,11 +206,6 @@ impl<'a> BiRun<'a> {
         }
     }
 
-    /// The bulk load threshold, epoch milliseconds.
-    pub fn threshold(&self) -> i64 {
-        self.threshold
-    }
-
     /// Chunk `i`'s snapshot rows, per dynamic table; its inserts and
     /// deletes are kept for later.
     pub fn chunk_snapshot(&self, i: u64) -> Vec<Rows> {
@@ -252,28 +247,36 @@ impl<'a> BiRun<'a> {
     }
 
     fn batches(&self, def: &'static TableDef, parts: Vec<Rows>) -> Batches {
-        let mut all = Rows::new(def);
-        for p in &parts {
-            for (a, b) in all.cols.iter_mut().zip(&p.cols) {
-                a.append(b);
-            }
-        }
-        drop(parts);
-        // column 0 is the date the batch is of (creation, or deletion)
-        let date = all.cols[0].i64s();
-        let mut order: Vec<u32> = (0..date.len() as u32).collect();
-        order.sort_by_key(|&j| date[j as usize]);
-        let mut by: BTreeMap<String, Vec<u32>> = BTreeMap::new();
-        for j in order {
-            by.entry(self.period.batch_id(date[j as usize]))
-                .or_default()
-                .push(j);
+        // rows as (part, row), in chunk order, stably sorted by column 0 (the
+        // date the batch is of: creation, or deletion); each batch is
+        // gathered straight from the parts, so no column ever holds more
+        // than one batch's strings
+        let mut order: Vec<(u32, u32, i64)> = parts
+            .iter()
+            .enumerate()
+            .flat_map(|(k, p)| {
+                p.cols[0]
+                    .i64s()
+                    .iter()
+                    .enumerate()
+                    .map(move |(j, &d)| (k as u32, j as u32, d))
+            })
+            .collect();
+        order.sort_by_key(|&(_, _, d)| d);
+        let mut by: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+        for (k, j, d) in order {
+            by.entry(self.period.batch_id(d)).or_default().push((k, j));
         }
         let batches = by
             .into_iter()
             .map(|(id, idx)| {
-                let cols = all.cols.iter().map(|c| c.gather(&idx)).collect();
-                (id, Rows { cols })
+                let mut r = Rows::new(def);
+                for (k, j) in idx {
+                    for (c, src) in r.cols.iter_mut().zip(&parts[k as usize].cols) {
+                        c.push_from(src, j as usize);
+                    }
+                }
+                (id, r)
             })
             .collect();
         Batches { def, batches }

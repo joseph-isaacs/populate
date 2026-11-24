@@ -33,7 +33,6 @@
 
 pub mod dat;
 mod direct;
-mod fused;
 mod gen_tables;
 mod seeds;
 
@@ -43,9 +42,9 @@ pub use gen_tables::{
     write_dat_many, write_parquet_many,
 };
 
+use dsbgen::config::{Session, SessionBuilder};
 use std::fmt;
 use std::str::FromStr;
-use dsbgen::config::{Session, SessionBuilder};
 
 /// Every TPC-DS table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

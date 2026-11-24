@@ -16,27 +16,26 @@
 
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
-use crate::generator::{CatalogSalesGeneratorColumn, GeneratorColumn};
 use crate::dsb::attributes::{attribute_map, AttributeKeyMap, MapName};
 use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
 use crate::dsb::make_key_perm;
 use crate::dsb::sales::{
-    exp_joint_keys, order_facts, orders_before, pricing_stream, sales_pricing, Channel,
-    OrderDates, PricingPerms, PRICING_DRAWS,
+    exp_joint_keys, order_facts, orders_before, pricing_stream, sales_pricing, Channel, OrderDates,
+    PricingPerms, PRICING_DRAWS,
 };
+use crate::generator::{CatalogSalesGeneratorColumn, GeneratorColumn};
 use crate::join_key_utils::{
     generate_catalog_page_join_key, generate_time_join_key, skip_catalog_page_join_key,
 };
 use crate::nulls::{create_null_bit_map, skip_null_bit_map};
 use crate::permutations::{get_permutation_entry, make_permutation};
+use crate::random::RandomNumberStream;
 use crate::random::RandomValueGenerator;
 use crate::row::catalog_returns_row_generator::RETURN_PERCENT;
 use crate::row::catalog_sales_row::CatalogSalesRow;
 use crate::row::{AbstractRowGenerator, LineItem};
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::table::Table;
-use crate::random::RandomNumberStream;
-use crate::types::Date;
 use std::sync::Arc;
 
 /// Minimum days from order to ship
@@ -127,13 +126,23 @@ impl CatalogSalesRowGenerator {
         );
         // The customer key permutation is drawn but unused (the customer
         // comes from the joint distribution).
-        make_key_perm(rows(T::Customer), ag.get_random_number_stream(&CsBillCustomerSk));
-        let ship_mode = make_key_perm(rows(T::ShipMode), ag.get_random_number_stream(&CsShipModeSk));
+        make_key_perm(
+            rows(T::Customer),
+            ag.get_random_number_stream(&CsBillCustomerSk),
+        );
+        let ship_mode = make_key_perm(
+            rows(T::ShipMode),
+            ag.get_random_number_stream(&CsShipModeSk),
+        );
         let promotion = make_key_perm(rows(T::Promotion), ag.get_random_number_stream(&CsPromoSk));
-        let call_center =
-            make_key_perm(rows(T::CallCenter), ag.get_random_number_stream(&CsCallCenterSk));
-        let warehouse =
-            make_key_perm(rows(T::Warehouse), ag.get_random_number_stream(&CsWarehouseSk));
+        let call_center = make_key_perm(
+            rows(T::CallCenter),
+            ag.get_random_number_stream(&CsCallCenterSk),
+        );
+        let warehouse = make_key_perm(
+            rows(T::Warehouse),
+            ag.get_random_number_stream(&CsWarehouseSk),
+        );
         let pricing = PricingPerms::new(Channel::Catalog, &session);
         let item_category = attribute_map(MapName::ItemCategory, &session);
         let item_category_perm = make_permutation(
@@ -183,7 +192,8 @@ impl CatalogSalesRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             while first.next().is_some() {}
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 
@@ -308,18 +318,30 @@ impl CatalogSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CsShipModeSk);
-        let cs_ship_mode_sk =
-            join_key(crate::config::Table::ShipMode, stream, scaling, Some(&p.ship_mode));
+        let cs_ship_mode_sk = join_key(
+            crate::config::Table::ShipMode,
+            stream,
+            scaling,
+            Some(&p.ship_mode),
+        );
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CsWarehouseSk);
-        let cs_warehouse_sk =
-            join_key(crate::config::Table::Warehouse, stream, scaling, Some(&p.warehouse));
+        let cs_warehouse_sk = join_key(
+            crate::config::Table::Warehouse,
+            stream,
+            scaling,
+            Some(&p.warehouse),
+        );
 
         let stream = self.abstract_generator.get_random_number_stream(&CsPromoSk);
-        let cs_promo_sk =
-            join_key(crate::config::Table::Promotion, stream, scaling, Some(&p.promotion));
+        let cs_promo_sk = join_key(
+            crate::config::Table::Promotion,
+            stream,
+            scaling,
+            Some(&p.promotion),
+        );
 
         let cs_pricing = sales_pricing(&p.pricing, &mut self.pricing);
 
@@ -391,7 +413,8 @@ impl CatalogSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CsBillAddrSk);
-        let cs_bill_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
+        let cs_bill_addr_sk =
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         // DSB: the first item and the customer, jointly by category and
         // state.

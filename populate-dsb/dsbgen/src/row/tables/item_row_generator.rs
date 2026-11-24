@@ -24,9 +24,7 @@ use crate::distribution::{
     pick_random_color, pick_random_current_price_range, pick_random_manufact_id_range,
     pick_random_size, ColorsWeights, IdWeights, SizeWeights,
 };
-use crate::generator::GeneratorColumn;
 use crate::generator::ItemGeneratorColumn;
-use crate::join_key_utils::generate_uniform_join_key;
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
 use crate::row::item_row::ItemRow;
@@ -77,8 +75,14 @@ impl ItemRowGenerator {
         use ItemGeneratorColumn::*;
         let mut ag = AbstractRowGenerator::new(row_count);
         let manager_count = manager_id_item_count();
-        let manager = make_key_perm(manager_count as i64, ag.get_random_number_stream(&IManagerId));
-        let manufact = make_perm(manufact_id_item_count(), ag.get_random_number_stream(&IManufactId));
+        let manager = make_key_perm(
+            manager_count as i64,
+            ag.get_random_number_stream(&IManagerId),
+        );
+        let manufact = make_perm(
+            manufact_id_item_count(),
+            ag.get_random_number_stream(&IManufactId),
+        );
         let colors = make_perm(
             colors_distribution().get_size() as i32,
             ag.get_random_number_stream(&IColor),
@@ -89,7 +93,10 @@ impl ItemRowGenerator {
             ag.get_random_number_stream(&IColor),
         );
         // hierarchy_item's first call (row 1's category).
-        let category = make_perm(category_count() as i32, ag.get_random_number_stream(&ICategory));
+        let category = make_perm(
+            category_count() as i32,
+            ag.get_random_number_stream(&ICategory),
+        );
         ag.mark_row1();
         ItemRowGenerator {
             abstract_generator: ag,
@@ -154,12 +161,16 @@ impl ItemRowGenerator {
         let i_class = class.get_name().to_string();
         // DSB moved `hierarchy_item` above the line that sets
         // `nFieldChangeFlags`, so class and brand go through `changeSCD`
-        // with an uninitialised flag word and bFirstRecord = 0. In the
-        // reference build (gcc -O0) that stack slot holds 2 before row 1
-        // (class new, brand kept from the zeroed statics) and 0 for every
-        // later row (both new), as gdb on the reference binary shows.
-        let i_class_id = class.get_id();
-        let i_brand_id = if row_number == 1 { 0 } else { new_brand_id };
+        // with an uninitialised flag word and bFirstRecord = 0. For every
+        // row after the first that stack slot holds 0 (both new). Before
+        // row 1 it holds whatever the stack had, which changes with address
+        // space randomisation: dsdgen's first item row has a different
+        // brand and class id from run to run. With randomisation off
+        // (`setarch -R`, or under gdb) the slot is odd then even: the class
+        // id is kept from the zeroed statics and the brand is new. That is
+        // the run we match.
+        let i_class_id = if row_number == 1 { 0 } else { class.get_id() };
+        let i_brand_id = new_brand_id;
 
         let has_size = get_has_size_at_index(category_index);
         let stream = self.abstract_generator.get_random_number_stream(&ISize);
@@ -311,14 +322,18 @@ impl ItemRowGenerator {
 
         let colors = colors_distribution();
         let stream = self.abstract_generator.get_random_number_stream(&IColor);
-        let color_index = exp_pick_index(colors.get_size() as i32, Some(&self.perms.colors), stream);
+        let color_index =
+            exp_pick_index(colors.get_size() as i32, Some(&self.perms.colors), stream);
         let i_color = colors.get_value_at_index(0, color_index).to_string();
         self.last_color_id = color_index as i32 + 1;
 
         let units = units_distribution();
         let stream = self.abstract_generator.get_random_number_stream(&IUnits);
         let i_units = units
-            .get_value_at_index(0, exp_pick_index(units.get_size() as i32, Some(&self.perms.units), stream))
+            .get_value_at_index(
+                0,
+                exp_pick_index(units.get_size() as i32, Some(&self.perms.units), stream),
+            )
             .to_string();
 
         let i_container = "Unknown".to_string();
@@ -330,7 +345,10 @@ impl ItemRowGenerator {
         );
 
         // i_promo_sk (not written): DSB's skewed join, then the 20% check.
-        let promotions = self.session.get_scaling().get_row_count(crate::config::Table::Promotion) as i64;
+        let promotions = self
+            .session
+            .get_scaling()
+            .get_row_count(crate::config::Table::Promotion) as i64;
         let stream = self.abstract_generator.get_random_number_stream(&IPromoSk);
         let _i_promo_sk = crate::dsb::exp_key(1, promotions, stream);
         let _temp = RandomValueGenerator::generate_uniform_random_int(1, 100, stream);
@@ -369,7 +387,8 @@ impl ItemRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

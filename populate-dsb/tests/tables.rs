@@ -3,13 +3,13 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
+use dsbgen::config::{SessionBuilder, Table as Ds};
+use dsbgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
 use populate_dsb::Encoding::{Latin1, Utf8};
 use populate_dsb::TableName::{self, *};
 use populate_dsb::Tpcds;
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use dsbgen::config::{SessionBuilder, Table as Ds};
-use dsbgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
 
 fn rows(batches: &[RecordBatch]) -> usize {
     batches.iter().map(|b| b.num_rows()).sum()
@@ -79,13 +79,19 @@ fn dat_matches_dsbgen_display_for_every_table() {
     }
 }
 
+/// DSB's distribution file has U+FFFD where TPC-DS has `Ô` and `É`, and
+/// dsdgen writes those bytes as they are: UTF-8. Latin-1 output has `?`.
 #[test]
-fn latin1_is_one_byte_per_char() {
+fn birth_countries_are_dsbs() {
     let c = Tpcds::new(1.0).table(Customer);
-    let dat = c.write_dat(Vec::new(), 0, Latin1).unwrap();
-    assert!(dat.windows(13).any(|w| w == b"C\xd4TE D'IVOIRE"));
     let dat = c.write_dat(Vec::new(), 0, Utf8).unwrap();
-    assert!(std::str::from_utf8(&dat).unwrap().contains("CÔTE D'IVOIRE"));
+    assert!(
+        std::str::from_utf8(&dat)
+            .unwrap()
+            .contains("C\u{FFFD}TE D'IVOIRE")
+    );
+    let dat = c.write_dat(Vec::new(), 0, Latin1).unwrap();
+    assert!(dat.windows(13).any(|w| w == b"C?TE D'IVOIRE"));
 }
 
 /// Our `.dat` equals dsbgen's own sequential generator, line for line.
@@ -134,8 +140,8 @@ fn store_sales_first_row_is_dsdgens() {
     let first = String::from_utf8(dat).unwrap();
     assert_eq!(
         first.lines().next().unwrap(),
-        "2451813|65495|3617|67006|591617|3428|24839|10|161|1|79|11.41|18.71|2.80|99.54|221.20\
-         |901.39|1478.09|6.08|99.54|121.66|127.74|-779.73|"
+        "2450815|65495|17881|78443|1751638|5428|27568|10|123|1|97|1.00|1.94|0.52|0.00|50.44\
+         |97.00|188.18|2.01|0.00|50.44|52.45|-46.56|"
     );
     // a ticket has 8..=16 line items
     let session = SessionBuilder::new().build().unwrap();
@@ -160,7 +166,7 @@ fn source_rows_at_sf1() {
         (Inventory, 11_745_000),
         (Item, 18_000),
         (Promotion, 300),
-        (Reason, 75), // the spec says 35; dsdgen writes all 75 reasons
+        (Reason, 35),
         (ShipMode, 20),
         (Store, 12),
         (StoreSales, 240_000),
@@ -222,11 +228,11 @@ fn parquet_round_trips_and_is_thread_independent() {
     }
 }
 
-/// A sales table and its returns requested together run as one fused pass
-/// (in either order, with other tables between, a table listed twice); the
-/// output must not change.
+/// Sales tables and their returns requested together (in either order,
+/// with other tables between, a table listed twice) on one shared pool
+/// must match generating each on its own.
 #[test]
-fn fused_channels_in_many() {
+fn channels_in_many() {
     let ds = Tpcds::new(1.0);
     let t = |n| ds.table(n).limit_source_rows(1_500).chunk_source_rows(211);
     let tables = [

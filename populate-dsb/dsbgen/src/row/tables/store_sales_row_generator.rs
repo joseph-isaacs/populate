@@ -27,12 +27,12 @@ use crate::generator::StoreSalesGeneratorColumn;
 use crate::join_key_utils::generate_time_join_key;
 use crate::nulls::{create_null_bit_map, skip_null_bit_map};
 use crate::permutations::{get_permutation_entry, make_permutation};
+use crate::random::RandomNumberStream;
 use crate::random::RandomValueGenerator;
 use crate::row::store_sales_row::StoreSalesRow;
 use crate::row::{AbstractRowGenerator, LineItem};
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::table::Table;
-use crate::random::RandomNumberStream;
 use std::sync::Arc;
 
 /// Percentage of sales that get returned (DSB's `SR_RETURN_PCT`)
@@ -131,9 +131,14 @@ impl StoreSalesRowGenerator {
             ag.get_random_number_stream(&SsPermutation),
         );
         // Drawn, unused: the customer comes from the joint distribution.
-        make_key_perm(rows(T::Customer), ag.get_random_number_stream(&SsSoldCustomerSk));
-        let promotion =
-            make_key_perm(rows(T::Promotion), ag.get_random_number_stream(&SsSoldPromoSk));
+        make_key_perm(
+            rows(T::Customer),
+            ag.get_random_number_stream(&SsSoldCustomerSk),
+        );
+        let promotion = make_key_perm(
+            rows(T::Promotion),
+            ag.get_random_number_stream(&SsSoldPromoSk),
+        );
         let store = make_key_perm(rows(T::Store), ag.get_random_number_stream(&SsSoldStoreSk));
         let pricing = PricingPerms::new(Channel::Store, &session);
         let item_category = attribute_map(MapName::ItemCategory, &session);
@@ -177,7 +182,8 @@ impl StoreSalesRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             while first.next().is_some() {}
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 
@@ -272,8 +278,13 @@ impl StoreSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldStoreSk);
-        let ss_sold_store_sk =
-            scd_join_key(crate::config::Table::Store, stream, 1, scaling, Some(&p.store));
+        let ss_sold_store_sk = scd_join_key(
+            crate::config::Table::Store,
+            stream,
+            1,
+            scaling,
+            Some(&p.store),
+        );
 
         let stream = self
             .abstract_generator
@@ -307,7 +318,8 @@ impl StoreSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SsSoldAddrSk);
-        let ss_sold_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
+        let ss_sold_addr_sk =
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         let ss_ticket_number = row_number_i64;
 
@@ -439,7 +451,7 @@ mod tests {
     macro_rules! assert_source_row_ranges_concatenate {
         ($generator:ty) => {{
             let session = SessionBuilder::new()
-                .with_scale_factor(0.01)
+                .with_scale_factor(1.0)
                 .build()
                 .expect("session");
             let source_rows = session
@@ -452,12 +464,15 @@ mod tests {
                 rows.map(|row| row.to_string()).collect()
             };
 
-            let whole = dat(1, source_rows);
-            let mut chunked = dat(1, source_rows / 2);
-            chunked.extend(dat(source_rows / 2 + 1, source_rows));
-
-            assert!(!whole.is_empty());
-            assert_eq!(whole, chunked);
+            // DSB needs scale 1, so split a few stretches of it, near the
+            // start and deep into the table.
+            for (start, mid, end) in [(1, 1, 400), (1, 250, 600), (150_000, 150_321, 150_700)] {
+                let whole = dat(start, end);
+                let mut chunked = dat(start, mid);
+                chunked.extend(dat(mid + 1, end));
+                assert!(!whole.is_empty());
+                assert_eq!(whole, chunked);
+            }
         }};
     }
 

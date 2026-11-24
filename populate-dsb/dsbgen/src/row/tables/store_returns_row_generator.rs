@@ -15,13 +15,10 @@
 //! Store returns row generator
 
 use crate::config::Session;
-use crate::generator::StoreReturnsGeneratorColumn;
 use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
 use crate::dsb::sales::{orders_before, Channel};
-use crate::join_key_utils::{
-    generate_returns_date_join_key, generate_scd_join_key, generate_uniform_join_key,
-    CS_MAX_SHIP_DELAY, CS_MIN_SHIP_DELAY,
-};
+use crate::generator::StoreReturnsGeneratorColumn;
+use crate::join_key_utils::{generate_returns_date_join_key, CS_MAX_SHIP_DELAY, CS_MIN_SHIP_DELAY};
 use crate::nulls::create_null_bit_map;
 use crate::random::RandomValueGenerator;
 use crate::row::store_returns_row::StoreReturnsRow;
@@ -112,8 +109,7 @@ impl StoreReturnsRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SrCustomerSk);
-        let mut sr_customer_sk =
-            join_key(crate::config::Table::Customer, stream, scaling, None);
+        let mut sr_customer_sk = join_key(crate::config::Table::Customer, stream, scaling, None);
         let stream = self
             .abstract_generator
             .get_random_number_stream(&SrTicketNumber);
@@ -142,16 +138,13 @@ impl StoreReturnsRowGenerator {
                 as i64;
 
         let stream = self.abstract_generator.get_random_number_stream(&SrCdemoSk);
-        let sr_cdemo_sk =
-            DemographicsJoin::customer().key(stream);
+        let sr_cdemo_sk = DemographicsJoin::customer().key(stream);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrHdemoSk);
-        let sr_hdemo_sk =
-            DemographicsJoin::household().key(stream);
+        let sr_hdemo_sk = DemographicsJoin::household().key(stream);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrAddrSk);
-        let sr_addr_sk =
-            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
+        let sr_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         let stream = self.abstract_generator.get_random_number_stream(&SrStoreSk);
         let sr_store_sk = scd_join_key(crate::config::Table::Store, stream, 1, scaling, None);

@@ -10,9 +10,9 @@ use crate::config::{Scaling, Table};
 use crate::distribution::DemographicsDistributions as Demo;
 use crate::generator::{CatalogSalesGeneratorColumn, CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
-use std::sync::OnceLock;
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::types::Date;
+use std::sync::OnceLock;
 
 /// `mk_join` to a table that keeps no history (and is not one of the
 /// specially joined tables). One draw.

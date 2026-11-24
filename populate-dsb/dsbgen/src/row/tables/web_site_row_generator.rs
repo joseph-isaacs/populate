@@ -14,6 +14,8 @@
 
 use crate::config::Session;
 use crate::distribution::{FirstNamesWeights, NamesDistributions};
+use crate::dsb::address::make_address;
+use crate::dsb::{exp_int, make_perm, map_perm};
 use crate::generator::WebSiteGeneratorColumn;
 use crate::join_key_utils::{generate_web_close_date_join_key, generate_web_open_date_join_key};
 use crate::nulls::create_null_bit_map;
@@ -23,8 +25,6 @@ use crate::slowly_changing_dimension_utils::{
     compute_scd_key, get_value_for_slowly_changing_dimension, ScdRowGenerator,
 };
 use crate::table::Table;
-use crate::dsb::address::make_address;
-use crate::dsb::{exp_int, make_perm, map_perm};
 use crate::types::{Address, Decimal};
 
 pub struct WebSiteRowGenerator {
@@ -64,7 +64,8 @@ impl WebSiteRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

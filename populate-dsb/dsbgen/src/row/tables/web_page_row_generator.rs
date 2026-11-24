@@ -1,8 +1,8 @@
 use crate::config::{Session, Table as ConfigTable};
 use crate::distribution::web_page_use_distribution::WebPageUseDistribution;
-use crate::generator::WebPageGeneratorColumn;
 use crate::dsb::join::join_key;
 use crate::dsb::{exp_int, exp_pick_index, make_perm, map_perm};
+use crate::generator::WebPageGeneratorColumn;
 use crate::join_key_utils::generate_web_page_creation_date_join_key;
 use crate::random::{RandomNumberStream, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, WebPageRow};
@@ -313,7 +313,8 @@ impl WebPageRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

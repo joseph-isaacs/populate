@@ -10,12 +10,12 @@
 //! split); populate-dsb splits every table into ~256Ki-row chunks on the
 //! same thread count. Best of 3 runs.
 
-use populate_dsb::{TableName, Tpcds};
-use std::time::{Duration, Instant};
 use dsbgen::config::{Session, SessionBuilder};
 use dsbgen::table::Table as DsTable;
 use dsbgen_arrow::arrow::array::RecordBatch as RecordBatch60;
 use dsbgen_arrow::*;
+use populate_dsb::{TableName, Tpcds};
+use std::time::{Duration, Instant};
 
 const BATCH: usize = 8192;
 

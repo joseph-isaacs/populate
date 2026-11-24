@@ -15,9 +15,9 @@
 use crate::business_key_generator::make_business_key;
 use crate::config::Session;
 use crate::config::Table as ConfigTable;
-use crate::generator::PromotionGeneratorColumn;
 use crate::dsb::join::scd_join_key;
 use crate::dsb::{exp_bucketed_int, exp_int, make_bucket, make_perm, map_perm};
+use crate::generator::PromotionGeneratorColumn;
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, PromotionRow};

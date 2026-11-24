@@ -20,12 +20,11 @@ use crate::dsb::attributes::{attribute_map, AttributeKeyMap, MapName};
 use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
 use crate::dsb::make_key_perm;
 use crate::dsb::sales::{
-    exp_joint_keys, order_facts, orders_before, sales_pricing, total_lines, Channel,
-    OrderDates, PricingPerms, PRICING_DRAWS,
+    exp_joint_keys, order_facts, orders_before, sales_pricing, total_lines, Channel, OrderDates,
+    PricingPerms, PRICING_DRAWS,
 };
 use crate::generator::{GeneratorColumn, WebSalesGeneratorColumn};
 use crate::join_key_utils::generate_time_join_key;
-use std::sync::Arc;
 use crate::nulls::{create_null_bit_map, skip_null_bit_map};
 use crate::permutations::{get_permutation_entry, make_permutation};
 use crate::random::RandomValueGenerator;
@@ -33,6 +32,7 @@ use crate::row::web_sales_row::WebSalesRow;
 use crate::row::{AbstractRowGenerator, LineItem};
 use crate::slowly_changing_dimension_utils::match_surrogate_key;
 use crate::table::Table;
+use std::sync::Arc;
 
 /// Percentage for determining if order ships to different customer (gift)
 /// Note: In Java, condition is `randomInt > GIFT_PERCENTAGE`, meaning ~92% are gifts
@@ -113,11 +113,19 @@ impl WebSalesRowGenerator {
         let rows = |t: T| scaling.get_row_count(t) as i64;
         let mut ag = AbstractRowGenerator::new(row_count);
         // Drawn, unused: the customer comes from the joint distribution.
-        make_key_perm(rows(T::Customer), ag.get_random_number_stream(&WsBillCustomerSk));
-        let ship_mode = make_key_perm(rows(T::ShipMode), ag.get_random_number_stream(&WsShipModeSk));
+        make_key_perm(
+            rows(T::Customer),
+            ag.get_random_number_stream(&WsBillCustomerSk),
+        );
+        let ship_mode = make_key_perm(
+            rows(T::ShipMode),
+            ag.get_random_number_stream(&WsShipModeSk),
+        );
         let promotion = make_key_perm(rows(T::Promotion), ag.get_random_number_stream(&WsPromoSk));
-        let warehouse =
-            make_key_perm(rows(T::Warehouse), ag.get_random_number_stream(&WsWarehouseSk));
+        let warehouse = make_key_perm(
+            rows(T::Warehouse),
+            ag.get_random_number_stream(&WsWarehouseSk),
+        );
         let web_site = make_key_perm(rows(T::WebSite), ag.get_random_number_stream(&WsWebSiteSk));
         let web_page = make_key_perm(rows(T::WebPage), ag.get_random_number_stream(&WsWebPageSk));
         let pricing = PricingPerms::new(Channel::Web, &session);
@@ -138,7 +146,10 @@ impl WebSalesRowGenerator {
         let earlier = PRICING_DRAWS
             * (total_lines(Channel::Catalog, &session) + total_lines(Channel::Store, &session));
         s.advance(earlier);
-        s.set_seeds_used(s.get_seeds_used().saturating_add(earlier.min(u32::MAX as u64) as u32));
+        s.set_seeds_used(
+            s.get_seeds_used()
+                .saturating_add(earlier.min(u32::MAX as u64) as u32),
+        );
         // mk_detail's first call draws the item permutation (its stream has
         // no budget, so drawing it up front is the same).
         let item_permutation = make_permutation(
@@ -176,7 +187,8 @@ impl WebSalesRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             while first.next().is_some() {}
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 
@@ -283,26 +295,48 @@ impl WebSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WsWebPageSk);
-        let ws_web_page_sk =
-            scd_join_key(crate::config::Table::WebPage, stream, date, scaling, Some(&p.web_page));
+        let ws_web_page_sk = scd_join_key(
+            crate::config::Table::WebPage,
+            stream,
+            date,
+            scaling,
+            Some(&p.web_page),
+        );
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WsWebSiteSk);
-        let ws_web_site_sk =
-            scd_join_key(crate::config::Table::WebSite, stream, date, scaling, Some(&p.web_site));
+        let ws_web_site_sk = scd_join_key(
+            crate::config::Table::WebSite,
+            stream,
+            date,
+            scaling,
+            Some(&p.web_site),
+        );
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WsShipModeSk);
-        let ws_ship_mode_sk =
-            join_key(crate::config::Table::ShipMode, stream, scaling, Some(&p.ship_mode));
+        let ws_ship_mode_sk = join_key(
+            crate::config::Table::ShipMode,
+            stream,
+            scaling,
+            Some(&p.ship_mode),
+        );
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WsWarehouseSk);
-        let ws_warehouse_sk =
-            join_key(crate::config::Table::Warehouse, stream, scaling, Some(&p.warehouse));
+        let ws_warehouse_sk = join_key(
+            crate::config::Table::Warehouse,
+            stream,
+            scaling,
+            Some(&p.warehouse),
+        );
         let stream = self.abstract_generator.get_random_number_stream(&WsPromoSk);
-        let ws_promo_sk =
-            join_key(crate::config::Table::Promotion, stream, scaling, Some(&p.promotion));
+        let ws_promo_sk = join_key(
+            crate::config::Table::Promotion,
+            stream,
+            scaling,
+            Some(&p.promotion),
+        );
         let pricing = p.pricing.clone();
         let stream = self.abstract_generator.get_random_number_stream(&WsPricing);
         let ws_pricing = sales_pricing(&pricing, stream);
@@ -353,7 +387,8 @@ impl WebSalesRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WsBillAddrSk);
-        let ws_bill_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
+        let ws_bill_addr_sk =
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
         // DSB: the first item and the customer, jointly by category and
         // state.
         let p = self.perms.clone();
@@ -401,7 +436,8 @@ impl WebSalesRowGenerator {
             let stream = self
                 .abstract_generator
                 .get_random_number_stream(&WsShipAddrSk);
-            ws_ship_addr_sk = join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
+            ws_ship_addr_sk =
+                join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
         }
 
         let ws_order_number = row_number_i64;
@@ -446,7 +482,6 @@ impl WebSalesRowGenerator {
         // Start a new order if we've finished the previous one
         if self.remaining_line_items == 0 {
             self.order_info = self.generate_order_info(row_number);
-
 
             // WebSales has 8-16 line items per order (vs 4-14 for CatalogSales)
             let stream = self

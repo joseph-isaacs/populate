@@ -82,8 +82,11 @@ impl CustomerAddressRowGenerator {
         let address_stream = self
             .abstract_generator
             .get_random_number_stream(&CustomerAddressGeneratorColumn::CaAddress);
-        let (ca_address, county_id) =
-            make_address(Table::CustomerAddress, address_stream, session.get_scaling());
+        let (ca_address, county_id) = make_address(
+            Table::CustomerAddress,
+            address_stream,
+            session.get_scaling(),
+        );
         self.last_county_id = county_id;
 
         CustomerAddressRow::new(
@@ -105,7 +108,8 @@ impl CustomerAddressRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

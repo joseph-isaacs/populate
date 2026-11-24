@@ -81,9 +81,9 @@ pub trait CsvRow<'a>: Display + Sized {
 /// assert_eq!(
 ///   csv,
 ///   "cc_call_center_sk,cc_call_center_id,cc_rec_start_date,cc_rec_end_date,cc_closed_date_sk,cc_open_date_sk,cc_name,cc_class,cc_employees,cc_sq_ft,cc_hours,cc_manager,cc_mkt_id,cc_mkt_class,cc_mkt_desc,cc_market_manager,cc_division,cc_division_name,cc_company,cc_company_name,cc_street_number,cc_street_name,cc_street_type,cc_suite_number,cc_city,cc_county,cc_state,cc_zip,cc_country,cc_gmt_offset,cc_tax_percentage\n\
-///    1,AAAAAAAABAAAAAAA,1998-01-01,,,2450952,NY Metro,large,2,1138,8AM-4PM,Bob Belcher,6,\"More than other authori\",\"Shared others could not count fully dollars. New members ca\",Julius Tran,3,pri,6,cally,730,Ash Hill,Boulevard,Suite 0,Midway,Williamson County,TN,31904,United States,-5,0.11\n\
-///    2,AAAAAAAACAAAAAAA,1998-01-01,2000-12-31,,2450806,Mid Atlantic,medium,6,2268,8AM-8AM,Felipe Perkins,2,\"A bit narrow forms matter animals. Consist\",\"Largely blank years put substantially deaf, new others. Question\",Julius Durham,5,anti,1,ought,984,Center Hill,Way,Suite 70,Midway,Williamson County,TN,31904,United States,-5,0.12\n\
-///    3,AAAAAAAACAAAAAAA,2001-01-01,,,2450806,Mid Atlantic,medium,6,4134,8AM-4PM,Mark Hightower,2,\"Wrong troops shall work sometimes in a opti\",\"Largely blank years put substantially deaf, new others. Question\",Julius Durham,1,ought,2,able,984,Center Hill,Way,Suite 70,Midway,Williamson County,TN,31904,United States,-5,0.01\n"
+///    1,AAAAAAAABAAAAAAA,1998-01-01,,,2450952,NY Metro,small,4,984,8AM-8AM,Bob Belcher,5,\"More than other authori\",\"Shared others could not count fully dollars. New members ca\",Julius Tran,6,cally,4,ese,252,Seventh ,Circle,Suite 180,Riverside,Franklin Parish,LA,79231,United States,-6,0.11\n\
+///    2,AAAAAAAACAAAAAAA,1998-01-01,2000-12-31,,2450806,Mid Atlantic,large,7,2779,8AM-8AM,Felipe Perkins,3,\"A bit narrow forms matter animals. Consist\",\"Largely blank years put substantially deaf, new others. Question\",Julius Durham,1,ought,3,pri,369,Third ,Ln,Suite 290,Oak Grove,Richland County,OH,48370,United States,-5,0.12\n\
+///    3,AAAAAAAACAAAAAAA,2001-01-01,,,2450806,Mid Atlantic,small,7,2310,8AM-12AM,Mark Hightower,3,\"Wrong troops shall work sometimes in a opti\",\"Largely blank years put substantially deaf, new others. Question\",Julius Durham,3,pri,5,anti,369,Third ,Ln,Suite 290,Oak Grove,Richland County,OH,48370,United States,-5,0.01\n"
 /// );
 /// ```
 pub struct CallCenterCsv<'a> {
@@ -165,9 +165,9 @@ impl Display for CallCenterCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "cp_catalog_page_sk,cp_catalog_page_id,cp_start_date_sk,cp_end_date_sk,cp_department,cp_catalog_number,cp_catalog_page_number,cp_description,cp_type\n\
-///    1,AAAAAAAABAAAAAAA,2450815,2450996,DEPARTMENT,1,1,\"In general basic characters welcome. Clearly lively friends conv\",bi-annual\n\
-///    2,AAAAAAAACAAAAAAA,2450815,2450996,DEPARTMENT,1,2,\"English areas will leave prisoners. Too public countries ought to become beneath the years. \",bi-annual\n\
-///    3,AAAAAAAADAAAAAAA,2450815,2450996,DEPARTMENT,1,3,\"Times could not address disabled indians. Effectively public ports c\",bi-annual\n"
+///    1,AAAAAAAABAAAAAAA,2450815,2450996,DEPARTMENT,1,1,\"Arms matter then under invisible terms. Homes sound. Mor\",bi-annual\n\
+///    2,AAAAAAAACAAAAAAA,2450815,2450996,DEPARTMENT,1,2,\"Social, exciting projects fly apparently other days. Female, used institutions used \",bi-annual\n\
+///    3,AAAAAAAADAAAAAAA,2450815,2450996,DEPARTMENT,1,3,\"Hands can catch dogs. Industrial, key grounds might hear a\",bi-annual\n"
 /// );
 /// ```
 pub struct CatalogPageCsv<'a> {
@@ -230,9 +230,9 @@ impl Display for CatalogPageCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "cr_returned_date_sk,cr_returned_time_sk,cr_item_sk,cr_refunded_customer_sk,cr_refunded_cdemo_sk,cr_refunded_hdemo_sk,cr_refunded_addr_sk,cr_returning_customer_sk,cr_returning_cdemo_sk,cr_returning_hdemo_sk,cr_returning_addr_sk,cr_call_center_sk,cr_catalog_page_sk,cr_ship_mode_sk,cr_warehouse_sk,cr_reason_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_return_tax,cr_return_amt_inc_tax,cr_fee,cr_return_ship_cost,cr_refunded_cash,cr_reversed_charge,cr_store_credit,cr_net_loss\n\
-///    2450926,45816,17368,14601,797995,6189,9583,14601,797995,4703,9583,1,106,2,2,25,2,47,3888.31,233.29,4121.60,91.23,1348.90,3577.24,186.64,124.43,1673.42\n\
-///    2450946,74710,6295,14601,797995,6189,9583,82809,665550,991,14832,1,17,2,5,6,2,49,2490.18,99.60,2589.78,52.54,1867.39,323.72,931.57,1234.89,2019.53\n\
-///    2451065,71104,3391,25383,3755,2480,5652,2311,700704,5571,12485,4,7,13,2,61,4,12,64.32,4.50,68.82,22.97,78.60,1.28,55.47,7.57,106.07\n"
+///    2451033,224,4400,10561,,,,,,,4349,1,,4,,7,1,6,,,355.44,,,,33.77,32.45,\n\
+///    2450982,44675,7105,73834,1224571,2668,10860,20973,1615201,5810,1371,1,10,17,1,12,3,3,153.60,1.53,155.13,45.29,0.00,59.90,8.43,85.27,46.82\n\
+///    2450975,7785,16543,73834,1224571,2668,10860,4674,1544135,5187,15289,1,14,14,3,9,3,2,61.52,5.53,67.05,66.97,1.66,36.29,21.95,3.28,74.16\n"
 /// );
 /// ```
 pub struct CatalogReturnsCsv<'a> {
@@ -319,9 +319,9 @@ impl Display for CatalogReturnsCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "cs_sold_date_sk,cs_sold_time_sk,cs_ship_date_sk,cs_bill_customer_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_bill_addr_sk,cs_ship_customer_sk,cs_ship_cdemo_sk,cs_ship_hdemo_sk,cs_ship_addr_sk,cs_call_center_sk,cs_catalog_page_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_list_price,cs_sales_price,cs_ext_discount_amt,cs_ext_sales_price,cs_ext_wholesale_cost,cs_ext_list_price,cs_ext_tax,cs_coupon_amt,cs_ext_ship_cost,cs_net_paid,cs_net_paid_inc_tax,cs_net_paid_inc_ship,cs_net_paid_inc_ship_tax,cs_net_profit\n\
-///    2450815,38212,2450886,62153,1822764,5775,19986,62153,1822764,5775,19986,4,62,3,4,16930,196,1,47,27.70,44.32,42.99,62.51,2020.53,1301.90,2083.04,101.02,0.00,1041.52,2020.53,2121.55,3062.05,3163.07,718.63\n\
-///    2450815,38212,2450846,62153,1822764,5775,19986,62153,1822764,5775,19986,4,31,8,2,6020,270,1,20,87.55,260.89,153.92,2139.40,3078.40,1751.00,5217.80,71.41,1292.92,1356.60,1785.48,1856.89,3142.08,3213.49,34.48\n\
-///    2450815,38212,2450868,62153,1822764,5775,19986,62153,1822764,5775,19986,4,76,2,2,16198,97,1,19,69.86,88.72,29.27,1129.55,556.13,1327.34,1685.68,33.36,0.00,168.53,556.13,589.49,724.66,758.02,-771.21\n"
+///    2450815,66744,2450895,10561,1199271,4668,1347,10561,1199271,4668,1347,1,27,15,1,17959,3,1,57,68.73,155.32,82.31,4161.57,4691.67,3917.61,8853.24,110.25,2486.58,1504.80,2205.09,2315.34,3709.89,3820.14,-1712.52\n\
+///    2450815,66744,2450847,10561,1199271,4668,1347,10561,1199271,4668,1347,1,35,14,3,13480,96,1,38,11.42,29.34,6.45,869.82,245.10,433.96,1114.92,7.35,0.00,546.06,245.10,252.45,791.16,798.51,-188.86\n\
+///    2450815,66744,2450867,10561,1199271,4668,1347,10561,1199271,4668,1347,1,91,14,5,8779,68,1,32,58.31,64.14,57.72,205.44,1847.04,1865.92,2052.48,73.88,0.00,492.48,1847.04,1920.92,2339.52,2413.40,-18.88\n"
 /// );
 /// ```
 pub struct CatalogSalesCsv<'a> {
@@ -433,9 +433,9 @@ impl Display for CatalogSalesCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "c_customer_sk,c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_shipto_date_sk,c_first_sales_date_sk,c_salutation,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_day,c_birth_month,c_birth_year,c_birth_country,c_login,c_email_address,c_last_review_date_sk\n\
-///    1,AAAAAAAABAAAAAAA,980124,7135,32946,2452238,2452208,Mr.,Javier,Lewis,Y,9,12,1936,\"CHILE\",,Javier.Lewis@VFAxlnZEvOx.org,2452508\n\
-///    2,AAAAAAAACAAAAAAA,819667,1461,31655,2452318,2452288,Dr.,Amy,Moses,Y,9,4,1966,\"TOGO\",,Amy.Moses@Ovk9KjHH.com,2452318\n\
-///    3,AAAAAAAADAAAAAAA,1473522,6247,48572,2449130,2449100,Miss,Latisha,Hamilton,N,18,9,1979,\"NIUE\",,Latisha.Hamilton@V.com,2452313\n"
+///    1,AAAAAAAABAAAAAAA,526469,4407,40007,2450005,2449975,Mr.,Jonathan,Gunter,N,16,2,1932,\"JAPAN\",,Jonathan.Gunter@8X.com,2452387\n\
+///    2,AAAAAAAACAAAAAAA,1638916,2930,14189,2452130,2452100,Mr.,Lamar,Young,N,24,10,1982,\"GREECE\",,Lamar.Young@gSje47t7Ryo.edu,2452493\n\
+///    3,AAAAAAAADAAAAAAA,395777,6030,5496,2450600,2450570,Mr.,Ricky,Crow,N,5,12,1938,\"WALLIS AND FUTUNA\",,Ricky.Crow@d6YrZaxpH.edu,2452289\n"
 /// );
 /// ```
 pub struct CustomerCsv<'a> {
@@ -508,9 +508,9 @@ impl Display for CustomerCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "ca_address_sk,ca_address_id,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type\n\
-///    1,AAAAAAAABAAAAAAA,18,Jackson ,Parkway,Suite 280,Fairfield,Maricopa County,AZ,86192,United States,-7,condo\n\
-///    2,AAAAAAAACAAAAAAA,362,Washington 6th,RD,Suite 80,Fairview,Taos County,NM,85709,United States,-7,condo\n\
-///    3,AAAAAAAADAAAAAAA,585,Dogwood Washington,Circle,Suite Q,Pleasant Valley,York County,PA,12477,United States,-5,single family\n"
+///    1,AAAAAAAABAAAAAAA,71,Davis ,Ln,Suite 40,Forestville,Knox County,MO,63027,United States,-6,apartment\n\
+///    2,AAAAAAAACAAAAAAA,746,Johnson ,Parkway,Suite 220,Kimball,Lawrence County,TN,33595,United States,-6,apartment\n\
+///    3,AAAAAAAADAAAAAAA,841,Elm ,Ave,Suite E,Creston,Hancock County,ME,01704,United States,-5,condo\n"
 /// );
 /// ```
 pub struct CustomerAddressCsv<'a> {
@@ -895,9 +895,9 @@ impl Display for IncomeBandCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "inv_date_sk,inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand\n\
-///    2450815,1,1,211\n\
-///    2450815,2,1,235\n\
-///    2450815,4,1,859\n"
+///    2450815,1,1,732\n\
+///    2450815,2,1,321\n\
+///    2450815,4,1,241\n"
 /// );
 /// ```
 pub struct InventoryCsv<'a> {
@@ -954,9 +954,9 @@ impl Display for InventoryCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "i_item_sk,i_item_id,i_rec_start_date,i_rec_end_date,i_item_desc,i_current_price,i_wholesale_cost,i_brand_id,i_brand,i_class_id,i_class,i_category_id,i_category,i_manufact_id,i_manufact,i_size,i_formulation,i_color,i_units,i_container,i_manager_id,i_product_name\n\
-///    1,AAAAAAAABAAAAAAA,1997-10-27,,\"Powers will not get influences. Electoral ports should show low, annual chains. Now young visitors may pose now however final pages. Bitterly right children suit increasing, leading el\",27.02,23.23,5003002,exportischolar #2,3,pop,5,Music,52,ableanti,N/A,3663peru009490160959,spring,Tsp,Unknown,6,ought\n\
-///    2,AAAAAAAACAAAAAAA,1997-10-27,2000-10-26,\"False opportunities would run alone with a views. Early approaches would show inc, european intentions; important, main passages shall know urban, \",1.12,0.38,1001001,amalgamalg #1,1,dresses,1,Women,294,esen stable,petite,516steel060826230906,rosy,Bunch,Unknown,98,able\n\
-///    3,AAAAAAAACAAAAAAA,2000-10-27,,\"False opportunities would run alone with a views. Early approaches would show inc, european intentions; important, main passages shall know urban, \",7.11,0.38,1001001,brandbrand #4,7,decor,7,Home,294,esen stable,N/A,516steel060826230906,sienna,Cup,Unknown,18,pri\n"
+///    1,AAAAAAAABAAAAAAA,1997-12-26,,\"Lines could delive\",1.96,0.62,0,amalgexporti #2,1,newborn,3,Children,259,n stantiable,petite,5687137aquamarine622,smoke,Carton,Unknown,86,ought\n\
+///    2,AAAAAAAACAAAAAAA,1997-12-26,2000-12-25,\"Firm centres demonstrate in a houses; fairly free months contribute more also labour sales; elections c\",0.74,0.23,6010003,univbrand #3,10,jewelry boxes,6,Jewelry,326,callyablepri,N/A,8light82873159702475,almond,Dram,Unknown,100,able\n\
+///    3,AAAAAAAACAAAAAAA,2000-12-26,,\"Firm centres demonstrate in a houses; fairly free months contribute more also labour sales; elections c\",5.35,0.23,2001002,amalgimporto #2,1,accessories,2,Men,326,callyablepri,petite,8light82873159702475,linen,Bunch,Unknown,44,pri\n"
 /// );
 /// ```
 pub struct ItemCsv<'a> {
@@ -1031,9 +1031,9 @@ impl Display for ItemCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "p_promo_sk,p_promo_id,p_start_date_sk,p_end_date_sk,p_item_sk,p_cost,p_response_target,p_promo_name,p_channel_dmail,p_channel_email,p_channel_catalog,p_channel_tv,p_channel_radio,p_channel_press,p_channel_event,p_channel_demo,p_channel_details,p_purpose,p_discount_active\n\
-///    1,AAAAAAAABAAAAAAA,2450164,2450185,10022,1000.00,1,ought,Y,N,N,N,N,N,N,N,\"Men will not say merely. Old, available \",Unknown,N\n\
-///    2,AAAAAAAACAAAAAAA,2450118,2450150,2410,1000.00,1,able,Y,N,N,N,N,N,N,N,\"So willing buildings coul\",Unknown,N\n\
-///    3,AAAAAAAADAAAAAAA,2450675,2450712,10843,1000.00,1,pri,Y,N,N,N,N,N,N,N,\"Companies shall not pr\",Unknown,N\n"
+///    1,AAAAAAAABAAAAAAA,2450597,2450600,8149,1000.00,1,ought,N,Y,N,Y,Y,Y,N,N,\"Men will not say merely. Old, available \",Unknown,N\n\
+///    2,AAAAAAAACAAAAAAA,2450230,2450278,3166,1000.00,1,able,Y,N,N,Y,Y,Y,N,Y,\"So willing buildings coul\",Unknown,Y\n\
+///    3,AAAAAAAADAAAAAAA,2450204,2450241,7045,1000.00,1,pri,N,Y,N,Y,Y,N,Y,N,\"Companies shall not pr\",Unknown,Y\n"
 /// );
 /// ```
 pub struct PromotionCsv<'a> {
@@ -1220,9 +1220,9 @@ impl Display for ShipModeCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "s_store_sk,s_store_id,s_rec_start_date,s_rec_end_date,s_closed_date_sk,s_store_name,s_number_employees,s_floor_space,s_hours,s_manager,s_market_id,s_geography_class,s_market_desc,s_market_manager,s_division_id,s_division_name,s_company_id,s_company_name,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,s_country,s_gmt_offset,s_tax_precentage\n\
-///    1,AAAAAAAABAAAAAAA,1997-03-13,,2451189,ought,245,5250760,8AM-4PM,William Ward,2,Unknown,\"Enough high areas stop expectations. Elaborate, local is\",Charles Bartley,1,Unknown,1,Unknown,767,Spring ,Wy,Suite 250,Midway,Williamson County,TN,31904,United States,-5,0.03\n\
-///    2,AAAAAAAACAAAAAAA,1997-03-13,2000-03-12,,able,236,5285950,8AM-4PM,Scott Smith,8,Unknown,\"Parliamentary candidates wait then heavy, keen mil\",David Lamontagne,1,Unknown,1,Unknown,255,Sycamore ,Dr.,Suite 410,Midway,Williamson County,TN,31904,United States,-5,0.03\n\
-///    3,AAAAAAAACAAAAAAA,2000-03-13,,,able,236,7557959,8AM-4PM,Scott Smith,7,Unknown,\"Impossible, true arms can treat constant, complete w\",David Lamontagne,1,Unknown,1,Unknown,877,Park Laurel,Road,Suite T,Midway,Williamson County,TN,31904,United States,-5,0.03\n"
+///    1,AAAAAAAABAAAAAAA,1997-03-13,,2451189,ought,266,7447677,8AM-4PM,William Ward,3,Unknown,\"Enough high areas stop expectations. Elaborate, local is\",Charles Bartley,1,Unknown,1,Unknown,721,Poplar ,Ave,Suite 250,Pleasant Hill,Richland County,OH,43604,United States,-5,0.03\n\
+///    2,AAAAAAAACAAAAAAA,1997-03-13,2000-03-12,,able,249,8860176,8AM-4PM,Scott Smith,7,Unknown,\"Parliamentary candidates wait then heavy, keen mil\",David Lamontagne,1,Unknown,1,Unknown,994,Pine ,Avenue,Suite 410,Midway,Ziebach County,SD,51904,United States,-6,0.03\n\
+///    3,AAAAAAAACAAAAAAA,2000-03-13,,,able,249,8187125,8AM-4PM,Scott Smith,3,Unknown,\"Impossible, true arms can treat constant, complete w\",David Lamontagne,1,Unknown,1,Unknown,647,Pine Laurel,Ln,Suite T,Mount Pleasant,Jefferson Davis Parish,LA,71933,United States,-6,0.03\n"
 /// );
 /// ```
 pub struct StoreCsv<'a> {
@@ -1303,9 +1303,15 @@ impl Display for StoreCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "sr_returned_date_sk,sr_return_time_sk,sr_item_sk,sr_customer_sk,sr_cdemo_sk,sr_hdemo_sk,sr_addr_sk,sr_store_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_return_tax,sr_return_amt_inc_tax,sr_fee,sr_return_ship_cost,sr_refunded_cash,sr_reversed_charge,sr_store_credit,sr_net_loss\n\
-///    2451984,46418,4553,67006,793022,4033,17397,7,69,1,51,37.23,3.35,40.58,55.28,714.00,0.74,17.51,18.98,772.63\n\
-///    2451822,47480,10993,67006,1082163,7157,49751,1,14,1,43,4009.32,120.27,4129.59,28.23,0.00,3448.01,5.61,555.70,148.50\n\
-///    2451653,37700,7654,68284,289468,3067,21819,10,20,2,7,249.48,2.49,251.97,11.50,6.23,234.51,8.83,6.14,20.22\n"
+///    2450986,46418,3302,78443,375811,3016,35,1,2,1,5,89.25,6.24,95.49,55.28,125.60,1.78,41.98,45.49,187.12\n\
+///    2450824,47480,17551,78443,1228709,2291,9154,2,5,1,2,122.60,8.58,131.18,28.23,0.00,105.43,0.17,17.00,36.81\n\
+///    2450912,41562,12994,78443,711303,6478,30992,7,22,1,27,679.59,47.57,727.16,85.02,855.63,299.01,262.60,117.98,988.22\n\
+///    2450836,60999,13484,78443,366911,719,8692,4,3,1,61,1973.96,98.69,2072.65,5.67,1123.01,276.35,509.28,1188.33,1227.37\n\
+///    2450848,36227,8522,78443,1576601,1549,19191,4,12,1,1,47.11,3.76,50.87,25.86,61.07,4.23,30.44,12.44,90.69\n\
+///    2450944,37700,4414,46210,1210472,140,7870,8,11,2,22,423.28,4.23,427.51,11.50,26.40,397.88,14.98,10.42,42.13\n\
+///    2450912,38831,3884,46210,1184982,1492,26228,2,21,2,66,6679.20,267.16,6946.36,17.91,1496.88,3740.35,558.38,2380.47,1781.95\n\
+///    2450917,54062,937,191,1377762,5860,32516,2,2,2,29,969.76,77.58,1047.34,37.27,837.52,930.96,22.11,16.69,952.37\n\
+///    2450845,56039,13280,46210,1499281,3954,8363,1,31,2,1,1.96,0.03,1.99,39.44,10.80,1.19,0.03,0.74,50.27\n"
 /// );
 /// ```
 pub struct StoreReturnsCsv<'a> {
@@ -1405,9 +1411,9 @@ impl Display for StoreReturnsCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "ss_sold_date_sk,ss_sold_time_sk,ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_list_price,ss_sales_price,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_ext_tax,ss_coupon_amt,ss_net_paid,ss_net_paid_inc_tax,ss_net_profit\n\
-///    2451813,65495,3617,67006,591617,3428,24839,10,161,1,79,11.41,18.71,2.80,99.54,221.20,901.39,1478.09,6.08,99.54,121.66,127.74,-779.73\n\
-///    2451813,65495,13283,67006,591617,3428,24839,10,154,1,37,63.63,101.17,41.47,46.03,1534.39,2354.31,3743.29,59.53,46.03,1488.36,1547.89,-865.95\n\
-///    2451813,65495,13631,67006,591617,3428,24839,10,172,1,99,80.52,137.68,83.98,0.00,8314.02,7971.48,13630.32,0.00,0.00,8314.02,8314.02,342.54\n"
+///    2450815,65495,17881,78443,1751638,5428,27568,10,123,1,97,1.00,1.94,0.52,0.00,50.44,97.00,188.18,2.01,0.00,50.44,52.45,-46.56\n\
+///    2450815,65495,3302,78443,1751638,5428,27568,10,164,1,94,32.26,66.13,17.85,1174.53,1677.90,3032.44,6216.22,35.23,1174.53,503.37,538.60,-2529.07\n\
+///    2450815,65495,17551,78443,1751638,5428,27568,10,32,1,4,47.89,82.84,61.30,186.35,245.20,191.56,331.36,4.11,186.35,58.85,62.96,-132.71\n"
 /// );
 /// ```
 pub struct StoreSalesCsv<'a> {
@@ -1589,9 +1595,9 @@ impl Display for TimeDimCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "w_warehouse_sk,w_warehouse_id,w_warehouse_name,w_warehouse_sq_ft,w_street_number,w_street_name,w_street_type,w_suite_number,w_city,w_county,w_state,w_zip,w_country,w_gmt_offset\n\
-///    1,AAAAAAAABAAAAAAA,\"Conventional childr\",977787,651,6th ,Parkway,Suite 470,Fairview,Williamson County,TN,35709,United States,-5\n\
-///    2,AAAAAAAACAAAAAAA,\"Important issues liv\",138504,600,View First,Avenue,Suite P,Fairview,Williamson County,TN,35709,United States,-5\n\
-///    3,AAAAAAAADAAAAAAA,\"Doors canno\",294242,534,Ash Laurel,Dr.,Suite 0,Fairview,Williamson County,TN,35709,United States,-5\n"
+///    1,AAAAAAAABAAAAAAA,\"Conventional childr\",829206,581,Johnson ,Way,Suite 470,Pleasant Hill,Williamson County,TN,33604,United States,-5\n\
+///    2,AAAAAAAACAAAAAAA,\"Important issues liv\",76496,96,Highland First,RD,Suite P,Fairview,Ziebach County,SD,55709,United States,-6\n\
+///    3,AAAAAAAADAAAAAAA,\"Doors canno\",789610,953,Lee Laurel,Road,Suite 0,Five Points,Ziebach County,SD,56098,United States,-6\n"
 /// );
 /// ```
 pub struct WarehouseCsv<'a> {
@@ -1658,9 +1664,9 @@ impl Display for WarehouseCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "wp_web_page_sk,wp_web_page_id,wp_rec_start_date,wp_rec_end_date,wp_creation_date_sk,wp_access_date_sk,wp_autogen_flag,wp_customer_sk,wp_url,wp_type,wp_char_count,wp_link_count,wp_image_count,wp_max_ad_count\n\
-///    1,AAAAAAAABAAAAAAA,1997-09-03,,2450810,2452620,Y,98539,http://www.foo.com,welcome,2531,8,3,4\n\
-///    2,AAAAAAAACAAAAAAA,1997-09-03,2000-09-02,2450814,2452580,N,,http://www.foo.com,protected,1564,4,3,1\n\
-///    3,AAAAAAAACAAAAAAA,2000-09-03,,2450814,2452611,N,,http://www.foo.com,feedback,1564,4,3,4\n"
+///    1,AAAAAAAABAAAAAAA,1997-09-03,,2450810,2452620,Y,42772,http://www.foo.com,order,2002,11,1,4\n\
+///    2,AAAAAAAACAAAAAAA,1997-09-03,2000-09-02,2450814,2452580,N,,http://www.foo.com,protected,1891,10,5,4\n\
+///    3,AAAAAAAACAAAAAAA,2000-09-03,,2450814,2452611,N,,http://www.foo.com,protected,1891,10,5,3\n"
 /// );
 /// ```
 pub struct WebPageCsv<'a> {
@@ -1727,9 +1733,9 @@ impl Display for WebPageCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "wr_returned_date_sk,wr_returned_time_sk,wr_item_sk,wr_refunded_customer_sk,wr_refunded_cdemo_sk,wr_refunded_hdemo_sk,wr_refunded_addr_sk,wr_returning_customer_sk,wr_returning_cdemo_sk,wr_returning_hdemo_sk,wr_returning_addr_sk,wr_web_page_sk,wr_reason_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_return_tax,wr_return_amt_inc_tax,wr_fee,wr_return_ship_cost,wr_refunded_cash,wr_reversed_charge,wr_account_credit,wr_net_loss\n\
-///    2451653,7022,10402,46224,1011635,3446,4057,46224,1011635,3446,4057,56,73,1,10,698.20,13.96,712.16,18.63,820.30,300.22,382.06,15.92,852.89\n\
-///    2451627,64915,15464,3811,18405,199,48793,3811,18405,199,48793,13,54,1,47,1248.79,49.95,1298.74,61.81,709.23,262.24,128.25,858.30,820.99\n\
-///    2452798,,9559,,31639,,18790,,31639,2038,18790,,71,2,11,,25.52,,,16.72,,16.36,165.47,\n"
+///    2451085,7022,1394,3832,629630,3930,4500,3832,629630,3930,4500,60,8,1,3,532.86,0.00,532.86,18.63,338.43,229.12,291.59,12.15,357.06\n\
+///    2451059,64915,7909,19283,1182083,1113,5658,19283,1182083,1113,5658,50,31,1,19,378.29,30.26,408.55,61.81,178.41,79.44,38.85,260.00,270.48\n\
+///    2450988,,13436,,1189482,,14884,,1189482,6982,14884,,2,2,26,,35.37,,,47.58,,90.73,917.48,\n"
 /// );
 /// ```
 pub struct WebReturnsCsv<'a> {
@@ -1813,9 +1819,9 @@ impl Display for WebReturnsCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "ws_sold_date_sk,ws_sold_time_sk,ws_ship_date_sk,ws_item_sk,ws_bill_customer_sk,ws_bill_cdemo_sk,ws_bill_hdemo_sk,ws_bill_addr_sk,ws_ship_customer_sk,ws_ship_cdemo_sk,ws_ship_hdemo_sk,ws_ship_addr_sk,ws_web_page_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_promo_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_list_price,ws_sales_price,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_ext_tax,ws_coupon_amt,ws_ext_ship_cost,ws_net_paid,ws_net_paid_inc_tax,ws_net_paid_inc_ship,ws_net_paid_inc_ship_tax,ws_net_profit\n\
-///    2451383,73313,2451482,4591,83074,596485,1096,40907,85919,41329,1140,1351,43,4,4,5,6,1,57,33.59,59.45,38.04,1220.37,2168.28,1914.63,3388.65,50.95,1149.18,575.70,1019.10,1070.05,1594.80,1645.75,-895.53\n\
-///    2451383,73313,2451411,3566,83074,596485,1096,40907,85919,41329,1140,1351,28,7,3,2,271,1,38,29.83,48.92,26.41,855.38,1003.58,1133.54,1858.96,30.10,0.00,910.86,1003.58,1033.68,1914.44,1944.54,-129.96\n\
-///    2451383,73313,2451413,7286,83074,596485,1096,40907,85919,41329,1140,1351,58,28,10,5,300,1,32,49.72,107.89,97.10,345.28,3107.20,1591.04,3452.48,124.28,0.00,828.48,3107.20,3231.48,3935.68,4059.96,1516.16\n"
+///    2450815,73313,2450914,16933,66833,745823,3684,3143,90264,1100283,440,6840,60,10,9,1,76,1,8,47.89,143.67,83.32,482.80,666.56,383.12,1149.36,0.00,0.00,448.24,666.56,666.56,1114.80,1114.80,283.44\n\
+///    2450815,73313,2450843,3014,66833,745823,3684,3143,90264,1100283,440,6840,60,1,18,3,180,1,94,89.57,145.99,138.69,686.20,13036.86,8419.58,13723.06,208.59,7822.11,2469.38,5214.75,5423.34,7684.13,7892.72,-3204.83\n\
+///    2450815,73313,2450845,4645,66833,745823,3684,3143,90264,1100283,440,6840,37,1,15,2,119,1,52,1.00,2.26,1.19,55.64,61.88,52.00,117.52,3.09,0.00,47.84,61.88,64.97,109.72,112.81,9.88\n"
 /// );
 /// ```
 pub struct WebSalesCsv<'a> {
@@ -1903,9 +1909,9 @@ impl Display for WebSalesCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "web_site_sk,web_site_id,web_rec_start_date,web_rec_end_date,web_name,web_open_date_sk,web_close_date_sk,web_class,web_manager,web_mkt_id,web_mkt_class,web_mkt_desc,web_market_manager,web_company_id,web_company_name,web_street_number,web_street_name,web_street_type,web_suite_number,web_city,web_county,web_state,web_zip,web_country,web_gmt_offset,web_tax_percentage\n\
-///    1,AAAAAAAABAAAAAAA,1997-08-16,,site_0,2450807,,Unknown,Ronald Shaffer,4,\"Grey lines ought to result indeed centres. Tod\",\"Well similar decisions used to keep hardly democratic, personal priorities.\",Joe George,6,cally,51,Dogwood Sunset,Ln,Suite 330,Midway,Williamson County,TN,31904,United States,-5,0.10\n\
-///    2,AAAAAAAACAAAAAAA,1997-08-16,2000-08-15,site_0,2450798,2447148,Unknown,Tommy Jones,6,\"Completely excellent things ought to pro\",\"Lucky passengers know. Red details will not hang alive, international s\",David Myers,4,ese,358,Ridge Wilson,Cir.,Suite 150,Midway,Williamson County,TN,31904,United States,-5,0.00\n\
-///    3,AAAAAAAACAAAAAAA,2000-08-16,,site_0,2450798,2447148,Unknown,Tommy Jones,3,\"Completely excellent things ought to pro\",\"Particular, common seasons shall not indicate fully more single decisions; \",David Myers,4,ese,753,7th ,Pkwy,Suite 210,Midway,Williamson County,TN,31904,United States,-5,0.02\n"
+///    1,AAAAAAAABAAAAAAA,1997-08-16,,site_0,2450807,,Unknown,Ronald Shaffer,1,\"Grey lines ought to result indeed centres. Tod\",\"Well similar decisions used to keep hardly democratic, personal priorities.\",Joe George,2,able,915,Smith Sunset,Road,Suite 330,Friendship,Pennington County,MN,54536,United States,-6,0.10\n\
+///    2,AAAAAAAACAAAAAAA,1997-08-16,2000-08-15,site_0,2450798,2447148,Unknown,Tommy Jones,1,\"Completely excellent things ought to pro\",\"Lucky passengers know. Red details will not hang alive, international s\",David Myers,5,anti,173,Tenth Wilson,Blvd,Suite 150,Greenwood,Wadena County,MN,58828,United States,-6,0.00\n\
+///    3,AAAAAAAACAAAAAAA,2000-08-16,,site_0,2450798,2447148,Unknown,Tommy Jones,1,\"Completely excellent things ought to pro\",\"Particular, common seasons shall not indicate fully more single decisions; \",David Myers,5,anti,827,Lincoln ,Avenue,Suite 210,Pleasant Valley,Daviess County,MO,58828,United States,-6,0.02\n"
 /// );
 /// ```
 pub struct WebSiteCsv<'a> {

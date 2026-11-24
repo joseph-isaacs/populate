@@ -85,7 +85,10 @@ impl<C: GeneratorColumn> AbstractRowGenerator<C> {
     /// The streams' seeds now (after `finish_row` of row 1, the start of
     /// row 2).
     pub fn seeds(&self) -> Vec<i64> {
-        self.random_number_streams.iter().map(|s| s.seed()).collect()
+        self.random_number_streams
+            .iter()
+            .map(|s| s.seed())
+            .collect()
     }
 
     /// Set the start of row 2 (see [`Self::seeds`]).

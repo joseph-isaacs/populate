@@ -24,11 +24,11 @@ use crate::dsb::{exp_date, exp_pick_index, make_key_perm, make_perm, DatePerms};
 use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomNumberStream, RandomValueGenerator};
-use std::sync::Arc;
 use crate::row::customer_row::CustomerRow;
 use crate::row::AbstractRowGenerator;
 use crate::table::Table;
 use crate::types::Date;
+use std::sync::Arc;
 
 /// Customer row generator (CustomerRowGenerator)
 pub struct CustomerRowGenerator {
@@ -109,7 +109,8 @@ impl CustomerRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 
@@ -119,8 +120,10 @@ impl CustomerRowGenerator {
     /// row's dates: replay them.
     fn birth_day_stream(&self, row: u64) -> RandomNumberStream {
         let c = CustomerGeneratorColumn::CBirthDay;
-        let mut s =
-            RandomNumberStream::new_with_column(c.get_global_column_number(), c.get_seeds_per_row());
+        let mut s = RandomNumberStream::new_with_column(
+            c.get_global_column_number(),
+            c.get_seeds_per_row(),
+        );
         let p = &self.perms.birth;
         s.advance((p.year.len() + p.month.len() + p.day.len()) as u64);
         for _ in 1..row {
@@ -168,12 +171,8 @@ impl CustomerRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CCurrentAddrSk);
-        let c_current_addr_sk = join_key(
-            crate::config::Table::CustomerAddress,
-            stream,
-            scaling,
-            None,
-        );
+        let c_current_addr_sk =
+            join_key(crate::config::Table::CustomerAddress, stream, scaling, None);
 
         // Name generation (matches Java order lines 81-85)
         let stream = self
@@ -243,7 +242,11 @@ impl CustomerRowGenerator {
         let c_birth_country = countries
             .get_value_at_index(
                 0,
-                exp_pick_index(countries.get_size() as i32, Some(&self.perms.country), stream),
+                exp_pick_index(
+                    countries.get_size() as i32,
+                    Some(&self.perms.country),
+                    stream,
+                ),
             )
             .to_string();
 

@@ -47,11 +47,19 @@ pub fn exp_rank(min: i64, max: i64, lambda: f64, stream: &mut RandomNumberStream
 
 // C's fmax/fmin (no NaNs reach them here).
 fn f64_max(a: f64, b: f64) -> f64 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 fn f64_min(a: f64, b: f64) -> f64 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 /// `genrand_integer(.., DIST_EXP_RANK_LOW, min, max, ..)`.
@@ -82,7 +90,11 @@ pub fn exp_rank_weight(rank: i64, count: i64, lambda: f64) -> f64 {
 /// `makeBucket`: split `item_count` values into about `estimate` buckets.
 /// Returns `(bucket_size, bucket_count)`.
 pub fn make_bucket(estimate: i32, item_count: i32) -> (i32, i32) {
-    let count = if estimate < item_count { estimate } else { item_count };
+    let count = if estimate < item_count {
+        estimate
+    } else {
+        item_count
+    };
     let size = (item_count + count - 1) / count;
     let count = (item_count + size - 1) / size;
     (size, count)
@@ -179,8 +191,12 @@ pub fn exp_decimal(
 /// `get_nday`: days in `month` of `year` (dsdgen's leap rule).
 pub fn days_in_month(year: i32, month: i32) -> i32 {
     const DAYS: [[i32; 14]; 2] = [
-        [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365],
-        [0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366],
+        [
+            0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365,
+        ],
+        [
+            0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366,
+        ],
     ];
     let leap = Date::is_leap_year(year) as usize;
     DAYS[leap][month as usize + 1] - DAYS[leap][month as usize]
@@ -201,8 +217,16 @@ pub struct DatePerms {
 pub fn exp_date(min: Date, max: Date, perms: &DatePerms, stream: &mut RandomNumberStream) -> Date {
     let range_year = max.get_year() - min.get_year() + 1;
     let year = map_perm(exp_int(1, range_year, stream), &perms.year) + min.get_year();
-    let month_min = if year == min.get_year() { min.get_month() } else { 1 };
-    let month_max = if year == max.get_year() { max.get_month() } else { 12 };
+    let month_min = if year == min.get_year() {
+        min.get_month()
+    } else {
+        1
+    };
+    let month_max = if year == max.get_year() {
+        max.get_month()
+    } else {
+        12
+    };
     let month = loop {
         let m = map_perm(exp_int(1, 12, stream), &perms.month);
         if m >= month_min && m <= month_max {

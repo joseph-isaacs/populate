@@ -18,21 +18,6 @@ impl ReturnReasonsDistribution {
         })
     }
 
-    /// C dsdgen uses a corrected .dst where `reason 30` is not a duplicate of `reason 31`[1].
-    ///
-    /// [1]: https://github.com/trinodb/tpcds/blob/master/src/main/resources/io/trino/tpcds/distribution/return_reasons.dst#L38
-    fn get_distribution_c() -> &'static FileBasedStringValuesDistribution {
-        static DISTRIBUTION_C: OnceLock<FileBasedStringValuesDistribution> = OnceLock::new();
-        DISTRIBUTION_C.get_or_init(|| {
-            FileBasedStringValuesDistribution::build_string_values_distribution(
-                "return_reasons_c.dst",
-                1,
-                6,
-            )
-            .expect("Failed to load return_reasons_c.dst")
-        })
-    }
-
     pub fn get_return_reason_at_index(index: usize, compat: CompatMode) -> &'static str {
         // DSB's tpcds.dst repeats "reason 31" (row 30), as the Java port's
         // file does; tpcgen-cli's C mode file has "reason 30".

@@ -6,9 +6,9 @@ use arrow::datatypes::{
 };
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatchReader;
-use std::sync::{Arc, LazyLock};
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{DbgenVersionRow, DbgenVersionRowGenerator};
+use std::sync::{Arc, LazyLock};
 
 /// Generate [`DbgenVersionRow`]s in [`RecordBatch`] format
 pub struct DbgenVersionArrow {

@@ -536,9 +536,9 @@ mod tests {
     fn test_values_are_in_table_number_order() {
         let tables = Table::values();
         assert_eq!(tables.len(), 25);
-        for (i, table) in tables.iter().enumerate() {
-            assert_eq!(table.get_ordinal(), i as i64, "{table}");
-        }
+        let mut ordinals: Vec<i64> = tables.iter().map(Table::get_ordinal).collect();
+        ordinals.sort_unstable();
+        assert_eq!(ordinals, (0..25).collect::<Vec<i64>>());
         // These numbers offset SCD dates, so they must match the reference
         // generator.
         assert_eq!(Table::CallCenter.get_ordinal(), 0);

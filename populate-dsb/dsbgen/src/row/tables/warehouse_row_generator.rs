@@ -1,11 +1,11 @@
 use crate::business_key_generator::make_business_key;
 use crate::config::Session;
+use crate::dsb::address::make_address;
+use crate::dsb::{exp_bucketed_int, make_bucket, make_perm};
 use crate::generator::WarehouseGeneratorColumn;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, WarehouseRow};
 use crate::table::Table;
-use crate::dsb::address::make_address;
-use crate::dsb::{exp_bucketed_int, make_bucket, make_perm};
 
 /// Row generator for the WAREHOUSE table (WarehouseRowGenerator)
 pub struct WarehouseRowGenerator {
@@ -99,7 +99,8 @@ impl WarehouseRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

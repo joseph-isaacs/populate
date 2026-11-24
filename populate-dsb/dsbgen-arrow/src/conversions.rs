@@ -6,9 +6,9 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow::datatypes::{ArrowPrimitiveType, Date32Type, Decimal128Type, Int32Type, Int64Type};
+use dsbgen::types::{Address, Date, Decimal};
 use std::fmt::{Display, Write as _};
 use std::sync::Arc;
-use dsbgen::types::{Address, Date, Decimal};
 
 /// Julian day number for the Unix epoch (1970-01-01)
 const UNIX_EPOCH_JULIAN: i32 = 2440588;

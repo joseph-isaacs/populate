@@ -11,8 +11,6 @@ use crate::seeds;
 use arrow_array::builder::make_view;
 use arrow_array::{ArrayRef, Int32Array, RecordBatch, StringViewArray};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
-use std::iter::repeat_n;
-use std::sync::Arc;
 use dsbgen::config::{Session, Table as Ds};
 use dsbgen::distribution::DemographicsDistributions as Demo;
 use dsbgen::generator::InventoryGeneratorColumn as Inv;
@@ -21,6 +19,8 @@ use dsbgen::slowly_changing_dimension_utils::match_surrogate_key;
 use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
 use dsbgen_arrow::{CustomerDemographicsArrow, InventoryArrow};
+use std::iter::repeat_n;
+use std::sync::Arc;
 
 fn i32s(v: Vec<i32>) -> ArrayRef {
     Arc::new(Int32Array::new(ScalarBuffer::from(v), None))

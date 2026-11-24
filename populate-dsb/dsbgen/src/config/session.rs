@@ -293,11 +293,13 @@ impl SessionBuilder {
     }
 
     fn validate(&self) -> Result<()> {
-        if !self.scale.is_finite() || self.scale < 0.0 {
+        // DSB's dsdgen takes its call center sizes from the integer scale
+        // and crashes below 1.
+        if !self.scale.is_finite() || self.scale < 1.0 {
             return Err(InvalidOptionError::with_message(
                 "scale",
                 &self.scale.to_string(),
-                "Scale must be a non-negative number",
+                "Scale must be at least 1",
             )
             .into());
         }
@@ -527,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_reason_ranges() {
-        RowSizeTest::new(Table::Reason, &[1..=75, 1..=0, 1..=0]).run();
+        RowSizeTest::new(Table::Reason, &[1..=35, 1..=0, 1..=0]).run();
     }
 
     #[test]

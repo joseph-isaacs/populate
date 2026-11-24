@@ -4,9 +4,9 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Date32Type, Decimal128Type, Field, Int32Type, Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatchReader;
-use std::sync::{Arc, LazyLock};
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{ItemRow, ItemRowGenerator};
+use std::sync::{Arc, LazyLock};
 
 /// Generate [`ItemRow`]s in [`RecordBatch`] format
 ///

@@ -2,16 +2,6 @@ use crate::config::{CompatMode, Table};
 use crate::distribution::calendar_distribution::{CalendarDistribution, CalendarWeights};
 use crate::types::Date;
 
-/// Row count for the `reason` table under C dsdgen compatibility.
-///
-/// C dsdgen generates all 75 entries from `return_reasons_c.dst` at every
-/// scale factor. The Java/Trino port incorrectly used a logarithmic scaling
-/// model starting at 35 for SF1; this constant fixes that when
-/// `CompatMode::C` is active, see [1].
-///
-/// [1]: https://github.com/trinodb/tpcds/blob/8a02abbba864feedc2afd078c8153d66a95bb2d4/src/main/java/io/trino/tpcds/Table.java#L201
-const REASON_ROW_COUNT_C: u64 = 75;
-
 /// Number of [`Table`] variants, all of which have precomputed row counts. A
 /// table's discriminant is its index.
 const CACHED_TABLE_COUNT: usize = 25;

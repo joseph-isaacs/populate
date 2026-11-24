@@ -16,12 +16,11 @@
 
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
-use crate::generator::WebReturnsGeneratorColumn;
-use crate::dsb::join::{join_key, scd_join_key, DemographicsJoin};
+use crate::dsb::join::{join_key, DemographicsJoin};
 use crate::dsb::sales::{orders_before, Channel};
+use crate::generator::WebReturnsGeneratorColumn;
 use crate::join_key_utils::{
-    generate_returns_date_join_key, generate_time_join_key, generate_uniform_join_key,
-    WS_MAX_SHIP_DELAY, WS_MIN_SHIP_DELAY,
+    generate_returns_date_join_key, generate_time_join_key, WS_MAX_SHIP_DELAY, WS_MIN_SHIP_DELAY,
 };
 use crate::nulls::create_null_bit_map;
 use crate::random::RandomValueGenerator;
@@ -134,14 +133,12 @@ impl WebReturnsRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrRefundedCdemoSk);
-        let mut wr_refunded_cdemo_sk =
-            DemographicsJoin::customer().key(stream);
+        let mut wr_refunded_cdemo_sk = DemographicsJoin::customer().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WrRefundedHdemoSk);
-        let mut wr_refunded_hdemo_sk =
-            DemographicsJoin::household().key(stream);
+        let mut wr_refunded_hdemo_sk = DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator

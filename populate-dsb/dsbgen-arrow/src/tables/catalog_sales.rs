@@ -4,10 +4,10 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Decimal128Type, Field, Int32Type, Int64Type, Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatchReader;
-use std::sync::{Arc, LazyLock};
 use dsbgen::config::{Session, Table};
 use dsbgen::row::{CatalogSalesRow, CatalogSalesRowGenerator};
 use dsbgen::types::{Decimal, Pricing};
+use std::sync::{Arc, LazyLock};
 
 /// Generate [`CatalogSalesRow`]s in [`RecordBatch`] format
 ///

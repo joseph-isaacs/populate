@@ -16,6 +16,8 @@
 
 use crate::config::Session;
 use crate::distribution::{CallCenterDistributions, FirstNamesWeights, NamesDistributions};
+use crate::dsb::address::make_address;
+use crate::dsb::{exp_bucketed_int, exp_int, make_bucket, make_perm, map_perm};
 use crate::generator::StoreGeneratorColumn;
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
@@ -25,8 +27,6 @@ use crate::slowly_changing_dimension_utils::{
     compute_scd_key_for_table_number, get_value_for_slowly_changing_dimension, ScdRowGenerator,
 };
 use crate::table::Table;
-use crate::dsb::address::make_address;
-use crate::dsb::{exp_bucketed_int, exp_int, make_bucket, make_perm, map_perm};
 use crate::types::{Address, Date, Decimal};
 
 /// Table number for `store`'s SCD dates. Matches the C `dsdgen` [1] and
@@ -110,7 +110,8 @@ impl StoreRowGenerator {
         if self.abstract_generator.needs_row2(row) {
             let mut first = Self::new(self.session.clone(), 1);
             first.next();
-            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
         }
     }
 

@@ -4,11 +4,13 @@
 use crate::TableName;
 use crate::dat::{self, Encoding};
 use crate::direct;
-use crate::fused::{Channel, Want};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
 use arrow_select::concat::concat_batches;
+use dsbgen::config::{Session, Table as Ds};
+use dsbgen::row::*;
+use dsbgen_arrow::*;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
@@ -18,9 +20,6 @@ use populate_table::{Chunks, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use dsbgen::config::{Session, Table as Ds};
-use dsbgen::row::*;
-use dsbgen_arrow::*;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
@@ -85,10 +84,6 @@ macro_rules! tables {
                 batch: usize,
                 emit: &mut dyn FnMut(RecordBatch),
             ) {
-                if let Some((channel, sales)) = Channel::of(self.name) {
-                    let want = Want { sales, returns: !sales };
-                    return channel.run(&self.session, first, last, batch, want, &mut |_, b| emit(b));
-                }
                 match self.name {
                     TableName::Inventory => {
                         return direct::inventory(&self.session, first, last, batch, emit)
@@ -109,7 +104,7 @@ macro_rules! tables {
             }
 
             /// The table as dsbgen-arrow generates it, sequentially: the
-            /// reference the parallel and fused paths are tested against.
+            /// reference the parallel paths are tested against.
             #[doc(hidden)]
             pub fn reference_arrow(&self) -> Vec<RecordBatch> {
                 match self.name {
@@ -139,7 +134,7 @@ macro_rules! tables {
                     Encoding::Utf8 => out.into_bytes(),
                     Encoding::Latin1 => out
                         .chars()
-                        .map(|c| u8::try_from(c).expect("Latin-1 text"))
+                        .map(|c| u8::try_from(c).unwrap_or(b'?'))
                         .collect(),
                 }
             }
@@ -408,8 +403,8 @@ pub fn for_each_batch_many(
     r.unwrap_or_else(|e| match e {});
 }
 
-/// One job source: a table, or a sales table and its returns generated
-/// together.
+/// One job source: a table. A unit can have several outputs, for a
+/// sales table and its returns generated in one pass.
 struct Unit<'a> {
     tables: &'a [DsTable],
     /// Indexes into `tables` of this unit's outputs.
@@ -419,77 +414,21 @@ struct Unit<'a> {
     raw: bool,
 }
 
-/// Units for `tables`, in order; a sales table and its returns with the
-/// same chunks and batch size become one unit (sales first) at the first
-/// one's place.
+/// Units for `tables`, in order: one per table.
 fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
-    // partner[i]: the table generated together with tables[i]
-    let mut partner = vec![None; tables.len()];
-    for (i, a) in tables.iter().enumerate() {
-        for (j, b) in tables.iter().enumerate() {
-            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
-                (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
-                _ => false,
-            };
-            if same_channel
-                && a.chunk_source_rows == b.chunk_source_rows
-                && a.source_rows == b.source_rows
-                && a.batch_size == b.batch_size
-            {
-                partner[i] = Some(j);
-            }
-        }
-    }
-    // pair only tables that chose each other (a table listed twice pairs once)
-    let partner: Vec<Option<usize>> = (0..tables.len())
-        .map(|i| partner[i].filter(|&j| partner[j] == Some(i)))
-        .collect();
-    let mut units = Vec::new();
-    for (i, t) in tables.iter().enumerate() {
-        let idx = match partner[i] {
-            Some(j) if j < i => continue,
-            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
-            Some(j) => vec![j, i],
-            None => vec![i],
-        };
-        units.push(Unit { tables, idx, raw });
-    }
-    units
+    (0..tables.len())
+        .map(|i| Unit {
+            tables,
+            idx: vec![i],
+            raw,
+        })
+        .collect()
 }
 
 impl Unit<'_> {
-    /// Chunk `i` as `.dat` text, appended to `bufs` (one per output). The
-    /// sales channels write their text directly, without Arrow columns.
+    /// Chunk `i` as `.dat` text, appended to `bufs` (one per output).
     fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
-        let t = &self.tables[self.idx[0]];
-        let Some((channel, sales)) = Channel::of(t.name) else {
-            return self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
-        };
-        let (first, last) = t.range(i);
-        match bufs {
-            // `idx` is sales, returns
-            [s, r] => {
-                let both = Want {
-                    sales: true,
-                    returns: true,
-                };
-                channel.run_dat(&t.session, first, last, both, s, r);
-            }
-            [one] => {
-                let want = Want {
-                    sales,
-                    returns: !sales,
-                };
-                let mut none = Vec::new();
-                let (s, r) = if sales {
-                    (one, &mut none)
-                } else {
-                    (&mut none, one)
-                };
-                channel.run_dat(&t.session, first, last, want, s, r);
-            }
-            _ => unreachable!("a unit has one or two outputs"),
-        }
+        self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
     }
 }
 
@@ -505,15 +444,6 @@ impl MultiChunks for Unit<'_> {
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
-        if self.idx.len() == 2 {
-            // `idx` is sales, returns: the channel's outputs 0 and 1
-            let (channel, _) = Channel::of(t.name).expect("a channel");
-            let want = Want {
-                sales: true,
-                returns: true,
-            };
-            return channel.run(&t.session, first, last, t.batch_size, want, emit);
-        }
         if self.raw {
             t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
         } else {
@@ -535,11 +465,10 @@ impl Chunks for DsTable {
     /// built from cache-sized generation batches.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        let direct = Channel::of(self.name).is_some()
-            || matches!(
-                self.name,
-                TableName::Inventory | TableName::CustomerDemographics
-            );
+        let direct = matches!(
+            self.name,
+            TableName::Inventory | TableName::CustomerDemographics
+        );
         if direct || self.batch_size <= GEN_BATCH {
             return self.arrow_range(first, last, self.batch_size, emit);
         }

@@ -3,13 +3,13 @@
 //! includes the stages before it), in ms, best of 3.
 //!
 //! `cargo run -p populate-dsb --release --example stages`
-use populate_table::Chunks;
+use dsbgen::config::{SessionBuilder, Table as T};
+use dsbgen::row::*;
 use populate_dsb::{Encoding, TableName, Tpcds};
+use populate_table::Chunks;
 use std::hint::black_box;
 use std::io::sink;
 use std::time::Instant;
-use dsbgen::config::{SessionBuilder, Table as T};
-use dsbgen::row::*;
 
 fn best(f: impl Fn()) -> f64 {
     (0..3)

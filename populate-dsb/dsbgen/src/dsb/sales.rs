@@ -120,8 +120,10 @@ pub fn date_perm(channel: Channel) -> &'static [i32] {
     static PERMS: OnceLock<[Vec<i32>; 3]> = OnceLock::new();
     &PERMS.get_or_init(|| {
         let c = DateDimGeneratorColumn::DDateSk;
-        let mut s =
-            RandomNumberStream::new_with_column(c.get_global_column_number(), c.get_seeds_per_row());
+        let mut s = RandomNumberStream::new_with_column(
+            c.get_global_column_number(),
+            c.get_seeds_per_row(),
+        );
         let count = date_bucket().1;
         [
             make_perm(count, &mut s),
@@ -341,10 +343,12 @@ impl OrderFacts {
 /// How a channel decides an order's line items, gift and returns: each from
 /// a stream that moves a fixed amount per order, so any order can be
 /// replayed on its own.
+/// A gift stream, its budget and whether a draw is a gift.
+type GiftStream = (RandomNumberStream, u64, fn(i32) -> bool);
+
 struct FactStreams {
     lines: (RandomNumberStream, u64, i32, i32),
-    /// The gift stream, its budget and whether a draw is a gift.
-    gift: Option<(RandomNumberStream, u64, fn(i32) -> bool)>,
+    gift: Option<GiftStream>,
     returned: (RandomNumberStream, u64, i32),
     return_budget: u64,
 }
@@ -445,9 +449,8 @@ pub fn order_facts(channel: Channel, first: u64, last: u64) -> OrderFacts {
 /// Orders per checkpoint of [`orders_before`]'s prefix sums.
 const CHECKPOINT: u64 = 1 << 16;
 
-type PrefixCache = std::sync::Mutex<
-    std::collections::HashMap<(Channel, u64), std::sync::Arc<Vec<OrderFacts>>>,
->;
+type PrefixCache =
+    std::sync::Mutex<std::collections::HashMap<(Channel, u64), std::sync::Arc<Vec<OrderFacts>>>>;
 
 /// Prefix sums of [`OrderFacts`] at every [`CHECKPOINT`] orders of a
 /// channel with `orders` orders, built in parallel on first use.

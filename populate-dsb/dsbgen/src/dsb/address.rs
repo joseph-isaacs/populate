@@ -80,11 +80,17 @@ pub fn make_address(
 
     let street_number = map_perm(exp_int(1, 1000, stream), &perms.street_number);
     let street_name1 = names
-        .get_value_at_index(0, exp_pick_index(names.get_size() as i32, Some(&perms.street_names), stream))
+        .get_value_at_index(
+            0,
+            exp_pick_index(names.get_size() as i32, Some(&perms.street_names), stream),
+        )
         .to_string();
     let street_name2 = pick_random_street_name(StreetNamesWeights::HalfEmpty, stream).to_string();
     let street_type = types
-        .get_value_at_index(0, exp_pick_index(types.get_size() as i32, Some(&perms.street_type), stream))
+        .get_value_at_index(
+            0,
+            exp_pick_index(types.get_size() as i32, Some(&perms.street_type), stream),
+        )
         .to_string();
 
     let i = uniform_int(1, 100, stream);

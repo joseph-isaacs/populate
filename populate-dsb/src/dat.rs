@@ -10,7 +10,6 @@ use arrow_array::RecordBatch;
 use populate_table::text::write_batch_with;
 
 pub use populate_table::text::Encoding;
-pub(crate) use populate_table::text::{decimal2_field, int_field};
 
 /// Append `batch` to `out` as `.dat` lines. dsdgen keeps GMT offsets as
 /// decimal(5,2) but prints them with no decimals (`-5`).

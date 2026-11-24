@@ -16,12 +16,11 @@
 
 use crate::config::Session;
 use crate::distribution::hours_distribution::HoursWeights;
-use crate::generator::CatalogReturnsGeneratorColumn;
 use crate::dsb::join::{join_key, DemographicsJoin};
 use crate::dsb::sales::{orders_before, Channel};
+use crate::generator::CatalogReturnsGeneratorColumn;
 use crate::join_key_utils::{
-    generate_returns_date_join_key, generate_time_join_key, CS_MAX_SHIP_DELAY,
-    CS_MIN_SHIP_DELAY,
+    generate_returns_date_join_key, generate_time_join_key, CS_MAX_SHIP_DELAY, CS_MIN_SHIP_DELAY,
 };
 use crate::nulls::create_null_bit_map;
 use crate::random::RandomValueGenerator;
@@ -119,14 +118,12 @@ impl CatalogReturnsRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReturningCdemoSk);
-        let mut cr_returning_cdemo_sk =
-            DemographicsJoin::customer().key(stream);
+        let mut cr_returning_cdemo_sk = DemographicsJoin::customer().key(stream);
 
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrReturningHdemoSk);
-        let cr_returning_hdemo_sk =
-            DemographicsJoin::household().key(stream);
+        let cr_returning_hdemo_sk = DemographicsJoin::household().key(stream);
 
         let stream = self
             .abstract_generator
@@ -184,15 +181,13 @@ impl CatalogReturnsRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrShipModeSk);
-        let cr_ship_mode_sk =
-            join_key(crate::config::Table::ShipMode, stream, scaling, None);
+        let cr_ship_mode_sk = join_key(crate::config::Table::ShipMode, stream, scaling, None);
 
         // Generate warehouse
         let stream = self
             .abstract_generator
             .get_random_number_stream(&CrWarehouseSk);
-        let cr_warehouse_sk =
-            join_key(crate::config::Table::Warehouse, stream, scaling, None);
+        let cr_warehouse_sk = join_key(crate::config::Table::Warehouse, stream, scaling, None);
 
         // Generate reason
         let stream = self

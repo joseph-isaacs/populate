@@ -161,8 +161,14 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
                 color.push(g.last_color_id());
             }
             vec![
-                (ItemCategory, AttributeKeyMap::from_attributes(item_categories(), category)),
-                (ItemColor, AttributeKeyMap::from_attributes(item_colors(), color)),
+                (
+                    ItemCategory,
+                    AttributeKeyMap::from_attributes(item_categories(), category),
+                ),
+                (
+                    ItemColor,
+                    AttributeKeyMap::from_attributes(item_colors(), color),
+                ),
             ]
         }
         CustomerAddressCounty | CustomerAddressState => {
@@ -207,7 +213,13 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
             let n = rows(session, Table::HouseholdDemographics);
             let mut ids = FirstAppearance::default();
             let attrs: Vec<i32> = HouseholdDemographicsRowGenerator::new(session.clone(), n)
-                .map(|r| ids.id(&format!("{}{}", r.get_hd_buy_potential(), r.get_hd_dep_count())))
+                .map(|r| {
+                    ids.id(&format!(
+                        "{}{}",
+                        r.get_hd_buy_potential(),
+                        r.get_hd_dep_count()
+                    ))
+                })
                 .collect();
             vec![(name, AttributeKeyMap::from_attributes(ids.count(), attrs))]
         }
@@ -247,10 +259,8 @@ fn item_colors() -> usize {
 /// `C_CURRENT_ADDR_SK`, which never overruns its budget of one.
 pub fn customer_current_addresses(session: &Session) -> Vec<i64> {
     let c = CustomerGeneratorColumn::CCurrentAddrSk;
-    let mut s = RandomNumberStream::new_with_column(
-        c.get_global_column_number(),
-        c.get_seeds_per_row(),
-    );
+    let mut s =
+        RandomNumberStream::new_with_column(c.get_global_column_number(), c.get_seeds_per_row());
     let addresses = rows(session, Table::CustomerAddress) as i64;
     (0..rows(session, Table::Customer))
         .map(|_| super::exp_key(1, addresses, &mut s))
@@ -270,33 +280,6 @@ impl AttributeKeyMap {
             out.push('\n');
         }
         out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Compares the maps with the `.meta` files of a dsdgen SF 1 run in
-    /// `$DSB_REF_DIR`.
-    #[test]
-    #[ignore = "needs DSB reference output in $DSB_REF_DIR"]
-    fn maps_match_dsdgen_meta_files() {
-        let dir = std::env::var("DSB_REF_DIR").expect("DSB_REF_DIR");
-        let session = Session::default();
-        for (name, file) in [
-            (MapName::ItemCategory, "item_category"),
-            (MapName::ItemColor, "item_color"),
-            (MapName::CustomerAddressCounty, "customer_address_county"),
-            (MapName::CustomerAddressState, "customer_address_state"),
-            (MapName::CustomerDemographics, "customer_demographics"),
-            (MapName::HouseholdDemographics, "household_demographics"),
-            (MapName::CustomerCounty, "customer_county"),
-            (MapName::CustomerState, "customer_state"),
-        ] {
-            let want = std::fs::read_to_string(format!("{dir}/{file}.meta")).expect("meta file");
-            assert!(attribute_map(name, &session).to_meta() == want, "{file}.meta differs");
-        }
     }
 }
 
@@ -324,4 +307,34 @@ pub fn one_sided_correlated_key(
         attribute = (attribute + 1) % count;
     }
     map.key_with_attribute(attribute, stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compares the maps with the `.meta` files of a dsdgen SF 1 run in
+    /// `$DSB_REF_DIR`.
+    #[test]
+    #[ignore = "needs DSB reference output in $DSB_REF_DIR"]
+    fn maps_match_dsdgen_meta_files() {
+        let dir = std::env::var("DSB_REF_DIR").expect("DSB_REF_DIR");
+        let session = Session::default();
+        for (name, file) in [
+            (MapName::ItemCategory, "item_category"),
+            (MapName::ItemColor, "item_color"),
+            (MapName::CustomerAddressCounty, "customer_address_county"),
+            (MapName::CustomerAddressState, "customer_address_state"),
+            (MapName::CustomerDemographics, "customer_demographics"),
+            (MapName::HouseholdDemographics, "household_demographics"),
+            (MapName::CustomerCounty, "customer_county"),
+            (MapName::CustomerState, "customer_state"),
+        ] {
+            let want = std::fs::read_to_string(format!("{dir}/{file}.meta")).expect("meta file");
+            assert!(
+                attribute_map(name, &session).to_meta() == want,
+                "{file}.meta differs"
+            );
+        }
+    }
 }

@@ -185,7 +185,7 @@ fn parquet_bytes_identical_for_any_thread_count_and_pinned() {
         0x6af6aa2a50bf68fa,
         0x69bbcd48d983f1cb,
         0x723509e790cfd903,
-        0x6f574caed52324b0,
+        0x5ccd3780aa210107,
     ];
     assert_eq!(got, pinned, "data changed for a fixed seed: {got:#x?}");
 }

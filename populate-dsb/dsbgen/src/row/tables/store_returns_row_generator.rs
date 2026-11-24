@@ -91,7 +91,6 @@ impl StoreReturnsRowGenerator {
             .advance(before.return_hdemo_over);
     }
 
-    /// Generate the return row for `sales_row`.
     /// The next sales line item and, when it is returned, its return:
     /// both tables of the channel from one pass, with the same rows as
     /// the sales and the returns generators each make alone.
@@ -105,6 +104,7 @@ impl StoreReturnsRowGenerator {
         Some((sale, ret))
     }
 
+    /// Generate the return row for `sales_row`.
     fn generate_row(&mut self, sales_row: &StoreSalesRow) -> StoreReturnsRow {
         use StoreReturnsGeneratorColumn::*;
 

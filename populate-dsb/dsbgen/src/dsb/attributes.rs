@@ -162,11 +162,12 @@ pub fn attribute_map(name: MapName, session: &Session) -> Arc<AttributeKeyMap> {
 
 /// The first of the maps [`build`] makes together with `name`.
 fn group(name: MapName) -> MapName {
-    use MapName::*;
     match name {
-        ItemCategory | ItemColor => ItemCategory,
-        CustomerAddressCounty | CustomerAddressState => CustomerAddressCounty,
-        CustomerCounty | CustomerState => CustomerCounty,
+        MapName::ItemCategory | MapName::ItemColor => MapName::ItemCategory,
+        MapName::CustomerAddressCounty | MapName::CustomerAddressState => {
+            MapName::CustomerAddressCounty
+        }
+        MapName::CustomerCounty | MapName::CustomerState => MapName::CustomerCounty,
         n => n,
     }
 }

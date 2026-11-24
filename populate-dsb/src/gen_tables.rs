@@ -428,6 +428,7 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
                 _ => false,
             };
             if same_channel
+                && a.session.get_scaling().get_scale() == b.session.get_scaling().get_scale()
                 && a.chunk_source_rows == b.chunk_source_rows
                 && a.source_rows == b.source_rows
                 && a.batch_size == b.batch_size
@@ -475,8 +476,45 @@ impl MultiChunks for Unit<'_> {
         if self.idx.len() == 2 {
             // `idx` is sales, returns: the channel's outputs 0 and 1
             let (channel, _) = Channel::of(t.name).expect("a channel");
-            let batch = if self.raw { GEN_BATCH } else { t.batch_size };
-            return channel.run(&t.session, t.source_rows, first, last, batch, emit);
+            if self.raw || t.batch_size <= GEN_BATCH {
+                let batch = if self.raw { GEN_BATCH } else { t.batch_size };
+                return channel.run(&t.session, t.source_rows, first, last, batch, emit);
+            }
+            // as `Chunks::chunk`: generation batches joined into at least
+            // `batch_size` rows, per output
+            let schemas = self.schemas();
+            let mut pending: [(Vec<RecordBatch>, usize); 2] = Default::default();
+            let mut flush = |k: usize, pending: &mut Vec<RecordBatch>| {
+                if pending.len() == 1 {
+                    emit(k, pending.pop().expect("one batch"));
+                } else if !pending.is_empty() {
+                    emit(
+                        k,
+                        concat_batches(&schemas[k], pending.iter()).expect("same schema"),
+                    );
+                    pending.clear();
+                }
+            };
+            channel.run(
+                &t.session,
+                t.source_rows,
+                first,
+                last,
+                GEN_BATCH,
+                &mut |k, b| {
+                    let (p, rows) = &mut pending[k];
+                    *rows += b.num_rows();
+                    p.push(b);
+                    if *rows >= t.batch_size {
+                        flush(k, p);
+                        *rows = 0;
+                    }
+                },
+            );
+            for (k, (p, _)) in pending.iter_mut().enumerate() {
+                flush(k, p);
+            }
+            return;
         }
         if self.raw {
             t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));

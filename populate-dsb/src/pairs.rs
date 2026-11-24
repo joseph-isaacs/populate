@@ -57,14 +57,13 @@ impl Channel {
     /// The channel of a sales or returns table, and whether it is the
     /// sales one.
     pub(crate) fn of(t: TableName) -> Option<(Channel, bool)> {
-        use TableName::*;
         Some(match t {
-            StoreSales => (Channel::Store, true),
-            StoreReturns => (Channel::Store, false),
-            CatalogSales => (Channel::Catalog, true),
-            CatalogReturns => (Channel::Catalog, false),
-            WebSales => (Channel::Web, true),
-            WebReturns => (Channel::Web, false),
+            TableName::StoreSales => (Channel::Store, true),
+            TableName::StoreReturns => (Channel::Store, false),
+            TableName::CatalogSales => (Channel::Catalog, true),
+            TableName::CatalogReturns => (Channel::Catalog, false),
+            TableName::WebSales => (Channel::Web, true),
+            TableName::WebReturns => (Channel::Web, false),
             _ => return None,
         })
     }

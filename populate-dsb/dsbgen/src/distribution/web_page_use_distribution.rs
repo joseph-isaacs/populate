@@ -103,6 +103,11 @@ impl WebPageUseDistribution {
     /// # Returns
     ///
     /// A web page use type string (e.g., "general", "order", "welcome", "ad", "feedback", "protected", "dynamic")
+    /// The page use types, in file order.
+    pub fn values() -> &'static [String] {
+        &Self::get_instance().values
+    }
+
     pub fn pick_random_web_page_use_type(stream: &mut RandomNumberStream) -> String {
         let dist = Self::get_instance();
         pick_random_value(&dist.values, &dist.weights_list, stream).clone()

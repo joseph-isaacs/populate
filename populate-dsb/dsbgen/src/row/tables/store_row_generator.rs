@@ -25,6 +25,8 @@ use crate::slowly_changing_dimension_utils::{
     compute_scd_key_for_table_number, get_value_for_slowly_changing_dimension, ScdRowGenerator,
 };
 use crate::table::Table;
+use crate::dsb::address::make_address;
+use crate::dsb::{exp_bucketed_int, exp_int, make_bucket, make_perm, map_perm};
 use crate::types::{Address, Date, Decimal};
 
 /// Table number for `store`'s SCD dates. Matches the C `dsdgen` [1] and
@@ -51,16 +53,64 @@ pub struct StoreRowGenerator {
     text: RandomTextGenerator,
     previous_row: Option<StoreRow>,
     session: Session,
+    perms: Perms,
+}
+
+/// `store_type`'s only row ("Big Box"): staff and floor space bounds.
+const STORE_MIN_STAFF: i32 = 200;
+const STORE_MAX_STAFF: i32 = 300;
+const STORE_MIN_SQ_FT: i32 = 5_000_000;
+const STORE_MAX_SQ_FT: i32 = 10_000_000;
+
+/// The permutations DSB's `mk_w_store` makes on its first call.
+struct Perms {
+    employees_bucket: (i32, i32),
+    employees: Vec<i32>,
+    market_id: Vec<i32>,
+    floor_space_bucket: (i32, i32),
+    floor_space: Vec<i32>,
 }
 
 impl StoreRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use StoreGeneratorColumn::*;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        // The init picks a store type (one draw) to size the buckets.
+        let s = ag.get_random_number_stream(&WStoreType);
+        s.next_random();
+        let employees_bucket = make_bucket(20, STORE_MAX_STAFF - STORE_MIN_STAFF + 1);
+        let employees = make_perm(employees_bucket.1, s);
+        let market_id = make_perm(10, ag.get_random_number_stream(&WStoreMarketId));
+        let floor_space_bucket = make_bucket(20, STORE_MAX_SQ_FT - STORE_MIN_SQ_FT + 1);
+        let floor_space = make_perm(
+            floor_space_bucket.1,
+            ag.get_random_number_stream(&WStoreFloorSpace),
+        );
+        // An exponential bucket plus a uniform value: two draws every row.
+        ag.set_seeds_per_row(&WStoreEmployees, 2);
+        ag.set_seeds_per_row(&WStoreFloorSpace, 2);
+        ag.mark_row1();
         StoreRowGenerator {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
             text: RandomTextGenerator::new(),
             previous_row: None,
             session,
+            perms: Perms {
+                employees_bucket,
+                employees,
+                market_id,
+                floor_space_bucket,
+                floor_space,
+            },
+        }
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
         }
     }
 
@@ -133,11 +183,22 @@ impl StoreRowGenerator {
         }
         field_change_flags >>= 1;
 
-        // Generate employees
+        // The row's store type (always "Big Box").
+        self.abstract_generator
+            .get_random_number_stream(&WStoreType)
+            .next_random();
+
+        // DSB: exponential, permuted bucket, then uniform in it.
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WStoreEmployees);
-        let mut employees = RandomValueGenerator::generate_uniform_random_int(200, 300, stream);
+        let mut employees = exp_bucketed_int(
+            STORE_MIN_STAFF,
+            STORE_MAX_STAFF,
+            self.perms.employees_bucket,
+            &self.perms.employees,
+            stream,
+        );
         if let Some(ref prev_row) = self.previous_row {
             employees = get_value_for_slowly_changing_dimension(
                 field_change_flags,
@@ -152,8 +213,13 @@ impl StoreRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WStoreFloorSpace);
-        let mut floor_space =
-            RandomValueGenerator::generate_uniform_random_int(5000000, 10000000, stream);
+        let mut floor_space = exp_bucketed_int(
+            STORE_MIN_SQ_FT,
+            STORE_MAX_SQ_FT,
+            self.perms.floor_space_bucket,
+            &self.perms.floor_space,
+            stream,
+        );
         if let Some(ref prev_row) = self.previous_row {
             floor_space = get_value_for_slowly_changing_dimension(
                 field_change_flags,
@@ -200,7 +266,7 @@ impl StoreRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WStoreMarketId);
-        let mut market_id = RandomValueGenerator::generate_uniform_random_int(1, 10, stream);
+        let mut market_id = map_perm(exp_int(1, 10, stream), &self.perms.market_id);
         if let Some(ref prev_row) = self.previous_row {
             market_id = get_value_for_slowly_changing_dimension(
                 field_change_flags,
@@ -286,8 +352,7 @@ impl StoreRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&WStoreAddress);
-        let mut address =
-            Address::make_address_for_column(Table::Store, stream, session.get_scaling());
+        let (mut address, _) = make_address(Table::Store, stream, session.get_scaling());
         field_change_flags >>= 1; // city
         field_change_flags >>= 1; // county
 
@@ -374,6 +439,7 @@ impl StoreRowGenerator {
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
         self.previous_row = None;
@@ -384,6 +450,7 @@ impl StoreRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
         self.previous_row = None;

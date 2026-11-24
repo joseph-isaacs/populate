@@ -23,6 +23,8 @@ use crate::slowly_changing_dimension_utils::{
     compute_scd_key, get_value_for_slowly_changing_dimension, ScdRowGenerator,
 };
 use crate::table::Table;
+use crate::dsb::address::make_address;
+use crate::dsb::{exp_int, make_perm, map_perm};
 use crate::types::{Address, Decimal};
 
 pub struct WebSiteRowGenerator {
@@ -30,22 +32,46 @@ pub struct WebSiteRowGenerator {
     text: RandomTextGenerator,
     previous_row: Option<WebSiteRow>,
     session: Session,
+    /// DSB's market and company id permutations.
+    market_id_perm: Vec<i32>,
+    company_id_perm: Vec<i32>,
 }
 
 impl WebSiteRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        let mut ag = AbstractRowGenerator::new(row_count);
+        let market_id_perm = make_perm(
+            6,
+            ag.get_random_number_stream(&WebSiteGeneratorColumn::WebMarketId),
+        );
+        let company_id_perm = make_perm(
+            6,
+            ag.get_random_number_stream(&WebSiteGeneratorColumn::WebCompanyId),
+        );
+        ag.mark_row1();
         Self {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
             text: RandomTextGenerator::new(),
             previous_row: None,
             session,
+            market_id_perm,
+            company_id_perm,
+        }
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
         }
     }
 
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
         self.previous_row = None;
@@ -56,6 +82,7 @@ impl WebSiteRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
         self.previous_row = None;
@@ -148,11 +175,14 @@ impl WebSiteRowGenerator {
         field_change_flags >>= 1;
 
         // Generate web_market_id
-        let mut web_market_id = RandomValueGenerator::generate_uniform_random_int(
-            1,
-            6,
-            self.abstract_generator
-                .get_random_number_stream(&WebSiteGeneratorColumn::WebMarketId),
+        let mut web_market_id = map_perm(
+            exp_int(
+                1,
+                6,
+                self.abstract_generator
+                    .get_random_number_stream(&WebSiteGeneratorColumn::WebMarketId),
+            ),
+            &self.market_id_perm,
         );
         if let Some(ref prev) = self.previous_row {
             web_market_id = get_value_for_slowly_changing_dimension(
@@ -224,11 +254,14 @@ impl WebSiteRowGenerator {
         field_change_flags >>= 1;
 
         // Generate web_company_id
-        let mut web_company_id = RandomValueGenerator::generate_uniform_random_int(
-            1,
-            6,
-            self.abstract_generator
-                .get_random_number_stream(&WebSiteGeneratorColumn::WebCompanyId),
+        let mut web_company_id = map_perm(
+            exp_int(
+                1,
+                6,
+                self.abstract_generator
+                    .get_random_number_stream(&WebSiteGeneratorColumn::WebCompanyId),
+            ),
+            &self.company_id_perm,
         );
         if let Some(ref prev) = self.previous_row {
             web_company_id = get_value_for_slowly_changing_dimension(
@@ -262,7 +295,7 @@ impl WebSiteRowGenerator {
         field_change_flags >>= 1;
 
         // Generate address
-        let mut web_address = Address::make_address_for_column(
+        let (mut web_address, _) = make_address(
             Table::WebSite,
             self.abstract_generator
                 .get_random_number_stream(&WebSiteGeneratorColumn::WebAddress),

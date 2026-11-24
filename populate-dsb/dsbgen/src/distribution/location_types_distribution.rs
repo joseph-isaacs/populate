@@ -110,6 +110,11 @@ impl LocationTypesDistribution {
         })
     }
 
+    /// The location type names, in file order.
+    pub fn values() -> &'static [String] {
+        &Self::get_instance().values
+    }
+
     /// Pick a random location type using specified weights.
     ///
     /// This corresponds to LocationTypesDistribution.pickRandomLocationType()

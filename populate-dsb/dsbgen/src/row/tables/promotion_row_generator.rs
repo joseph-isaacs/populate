@@ -16,7 +16,8 @@ use crate::business_key_generator::make_business_key;
 use crate::config::Session;
 use crate::config::Table as ConfigTable;
 use crate::generator::PromotionGeneratorColumn;
-use crate::join_key_utils::generate_scd_join_key;
+use crate::dsb::join::scd_join_key;
+use crate::dsb::{exp_bucketed_int, exp_int, make_bucket, make_perm, map_perm};
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, PromotionRow};
@@ -35,21 +36,49 @@ pub struct PromotionRowGenerator {
     abstract_row_generator: AbstractRowGenerator<PromotionGeneratorColumn>,
     text: RandomTextGenerator,
     session: Session,
+    perms: Perms,
+}
+
+/// The permutations DSB's `mk_w_promotion` makes on its first call.
+struct Perms {
+    flags: Vec<i32>,
+    length: Vec<i32>,
+    start_bucket: (i32, i32),
+    start: Vec<i32>,
 }
 
 impl PromotionRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use PromotionGeneratorColumn::*;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        let flags = make_perm(512, ag.get_random_number_stream(&PChannelDmail));
+        let length = make_perm(
+            PROMO_LENGTH_MAX - PROMO_LENGTH_MIN + 1,
+            ag.get_random_number_stream(&PEndDateId),
+        );
+        let start_bucket = make_bucket(50, PROMO_START_MAX - PROMO_START_MIN + 1);
+        let start = make_perm(start_bucket.1, ag.get_random_number_stream(&PStartDateId));
+        // An exponential bucket plus a uniform day: two draws every row.
+        ag.set_seeds_per_row(&PStartDateId, 2);
+        ag.mark_row1();
         PromotionRowGenerator {
-            abstract_row_generator: AbstractRowGenerator::new(row_count),
+            abstract_row_generator: ag,
             text: RandomTextGenerator::new(),
             session,
+            perms: Perms {
+                flags,
+                length,
+                start_bucket,
+                start,
+            },
         }
     }
 
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_row_generator
             .skip_rows_until_starting_row_number(starting_row_number);
     }
@@ -59,8 +88,18 @@ impl PromotionRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_row_generator
             .set_source_row_range(starting_row_number, ending_row_number);
+    }
+
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_row_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_row_generator
+                .set_row2(first.abstract_row_generator.seeds());
+        }
     }
 
     fn generate_promotion_row(&mut self, row_number: u64) -> PromotionRow {
@@ -78,28 +117,33 @@ impl PromotionRowGenerator {
         let p_promo_sk = row_number_i64;
         let p_promo_id = make_business_key(row_number);
 
+        // DSB: exponential, permuted start bucket and length.
         let p_start_date_id = Date::JULIAN_DATE_MINIMUM as i64
-            + RandomValueGenerator::generate_uniform_random_int(
+            + exp_bucketed_int(
                 PROMO_START_MIN,
                 PROMO_START_MAX,
+                self.perms.start_bucket,
+                &self.perms.start,
                 self.abstract_row_generator
                     .get_random_number_stream(&PromotionGeneratorColumn::PStartDateId),
             ) as i64;
 
-        let p_end_date_id = p_start_date_id
-            + RandomValueGenerator::generate_uniform_random_int(
-                PROMO_LENGTH_MIN,
-                PROMO_LENGTH_MAX,
-                self.abstract_row_generator
-                    .get_random_number_stream(&PromotionGeneratorColumn::PEndDateId),
-            ) as i64;
+        let length = exp_int(
+            PROMO_LENGTH_MIN,
+            PROMO_LENGTH_MAX,
+            self.abstract_row_generator
+                .get_random_number_stream(&PromotionGeneratorColumn::PEndDateId),
+        ) - (PROMO_LENGTH_MIN - 1);
+        let length = map_perm(length, &self.perms.length) + PROMO_LENGTH_MIN - 1;
+        let p_end_date_id = p_start_date_id + length as i64;
 
-        let p_item_sk = generate_scd_join_key(
+        let p_item_sk = scd_join_key(
             ConfigTable::Item,
             self.abstract_row_generator
                 .get_random_number_stream(&PromotionGeneratorColumn::PItemSk),
             1,
             scaling,
+            None,
         );
 
         let p_cost = Decimal::new(100000, 2);
@@ -116,39 +160,25 @@ impl PromotionRowGenerator {
             crate::distribution::get_syllables_distribution(),
         );
 
-        // Generate channel flags using a single random int (0-511)
-        let mut flags = RandomValueGenerator::generate_uniform_random_int(
-            0,
-            511,
+        // DSB: exponential, permuted flags, read low bit first (it fixed
+        // dsdgen's `<<=`).
+        let flags = exp_int(
+            1,
+            512,
             self.abstract_row_generator
                 .get_random_number_stream(&PromotionGeneratorColumn::PChannelDmail),
         );
-
-        let p_channel_dmail = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_email = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_catalog = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_tv = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_radio = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_press = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_event = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_channel_demo = (flags & 0x01) != 0;
-        flags <<= 1;
-
-        let p_discount_active = (flags & 0x01) != 0;
+        let flags = map_perm(flags, &self.perms.flags) - 1;
+        let bit = |i: u32| (flags >> i) & 1 != 0;
+        let p_channel_dmail = bit(0);
+        let p_channel_email = bit(1);
+        let p_channel_catalog = bit(2);
+        let p_channel_tv = bit(3);
+        let p_channel_radio = bit(4);
+        let p_channel_press = bit(5);
+        let p_channel_event = bit(6);
+        let p_channel_demo = bit(7);
+        let p_discount_active = bit(8);
 
         let p_channel_details = self.text.random_text(
             PROMO_DETAIL_LENGTH_MIN,

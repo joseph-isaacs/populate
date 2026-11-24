@@ -1,8 +1,10 @@
 use crate::config::{Session, Table as ConfigTable};
 use crate::distribution::web_page_use_distribution::WebPageUseDistribution;
 use crate::generator::WebPageGeneratorColumn;
-use crate::join_key_utils::{generate_uniform_join_key, generate_web_page_creation_date_join_key};
-use crate::random::RandomValueGenerator;
+use crate::dsb::join::join_key;
+use crate::dsb::{exp_int, exp_pick_index, make_perm, map_perm};
+use crate::join_key_utils::generate_web_page_creation_date_join_key;
+use crate::random::{RandomNumberStream, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, WebPageRow};
 use crate::slowly_changing_dimension_utils::{
     compute_scd_key, get_value_for_slowly_changing_dimension, ScdRowGenerator,
@@ -16,6 +18,27 @@ pub struct WebPageRowGenerator {
     abstract_generator: AbstractRowGenerator<WebPageGeneratorColumn>,
     previous_row: Option<WebPageRow>,
     session: Session,
+    perms: Perms,
+}
+
+const WP_LINK_MIN: i32 = 2;
+const WP_LINK_MAX: i32 = 25;
+const WP_IMAGE_MIN: i32 = 1;
+const WP_IMAGE_MAX: i32 = 7;
+const WP_AD_MIN: i32 = 0;
+const WP_AD_MAX: i32 = 4;
+
+/// The permutations DSB's `mk_w_web_page` makes on its first call.
+struct Perms {
+    link_count: Vec<i32>,
+    image_count: Vec<i32>,
+    max_ad_count: Vec<i32>,
+    web_type: Vec<i32>,
+}
+
+/// An exponential value in `[min, max]` mapped through `perm`.
+fn exp_permuted(min: i32, max: i32, perm: &[i32], stream: &mut RandomNumberStream) -> i32 {
+    map_perm(exp_int(min, max, stream) - (min - 1), perm) + min - 1
 }
 
 impl WebPageRowGenerator {
@@ -23,10 +46,35 @@ impl WebPageRowGenerator {
 
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
+        use WebPageGeneratorColumn::*;
+        let mut ag = AbstractRowGenerator::new(row_count);
+        let link_count = make_perm(
+            WP_LINK_MAX - WP_LINK_MIN + 1,
+            ag.get_random_number_stream(&WpLinkCount),
+        );
+        let image_count = make_perm(
+            WP_IMAGE_MAX - WP_IMAGE_MIN + 1,
+            ag.get_random_number_stream(&WpImageCount),
+        );
+        let max_ad_count = make_perm(
+            WP_AD_MAX - WP_AD_MIN + 1,
+            ag.get_random_number_stream(&WpMaxAdCount),
+        );
+        let web_type = make_perm(
+            WebPageUseDistribution::values().len() as i32,
+            ag.get_random_number_stream(&WpType),
+        );
+        ag.mark_row1();
         Self {
-            abstract_generator: AbstractRowGenerator::new(row_count),
+            abstract_generator: ag,
             previous_row: None,
             session,
+            perms: Perms {
+                link_count,
+                image_count,
+                max_ad_count,
+                web_type,
+            },
         }
     }
 
@@ -117,11 +165,12 @@ impl WebPageRowGenerator {
         field_change_flags >>= 1;
 
         // wp_customer_sk - join to CUSTOMER
-        let mut wp_customer_sk = generate_uniform_join_key(
+        let mut wp_customer_sk = join_key(
             ConfigTable::Customer,
             self.abstract_generator
                 .get_random_number_stream(&WebPageGeneratorColumn::WpCustomerSk),
             session.get_scaling(),
+            None,
         );
         if let Some(prev) = &self.previous_row {
             wp_customer_sk = get_value_for_slowly_changing_dimension(
@@ -141,16 +190,21 @@ impl WebPageRowGenerator {
         field_change_flags >>= 1;
 
         // wp_type - always uses a new value due to a bug in the C code
-        let wp_type = WebPageUseDistribution::pick_random_web_page_use_type(
+        let types = WebPageUseDistribution::values();
+        let wp_type = types[exp_pick_index(
+            types.len() as i32,
+            Some(&self.perms.web_type),
             self.abstract_generator
                 .get_random_number_stream(&WebPageGeneratorColumn::WpType),
-        );
+        )]
+        .clone();
         field_change_flags >>= 1;
 
         // wp_link_count
-        let mut wp_link_count = RandomValueGenerator::generate_uniform_random_int(
-            2,
-            25,
+        let mut wp_link_count = exp_permuted(
+            WP_LINK_MIN,
+            WP_LINK_MAX,
+            &self.perms.link_count,
             self.abstract_generator
                 .get_random_number_stream(&WebPageGeneratorColumn::WpLinkCount),
         );
@@ -165,9 +219,10 @@ impl WebPageRowGenerator {
         field_change_flags >>= 1;
 
         // wp_image_count
-        let mut wp_image_count = RandomValueGenerator::generate_uniform_random_int(
-            1,
-            7,
+        let mut wp_image_count = exp_permuted(
+            WP_IMAGE_MIN,
+            WP_IMAGE_MAX,
+            &self.perms.image_count,
             self.abstract_generator
                 .get_random_number_stream(&WebPageGeneratorColumn::WpImageCount),
         );
@@ -182,9 +237,10 @@ impl WebPageRowGenerator {
         field_change_flags >>= 1;
 
         // wp_max_ad_count
-        let mut wp_max_ad_count = RandomValueGenerator::generate_uniform_random_int(
-            0,
-            4,
+        let mut wp_max_ad_count = exp_permuted(
+            WP_AD_MIN,
+            WP_AD_MAX,
+            &self.perms.max_ad_count,
             self.abstract_generator
                 .get_random_number_stream(&WebPageGeneratorColumn::WpMaxAdCount),
         );
@@ -253,9 +309,18 @@ impl WebPageRowGenerator {
         )
     }
 
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator.set_row2(first.abstract_generator.seeds());
+        }
+    }
+
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
         self.previous_row = None;
@@ -266,6 +331,7 @@ impl WebPageRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
         self.previous_row = None;

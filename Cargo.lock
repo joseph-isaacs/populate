@@ -804,6 +804,7 @@ dependencies = [
  "bytes",
  "divan",
  "itoa",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]
@@ -856,6 +857,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "divan",
+ "mimalloc",
  "parquet",
  "populate-table",
 ]

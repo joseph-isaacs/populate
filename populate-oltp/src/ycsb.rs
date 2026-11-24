@@ -46,20 +46,20 @@ pub const YCSB_CHUNK_ROWS: u64 = 32 * 1024;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Ycsb {
-    record_count: u64,
-    insert_start: u64,
-    insert_count: Option<u64>,
-    field_count: usize,
-    field_length: usize,
-    field_prefix: String,
-    ordered: bool,
-    zero_padding: usize,
-    data_integrity: bool,
-    tlr: JavaTlr,
-    chunk_rows: u64,
-    batch: usize,
-    plan: Plan,
-    schema: SchemaRef,
+    pub(crate) record_count: u64,
+    pub(crate) insert_start: u64,
+    pub(crate) insert_count: Option<u64>,
+    pub(crate) field_count: usize,
+    pub(crate) field_length: usize,
+    pub(crate) field_prefix: String,
+    pub(crate) ordered: bool,
+    pub(crate) zero_padding: usize,
+    pub(crate) data_integrity: bool,
+    pub(crate) tlr: JavaTlr,
+    pub(crate) chunk_rows: u64,
+    pub(crate) batch: usize,
+    pub(crate) plan: Plan,
+    pub(crate) schema: SchemaRef,
 }
 
 impl Ycsb {
@@ -216,8 +216,12 @@ impl Ycsb {
     }
 
     fn push_key(&self, keynum: u64, out: &mut String) {
-        // YCSB takes the sequence number as an `int`
-        let k = keynum as i32 as i64;
+        // the load takes the sequence number as an `int`
+        self.push_key_long(keynum as i32 as i64, out)
+    }
+
+    /// `buildKeyName(keynum)`.
+    pub(crate) fn push_key_long(&self, k: i64, out: &mut String) {
         let k = if self.ordered { k } else { fnv_hash64(k) };
         let mut b = itoa::Buffer::new();
         let digits = b.format(k);
@@ -412,7 +416,7 @@ pub fn fnv_hash64(mut val: i64) -> i64 {
 
 /// `String.hashCode` of ASCII `s`, continued from `h`.
 #[inline]
-fn java_hash(h: i32, s: &[u8]) -> i32 {
+pub(crate) fn java_hash(h: i32, s: &[u8]) -> i32 {
     s.iter()
         .fold(h, |h, &b| h.wrapping_mul(31).wrapping_add(b as i32))
 }
@@ -420,7 +424,13 @@ fn java_hash(h: i32, s: &[u8]) -> i32 {
 /// `CoreWorkload.buildDeterministicValue(key, field)` for a constant field
 /// length `size`, into `out`.
 /// `h` is `String.hashCode` of `key`; the value is appended to `out`.
-fn deterministic_value(key: &[u8], h: i32, field: &[u8], size: usize, out: &mut Vec<u8>) {
+pub(crate) fn deterministic_value(
+    key: &[u8],
+    h: i32,
+    field: &[u8],
+    size: usize,
+    out: &mut Vec<u8>,
+) {
     let start = out.len();
     out.extend_from_slice(key);
     out.push(b':');
@@ -489,7 +499,7 @@ impl RandomLayout {
 /// Byte `k` is `((bytes >> 5k) & mask_k) + ' '` (masks 31, 63, 95, 31,
 /// 63, 95), little-endian in the low 6 bytes of the result.
 #[inline(always)]
-fn six(bytes: i32) -> u64 {
+pub(crate) fn six(bytes: i32) -> u64 {
     let x = bytes as u32 as u64;
     (x & 31
         | (x << 3) & (63 << 8)
@@ -506,7 +516,7 @@ fn six(bytes: i32) -> u64 {
 /// Buckets in index order, each in insertion order (resizes keep the
 /// relative order). Panics if a bucket gets a 9th entry, where HashMap
 /// would turn it into a tree or resize.
-fn java_hashmap_order(keys: &[String]) -> Vec<usize> {
+pub(crate) fn java_hashmap_order(keys: &[String]) -> Vec<usize> {
     let mut cap = 16usize;
     while keys.len() > cap / 4 * 3 {
         cap *= 2;

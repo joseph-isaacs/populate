@@ -21,13 +21,14 @@ multi-threaded output equals one sequential run.
 - [x] **H2O db-benchmark groupby and join** (`populate-h2o`)
   - Matches R's `set.seed(108)` output byte for byte (R's Mersenne
     Twister, `sample()`, `round()`, data.table `fwrite`): every 1e7 data
-    set the benchmark uses and groupby `1e8_1e2_0_0`. 8–17x faster than
-    `Rscript` (see [`populate-h2o/README.md`](populate-h2o/README.md)).
-  - [ ] Parallelise the remaining sequential steps: the groupby stream
-    pass and the join key permutations.
+    set the benchmark uses and groupby `1e8_1e2_0_0` / `1e8_1e1_5_1`.
+    12–40x faster than `Rscript` (see
+    [`populate-h2o/README.md`](populate-h2o/README.md)).
+  - [ ] Parallelise the join key shuffles themselves (draws are
+    sequential; only the swaps overlap).
 - [x] **DSB** (`populate-dsb`): DSB's dsdgen is a fork of TPC-DS dsdgen;
   its changes are ported into a copy of tpcdsgen. All 24 tables match DSB
-  dsdgen byte for byte at SF 1 and 2, chunked on all cores.
+  dsdgen byte for byte at SF 1, 2 and 5, chunked on all cores.
   - Next: a DSB-aware fused sales path, as populate-tpcds has.
 - [ ] **TSBS devops / IoT** (`populate-tsbs`)
   - Reproduce Go `math/rand` and the per-host simulation for `--seed`

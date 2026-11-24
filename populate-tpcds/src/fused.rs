@@ -38,12 +38,12 @@ use tpcdsgen::join_key_utils::{
 };
 use tpcdsgen::nulls::create_null_bit_map;
 use tpcdsgen::permutations::{get_permutation_entry, make_permutation};
-use tpcdsgen::random::RandomValueGenerator;
+use tpcdsgen::random::{RandomNumberStream, RandomValueGenerator};
 use tpcdsgen::row::AbstractRowGenerator;
 use tpcdsgen::slowly_changing_dimension_utils::match_surrogate_key;
 use tpcdsgen::table::Table as NullTable;
 use tpcdsgen::types::{
-    Date, Decimal, Pricing, generate_pricing_for_returns_table, generate_pricing_for_sales_table,
+    Date, Decimal, Pricing, PricingLimits, generate_pricing_for_returns_table,
     get_catalog_sales_pricing_limits, get_store_sales_pricing_limits, get_web_sales_pricing_limits,
 };
 use tpcdsgen_arrow::{
@@ -336,6 +336,80 @@ const CATALOG_RETURNS: &[Kind] = &[
     I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, L, I, D, D, D, D, D, D, D, D, D,
 ];
 
+/// tpcdsgen's `generate_pricing_for_sales_table`, with the decimal
+/// arithmetic done on plain integers: every operand has 2 decimals (the
+/// quantity 0), so each product's rescaling is a constant division and
+/// nothing tracks precisions. The same 8 draws in the same order, so the
+/// same values (tested against tpcdsgen for every channel's limits).
+/// tpcdsgen's version is a fifth of a sales table's generation.
+fn sales_pricing(limits: &PricingLimits, s: &mut RandomNumberStream) -> Pricing {
+    let two = |d: Decimal| {
+        debug_assert_eq!(d.get_precision(), 2);
+        d.get_number()
+    };
+    let (max_markup, max_discount, max_wholesale) = (
+        two(limits.get_max_markup()),
+        two(limits.get_max_discount()),
+        two(limits.get_max_wholesale_cost()),
+    );
+    // RandomValueGenerator's uniform int and decimal draws
+    let int = |s: &mut RandomNumberStream, lo: i32, hi: i32| {
+        (s.next_random() as i32) % (hi - lo + 1) + lo
+    };
+    let dec = |s: &mut RandomNumberStream, lo: i64, hi: i64| s.next_random() % (hi - lo + 1) + lo;
+    let q = int(s, Pricing::QUANTITY_MIN, limits.get_max_quantity_sold()) as i64;
+    let wholesale = dec(s, 100, max_wholesale);
+    let ext_wholesale = q * wholesale;
+    let markup = dec(s, 0, max_markup) + 100;
+    let list = wholesale * markup / 100;
+    let discount = 100 - dec(s, 0, max_discount);
+    let sales = list * discount / 100;
+    let ext_list = list * q;
+    let ext_sales = sales * q;
+    let ext_discount = ext_list - ext_sales;
+    let coupon = dec(s, 0, 100);
+    let coupon_usage = int(s, 1, 100);
+    // 20% of sales use a coupon
+    let coupon_amount = if coupon_usage <= 20 {
+        ext_sales * coupon / 100
+    } else {
+        0
+    };
+    let net_paid = ext_sales - coupon_amount;
+    let shipping = dec(s, 0, 50);
+    let ship = list * shipping / 100;
+    let ext_ship = ship * q;
+    let net_paid_ship = net_paid + ext_ship;
+    let tax = dec(s, 0, 9);
+    let ext_tax = net_paid * tax / 100;
+    let d = |n: i64| Decimal::new(n, 2);
+    Pricing::new(
+        d(wholesale),
+        d(list),
+        d(sales),
+        q as i32,
+        d(ext_discount),
+        d(ext_sales),
+        d(ext_wholesale),
+        d(ext_list),
+        d(tax),
+        d(ext_tax),
+        d(coupon_amount),
+        d(ship),
+        d(ext_ship),
+        d(net_paid),
+        d(net_paid + ext_tax),
+        d(net_paid_ship),
+        d(net_paid_ship + ext_tax),
+        d(net_paid - ext_wholesale),
+        Decimal::ZERO,
+        Decimal::ZERO,
+        Decimal::ZERO,
+        Decimal::ZERO,
+        Decimal::ZERO,
+    )
+}
+
 /// The order-level values shared by a ticket's line items.
 #[derive(Default, Clone, Copy)]
 struct Order {
@@ -526,10 +600,7 @@ fn store_channel(session: &Session, first: u64, last: u64, want: Want, out: &mut
                 sg.get_random_number_stream(&S::SsSoldPromoSk),
                 scaling,
             );
-            let pricing = generate_pricing_for_sales_table(
-                &limits,
-                sg.get_random_number_stream(&S::SsPricing),
-            );
+            let pricing = sales_pricing(&limits, sg.get_random_number_stream(&S::SsPricing));
             if want.sales {
                 push_sale(out.row(0), nbm, &o, item, promo, &pricing);
                 out.done(0);
@@ -817,10 +888,7 @@ fn catalog_channel(session: &Session, first: u64, last: u64, want: Want, out: &m
             let ship_mode = uniform(Ds::ShipMode, &CS::CsShipModeSk, &mut sg);
             let warehouse = uniform(Ds::Warehouse, &CS::CsWarehouseSk, &mut sg);
             let promo = uniform(Ds::Promotion, &CS::CsPromoSk, &mut sg);
-            let pricing = generate_pricing_for_sales_table(
-                &limits,
-                sg.get_random_number_stream(&CS::CsPricing),
-            );
+            let pricing = sales_pricing(&limits, sg.get_random_number_stream(&CS::CsPricing));
             let sale = LineSale {
                 ship_date,
                 page: catalog_page,
@@ -1097,10 +1165,7 @@ fn web_channel(session: &Session, first: u64, last: u64, want: Want, out: &mut i
             let ship_mode = uniform(Ds::ShipMode, &WS::WsShipModeSk, &mut sg);
             let warehouse = uniform(Ds::Warehouse, &WS::WsWarehouseSk, &mut sg);
             let promo = uniform(Ds::Promotion, &WS::WsPromoSk, &mut sg);
-            let pricing = generate_pricing_for_sales_table(
-                &limits,
-                sg.get_random_number_stream(&WS::WsPricing),
-            );
+            let pricing = sales_pricing(&limits, sg.get_random_number_stream(&WS::WsPricing));
             let sale = LineSale {
                 ship_date,
                 page: web_page,
@@ -1263,6 +1328,56 @@ mod tests {
     use super::*;
     use arrow_select::concat::concat_batches;
     use tpcdsgen::config::SessionBuilder;
+    use tpcdsgen::types::generate_pricing_for_sales_table;
+
+    /// Every field of a pricing.
+    fn fields(p: &Pricing) -> Vec<Decimal> {
+        vec![
+            p.get_wholesale_cost(),
+            p.get_list_price(),
+            p.get_sales_price(),
+            Decimal::from_integer(p.get_quantity()),
+            p.get_ext_discount_amount(),
+            p.get_ext_sales_price(),
+            p.get_ext_wholesale_cost(),
+            p.get_ext_list_price(),
+            p.get_tax_percent(),
+            p.get_ext_tax(),
+            p.get_coupon_amount(),
+            p.get_ship_cost(),
+            p.get_ext_ship_cost(),
+            p.get_net_paid(),
+            p.get_net_paid_including_tax(),
+            p.get_net_paid_including_shipping(),
+            p.get_net_paid_including_shipping_and_tax(),
+            p.get_net_profit(),
+            p.get_refunded_cash(),
+            p.get_reversed_charge(),
+            p.get_store_credit(),
+            p.get_fee(),
+            p.get_net_loss(),
+        ]
+    }
+
+    #[test]
+    fn sales_pricing_matches_tpcdsgen() {
+        for limits in [
+            get_store_sales_pricing_limits(),
+            get_catalog_sales_pricing_limits(),
+            get_web_sales_pricing_limits(),
+        ] {
+            let mut a = RandomNumberStream::new(8);
+            let mut b = a.clone();
+            for _ in 0..200_000 {
+                let want = generate_pricing_for_sales_table(&limits, &mut a);
+                let got = sales_pricing(&limits, &mut b);
+                assert_eq!(fields(&got), fields(&want));
+                assert_eq!(got.get_quantity(), want.get_quantity());
+            }
+            // the same draws used
+            assert_eq!(a.next_random(), b.next_random());
+        }
+    }
 
     fn collect(f: impl FnOnce(&mut dyn FnMut(RecordBatch))) -> Vec<RecordBatch> {
         let mut v = Vec::new();

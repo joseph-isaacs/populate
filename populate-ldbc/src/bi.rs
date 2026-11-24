@@ -20,7 +20,7 @@
 use crate::csv;
 use crate::java::civil_from_days;
 use crate::layout::Layout;
-use crate::rows::{Col, Kind, Rows, TableDef};
+use crate::rows::{Kind, Rows, TableDef};
 use crate::{Ldbc, par_map, to_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -166,20 +166,6 @@ impl BiTables {
     }
 }
 
-fn i64s(c: &Col) -> &[i64] {
-    match c {
-        Col::I64(v) => v,
-        _ => unreachable!("not an i64 column"),
-    }
-}
-
-fn bools(c: &Col) -> &[bool] {
-    match c {
-        Col::Bool(v) => v,
-        _ => unreachable!("not a bool column"),
-    }
-}
-
 /// One chunk's inserts (per dynamic table) and deletes (per delete table).
 type Pending = (Vec<Rows>, Vec<Rows>);
 
@@ -237,7 +223,7 @@ impl<'a> BiRun<'a> {
         let mut snap = Vec::with_capacity(rows.len());
         let mut ins = Vec::with_capacity(rows.len());
         for (p, r) in t.snapshot.iter().zip(&rows) {
-            let created = i64s(&r.cols[0]);
+            let created = r.cols[0].i64s();
             let before: Vec<u32> = (0..created.len() as u32)
                 .filter(|&j| created[j as usize] < thr)
                 .collect();
@@ -253,8 +239,8 @@ impl<'a> BiRun<'a> {
             .map(|p| {
                 let (r, def) = (&rows[p.src], self.layout.dynamic[p.src].def);
                 let col = |n: &str| def.cols.iter().position(|c| c.0 == n).expect("column");
-                let deleted = i64s(&r.cols[col("deletionDate")]);
-                let explicit = bools(&r.cols[col("explicitlyDeleted")]);
+                let deleted = r.cols[col("deletionDate")].i64s();
+                let explicit = r.cols[col("explicitlyDeleted")].bools();
                 let idx: Vec<u32> = (0..deleted.len() as u32)
                     .filter(|&j| explicit[j as usize] && (thr..end).contains(&deleted[j as usize]))
                     .collect();
@@ -274,7 +260,7 @@ impl<'a> BiRun<'a> {
         }
         drop(parts);
         // column 0 is the date the batch is of (creation, or deletion)
-        let date = i64s(&all.cols[0]);
+        let date = all.cols[0].i64s();
         let mut order: Vec<u32> = (0..date.len() as u32).collect();
         order.sort_by_key(|&j| date[j as usize]);
         let mut by: BTreeMap<String, Vec<u32>> = BTreeMap::new();

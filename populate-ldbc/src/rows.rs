@@ -177,6 +177,60 @@ impl Col {
 }
 
 impl Col {
+    /// The values of an `i64` column.
+    pub fn i64s(&self) -> &[i64] {
+        match self {
+            Col::I64(v) => v,
+            _ => unreachable!("not an i64 column"),
+        }
+    }
+
+    /// The values of an `i32` column.
+    pub fn i32s(&self) -> &[i32] {
+        match self {
+            Col::I32(v) => v,
+            _ => unreachable!("not an i32 column"),
+        }
+    }
+
+    /// The values of a bool column.
+    pub fn bools(&self) -> &[bool] {
+        match self {
+            Col::Bool(v) => v,
+            _ => unreachable!("not a bool column"),
+        }
+    }
+
+    /// Row `r` of a string column (`None` if null).
+    pub fn str_at(&self, r: usize) -> Option<&[u8]> {
+        let at = |o: &[u32]| {
+            let s = if r == 0 { 0 } else { o[r - 1] as usize };
+            (s, o[r] as usize)
+        };
+        match self {
+            Col::Str(d, o) => {
+                let (a, b) = at(o);
+                Some(&d[a..b])
+            }
+            Col::OptStr(d, o, n) => {
+                let (a, b) = at(o);
+                n[r].then(|| &d[a..b])
+            }
+            _ => unreachable!("not a string column"),
+        }
+    }
+
+    /// Row `r` of an optional `i32` column.
+    pub fn opt_i32_at(&self, r: usize) -> Option<i32> {
+        match self {
+            Col::OptI32(v, n) => n[r].then_some(v[r]),
+            Col::I32(v) => Some(v[r]),
+            _ => unreachable!("not an i32 column"),
+        }
+    }
+}
+
+impl Col {
     /// The values at rows `idx`, in that order.
     pub fn gather(&self, idx: &[u32]) -> Col {
         fn strs(d: &[u8], o: &[u32], idx: &[u32]) -> (Vec<u8>, Vec<u32>) {

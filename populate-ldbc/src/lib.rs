@@ -32,6 +32,7 @@ pub mod bi;
 pub mod csv;
 mod dates;
 mod dict;
+pub mod factors;
 mod fdlibm;
 mod java;
 mod jrand;
@@ -50,6 +51,7 @@ use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::SchemaRef;
 use dates::Dates;
 use dict::{Dictionaries, PlaceType};
+use factors::{Factor, FactorInput};
 use knows::Knows;
 use params::Params;
 use person::{Person, PersonGenerator};
@@ -130,6 +132,8 @@ pub struct Ldbc {
     resume: Vec<Mutex<Vec<Option<Resume>>>>,
     num_bits: u32,
     pub timings: Timings,
+    /// Gathers the factor tables' inputs from each chunk, when asked to.
+    factor_input: Option<FactorInput>,
 }
 
 /// Persons per chunk. A block of 10,000 persons is generated in order from
@@ -232,6 +236,7 @@ impl Ldbc {
                 knows: t3 - t2,
                 states: Duration::ZERO,
             },
+            factor_input: None,
         };
         Ok(g.with_states(threads))
     }
@@ -337,6 +342,24 @@ impl Ldbc {
         if let Some(s) = states.get_mut(k + 1) {
             s.get_or_insert(next);
         }
+        drop(states);
+        if let Some(f) = &self.factor_input {
+            f.add(i, out);
+        }
+    }
+
+    /// Gather the factor tables' inputs from every chunk generated from
+    /// now on (each chunk once), for [`Self::factors`].
+    pub fn collect_factors(&mut self) {
+        self.factor_input = Some(FactorInput::new(self.num_chunks()));
+    }
+
+    /// The datagen's factor tables (`--generate-factors`), on `threads`
+    /// threads (0 = all cores), once every chunk has been generated after
+    /// [`Self::collect_factors`].
+    pub fn factors(&self, threads: usize) -> Vec<Factor> {
+        let f = self.factor_input.as_ref().expect("collect_factors first");
+        f.finish(&self.static_rows(), threads)
     }
 
     /// Generate every chunk on `threads` threads (0 = all cores)

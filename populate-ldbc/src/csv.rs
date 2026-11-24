@@ -68,11 +68,14 @@ impl DayCache {
 /// A timestamp column value.
 #[inline]
 pub fn timestamp(out: &mut Vec<u8>, ms: i64) {
-    timestamp_cached(out, ms, &mut DayCache::default());
+    timestamp_text::<false>(out, ms, &mut DayCache::default());
 }
 
+/// `yyyy-MM-ddTHH:mm:ss.SSS` and the zone: `+00:00` for the graph's CSV,
+/// `Z` for the factor tables' (Spark's `XXX` pattern, without and with
+/// the datagen's own `timestampFormat`).
 #[inline]
-fn timestamp_cached(out: &mut Vec<u8>, ms: i64, days: &mut DayCache) {
+fn timestamp_text<const Z: bool>(out: &mut Vec<u8>, ms: i64, days: &mut DayCache) {
     let us = spark_micros(ms);
     let secs = us.div_euclid(1_000_000);
     let milli = (us.rem_euclid(1_000_000) / 1000) as u32;
@@ -84,7 +87,12 @@ fn timestamp_cached(out: &mut Vec<u8>, ms: i64, days: &mut DayCache) {
     b[17..19].copy_from_slice(&two(sod % 60));
     b[20] = b'0' + (milli / 100) as u8;
     b[21..23].copy_from_slice(&two(milli % 100));
-    out.extend_from_slice(&b);
+    if Z {
+        b[23] = b'Z';
+        out.extend_from_slice(&b[..24]);
+    } else {
+        out.extend_from_slice(&b);
+    }
 }
 
 /// A date column value.
@@ -105,6 +113,11 @@ fn int(out: &mut Vec<u8>, v: i64) {
 /// separator, a quote or a line break, `""` if empty.
 #[inline]
 pub fn string(out: &mut Vec<u8>, s: &[u8]) {
+    string_sep::<b'|'>(out, s)
+}
+
+#[inline]
+fn string_sep<const SEP: u8>(out: &mut Vec<u8>, s: &[u8]) {
     let mut a = 0;
     let mut b = s.len();
     while a < b && s[a] <= b' ' {
@@ -118,7 +131,7 @@ pub fn string(out: &mut Vec<u8>, s: &[u8]) {
         out.extend_from_slice(b"\"\"");
         return;
     }
-    if needs_quotes(s) {
+    if needs_quotes::<SEP>(s) {
         out.push(b'"');
         for &c in s {
             if c == b'"' || c == b'\\' {
@@ -135,8 +148,8 @@ pub fn string(out: &mut Vec<u8>, s: &[u8]) {
 /// Whether `s` holds the separator, a quote or a line break: 32 bytes at
 /// a time without early exits inside a block, so it vectorises.
 #[inline]
-fn needs_quotes(s: &[u8]) -> bool {
-    let special = |c: u8| (c == b'|') | (c == b'"') | (c == b'\n') | (c == b'\r');
+fn needs_quotes<const SEP: u8>(s: &[u8]) -> bool {
+    let special = |c: u8| (c == SEP) | (c == b'"') | (c == b'\n') | (c == b'\r');
     let (blocks, rest) = s.as_chunks::<32>();
     blocks
         .iter()
@@ -157,17 +170,34 @@ pub fn header(def: &TableDef, out: &mut Vec<u8>) {
 
 /// Append `rows` as CSV lines.
 pub fn write(def: &TableDef, rows: &Rows, out: &mut Vec<u8>) {
+    write_styled::<false>(def, rows, out)
+}
+
+/// Append `rows` as the factor tables' CSV lines: Spark's defaults, `,`
+/// separated, timestamps in `Z`, nulls as `""`, and no header.
+pub fn write_factor(def: &TableDef, rows: &Rows, out: &mut Vec<u8>) {
+    write_styled::<true>(def, rows, out)
+}
+
+fn write_styled<const FACTOR: bool>(def: &TableDef, rows: &Rows, out: &mut Vec<u8>) {
+    let sep = if FACTOR { b',' } else { b'|' };
+    let null: &[u8] = if FACTOR { b"\"\"" } else { b"" };
+    let string = if FACTOR {
+        string_sep::<b','>
+    } else {
+        string_sep::<b'|'>
+    };
     let n = rows.len();
     out.reserve(n * 16 * def.cols.len());
     let mut days = vec![DayCache::default(); def.cols.len()];
     for r in 0..n {
         for (c, (col, &(_, kind))) in rows.cols.iter().zip(def.cols).enumerate() {
             if c > 0 {
-                out.push(b'|');
+                out.push(sep);
             }
             match col {
                 Col::I64(v) => match kind {
-                    Kind::Ts => timestamp_cached(out, v[r], &mut days[c]),
+                    Kind::Ts => timestamp_text::<FACTOR>(out, v[r], &mut days[c]),
                     Kind::Date => date(out, v[r]),
                     _ => int(out, v[r]),
                 },
@@ -180,17 +210,23 @@ pub fn write(def: &TableDef, rows: &Rows, out: &mut Vec<u8>) {
                 Col::OptI64(v, valid) => {
                     if valid[r] {
                         int(out, v[r]);
+                    } else {
+                        out.extend_from_slice(null);
                     }
                 }
                 Col::OptI32(v, valid) => {
                     if valid[r] {
                         int(out, v[r] as i64);
+                    } else {
+                        out.extend_from_slice(null);
                     }
                 }
                 Col::OptStr(d, o, valid) => {
                     if valid[r] {
                         let s = if r == 0 { 0 } else { o[r - 1] as usize };
                         string(out, &d[s..o[r] as usize]);
+                    } else {
+                        out.extend_from_slice(null);
                     }
                 }
             }

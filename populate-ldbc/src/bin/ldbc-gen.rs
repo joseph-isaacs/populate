@@ -12,6 +12,13 @@
 //! the rows of the datagen's `graphs/csv/raw/composite-merged-fk/...`
 //! files with one header; `parquet` writes `DIR/.../<Table>.parquet`;
 //! `none` generates and drops the rows.
+//!
+//! `--mode bi` writes the datagen's BI layout (`initial_snapshot/`,
+//! `inserts/` and `deletes/` batches); `--explode-edges`,
+//! `--explode-attrs` and `--epoch-millis` its other layouts.
+//! `--generate-factors` also writes the 34 factor tables, as
+//! `DIR/factors/<csv|parquet>/raw/composite-merged-fk/<name>/part-0.*`
+//! (`--factor-format`, default `parquet` as the datagen's).
 
 use parquet::arrow::ArrowWriter;
 use populate_ldbc::bi::{Bi, BiRun, Period};
@@ -46,7 +53,8 @@ impl Format {
 
 const USAGE: &str = "usage: ldbc-gen [--sf 1 | --persons N] [--resources DIR] [--out DIR] \
 [--format csv|parquet|none] [--threads N] [--mode raw|bi] [--bulkload-portion 0.97] \
-[--batch-period year|month|day|hour|minute] [--explode-edges] [--explode-attrs] [--epoch-millis]";
+[--batch-period year|month|day|hour|minute] [--explode-edges] [--explode-attrs] [--epoch-millis] \
+[--generate-factors] [--factor-format csv|parquet]";
 
 struct Args {
     persons: u64,
@@ -57,6 +65,8 @@ struct Args {
     /// `--mode bi`, with its settings.
     bi: Option<Bi>,
     layout: LayoutOptions,
+    /// `--generate-factors`, in this format.
+    factors: Option<Format>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -68,7 +78,10 @@ fn parse() -> Result<Args, String> {
         threads: 0,
         bi: None,
         layout: LayoutOptions::default(),
+        factors: None,
     };
+    let mut factor_format = Format::Parquet;
+    let mut factors = false;
     let mut bi = Bi::default();
     let mut it = args().skip(1);
     while let Some(flag) = it.next() {
@@ -113,6 +126,14 @@ fn parse() -> Result<Args, String> {
             "--explode-edges" => a.layout.explode_edges = true,
             "--explode-attrs" => a.layout.explode_attrs = true,
             "--epoch-millis" => a.layout.epoch_millis = true,
+            "--generate-factors" => factors = true,
+            "--factor-format" => {
+                factor_format = match val()?.as_str() {
+                    "csv" => Format::Csv,
+                    "parquet" => Format::Parquet,
+                    f => return Err(format!("unknown factor format {f} (csv or parquet)")),
+                }
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 exit(0);
@@ -120,6 +141,7 @@ fn parse() -> Result<Args, String> {
             f => return Err(format!("unknown flag {f}")),
         }
     }
+    a.factors = factors.then_some(factor_format);
     if let Some(b) = &mut a.bi {
         *b = bi;
     }
@@ -152,7 +174,10 @@ fn main() {
 
 fn run(a: &Args, res: PathBuf) -> io::Result<()> {
     let t0 = Instant::now();
-    let g = Ldbc::new(&res, a.persons, a.threads)?;
+    let mut g = Ldbc::new(&res, a.persons, a.threads)?;
+    if a.factors.is_some() {
+        g.collect_factors();
+    }
     let tm = &g.timings;
     eprintln!(
         "{} persons, {} friendships, {} blocks: dictionaries {:.2?}, persons {:.2?}, knows {:.2?}, states {:.2?}",
@@ -216,6 +241,19 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             rows
         }
     };
+    if let Some(f) = a.factors {
+        let t = Instant::now();
+        let dir = a
+            .out
+            .join("factors")
+            .join(f.ext())
+            .join("raw")
+            .join("composite-merged-fk");
+        for x in g.factors(a.threads) {
+            write_factor(f, x.def, &x.rows, &dir.join(x.def.name))?;
+        }
+        eprintln!("factors {:.2?}", t.elapsed());
+    }
     let t2 = Instant::now();
     // rows are counted only when nothing is written
     let counted = if a.format == Format::None {
@@ -298,14 +336,32 @@ fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io
             csv::write(def, r, &mut buf);
             fs::write(path, buf)
         }
-        Format::Parquet => {
-            let batch = to_batch(def, r);
-            let mut w = ArrowWriter::try_new(File::create(path)?, batch.schema(), None)
-                .map_err(io::Error::other)?;
-            w.write(&batch).map_err(io::Error::other)?;
-            w.close().map_err(io::Error::other)?;
-            Ok(())
-        }
+        Format::Parquet => write_parquet(def, r, &path),
         Format::None => Ok(()),
     }
+}
+
+/// A factor table as `dir/part-0.csv` (Spark's default CSV options, no
+/// header) or `dir/part-0.parquet`.
+fn write_factor(f: Format, def: &TableDef, r: &Rows, dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("part-0.{}", f.ext()));
+    match f {
+        Format::Csv => {
+            let mut buf = Vec::new();
+            csv::write_factor(def, r, &mut buf);
+            fs::write(path, buf)
+        }
+        Format::Parquet => write_parquet(def, r, &path),
+        Format::None => Ok(()),
+    }
+}
+
+fn write_parquet(def: &TableDef, r: &Rows, path: &Path) -> io::Result<()> {
+    let batch = to_batch(def, r);
+    let mut w = ArrowWriter::try_new(File::create(path)?, batch.schema(), None)
+        .map_err(io::Error::other)?;
+    w.write(&batch).map_err(io::Error::other)?;
+    w.close().map_err(io::Error::other)?;
+    Ok(())
 }

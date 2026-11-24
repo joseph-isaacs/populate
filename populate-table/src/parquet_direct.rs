@@ -49,6 +49,22 @@ use std::slice::from_raw_parts;
 /// here under `props` (anything else goes to arrow-rs).
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
+    if let DataType::FixedSizeList(item, n) = dt {
+        // a required list of required values, PLAIN
+        let item_ok = matches!(
+            (item.data_type(), descr.physical_type()),
+            (DataType::Float32, PhysicalType::FLOAT)
+                | (DataType::Float64, PhysicalType::DOUBLE)
+                | (DataType::Int32, PhysicalType::INT32)
+                | (DataType::Int64, PhysicalType::INT64)
+        );
+        return item_ok
+            && *n > 0
+            && descr.max_rep_level() == 1
+            && descr.max_def_level() == 1
+            && !props.dictionary_enabled(path)
+            && common_ok(path, props);
+    }
     let type_ok = match (dt, descr.physical_type()) {
         (
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Date32,
@@ -62,10 +78,12 @@ pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterPr
         (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
         _ => false,
     };
-    type_ok
-        && descr.max_rep_level() == 0
-        && descr.max_def_level() <= 1
-        && props.writer_version() == WriterVersion::PARQUET_1_0
+    type_ok && descr.max_rep_level() == 0 && descr.max_def_level() <= 1 && common_ok(path, props)
+}
+
+/// Writer settings every direct column needs.
+fn common_ok(path: &ColumnPath, props: &WriterProperties) -> bool {
+    props.writer_version() == WriterVersion::PARQUET_1_0
         && matches!(
             props.compression(path),
             Compression::SNAPPY | Compression::UNCOMPRESSED
@@ -94,6 +112,31 @@ impl DirectColumn {
 
     /// The encoded chunk (offsets relative to its start) and its metadata.
     pub(crate) fn close(self, props: &WriterProperties) -> Result<(Bytes, ColumnCloseResult)> {
+        if let Some(DataType::FixedSizeList(_, n)) = self.arrays.first().map(|a| a.data_type()) {
+            let n = *n as usize;
+            return match self.descr.physical_type() {
+                PhysicalType::FLOAT => {
+                    let v = list_slices(&self.arrays, |a| {
+                        f32_bits(a.as_primitive::<Float32Type>().values())
+                    })?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                PhysicalType::DOUBLE => {
+                    let v = list_slices(&self.arrays, |a| {
+                        f64_bits(a.as_primitive::<Float64Type>().values())
+                    })?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                PhysicalType::INT32 => {
+                    let v = list_slices(&self.arrays, |a| a.as_primitive::<Int32Type>().values())?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+                _ => {
+                    let v = list_slices(&self.arrays, |a| a.as_primitive::<Int64Type>().values())?;
+                    encode_list(&self.descr, props, n, &v)
+                }
+            };
+        }
         match self.descr.physical_type() {
             PhysicalType::INT32 => {
                 let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
@@ -213,6 +256,11 @@ trait Native: Copy + Ord + Default + Send + 'static {
     /// Order-preserving: `a <= b` iff `a.key() <= b.key()`.
     fn key(self) -> u64;
     fn put(self, out: &mut Vec<u8>);
+    /// PLAIN encoding of `v`.
+    fn put_all(v: &[Self], out: &mut Vec<u8>) {
+        out.reserve(v.len() * Self::SIZE);
+        v.iter().for_each(|x| x.put(out));
+    }
     /// Chunk statistics; `nans` is the NaN count (floats only).
     fn stats(min: Option<Self>, max: Option<Self>, nulls: u64, nans: Option<u64>) -> Statistics;
     /// Floating point: NaNs are left out of min / max unless every value
@@ -220,6 +268,12 @@ trait Native: Copy + Ord + Default + Send + 'static {
     const FLOAT: bool = false;
     fn is_nan(self) -> bool {
         false
+    }
+    /// Floats: smallest and largest non-NaN values, `None` if there are
+    /// none.
+    fn min_max_numbers(v: &[Self]) -> Option<(Self, Self)> {
+        let _ = v;
+        None
     }
 }
 
@@ -257,25 +311,38 @@ impl Native for i64 {
 /// dictionary compares them), ordered by IEEE 754 total order (as its
 /// statistics are).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
 struct F32(u32);
 
 /// An `f64` by its bits, as [`F32`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
 struct F64(u64);
 
 macro_rules! float_native {
     ($t:ident, $bits:ty, $f:ty, $size:expr, $variant:ident) => {
         impl $t {
+            const SIGN: $bits = 1 << (<$bits>::BITS - 1);
+
             /// Total-order key: flip all bits of negatives, the sign of
             /// positives.
             #[inline(always)]
             fn total(self) -> $bits {
-                const SIGN: $bits = 1 << (<$bits>::BITS - 1);
-                if self.0 & SIGN != 0 {
+                if self.0 & Self::SIGN != 0 {
                     !self.0
                 } else {
-                    self.0 | SIGN
+                    self.0 | Self::SIGN
                 }
+            }
+
+            /// Inverse of [`total`](Self::total).
+            #[inline(always)]
+            fn from_total(k: $bits) -> Self {
+                $t(if k & Self::SIGN != 0 {
+                    k ^ Self::SIGN
+                } else {
+                    !k
+                })
             }
         }
 
@@ -304,6 +371,19 @@ macro_rules! float_native {
             fn put(self, out: &mut Vec<u8>) {
                 out.extend_from_slice(&self.0.to_le_bytes());
             }
+            fn put_all(v: &[Self], out: &mut Vec<u8>) {
+                #[cfg(target_endian = "little")]
+                {
+                    // SAFETY: `Self` is a transparent integer: its bytes, in
+                    // order, are the values' little-endian PLAIN encoding
+                    let b = unsafe {
+                        std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), size_of_val(v))
+                    };
+                    out.extend_from_slice(b);
+                }
+                #[cfg(not(target_endian = "little"))]
+                v.iter().for_each(|x| x.put(out));
+            }
             fn stats(
                 min: Option<Self>,
                 max: Option<Self>,
@@ -316,8 +396,21 @@ macro_rules! float_native {
                         .with_nan_count(nans),
                 )
             }
+            #[inline(always)]
             fn is_nan(self) -> bool {
-                <$f>::from_bits(self.0).is_nan()
+                // exponent all ones, mantissa not zero
+                (self.0 & !Self::SIGN) > (<$f>::INFINITY).to_bits()
+            }
+            fn min_max_numbers(v: &[Self]) -> Option<(Self, Self)> {
+                // branch-free folds over total-order keys, NaN as the
+                // identity of each, so they vectorise
+                let lo = v.iter().fold(<$bits>::MAX, |m, &x| {
+                    m.min(if x.is_nan() { <$bits>::MAX } else { x.total() })
+                });
+                let hi = v
+                    .iter()
+                    .fold(0, |m, &x| m.max(if x.is_nan() { 0 } else { x.total() }));
+                (lo <= hi).then(|| (Self::from_total(lo), Self::from_total(hi)))
             }
         }
     };
@@ -409,11 +502,8 @@ fn min_max<T: Native>(v: &[T]) -> Option<(T, T)> {
         return None;
     }
     if T::FLOAT {
-        let numbers = v.iter().copied().filter(|x| !x.is_nan());
-        let lo = numbers.clone().fold(T::MAX, Ord::min);
-        let hi = numbers.fold(T::MIN, Ord::max);
-        if lo <= hi {
-            return Some((lo, hi));
+        if let Some(r) = T::min_max_numbers(v) {
+            return Some(r);
         }
         // every value is NaN: their total-order extremes
     }
@@ -439,6 +529,8 @@ struct ChunkWriter<'a> {
     written: u64,
     /// Total string bytes (byte array columns only).
     unencoded: Option<i64>,
+    /// Values per record of a fixed-size list column (levels are values).
+    list: Option<usize>,
     dictionary_offset: Option<i64>,
     data_offset: Option<i64>,
     column_index: ColumnIndexBuilder,
@@ -472,6 +564,7 @@ impl<'a> ChunkWriter<'a> {
             written: 0,
             unencoded: None,
             dictionary_offset: None,
+            list: None,
             data_offset: None,
             column_index: ColumnIndexBuilder::new(descr.physical_type()),
             offset_index: OffsetIndexBuilder::new(),
@@ -595,11 +688,16 @@ impl<'a> ChunkWriter<'a> {
             if self.histograms {
                 let h = vec![nulls, vals as i64];
                 meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
+                if let Some(n) = self.list {
+                    let records = (rows / n) as i64;
+                    let h = vec![records, rows as i64 - records];
+                    meta = meta.set_repetition_level_histogram(Some(LevelHistogram::from(h)));
+                }
             }
         }
         Ok(ColumnCloseResult {
             bytes_written: self.written,
-            rows_written: rows as u64,
+            rows_written: (rows / self.list.unwrap_or(1)) as u64,
             metadata: meta.build()?,
             bloom_filter: None,
             column_index: match stats_level {
@@ -612,6 +710,64 @@ impl<'a> ChunkWriter<'a> {
 }
 
 impl ChunkWriter<'_> {
+    /// A v1 data page of `records` lists of `n` values each (none null):
+    /// repetition levels (0 then `n - 1` ones per list), definition levels
+    /// (all 1), then the PLAIN values `put` writes. `put` returns the
+    /// page's min and max (column index bytes).
+    fn list_page(
+        &mut self,
+        records: usize,
+        n: usize,
+        nans: Option<i64>,
+        put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        let levels = records * n;
+        let mut one = Vec::new();
+        rle(0, 1, 1, &mut one);
+        if n > 1 {
+            rle(1, n - 1, 1, &mut one);
+        }
+        let mut body = Vec::with_capacity(8 + one.len() * records + 8 + levels * 8);
+        body.extend_from_slice(&((one.len() * records) as u32).to_le_bytes());
+        for _ in 0..records {
+            body.extend_from_slice(&one);
+        }
+        let at = body.len();
+        body.extend_from_slice(&[0; 4]);
+        rle(1, levels, 1, &mut body);
+        let len = (body.len() - at - 4) as u32;
+        body[at..at + 4].copy_from_slice(&len.to_le_bytes());
+        let min_max = put(&mut body);
+        if !self.encodings.contains(&Encoding::PLAIN) {
+            self.encodings.push(Encoding::PLAIN);
+        }
+        let (buf, size) = self.compress(body)?;
+        let page = Page::DataPage {
+            buf,
+            num_values: levels as u32,
+            encoding: Encoding::PLAIN,
+            def_level_encoding: Encoding::RLE,
+            rep_level_encoding: Encoding::RLE,
+            statistics: None,
+        };
+        let spec = self.pages.write_page(CompressedPage::new(page, size))?;
+        self.data_offset.get_or_insert(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.offset_index.append_row_count(records as i64);
+        self.offset_index
+            .append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
+        let (lo, hi) = min_max.unwrap_or_default();
+        self.column_index.append(false, lo, hi, 0, nans);
+        if self.histograms {
+            let rep = LevelHistogram::from(vec![records as i64, (levels - records) as i64]);
+            let def = LevelHistogram::from(vec![0, levels as i64]);
+            self.column_index.append_histograms(&Some(rep), &Some(def));
+        }
+        Ok(())
+    }
+
     /// Record a byte array page's string bytes, as arrow-rs does.
     fn unencoded_bytes(&mut self, n: i64) {
         *self.unencoded.get_or_insert(0) += n;
@@ -714,6 +870,105 @@ fn encode<T: Native>(
     let nans = (T::FLOAT && !v.vals.is_empty())
         .then(|| v.vals.iter().filter(|x| x.is_nan()).count() as u64);
     let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls, nans), order)?;
+    Ok((Bytes::from(sink.into_inner()?), close))
+}
+
+// ---------------------------------------------------------------------------
+// Fixed-size lists of numbers
+
+/// The values of each of a chunk's fixed-size list arrays, as slices of
+/// the arrays (no copy); an error if any list or value is null (the column
+/// is declared required).
+fn list_slices<'a, T: 'a>(
+    arrays: &'a [ArrayRef],
+    values: impl Fn(&'a ArrayRef) -> &'a [T],
+) -> Result<Vec<&'a [T]>> {
+    arrays
+        .iter()
+        .map(|a| {
+            let l = a.as_fixed_size_list();
+            let child = l.values();
+            if l.null_count() > 0 || child.null_count() > 0 {
+                return Err(ParquetError::General(
+                    "null in a required fixed-size list column".into(),
+                ));
+            }
+            let start = l.value_offset_at(0);
+            Ok(&values(child)[start..start + l.len() * l.value_length() as usize])
+        })
+        .collect()
+}
+
+/// `f32`s as [`F32`]s, in place.
+fn f32_bits(v: &[f32]) -> &[F32] {
+    // SAFETY: `F32` is a transparent `u32`, of the size and alignment of
+    // `f32`, and every bit pattern is valid for both
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), v.len()) }
+}
+
+/// `f64`s as [`F64`]s, in place.
+fn f64_bits(v: &[f64]) -> &[F64] {
+    // SAFETY: as `f32_bits`
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), v.len()) }
+}
+
+/// Fold page minima (or maxima) into the chunk's as arrow-rs does: a NaN
+/// gives way to any number, then `better` decides.
+fn fold_stat<T: Native>(acc: Option<T>, x: T, better: impl Fn(T, T) -> bool) -> Option<T> {
+    Some(match acc {
+        None => x,
+        Some(a) if a.is_nan() && !x.is_nan() => x,
+        Some(a) if !a.is_nan() && x.is_nan() => a,
+        Some(a) if better(x, a) => x,
+        Some(a) => a,
+    })
+}
+
+/// A required `FixedSizeList` column of `n` values per record, PLAIN, in
+/// pages of whole records (a page never spans two of the input arrays,
+/// which are encoded where they are).
+fn encode_list<T: Native>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    n: usize,
+    parts: &[&[T]],
+) -> Result<(Bytes, ColumnCloseResult)> {
+    let per_page = props
+        .data_page_row_count_limit()
+        .min(props.data_page_size_limit() / (n * T::SIZE))
+        .max(1);
+    let mut sink = TrackedWrite::new(Vec::new());
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    w.list = Some(n);
+    let bytes = |x: T| {
+        let mut b = Vec::new();
+        x.put(&mut b);
+        b
+    };
+    let (mut lo, mut hi) = (None, None);
+    let mut nans = 0u64;
+    let mut levels = 0;
+    let mut page_ranges = Vec::new();
+    for part in parts {
+        for page in part.chunks(per_page * n) {
+            let mm = min_max(page);
+            if let Some((a, b)) = mm {
+                lo = fold_stat(lo, a, |x, y| x < y);
+                hi = fold_stat(hi, b, |x, y| x > y);
+            }
+            page_ranges.push(mm);
+            let page_nans = T::FLOAT.then(|| page.iter().filter(|x| x.is_nan()).count());
+            nans += page_nans.unwrap_or(0) as u64;
+            w.list_page(page.len() / n, n, page_nans.map(|c| c as i64), |body| {
+                T::put_all(page, body);
+                mm.map(|(lo, hi)| (bytes(lo), bytes(hi)))
+            })?;
+            levels += page.len();
+        }
+    }
+    let order = boundary_order(page_ranges.into_iter());
+    let nans = (T::FLOAT && levels > 0).then_some(nans);
+    let close = w.finish(levels, levels, T::stats(lo, hi, 0, nans), order)?;
     Ok((Bytes::from(sink.into_inner()?), close))
 }
 

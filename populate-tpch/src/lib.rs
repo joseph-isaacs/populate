@@ -37,7 +37,9 @@
 //! ```
 
 mod engine;
-mod rng;
+/// dbgen's random streams, shared with `populate-ssb` (not a stable API).
+#[doc(hidden)]
+pub mod rng;
 mod tables;
 mod text;
 

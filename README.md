@@ -94,6 +94,19 @@ cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case iot --scale 10
 
 See [`populate-tsbs/README.md`](populate-tsbs/README.md).
 
+## SSB
+
+`populate-ssb` generates the five Star Schema Benchmark tables
+byte-identical to `ssb-dbgen`, plus the denormalised `lineorder_flat`, as
+Arrow, Parquet or `.tbl` text, on all cores, on TPC-H's random streams.
+
+```sh
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb              # Parquet
+cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl # ssb-dbgen text
+```
+
+See [`populate-ssb/README.md`](populate-ssb/README.md).
+
 ## Crates
 
 | crate                   | contents                                            |
@@ -107,5 +120,20 @@ See [`populate-tsbs/README.md`](populate-tsbs/README.md).
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
 | `populate-tsbs`         | TSBS devops/IoT byte-identical to `tsbs_generate_data`, on all cores; the `tsbs-gen` CLI |
+| `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 
 See `populate/DESIGN.md` for the design.
+
+## H2O db-benchmark
+
+`populate-h2o` generates the H2O db-benchmark groupby and join data sets,
+byte-identical to the CSV its R datagen scripts write (R's Mersenne
+Twister, `sample()`, `round()` and data.table `fwrite` reproduced), as CSV,
+Arrow or Parquet, on all cores.
+
+```sh
+cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 0 --sort 0
+cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
+```
+
+See [`populate-h2o/README.md`](populate-h2o/README.md).

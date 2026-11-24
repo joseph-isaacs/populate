@@ -9,6 +9,10 @@ members = [
     "populate-tpcds",
     "populate-tpch",
     "populate-tsbs",
+    "populate-ssb",
+    "populate-h2o",
+    "populate-oltp",
+    "populate-synth",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -24,6 +28,10 @@ default-members = [
     "populate-tpcds",
     "populate-tpch",
     "populate-tsbs",
+    "populate-ssb",
+    "populate-h2o",
+    "populate-oltp",
+    "populate-synth",
 ]
 resolver = "2"
 
@@ -50,6 +58,10 @@ populate-table = { path = "populate-table" }
 populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
 populate-tsbs = { path = "populate-tsbs" }
+populate-ssb = { path = "populate-ssb" }
+populate-h2o = { path = "populate-h2o" }
+populate-oltp = { path = "populate-oltp" }
+populate-synth = { path = "populate-synth" }
 
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
 # (populate is generic, so everything is monomorphised into the bench crate
@@ -57,3 +69,8 @@ populate-tsbs = { path = "populate-tsbs" }
 [profile.bench]
 codegen-units = 1
 debug = true
+
+# populate-h2o's tests generate the 1e7-row join tables (the smallest the
+# datagen allows); unoptimised that takes minutes.
+[profile.test.package.populate-h2o]
+opt-level = 3

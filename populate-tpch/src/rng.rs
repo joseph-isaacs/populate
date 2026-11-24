@@ -10,11 +10,11 @@
 //! independent lanes.
 
 /// The LCG multiplier.
-pub(crate) const A: u64 = 16807;
+pub const A: u64 = 16807;
 /// The LCG modulus, `2^31 - 1`.
-pub(crate) const M: u64 = 2_147_483_647;
+pub const M: u64 = 2_147_483_647;
 /// Independent chains [`draws`] runs at once.
-pub(crate) const LANES: usize = 16;
+pub const LANES: usize = 16;
 
 /// `a * b mod (2^31 - 1)` for `a, b` in `[1, m)`, with no division and no
 /// compare (so it vectorises).
@@ -24,14 +24,14 @@ pub(crate) const LANES: usize = 16;
 /// or `r = m`, and `r = m` would mean `a * b = 0 (mod m)`, impossible for a
 /// prime `m`.
 #[inline(always)]
-pub(crate) fn mulmod(a: u64, b: u64) -> u64 {
+pub fn mulmod(a: u64, b: u64) -> u64 {
     let p = a * b;
     let r = (p & M) + (p >> 31);
     (r & M) + (r >> 31)
 }
 
 /// `base^exp mod m`.
-pub(crate) fn powmod(mut base: u64, mut exp: u64) -> u64 {
+pub fn powmod(mut base: u64, mut exp: u64) -> u64 {
     let mut acc = 1;
     while exp > 0 {
         if exp & 1 == 1 {
@@ -47,13 +47,13 @@ pub(crate) fn powmod(mut base: u64, mut exp: u64) -> u64 {
 /// truncated, with the range computed in wrapping `i32` as dbgen does
 /// (`RandomAlphaNumeric` asks for `0..=i32::MAX`, a range of `-2^31`).
 #[inline(always)]
-pub(crate) fn bounded(x: u32, lo: i32, hi: i32) -> i32 {
+pub fn bounded(x: u32, lo: i32, hi: i32) -> i32 {
     let range = (hi.wrapping_sub(lo)).wrapping_add(1) as f64;
     lo.wrapping_add(((x as f64 / M as f64) * range) as i32)
 }
 
 /// Ranges below this map a draw exactly with integers ([`scale`]).
-pub(crate) const INT_RANGE: u32 = 1 << 21;
+pub const INT_RANGE: u32 = 1 << 21;
 
 /// `floor(x * range / m)` without a division: equal to the `f64` formula
 /// of [`bounded`] for every `x` in `[1, m)` when `range < 2^21`.
@@ -69,7 +69,7 @@ pub(crate) const INT_RANGE: u32 = 1 << 21;
 /// `t = q0 + r0 < 2m` (`p < 2^52`), so it is `q0 + (t >= m)`, and
 /// `t >= m` is `(t + 1) >> 31`.
 #[inline(always)]
-pub(crate) fn scale(x: u32, range: u32) -> u32 {
+pub fn scale(x: u32, range: u32) -> u32 {
     let p = x as u64 * range as u64;
     let q0 = p >> 31;
     let t = (p & M) + q0;
@@ -79,7 +79,7 @@ pub(crate) fn scale(x: u32, range: u32) -> u32 {
 /// The `n` draws `start + 1 ..= start + n` of the stream seeded `seed`, as
 /// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
 /// so the multiply chain vectorises.
-pub(crate) fn draws(seed: i64, start: u64, out: &mut [u32]) {
+pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
     let mut lanes = [0u64; LANES];
     let mut x = mulmod(seed as u64, powmod(A, start));
     for l in &mut lanes {
@@ -100,7 +100,7 @@ pub(crate) fn draws(seed: i64, start: u64, out: &mut [u32]) {
 }
 
 /// Map draws to dbgen's bounded values in `lo..=hi`, in place.
-pub(crate) fn bound_all(v: &mut [u32], lo: i32, hi: i32) {
+pub fn bound_all(v: &mut [u32], lo: i32, hi: i32) {
     let range = (hi as i64 - lo as i64 + 1) as u64;
     if range < INT_RANGE as u64 {
         let range = range as u32;
@@ -116,7 +116,7 @@ pub(crate) fn bound_all(v: &mut [u32], lo: i32, hi: i32) {
 
 /// One dbgen stream (tpchgen's `RowRandomInt`), drawn serially.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Rng {
+pub struct Rng {
     seed: u64,
     usage: u32,
     per_row: u32,
@@ -125,7 +125,7 @@ pub(crate) struct Rng {
 impl Rng {
     /// The stream seeded `seed` with `per_row` draws per row, at the start
     /// of row `row`.
-    pub(crate) fn at(seed: i64, per_row: u32, row: u64) -> Self {
+    pub fn at(seed: i64, per_row: u32, row: u64) -> Self {
         Rng {
             seed: mulmod(seed as u64, powmod(A, per_row as u64 * row)),
             usage: 0,
@@ -135,7 +135,7 @@ impl Rng {
 
     /// The next raw draw, in `[1, m)`.
     #[inline(always)]
-    pub(crate) fn next_rand(&mut self) -> u32 {
+    pub fn next_rand(&mut self) -> u32 {
         self.seed = mulmod(self.seed, A);
         self.usage += 1;
         self.seed as u32
@@ -143,14 +143,14 @@ impl Rng {
 
     /// The next value in `lo..=hi`, as dbgen maps it.
     #[inline(always)]
-    pub(crate) fn next_int(&mut self, lo: i32, hi: i32) -> i32 {
+    pub fn next_int(&mut self, lo: i32, hi: i32) -> i32 {
         let x = self.next_rand();
         bounded(x, lo, hi)
     }
 
     /// Skip to the start of the next row.
     #[inline(always)]
-    pub(crate) fn row_finished(&mut self) {
+    pub fn row_finished(&mut self) {
         if self.usage < self.per_row {
             self.seed = mulmod(self.seed, powmod(A, (self.per_row - self.usage) as u64));
         }

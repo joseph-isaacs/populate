@@ -80,6 +80,23 @@ pub fn scale(x: u32, range: u32) -> u32 {
 /// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
 /// so the multiply chain vectorises.
 pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has AVX2
+        return unsafe { draws_avx2(seed, start, out) };
+    }
+    draws_any(seed, start, out)
+}
+
+/// [`draws`] compiled for AVX2: 4 lanes per multiply instead of 2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn draws_avx2(seed: i64, start: u64, out: &mut [u32]) {
+    draws_any(seed, start, out)
+}
+
+#[inline(always)]
+fn draws_any(seed: i64, start: u64, out: &mut [u32]) {
     let mut lanes = [0u64; LANES];
     let mut x = mulmod(seed as u64, powmod(A, start));
     for l in &mut lanes {
@@ -87,20 +104,41 @@ pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
         *l = x;
     }
     let step = powmod(A, LANES as u64);
+    // as u32 lanes: every value is below 2^31, so each product is one
+    // 32 x 32 -> 64 bit multiply (`pmuludq`), and the store is a plain copy
+    let mut lanes = lanes.map(|x| x as u32);
+    let step = step as u32;
     let mut chunks = out.chunks_exact_mut(LANES);
     for c in &mut chunks {
-        for (o, x) in c.iter_mut().zip(&mut lanes) {
-            *o = *x as u32;
-            *x = mulmod(*x, step);
+        c.copy_from_slice(&lanes);
+        for x in &mut lanes {
+            *x = mulmod(*x as u64, step as u64) as u32;
         }
     }
-    for (o, x) in chunks.into_remainder().iter_mut().zip(&lanes) {
-        *o = *x as u32;
-    }
+    let rest = chunks.into_remainder();
+    let n = rest.len();
+    rest.copy_from_slice(&lanes[..n]);
 }
 
 /// Map draws to dbgen's bounded values in `lo..=hi`, in place.
 pub fn bound_all(v: &mut [u32], lo: i32, hi: i32) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has AVX2
+        return unsafe { bound_all_avx2(v, lo, hi) };
+    }
+    bound_all_any(v, lo, hi)
+}
+
+/// [`bound_all`] compiled for AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn bound_all_avx2(v: &mut [u32], lo: i32, hi: i32) {
+    bound_all_any(v, lo, hi)
+}
+
+#[inline(always)]
+fn bound_all_any(v: &mut [u32], lo: i32, hi: i32) {
     let range = (hi as i64 - lo as i64 + 1) as u64;
     if range < INT_RANGE as u64 {
         let range = range as u32;
@@ -196,13 +234,28 @@ mod tests {
     fn draws_match_serial() {
         for start in [0u64, 1, 17, 1_000_003] {
             for n in [0usize, 1, 15, 16, 17, 100] {
-                let mut v = vec![0; n];
-                draws(1808217256, start, &mut v);
-                let mut r = Rng::at(1808217256, 1, start);
-                for &x in &v {
-                    assert_eq!(x, r.next_rand());
+                // the dispatched version and the portable one
+                for f in [draws, draws_any] {
+                    let mut v = vec![0; n];
+                    f(1808217256, start, &mut v);
+                    let mut r = Rng::at(1808217256, 1, start);
+                    for &x in &v {
+                        assert_eq!(x, r.next_rand());
+                    }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn bound_all_dispatch_matches_portable() {
+        let mut v = vec![0; 1000];
+        draws(77, 5, &mut v);
+        for (lo, hi) in [(1, 7), (100, 100_000), (0, i32::MAX), (-5, 3_000_000)] {
+            let (mut a, mut b) = (v.clone(), v.clone());
+            bound_all(&mut a, lo, hi);
+            bound_all_any(&mut b, lo, hi);
+            assert_eq!(a, b);
         }
     }
 

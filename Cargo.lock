@@ -831,6 +831,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "divan",
+ "libc",
  "parquet",
  "populate-table",
  "tpchgen",

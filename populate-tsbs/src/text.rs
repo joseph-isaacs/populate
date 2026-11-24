@@ -386,13 +386,25 @@ fn crate_db(st: &Statics, p: &Point, out: &mut Vec<u8>) {
     out.push(b'\n');
 }
 
-/// `YYYY-MM-DD` of a Unix-nanosecond time, UTC.
-fn push_date(out: &mut Vec<u8>, ts: i64) {
-    let (y, m, d) = civil_from_days(ts.div_euclid(86_400_000_000_000));
+/// `YYYY-MM-DD` (Go's `Format("2006-01-02")`) of the point's true time,
+/// UTC. Points carry `UnixNano`, which wraps outside 1678..2262; the true
+/// time is the run's start plus the point's (non-negative, under 584
+/// years) offset from it.
+fn push_date(out: &mut Vec<u8>, start: i128, ts: i64) {
+    let t = start + i128::from(ts.wrapping_sub(start as i64) as u64);
+    let (y, m, d) = civil_from_days(t.div_euclid(86_400_000_000_000) as i64);
     let two = |out: &mut Vec<u8>, v: i64| {
         out.push(b'0' + (v / 10) as u8);
         out.push(b'0' + (v % 10) as u8);
     };
+    if y < 0 {
+        out.push(b'-');
+    }
+    let y = y.unsigned_abs();
+    if y >= 10_000 {
+        out.extend_from_slice((y / 10_000).to_string().as_bytes());
+    }
+    let y = (y % 10_000) as i64;
     two(out, y / 100);
     two(out, y % 100);
     out.push(b'-');
@@ -415,7 +427,7 @@ fn cassandra(st: &Statics, p: &Point, out: &mut Vec<u8>) {
         }
     }
     let mut date = Vec::with_capacity(10);
-    push_date(&mut date, p.ts);
+    push_date(&mut date, st.start, p.ts);
     for (k, &v) in m.fields.iter().zip(&p.fields) {
         let table: &[u8] = match v {
             Val::Nil => continue,
@@ -469,8 +481,16 @@ mod tests {
         assert_eq!(s(&|o| push_f64(o, 0.0)), "0");
         assert_eq!(s(&|o| push_f32(o, 1.5e-6)), "0.0000015");
         assert_eq!(
-            s(&|o| push_date(o, 1_451_606_400_000_000_000)),
+            s(&|o| push_date(o, 1_451_606_400_000_000_000, 1_451_606_400_000_000_000)),
             "2016-01-01"
         );
+        // 1600 wraps as UnixNano; the date is still the true one
+        let t = -11_676_096_000_000_000_000i128;
+        assert_eq!(
+            s(&|o| push_date(o, t, t as i64 + 86_400_000_000_000)),
+            "1600-01-02"
+        );
+        let t = 253_402_300_800_000_000_000i128; // 10000-01-01
+        assert_eq!(s(&|o| push_date(o, t, t as i64)), "10000-01-01");
     }
 }

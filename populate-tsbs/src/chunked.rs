@@ -16,10 +16,10 @@
 //! devops worker never ticks, it only formats.
 
 use crate::config::Config;
-use crate::model::Point;
+use crate::model::{Point, Statics};
 use crate::sim::{AnySim, Sim};
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Points per chunk by default (about 4 MB of influx text for devops).
 pub const DEFAULT_CHUNK_POINTS: u64 = 16 * 1024;
@@ -124,7 +124,7 @@ impl<S: Sim> Chunked<S> {
     }
 
     /// The statics of the run.
-    pub fn statics(&self) -> std::sync::Arc<crate::model::Statics> {
+    pub fn statics(&self) -> Arc<Statics> {
         self.frontier
             .lock()
             .expect("frontier")

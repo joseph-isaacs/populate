@@ -65,6 +65,8 @@ pub struct Measurement {
 /// generator's tag values.
 #[derive(Debug, Clone)]
 pub struct Statics {
+    /// The run's true start time, Unix nanoseconds (cassandra's date).
+    pub start: i128,
     /// Tag keys every point starts with.
     pub tag_keys: Vec<Box<str>>,
     /// Their Go types (header lines).

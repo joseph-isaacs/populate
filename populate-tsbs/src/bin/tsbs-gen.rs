@@ -19,7 +19,7 @@
 use populate_table::MultiChunks;
 use populate_table::sched::par_sources;
 use populate_tsbs::config::{parse_duration, parse_rfc3339};
-use populate_tsbs::{Config, Format, Tsbs, UseCase};
+use populate_tsbs::{Config, Format, Tsbs};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -58,6 +58,7 @@ fn parse() -> Result<Args, String> {
         chunk_points: 0,
     };
     let mut format = None;
+    let mut use_case = None;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -73,7 +74,7 @@ fn parse() -> Result<Args, String> {
         let num = |s: String| s.parse::<u64>().map_err(|e| format!("{flag}: {e}"));
         let flag = flag.trim_start_matches('-');
         match flag {
-            "use-case" => a.cfg.use_case = val()?.parse()?,
+            "use-case" => use_case = Some(val()?),
             "scale" => a.cfg.scale = num(val()?)?,
             "initial-scale" => a.cfg.initial_scale = num(val()?)?,
             "seed" => a.cfg.seed = val()?.parse().map_err(|e| format!("--seed: {e}"))?,
@@ -99,6 +100,8 @@ fn parse() -> Result<Args, String> {
             _ => return Err(format!("unknown flag --{flag}\n{USAGE}")),
         }
     }
+    // Go's flag default is "", which no use case matches
+    a.cfg.use_case = use_case.unwrap_or_default().parse()?;
     a.out = match format.as_deref() {
         Some("parquet") => Out::Parquet,
         Some("arrow") => Out::Arrow,
@@ -184,6 +187,5 @@ fn run(a: Args) -> Result<(), String> {
             eprintln!("{rows} rows in {:.2?}", t0.elapsed());
         }
     }
-    let _ = UseCase::ALL;
     Ok(())
 }

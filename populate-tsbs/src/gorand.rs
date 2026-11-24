@@ -6,6 +6,7 @@
 //! Ported from the Go 1.24 sources (BSD-style licence, The Go Authors).
 
 use crate::gotables::{FN, KN, RNG_COOKED, WN};
+use std::fmt::{self, Debug, Formatter};
 use std::sync::OnceLock;
 
 const RNG_LEN: usize = 607;
@@ -21,8 +22,8 @@ pub struct GoRand {
     vec: Box<[i64; RNG_LEN]>,
 }
 
-impl std::fmt::Debug for GoRand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for GoRand {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GoRand")
             .field("tap", &self.tap)
             .field("feed", &self.feed)
@@ -282,7 +283,7 @@ pub fn go_f64_to_u64(f: f64) -> u64 {
     if f < TWO63 {
         go_f64_to_i64(f) as u64
     } else {
-        (go_f64_to_i64(f - TWO63) as u64) ^ (1 << 63)
+        (go_f64_to_i64(f - TWO63) as u64) | (1 << 63)
     }
 }
 

@@ -304,6 +304,36 @@ const GOLDEN: &[Case] = &[
         677,
         0x56f591765545f412,
     ),
+    (
+        "cpu-only",
+        "influx",
+        1,
+        5,
+        "2016-01-01T00:10:00Z",
+        "--log-interval=1.57m",
+        2112,
+        0xae039481a61908e4,
+    ),
+    (
+        "cpu-only",
+        "cassandra",
+        1,
+        3,
+        "1600-01-01T00:10:00Z",
+        "--timestamp-start=1600-01-01T00:00:00Z",
+        128041,
+        0xfcdaf6ecd8f0f5b6,
+    ),
+    (
+        "devops",
+        "cassandra",
+        2,
+        9,
+        "9999-12-31T23:59:59Z",
+        "--timestamp-start=9999-12-31T23:30:00Z --log-interval=7m",
+        199633,
+        0x522a61d689785036,
+    ),
 ];
 
 fn fnv(b: &[u8]) -> u64 {
@@ -328,6 +358,7 @@ fn config(uc: &str, scale: u64, seed: i64, end: &str, extra: &str) -> Config {
             "interleaved-generation-groups" => c.groups = v.parse().unwrap(),
             "interleaved-generation-group-id" => c.group_id = v.parse().unwrap(),
             "log-interval" => c.interval = parse_duration(v).unwrap(),
+            "timestamp-start" => c.start = parse_rfc3339(v).unwrap(),
             _ => panic!("unknown flag {k}"),
         }
     }

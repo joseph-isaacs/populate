@@ -15,7 +15,7 @@ use populate_tsbs::{Config, Format, Tsbs, UseCase};
 
 fn cfg(uc: UseCase, scale: u64, seed: i64, secs: i64) -> Config {
     let mut c = Config::new(uc, scale, seed);
-    c.end = c.start + secs * 1_000_000_000;
+    c.end = c.start + i128::from(secs) * 1_000_000_000;
     c
 }
 

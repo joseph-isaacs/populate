@@ -375,6 +375,7 @@ struct Static {
     start_epoch: Vec<u64>,
     generic: bool,
     hosts: u64,
+    /// `UnixNano` of the start: wrapping, like Go's.
     start: i64,
     interval: i64,
 }
@@ -549,17 +550,17 @@ impl DevopsSim {
         } else {
             (Vec::new(), Vec::new())
         };
-        let mut specs = Vec::new();
+        let mut all_specs = Vec::new();
         let mut meas_off = Vec::new();
         for &m in &ms {
-            meas_off.push(specs.len());
-            let mut s = specs_of(m);
+            meas_off.push(all_specs.len());
+            let mut s = specs(m);
             if m == M::Cpu {
                 s.truncate(cpu_fields);
             }
-            specs.extend(s);
+            all_specs.extend(s);
         }
-        meas_off.push(specs.len());
+        meas_off.push(all_specs.len());
         let mut state = Vec::new();
         let mut offsets = vec![0];
         let mut gen_tags = Vec::with_capacity(hosts as usize);
@@ -585,6 +586,7 @@ impl DevopsSim {
         }
         let header_fields = measurements.iter().map(|m| m.fields.clone()).collect();
         let statics = Statics {
+            start: cfg.start,
             tag_keys: HOST_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types: vec![Type::Str; HOST_TAG_KEYS.len()],
             measurements,
@@ -603,23 +605,42 @@ impl DevopsSim {
             // a host's StartEpoch is the first epoch it is visited in,
             // and epochHosts only grows
             start_epoch = vec![u64::MAX; hosts as usize];
-            let mut seen = 0u64;
             let last_epoch = max.div_ceil(hosts.max(1));
-            for e in 0..last_epoch {
-                let eh = epoch_generators(init_hosts, hosts, e, epochs).min(hosts);
-                while seen < eh {
+            let eh = |e: u64| epoch_generators(init_hosts, hosts, e, epochs).min(hosts);
+            let (mut seen, mut e) = (0u64, 0u64);
+            // epochHosts grows with the epoch (when initial scale <= scale
+            // and there are two or more epochs), so the epoch each host
+            // first appears in is a binary search away; otherwise walk.
+            let monotone = init_hosts <= hosts && epochs >= 2;
+            while seen < hosts && e < last_epoch {
+                if monotone && eh(e) <= seen {
+                    // first e' in (e, last_epoch) with eh(e') > seen
+                    let (mut lo, mut hi) = (e + 1, last_epoch);
+                    while lo < hi {
+                        let mid = lo + (hi - lo) / 2;
+                        if eh(mid) > seen {
+                            hi = mid
+                        } else {
+                            lo = mid + 1
+                        }
+                    }
+                    e = lo;
+                    if e == last_epoch {
+                        break;
+                    }
+                }
+                let n = eh(e);
+                while seen < n {
                     start_epoch[seen as usize] = e;
                     seen += 1;
                 }
-                if seen == hosts {
-                    break;
-                }
+                e += 1;
             }
         }
         let st = Static {
             statics: Arc::new(statics),
             ms,
-            specs,
+            specs: all_specs,
             offsets,
             meas_off,
             mem_total,
@@ -628,7 +649,7 @@ impl DevopsSim {
             start_epoch,
             generic,
             hosts,
-            start: cfg.start,
+            start: cfg.start as i64,
             interval: cfg.interval,
         };
         DevopsSim {
@@ -685,7 +706,9 @@ impl DevopsSim {
         let h = self.host as usize;
         p.meas = mi as u32;
         p.source = h as u32;
-        p.ts = st.start + self.epoch as i64 * st.interval;
+        p.ts = st
+            .start
+            .wrapping_add((self.epoch as i64).wrapping_mul(st.interval));
         p.fields.clear();
         let vals = &self.state[st.offsets[h]..st.offsets[h + 1]];
         let vals = if st.generic {
@@ -793,10 +816,6 @@ fn clamp(mut v: f64, min: f64, max: f64) -> f64 {
         v = min;
     }
     v
-}
-
-fn specs_of(m: M) -> Vec<Spec> {
-    specs(m)
 }
 
 impl Sim for DevopsSim {

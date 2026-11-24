@@ -60,6 +60,7 @@ const WALKS: [(f64, f64, f64, f64, f64); 7] = [
 struct Static {
     statics: Arc<Statics>,
     trucks: u64,
+    /// `UnixNano` of the start: wrapping, like Go's.
     start: i64,
     interval: i64,
 }
@@ -160,7 +161,9 @@ impl Base {
         let t = self.source as usize;
         p.meas = self.meas as u32;
         p.source = t as u32;
-        p.ts = st.start + self.epoch as i64 * st.interval;
+        p.ts = st
+            .start
+            .wrapping_add((self.epoch as i64).wrapping_mul(st.interval));
         p.zero_tag = NO_TAG;
         p.fields.clear();
         let s = &self.state[t * DISTS..][..DISTS];
@@ -278,6 +281,7 @@ impl IotSim {
         let mut tag_types = vec![Type::Str; 5];
         tag_types.extend([Type::F32; 3]);
         let statics = Statics {
+            start: cfg.start,
             tag_keys: TRUCK_TAG_KEYS.iter().map(|&s| s.into()).collect(),
             tag_types,
             measurements,
@@ -294,7 +298,7 @@ impl IotSim {
             st: Arc::new(Static {
                 statics: Arc::new(statics),
                 trucks,
-                start: cfg.start,
+                start: cfg.start as i64,
                 interval: cfg.interval,
             }),
             base: Base {

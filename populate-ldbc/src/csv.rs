@@ -15,7 +15,7 @@ use crate::rows::{Col, Kind, Rows, TableDef};
 /// Spark's microseconds of epoch milliseconds stored as a `Long`, divided
 /// by 1000 and cast to a timestamp.
 #[inline]
-fn spark_micros(ms: i64) -> i64 {
+pub(crate) fn spark_micros(ms: i64) -> i64 {
     ((ms as f64 / 1000.0) * 1_000_000.0) as i64
 }
 

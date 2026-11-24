@@ -14,14 +14,16 @@
 //! `none` generates and drops the rows.
 
 use parquet::arrow::ArrowWriter;
-use populate_ldbc::rows::{DYNAMIC, STATIC};
+use populate_ldbc::bi::{Bi, BiRun, Period};
+use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
+use populate_ldbc::rows::{Rows, TableDef};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
 use populate_table::text::write_text_many;
-use populate_table::write_parquet_many;
+use populate_table::{MultiChunks, par_sources, write_parquet_many};
 use std::env::args;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
@@ -32,8 +34,19 @@ enum Format {
     None,
 }
 
+impl Format {
+    fn ext(self) -> &'static str {
+        match self {
+            Format::Csv => "csv",
+            Format::Parquet => "parquet",
+            Format::None => "",
+        }
+    }
+}
+
 const USAGE: &str = "usage: ldbc-gen [--sf 1 | --persons N] [--resources DIR] [--out DIR] \
-[--format csv|parquet|none] [--threads N]";
+[--format csv|parquet|none] [--threads N] [--mode raw|bi] [--bulkload-portion 0.97] \
+[--batch-period year|month|day|hour|minute] [--explode-edges] [--explode-attrs] [--epoch-millis]";
 
 struct Args {
     persons: u64,
@@ -41,6 +54,9 @@ struct Args {
     out: PathBuf,
     format: Format,
     threads: usize,
+    /// `--mode bi`, with its settings.
+    bi: Option<Bi>,
+    layout: LayoutOptions,
 }
 
 fn parse() -> Result<Args, String> {
@@ -50,7 +66,10 @@ fn parse() -> Result<Args, String> {
         out: PathBuf::from("ldbc-out"),
         format: Format::Csv,
         threads: 0,
+        bi: None,
+        layout: LayoutOptions::default(),
     };
+    let mut bi = Bi::default();
     let mut it = args().skip(1);
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -73,12 +92,36 @@ fn parse() -> Result<Args, String> {
                     f => return Err(format!("unknown format {f}")),
                 }
             }
+            "--mode" => {
+                a.bi = match val()?.as_str() {
+                    "raw" => None,
+                    "bi" => Some(bi),
+                    m => return Err(format!("unknown mode {m} (raw or bi)")),
+                }
+            }
+            "--bulkload-portion" => {
+                bi.bulkload_portion = val()?
+                    .parse()
+                    .map_err(|e| format!("--bulkload-portion: {e}"))?
+            }
+            "--batch-period" => {
+                let v = val()?;
+                bi.period = Period::parse(&v).ok_or_else(|| {
+                    format!("unknown batch period {v} (year, month, day, hour, minute)")
+                })?
+            }
+            "--explode-edges" => a.layout.explode_edges = true,
+            "--explode-attrs" => a.layout.explode_attrs = true,
+            "--epoch-millis" => a.layout.epoch_millis = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 exit(0);
             }
             f => return Err(format!("unknown flag {f}")),
         }
+    }
+    if let Some(b) = &mut a.bi {
+        *b = bi;
     }
     if a.persons == 0 {
         return Err("--persons must be positive".into());
@@ -122,72 +165,147 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
         tm.states
     );
     let t1 = Instant::now();
-    let ext = match a.format {
-        Format::Csv => "csv",
-        Format::Parquet => "parquet",
-        Format::None => "",
+    let layout = Layout::new(a.layout);
+    let names: Vec<&str> = layout.dynamic.iter().map(|t| t.def.name).collect();
+    let lr = LayoutRun {
+        g: &g,
+        layout: &layout,
     };
-    let (dyn_dir, static_dir) = (a.out.join("dynamic"), a.out.join("static"));
-    if a.format != Format::None {
-        fs::create_dir_all(&dyn_dir)?;
-        fs::create_dir_all(&static_dir)?;
+    let rows = match a.bi {
+        None => {
+            let ws = files(a, &a.out.join("dynamic"), &names)?;
+            // the raw layout straight from the generator; others projected
+            let raw = a.layout == LayoutOptions::default();
+            let rows = match a.format {
+                Format::Csv if raw => finish(write_text_many(&[&g.csv()], ws, a.threads)?)?,
+                Format::Csv => finish(write_text_many(&[&lr], ws, a.threads)?)?,
+                Format::Parquet => {
+                    let src: &dyn MultiChunks = if raw { &g } else { &lr };
+                    finish(
+                        write_parquet_many(&[src], ws, a.threads, None)
+                            .map_err(io::Error::other)?,
+                    )?
+                }
+                Format::None => g.count_rows(a.threads),
+            };
+            write_static(a, &layout, &lr, &a.out.join("static"))?;
+            rows
+        }
+        Some(bi) => {
+            let run = BiRun::new(&g, &layout, bi);
+            let snap = a.out.join("initial_snapshot");
+            let ws = files(a, &snap.join("dynamic"), &names)?;
+            let mut rows = match a.format {
+                Format::Csv => finish(write_text_many(&[&run], ws, a.threads)?)?,
+                Format::Parquet => finish(
+                    write_parquet_many(&[&run], ws, a.threads, None).map_err(io::Error::other)?,
+                )?,
+                Format::None => count_snapshot(&run, a.threads),
+            };
+            write_static(a, &layout, &lr, &snap.join("static"))?;
+            let (inserts, deletes) = run.finish(a.threads);
+            for (kind, tables) in [("inserts", inserts), ("deletes", deletes)] {
+                for t in tables {
+                    for (id, r) in &t.batches {
+                        rows += r.len();
+                        let dir = a.out.join(kind).join("dynamic").join(t.def.name);
+                        write_table(a, t.def, r, &dir.join(format!("batch_id={id}")), "part-0")?;
+                    }
+                }
+            }
+            rows
+        }
+    };
+    let t2 = Instant::now();
+    // rows are counted only when nothing is written
+    let counted = if a.format == Format::None {
+        format!(" ({rows} rows)")
+    } else {
+        String::new()
+    };
+    eprintln!("tables {:.2?}{counted}; total {:.2?}", t2 - t1, t2 - t0);
+    Ok(())
+}
+
+/// One buffered file per dynamic table in `dir` (none for `--format none`).
+fn files(a: &Args, dir: &Path, names: &[&str]) -> io::Result<Vec<BufWriter<File>>> {
+    if a.format == Format::None {
+        return Ok(Vec::new());
     }
-    let files = |dir: &PathBuf,
-                 names: &mut dyn Iterator<Item = &str>|
-     -> io::Result<Vec<BufWriter<File>>> {
-        names
-            .map(|n| {
-                Ok(BufWriter::with_capacity(
-                    1 << 20,
-                    File::create(dir.join(format!("{n}.{ext}")))?,
-                ))
-            })
-            .collect()
-    };
-    let mut rows_total = 0usize;
+    fs::create_dir_all(dir)?;
+    names
+        .iter()
+        .map(|n| {
+            let f = File::create(dir.join(format!("{n}.{}", a.format.ext())))?;
+            Ok(BufWriter::with_capacity(1 << 20, f))
+        })
+        .collect()
+}
+
+/// Flush the writers (rows are not counted: 0).
+fn finish(ws: Vec<BufWriter<File>>) -> io::Result<usize> {
+    for mut w in ws {
+        w.flush()?;
+    }
+    Ok(0)
+}
+
+fn count_snapshot(run: &BiRun, threads: usize) -> usize {
+    let n = MultiChunks::num_chunks(run);
+    let counts: Vec<usize> = par_chunks(n, threads, |i| {
+        run.chunk_snapshot(i).iter().map(Rows::len).sum()
+    });
+    counts.into_iter().sum()
+}
+
+/// `f(i)` for `i in 0..n` on `threads` threads (0 = all cores).
+fn par_chunks<T: Send>(n: u64, threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    let mut out = Vec::new();
+    let r: Result<(), ()> = par_sources(
+        &[n],
+        threads,
+        |_, i| f(i),
+        |_, t| {
+            out.push(t);
+            Ok(())
+        },
+    );
+    r.expect("no errors");
+    out
+}
+
+fn write_static(a: &Args, layout: &Layout, lr: &LayoutRun, dir: &Path) -> io::Result<()> {
+    if a.format == Format::None {
+        return Ok(());
+    }
+    for (t, r) in layout.statics.iter().zip(&lr.static_rows()) {
+        write_table(a, t.def, r, dir, t.def.name)?;
+    }
+    Ok(())
+}
+
+/// One table as `dir/name.csv` (with a header) or `dir/name.parquet`.
+fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io::Result<()> {
+    if a.format == Format::None {
+        return Ok(());
+    }
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{name}.{}", a.format.ext()));
     match a.format {
         Format::Csv => {
-            let ws = files(&dyn_dir, &mut DYNAMIC.iter().map(|d| d.name))?;
-            for mut w in write_text_many(&[&g.csv()], ws, a.threads)? {
-                w.flush()?;
-            }
-            let st = g.static_rows();
-            for (def, r) in STATIC.iter().zip(&st) {
-                let mut buf = Vec::new();
-                csv::header(def, &mut buf);
-                csv::write(def, r, &mut buf);
-                fs::write(static_dir.join(format!("{}.csv", def.name)), buf)?;
-            }
+            let mut buf = Vec::new();
+            csv::header(def, &mut buf);
+            csv::write(def, r, &mut buf);
+            fs::write(path, buf)
         }
         Format::Parquet => {
-            let ws = files(&dyn_dir, &mut DYNAMIC.iter().map(|d| d.name))?;
-            for mut w in write_parquet_many(&[&g], ws, a.threads, None).map_err(io::Error::other)? {
-                w.flush()?;
-            }
-            let st = g.static_rows();
-            for (def, r) in STATIC.iter().zip(&st) {
-                let f = File::create(static_dir.join(format!("{}.parquet", def.name)))?;
-                let batch = to_batch(def, r);
-                let mut w =
-                    ArrowWriter::try_new(f, batch.schema(), None).map_err(io::Error::other)?;
-                w.write(&batch).map_err(io::Error::other)?;
-                w.close().map_err(io::Error::other)?;
-            }
+            let batch = to_batch(def, r);
+            let mut w = ArrowWriter::try_new(File::create(path)?, batch.schema(), None)
+                .map_err(io::Error::other)?;
+            w.write(&batch).map_err(io::Error::other)?;
+            w.close().map_err(io::Error::other)?;
+            Ok(())
         }
-        Format::None => {
-            rows_total = g.count_rows(a.threads);
-        }
+        Format::None => Ok(()),
     }
-    let t2 = Instant::now();
-    eprintln!(
-        "tables {:.2?}{}; total {:.2?}",
-        t2 - t1,
-        if a.format == Format::None {
-            format!(" ({rows_total} rows)")
-        } else {
-            String::new()
-        },
-        t2 - t0
-    );
-    Ok(())
 }

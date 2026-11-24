@@ -28,6 +28,7 @@
 //! [ldbc_snb_datagen_spark]: https://github.com/ldbc/ldbc_snb_datagen_spark
 
 mod activity;
+pub mod bi;
 pub mod csv;
 mod dates;
 mod dict;
@@ -35,6 +36,7 @@ mod fdlibm;
 mod java;
 mod jrand;
 mod knows;
+pub mod layout;
 pub mod params;
 mod person;
 pub mod rows;

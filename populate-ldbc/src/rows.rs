@@ -176,6 +176,71 @@ impl Col {
     }
 }
 
+impl Col {
+    /// The values at rows `idx`, in that order.
+    pub fn gather(&self, idx: &[u32]) -> Col {
+        fn strs(d: &[u8], o: &[u32], idx: &[u32]) -> (Vec<u8>, Vec<u32>) {
+            let (mut nd, mut no) = (Vec::new(), Vec::with_capacity(idx.len()));
+            for &i in idx {
+                let i = i as usize;
+                let s = if i == 0 { 0 } else { o[i - 1] as usize };
+                nd.extend_from_slice(&d[s..o[i] as usize]);
+                no.push(u32::try_from(nd.len()).expect("a chunk's string column is over 4 GiB"));
+            }
+            (nd, no)
+        }
+        fn pick<T: Copy>(v: &[T], idx: &[u32]) -> Vec<T> {
+            idx.iter().map(|&i| v[i as usize]).collect()
+        }
+        match self {
+            Col::I64(v) => Col::I64(pick(v, idx)),
+            Col::I32(v) => Col::I32(pick(v, idx)),
+            Col::Bool(v) => Col::Bool(pick(v, idx)),
+            Col::Str(d, o) => {
+                let (d, o) = strs(d, o, idx);
+                Col::Str(d, o)
+            }
+            Col::OptI64(v, n) => Col::OptI64(pick(v, idx), pick(n, idx)),
+            Col::OptI32(v, n) => Col::OptI32(pick(v, idx), pick(n, idx)),
+            Col::OptStr(d, o, n) => {
+                let (d, o) = strs(d, o, idx);
+                Col::OptStr(d, o, pick(n, idx))
+            }
+        }
+    }
+
+    /// Append `other`'s values (a column of the same kind).
+    pub fn append(&mut self, other: &Col) {
+        fn strs(d: &mut Vec<u8>, o: &mut Vec<u32>, od: &[u8], oo: &[u32]) {
+            let base = u32::try_from(d.len()).expect("a chunk's string column is over 4 GiB");
+            d.extend_from_slice(od);
+            o.extend(oo.iter().map(|&e| {
+                base.checked_add(e)
+                    .expect("a chunk's string column is over 4 GiB")
+            }));
+        }
+        match (self, other) {
+            (Col::I64(a), Col::I64(b)) => a.extend_from_slice(b),
+            (Col::I32(a), Col::I32(b)) => a.extend_from_slice(b),
+            (Col::Bool(a), Col::Bool(b)) => a.extend_from_slice(b),
+            (Col::Str(d, o), Col::Str(od, oo)) => strs(d, o, od, oo),
+            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
+                a.extend_from_slice(b);
+                n.extend_from_slice(m);
+            }
+            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
+                a.extend_from_slice(b);
+                n.extend_from_slice(m);
+            }
+            (Col::OptStr(d, o, n), Col::OptStr(od, oo, m)) => {
+                strs(d, o, od, oo);
+                n.extend_from_slice(m);
+            }
+            _ => unreachable!("columns of different kinds"),
+        }
+    }
+}
+
 /// A table's columns for one chunk.
 #[derive(Debug, Clone)]
 pub struct Rows {

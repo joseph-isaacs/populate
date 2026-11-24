@@ -172,7 +172,7 @@ impl FromStr for TableName {
     }
 }
 
-/// A DSB data set at one scale factor (at least 1: dsdgen crashes below).
+/// A DSB data set at one scale factor.
 #[derive(Debug, Clone)]
 pub struct Dsb {
     sf: f64,
@@ -180,11 +180,13 @@ pub struct Dsb {
 }
 
 impl Dsb {
-    /// Scale factor `sf` (1 = about 1 GB of `.dat` text). dsdgen's scale
-    /// factors are 1, 10, 100, 300, 1000, ...; others are interpolated the
-    /// way dsdgen does.
+    /// Scale factor `sf` (1 = about 1 GB of `.dat` text): a whole number,
+    /// at least 1, as DSB's dsdgen takes.
     pub fn new(sf: f64) -> Self {
-        assert!(sf >= 1.0, "scale factor must be at least 1");
+        assert!(
+            sf >= 1.0 && sf.fract() == 0.0,
+            "scale factor must be a whole number, at least 1"
+        );
         let session = SessionBuilder::new()
             .with_scale_factor(sf)
             .build()

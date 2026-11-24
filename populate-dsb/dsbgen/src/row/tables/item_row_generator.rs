@@ -24,6 +24,9 @@ use crate::distribution::{
     pick_random_color, pick_random_current_price_range, pick_random_manufact_id_range,
     pick_random_size, ColorsWeights, IdWeights, SizeWeights,
 };
+use crate::dsb::{
+    correlated_attribute, exp_int, exp_key, exp_pick_index, make_key_perm, make_perm, map_perm,
+};
 use crate::generator::ItemGeneratorColumn;
 use crate::nulls::create_null_bit_map;
 use crate::random::{RandomTextGenerator, RandomValueGenerator};
@@ -71,7 +74,6 @@ pub struct ItemRowGenerator {
 impl ItemRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
-        use crate::dsb::{make_key_perm, make_perm};
         use ItemGeneratorColumn::*;
         let mut ag = AbstractRowGenerator::new(row_count);
         let manager_count = manager_id_item_count();
@@ -122,10 +124,9 @@ impl ItemRowGenerator {
         use ItemGeneratorColumn::*;
         let stream = self.abstract_generator.get_random_number_stream(&ICategory);
         let category_index =
-            crate::dsb::exp_pick_index(category_count() as i32, Some(&self.perms.category), stream);
+            exp_pick_index(category_count() as i32, Some(&self.perms.category), stream);
         let stream = self.abstract_generator.get_random_number_stream(&IClass);
-        let class_index =
-            crate::dsb::exp_pick_index(category_class_count(category_index) as i32, None, stream);
+        let class_index = exp_pick_index(category_class_count(category_index) as i32, None, stream);
         let class = category_class_at(category_index, class_index);
         let category_id = (category_index + 1) as i64;
         let brand_base = (row_number as i64) % class.get_brand_count() as i64 + 1;
@@ -143,7 +144,6 @@ impl ItemRowGenerator {
     }
 
     fn generate_item_row(&mut self, row_number: u64) -> ItemRow {
-        use crate::dsb::{exp_int, exp_pick_index, map_perm};
         use ItemGeneratorColumn::*;
 
         let row_number_i64 = i64::try_from(row_number).expect("row number fits in i64");
@@ -186,7 +186,7 @@ impl ItemRowGenerator {
         let stream = self
             .abstract_generator
             .get_random_number_stream(&IManagerId);
-        let i_manager_id = crate::dsb::correlated_attribute(
+        let i_manager_id = correlated_attribute(
             category_count() as i32,
             i_category_id,
             self.perms.manager_count,
@@ -350,7 +350,7 @@ impl ItemRowGenerator {
             .get_scaling()
             .get_row_count(crate::config::Table::Promotion) as i64;
         let stream = self.abstract_generator.get_random_number_stream(&IPromoSk);
-        let _i_promo_sk = crate::dsb::exp_key(1, promotions, stream);
+        let _i_promo_sk = exp_key(1, promotions, stream);
         let _temp = RandomValueGenerator::generate_uniform_random_int(1, 100, stream);
 
         let row = ItemRow::new(

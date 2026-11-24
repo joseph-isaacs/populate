@@ -11,12 +11,19 @@ use super::attributes::AttributeKeyMap;
 use super::{exp_decimal, exp_int, exp_rank_weight, make_bucket, make_perm, map_perm};
 use super::{range_from_bucket, DATE_BUCKET_COUNT, LAMBDA_LOW};
 use super::{DISCOUNT_BUCKET_COUNT, MARKUP_BUCKET_COUNT, WHOLESALE_COST_BUCKET_COUNT};
-use crate::config::Session;
+use crate::config::{Session, Table};
+use crate::generator::CatalogReturnsGeneratorColumn as Cr;
+use crate::generator::CatalogSalesGeneratorColumn as Cs;
+use crate::generator::StoreReturnsGeneratorColumn as Sr;
+use crate::generator::StoreSalesGeneratorColumn as Ss;
+use crate::generator::WebReturnsGeneratorColumn as Wr;
+use crate::generator::WebSalesGeneratorColumn as Ws;
 use crate::generator::{DateDimGeneratorColumn, GeneratorColumn, WebSalesGeneratorColumn};
 use crate::random::{RandomNumberStream, RandomValueGenerator};
 use crate::row::CallCenterRowGenerator;
 use crate::types::{Date, Decimal, Pricing};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A sales channel, in dsdgen's generation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,11 +43,11 @@ impl Channel {
     }
 
     /// The sales table.
-    pub fn table(self) -> crate::config::Table {
+    pub fn table(self) -> Table {
         match self {
-            Channel::Catalog => crate::config::Table::CatalogSales,
-            Channel::Store => crate::config::Table::StoreSales,
-            Channel::Web => crate::config::Table::WebSales,
+            Channel::Catalog => Table::CatalogSales,
+            Channel::Store => Table::StoreSales,
+            Channel::Web => Table::WebSales,
         }
     }
 
@@ -362,8 +369,6 @@ fn stream_of<C: GeneratorColumn>(c: C, first_order: u64) -> (RandomNumberStream,
 
 impl FactStreams {
     fn new(channel: Channel, first_order: u64) -> Self {
-        use crate::generator::CatalogReturnsGeneratorColumn as Cr;
-        use crate::generator::CatalogSalesGeneratorColumn as Cs;
         match channel {
             Channel::Catalog => {
                 let (l, lb) = stream_of(Cs::CsOrderNumber, first_order);
@@ -377,8 +382,6 @@ impl FactStreams {
                 }
             }
             Channel::Store => {
-                use crate::generator::StoreReturnsGeneratorColumn as Sr;
-                use crate::generator::StoreSalesGeneratorColumn as Ss;
                 let (l, lb) = stream_of(Ss::SsTicketNumber, first_order);
                 let (r, rb) = stream_of(Ss::SrIsReturned, first_order);
                 FactStreams {
@@ -389,8 +392,6 @@ impl FactStreams {
                 }
             }
             Channel::Web => {
-                use crate::generator::WebReturnsGeneratorColumn as Wr;
-                use crate::generator::WebSalesGeneratorColumn as Ws;
                 let (l, lb) = stream_of(Ws::WsOrderNumber, first_order);
                 let (g, gb) = stream_of(Ws::WsShipCustomerSk, first_order);
                 let (r, rb) = stream_of(Ws::WrIsReturned, first_order);
@@ -449,12 +450,11 @@ pub fn order_facts(channel: Channel, first: u64, last: u64) -> OrderFacts {
 /// Orders per checkpoint of [`orders_before`]'s prefix sums.
 const CHECKPOINT: u64 = 1 << 16;
 
-type PrefixCache =
-    std::sync::Mutex<std::collections::HashMap<(Channel, u64), std::sync::Arc<Vec<OrderFacts>>>>;
+type PrefixCache = Mutex<HashMap<(Channel, u64), Arc<Vec<OrderFacts>>>>;
 
 /// Prefix sums of [`OrderFacts`] at every [`CHECKPOINT`] orders of a
 /// channel with `orders` orders, built in parallel on first use.
-fn checkpoints(channel: Channel, orders: u64) -> std::sync::Arc<Vec<OrderFacts>> {
+fn checkpoints(channel: Channel, orders: u64) -> Arc<Vec<OrderFacts>> {
     static CACHE: OnceLock<PrefixCache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(c) = cache.lock().expect("prefix cache").get(&(channel, orders)) {
@@ -483,7 +483,7 @@ fn checkpoints(channel: Channel, orders: u64) -> std::sync::Arc<Vec<OrderFacts>>
         run.add(s);
         prefix.push(run);
     }
-    let prefix = std::sync::Arc::new(prefix);
+    let prefix = Arc::new(prefix);
     cache
         .lock()
         .expect("prefix cache")

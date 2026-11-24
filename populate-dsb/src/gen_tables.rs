@@ -403,8 +403,8 @@ pub fn for_each_batch_many(
     r.unwrap_or_else(|e| match e {});
 }
 
-/// One job source: a table. A unit can have several outputs, for a
-/// sales table and its returns generated in one pass.
+/// One job source: a table. `idx` lists its outputs, so that a sales
+/// table and its returns could share one pass; today each unit has one.
 struct Unit<'a> {
     tables: &'a [DsTable],
     /// Indexes into `tables` of this unit's outputs.

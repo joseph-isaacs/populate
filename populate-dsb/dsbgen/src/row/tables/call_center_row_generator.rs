@@ -1,5 +1,6 @@
 use crate::config::Session;
 use crate::distribution::{CallCenterDistributions, FirstNamesWeights, NamesDistributions};
+use crate::dsb::{make_bucket, make_perm};
 use crate::generator::{CallCenterGeneratorColumn, GeneratorColumn};
 use crate::random::{RandomNumberStream, RandomTextGenerator, RandomValueGenerator};
 use crate::row::{AbstractRowGenerator, CallCenterRow};
@@ -51,7 +52,6 @@ const JULIAN_DATE_START: i64 = Date::JULIAN_DATA_START_DATE - 23; // 23 is the o
 impl CallCenterRowGenerator {
     /// Generate source rows `1..=row_count`.
     pub fn new(session: Session, row_count: u64) -> Self {
-        use crate::dsb::{make_bucket, make_perm};
         use CallCenterGeneratorColumn::*;
         let mut ag = AbstractRowGenerator::new(row_count);
         // DSB: `nScale = get_int("SCALE")`.
@@ -65,7 +65,10 @@ impl CallCenterRowGenerator {
         let company = make_perm(6, ag.get_random_number_stream(&CcCompany));
         let sq_ft_bucket = make_bucket(20, 700 - 100 + 1);
         let sq_ft = make_perm(sq_ft_bucket.1, ag.get_random_number_stream(&CcSqFt));
-        let employees_max = MAX_NUMBER_OF_EMPLOYEES_UNSCALED * scale * scale;
+        // C's `int` arithmetic, which wraps at huge scales.
+        let employees_max = MAX_NUMBER_OF_EMPLOYEES_UNSCALED
+            .wrapping_mul(scale)
+            .wrapping_mul(scale);
         let employees_bucket = make_bucket(20, employees_max);
         let employees = make_perm(
             employees_bucket.1,
@@ -482,9 +485,21 @@ impl CallCenterRowGenerator {
             .clone()
     }
 
+    /// Take the row-2 snapshot (row 1 draws the permutations) before
+    /// skipping past row 1.
+    fn ensure_row2(&mut self, row: u64) {
+        if self.abstract_generator.needs_row2(row) {
+            let mut first = Self::new(self.session.clone(), 1);
+            first.next();
+            self.abstract_generator
+                .set_row2(first.abstract_generator.seeds());
+        }
+    }
+
     /// Start generating at `starting_row_number` (1-based), fast forwarding
     /// the random number streams to that row.
     pub fn skip_rows_until_starting_row_number(&mut self, starting_row_number: u64) {
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .skip_rows_until_starting_row_number(starting_row_number);
         self.previous_row = None;
@@ -495,12 +510,7 @@ impl CallCenterRowGenerator {
     ///
     /// The ending row number is clamped to the table's row count.
     pub fn set_source_row_range(&mut self, starting_row_number: u64, ending_row_number: u64) {
-        if self.abstract_generator.needs_row2(starting_row_number) {
-            let mut first = Self::new(self.session.clone(), 1);
-            first.next();
-            self.abstract_generator
-                .set_row2(first.abstract_generator.seeds());
-        }
+        self.ensure_row2(starting_row_number);
         self.abstract_generator
             .set_source_row_range(starting_row_number, ending_row_number);
         self.previous_row = None;
@@ -547,5 +557,20 @@ mod tests {
         // Check that we can get values (CSV serialization works)
         let values = dat_values(&row);
         assert_eq!(values[0], "1"); // cc_call_center_sk should be row number
+    }
+
+    /// Skipping past row 1 (whose first row draws the permutations) gives
+    /// the sequential rows.
+    #[test]
+    fn skip_past_row_one_matches_sequential() {
+        let session = Session::default();
+        let n = session.get_scaling().get_row_count(Table::CallCenter);
+        let whole: Vec<String> = CallCenterRowGenerator::new(session.clone(), n)
+            .map(|r| r.to_string())
+            .collect();
+        let mut g = CallCenterRowGenerator::new(session, n);
+        g.skip_rows_until_starting_row_number(2);
+        let rest: Vec<String> = g.map(|r| r.to_string()).collect();
+        assert_eq!(rest, whole[1..]);
     }
 }

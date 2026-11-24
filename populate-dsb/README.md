@@ -14,7 +14,7 @@ cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format d
 ```
 
 Flags as `tpcds-gen` (see [`populate-tpcds`](../populate-tpcds/README.md)):
-`--sf` (at least 1: dsdgen crashes below), `--out`,
+`--sf` (a whole number, at least 1, as dsdgen takes it), `--out`,
 `--format parquet|dat|none`, `--tables`, `--threads`, `--batch`,
 `--row-group`, `--compression snappy|none`, `--no-dictionary`,
 `--encoding utf8|latin1`. `.dat` output is UTF-8 by default, as dsdgen

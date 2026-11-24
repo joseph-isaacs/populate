@@ -10,6 +10,8 @@
 
 use super::uniform_int;
 use crate::config::{Session, Table};
+use crate::distribution::items_distributions::{category_count, colors_distribution};
+use crate::distribution::FipsCountyDistribution;
 use crate::generator::{CustomerGeneratorColumn, GeneratorColumn};
 use crate::random::RandomNumberStream;
 use crate::row::{
@@ -183,10 +185,7 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
             vec![
                 (
                     CustomerAddressCounty,
-                    AttributeKeyMap::from_attributes(
-                        crate::distribution::FipsCountyDistribution::size(),
-                        county,
-                    ),
+                    AttributeKeyMap::from_attributes(FipsCountyDistribution::size(), county),
                 ),
                 (
                     CustomerAddressState,
@@ -248,11 +247,11 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
 }
 
 fn item_categories() -> usize {
-    crate::distribution::items_distributions::category_count()
+    category_count()
 }
 
 fn item_colors() -> usize {
-    crate::distribution::items_distributions::colors_distribution().get_size()
+    colors_distribution().get_size()
 }
 
 /// Every customer's `c_current_addr_sk`: one exponential draw a row from

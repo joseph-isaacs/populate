@@ -293,13 +293,12 @@ impl SessionBuilder {
     }
 
     fn validate(&self) -> Result<()> {
-        // DSB's dsdgen takes its call center sizes from the integer scale
-        // and crashes below 1.
-        if !self.scale.is_finite() || self.scale < 1.0 {
+        // DSB's dsdgen reads the scale as an integer, and crashes below 1.
+        if !self.scale.is_finite() || self.scale < 1.0 || self.scale.fract() != 0.0 {
             return Err(InvalidOptionError::with_message(
                 "scale",
                 &self.scale.to_string(),
-                "Scale must be at least 1",
+                "Scale must be a whole number, at least 1",
             )
             .into());
         }

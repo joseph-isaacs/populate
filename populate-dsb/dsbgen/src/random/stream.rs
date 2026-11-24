@@ -49,7 +49,9 @@ impl RandomNumberStream {
         }
 
         self.seed = next_seed;
-        self.seeds_used += 1;
+        // dsdgen's count is a C int: it can wrap on a stream that is never
+        // reset (WS_PRICING before web_sales).
+        self.seeds_used = self.seeds_used.wrapping_add(1);
         self.seed
     }
 

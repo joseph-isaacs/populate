@@ -115,9 +115,9 @@ fn parse() -> Result<Args, String> {
             f => return Err(format!("unknown flag `{f}`")),
         }
     }
-    // DSB's dsdgen crashes below scale 1.
-    if a.sf.is_nan() || a.sf < 1.0 {
-        return Err("--sf must be at least 1".into());
+    // DSB's dsdgen reads a whole scale, and crashes below 1.
+    if a.sf.is_nan() || a.sf < 1.0 || a.sf.fract() != 0.0 {
+        return Err("--sf must be a whole number, at least 1".into());
     }
     if a.batch == 0 || a.row_group == Some(0) {
         return Err("--batch and --row-group must be > 0".into());

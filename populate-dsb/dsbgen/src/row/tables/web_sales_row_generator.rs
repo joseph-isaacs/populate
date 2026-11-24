@@ -84,6 +84,11 @@ pub struct WebSalesRowGenerator {
     item_permutation: Option<Vec<i32>>,
     dates: OrderDates,
     remaining_line_items: i32,
+    /// The source row of the current order.
+    order_row: u64,
+    /// WS_PRICING's draw count from catalog and store sales, as dsdgen's
+    /// `int` holds it.
+    pricing_carry: i32,
     order_info: OrderInfo,
     item_index: i32,
     session: Session,
@@ -140,16 +145,14 @@ impl WebSalesRowGenerator {
         let customer_state = attribute_map(MapName::CustomerState, &session);
         let customer_state_perm = make_permutation(customer_state.attribute_count() as usize, s);
         // WS_PRICING comes to web sales after every catalog and store line
-        // item has drawn from it; its count of draws is never reset, so the
-        // first row overruns its budget.
+        // item has drawn from it, and its count of draws (a C int) is never
+        // reset before. Row 1's end burns up to the budget from that
+        // wrapped count: see `finish_line_item`.
         let s = ag.get_random_number_stream(&WsPricing);
         let earlier = PRICING_DRAWS
             * (total_lines(Channel::Catalog, &session) + total_lines(Channel::Store, &session));
         s.advance(earlier);
-        s.set_seeds_used(
-            s.get_seeds_used()
-                .saturating_add(earlier.min(u32::MAX as u64) as u32),
-        );
+        let pricing_carry = earlier as u32 as i32;
         // mk_detail's first call draws the item permutation (its stream has
         // no budget, so drawing it up front is the same).
         let item_permutation = make_permutation(
@@ -165,6 +168,8 @@ impl WebSalesRowGenerator {
             item_permutation: Some(item_permutation),
             dates: OrderDates::new(Channel::Web, rows(T::WebSales)),
             remaining_line_items: 0,
+            order_row: 0,
+            pricing_carry,
             order_info: OrderInfo::default(),
             item_index: 0,
             session,
@@ -481,6 +486,7 @@ impl WebSalesRowGenerator {
 
         // Start a new order if we've finished the previous one
         if self.remaining_line_items == 0 {
+            self.order_row = row_number;
             self.order_info = self.generate_order_info(row_number);
 
             // WebSales has 8-16 line items per order (vs 4-14 for CatalogSales)
@@ -529,6 +535,21 @@ impl WebSalesRowGenerator {
         self.remaining_line_items -= 1;
         let last_in_order = self.remaining_line_items == 0;
         if last_in_order {
+            if self.order_row == 1 {
+                // dsdgen's checkSeeds on WS_PRICING at row 1: the count
+                // carried from catalog and store sales plus row 1's draws,
+                // wrapped as a C int, burnt up to the budget if below it.
+                let s = self
+                    .abstract_generator
+                    .get_random_number_stream(&WebSalesGeneratorColumn::WsPricing);
+                let used = self.pricing_carry.wrapping_add(s.get_seeds_used() as i32);
+                let budget = s.get_seeds_per_row();
+                if used < budget as i32 {
+                    s.advance((budget as i64 - used as i64) as u64);
+                }
+                // nothing left for finish_row to burn
+                s.set_seeds_used(budget);
+            }
             self.abstract_generator.finish_row();
         }
         last_in_order

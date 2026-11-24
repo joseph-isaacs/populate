@@ -62,27 +62,33 @@ pub enum TableName {
     Date,
     LineOrder,
     /// `lineorder` joined with `customer`, `supplier` and `part` (SSB-flat).
-    /// Not made by ssb-dbgen.
+    /// Not made by ssb-dbgen. The dimension tables are built once per
+    /// [`Ssb`] and kept; each batch's name, address and phone columns are
+    /// views into (and keep alive) the dimension's whole buffer, which
+    /// matters only when sending the Arrow batches on (IPC, FFI) rather
+    /// than writing Parquet or `.tbl`.
     LineOrderFlat,
 }
 
 impl TableName {
     /// The five SSB tables, in ssb-dbgen's order (not `lineorder_flat`).
-    pub const ALL: [TableName; 5] = {
-        use TableName::*;
-        [Part, Supplier, Customer, Date, LineOrder]
-    };
+    pub const ALL: [TableName; 5] = [
+        TableName::Part,
+        TableName::Supplier,
+        TableName::Customer,
+        TableName::Date,
+        TableName::LineOrder,
+    ];
 
     /// SQL name, e.g. `lineorder`.
     pub fn as_str(self) -> &'static str {
-        use TableName::*;
         match self {
-            Part => "part",
-            Supplier => "supplier",
-            Customer => "customer",
-            Date => "date",
-            LineOrder => "lineorder",
-            LineOrderFlat => "lineorder_flat",
+            TableName::Part => "part",
+            TableName::Supplier => "supplier",
+            TableName::Customer => "customer",
+            TableName::Date => "date",
+            TableName::LineOrder => "lineorder",
+            TableName::LineOrderFlat => "lineorder_flat",
         }
     }
 }
@@ -105,8 +111,10 @@ impl FromStr for TableName {
     }
 }
 
-/// The largest supported scale factor: above it `lo_ordtotalprice` and the
-/// other 32-bit columns still fit, but customer keys near 2^31 would not.
+/// The largest supported scale factor: customer names print keys in 9
+/// digits (ssb-dbgen's `%09ld`), which holds below 10^9 customers (SF
+/// 33,333). Every 32-bit column fits well past it. (ssb-dbgen itself warns
+/// above SF 1000.)
 pub const MAX_SCALE_FACTOR: f64 = 30_000.0;
 
 /// An SSB data set at one scale factor.
@@ -119,8 +127,8 @@ pub struct Ssb {
 impl Ssb {
     /// Scale factor `sf`, as ssb-dbgen's `-s`: below 1 every table is
     /// scaled by `sf` (the date table too); from 1 the scale is `sf`
-    /// truncated to an integer. `part` has `200,000 * floor(1 + log2(sf))`
-    /// rows.
+    /// truncated to an integer. From SF 1 `part` has
+    /// `200,000 * floor(1 + log2(sf))` rows (below, `200,000 * sf`).
     pub fn new(sf: f64) -> Self {
         assert!(
             sf > 0.0 && sf <= MAX_SCALE_FACTOR,

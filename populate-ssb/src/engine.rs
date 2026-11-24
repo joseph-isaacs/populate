@@ -55,14 +55,13 @@ impl TableName {
     /// `lo_orderkey`), `Utf8View` text, column names as in ssb-dbgen's
     /// `ssb.ddl`.
     pub fn schema(self) -> SchemaRef {
-        use TableName::*;
         match self {
-            Part => tables::PART.clone(),
-            Supplier => tables::SUPPLIER.clone(),
-            Customer => tables::CUSTOMER.clone(),
-            Date => tables::DATE.clone(),
-            LineOrder => tables::LINEORDER.clone(),
-            LineOrderFlat => flat::FLAT.clone(),
+            TableName::Part => tables::PART.clone(),
+            TableName::Supplier => tables::SUPPLIER.clone(),
+            TableName::Customer => tables::CUSTOMER.clone(),
+            TableName::Date => tables::DATE.clone(),
+            TableName::LineOrder => tables::LINEORDER.clone(),
+            TableName::LineOrderFlat => flat::FLAT.clone(),
         }
     }
 }
@@ -171,11 +170,11 @@ impl SsbTable {
             let k = n as usize;
             emit(match self.name {
                 TableName::Part => tables::part(d, at, k),
-                TableName::Supplier => tables::supplier(d, at, k),
+                TableName::Supplier => tables::supplier(d, s, at, k),
                 TableName::Customer => tables::customer(d, s, at, k),
                 TableName::Date => tables::date(d, at, k),
                 TableName::LineOrder => tables::lineorder(d, s, at, k),
-                TableName::LineOrderFlat => self.dims(0).join(tables::lineorder(d, s, at, k)),
+                TableName::LineOrderFlat => self.dims(0).join(d, tables::lineorder(d, s, at, k)),
             });
             at += n;
         }
@@ -228,6 +227,10 @@ impl SsbTable {
     }
 }
 
+/// Driving an `SsbTable` through these traits directly (rather than its
+/// own `for_each_batch` / `write_*` methods) skips its preparation: for
+/// `lineorder_flat`, the first chunk then builds the dimension tables on
+/// all cores while the other workers wait.
 impl Chunks for SsbTable {
     fn schema(&self) -> SchemaRef {
         SsbTable::schema(self)

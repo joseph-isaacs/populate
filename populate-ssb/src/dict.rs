@@ -12,6 +12,7 @@
 use arrow_array::StringViewArray;
 use arrow_buffer::{Buffer, ScalarBuffer};
 use populate_tpch::rng::scale;
+use std::iter::repeat_n;
 use std::sync::{Arc, LazyLock};
 use tpchgen::distribution::{Distribution, Distributions};
 
@@ -221,7 +222,7 @@ impl Builder {
         let mut prev = 0;
         for (i, v) in d.get_values().iter().enumerate() {
             let w = d.get_weight(i);
-            picks.extend(std::iter::repeat_n(i as u8, (w - prev).max(0) as usize));
+            picks.extend(repeat_n(i as u8, (w - prev).max(0) as usize));
             prev = w;
             views.push(self.add(v));
         }

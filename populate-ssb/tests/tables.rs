@@ -9,8 +9,10 @@
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
+use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use populate_ssb::TableName::{Customer, Date, LineOrder, Part, Supplier};
 use populate_ssb::{Ssb, TableName, write_tbl_many};
 use std::path::PathBuf;
 use std::process::Command;
@@ -29,7 +31,6 @@ fn check(sf: f64, t: TableName, first: u64, end: u64, len: usize, hash: u64) {
 
 #[test]
 fn sf_0_01_matches_ssb_dbgen() {
-    use TableName::*;
     for (t, len, hash) in [
         (Part, 167_463, 0x05936901d31af393),
         (Supplier, 1_594, 0x72e4b3d899e927d8),
@@ -44,7 +45,6 @@ fn sf_0_01_matches_ssb_dbgen() {
 
 #[test]
 fn dimensions_match_ssb_dbgen() {
-    use TableName::*;
     let all = u64::MAX;
     for (sf, t, first, end, len, hash) in [
         (1.0, Supplier, 0, all, 166_676, 0x739b3a6c5ddd7d94),
@@ -54,6 +54,15 @@ fn dimensions_match_ssb_dbgen() {
         (8.0, Supplier, 0, all, 1_346_561, 0xb71e2a819261b4f4),
         (8.0, Customer, 0, all, 22_905_175, 0x203b6942388e4f96),
         (8.0, Part, 650_000, 651_000, 86_281, 0xe225060e453ac895),
+        // customer keys past 2^21: the floating-point range mapping
+        (
+            100.0,
+            Customer,
+            2_000_000,
+            2_001_000,
+            96_648,
+            0x07ec723892b8912f,
+        ),
     ] {
         check(sf, t, first, end, len, hash);
     }
@@ -66,6 +75,8 @@ fn lineorder_ranges_match_ssb_dbgen() {
         (1.0, 1_000_000, 1_001_000, 402_302, 0xb2bde89579e317c7),
         (1.0, 1_499_000, 1_500_000, 405_941, 0x22dd886daf2f7e3c),
         (8.0, 11_000_000, 11_000_500, 209_959, 0x0bcae4fec444ec6c),
+        (100.0, 0, 1_000, 417_046, 0xb13a44469835b637),
+        (1100.0, 0, 1_000, 427_359, 0x7366e035a9b44cf1),
     ] {
         check(sf, TableName::LineOrder, first, end, len, hash);
     }
@@ -129,10 +140,26 @@ fn text<'a>(b: &'a RecordBatch, c: &str, r: usize) -> &'a str {
 
 #[test]
 fn flat_is_the_join() {
-    let s = Ssb::new(0.01);
+    flat_matches(0.01, 0);
+    // dimensions built from many jobs (over 64Ki customers and parts)
+    flat_matches(3.0, 20_000);
+}
+
+/// `lineorder_flat` of the first `orders` orders (all for 0) of SF `sf`
+/// against `lineorder` joined with the dimension tables.
+fn flat_matches(sf: f64, orders: u64) {
+    let s = Ssb::new(sf);
+    let limit = |t: TableName| {
+        let t = s.table(t);
+        if orders > 0 && matches!(t.name(), TableName::LineOrder | TableName::LineOrderFlat) {
+            t.limit_source_rows(orders)
+        } else {
+            t
+        }
+    };
     let one = |t: TableName| {
-        let v = s.table(t).collect(0);
-        arrow_select::concat::concat_batches(&t.schema(), &v).unwrap()
+        let v = limit(t).collect(0);
+        concat_batches(&t.schema(), &v).unwrap()
     };
     let (lo, cust, supp, part) = (
         one(TableName::LineOrder),
@@ -204,7 +231,7 @@ fn parquet_round_trips() {
             .build()
             .unwrap();
         let got: Vec<RecordBatch> = reader.map(Result::unwrap).collect();
-        let cat = |v: &[RecordBatch]| arrow_select::concat::concat_batches(&t.schema(), v).unwrap();
+        let cat = |v: &[RecordBatch]| concat_batches(&t.schema(), v).unwrap();
         assert_eq!(cat(&got), cat(&want), "{t}");
     }
 }

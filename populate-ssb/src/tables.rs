@@ -19,8 +19,9 @@
 //!   finished row's unused draws for the table's streams), so `lineorder`
 //!   starts those streams at row `dates`.
 
-use crate::dict::{COLORS, DAYS, Dict, Views};
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringViewArray};
+use crate::dict::{COLORS, DAYS, Dict, Views, days_in_month, holiday, season};
+use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
+use arrow_schema::DataType::{Int32, Int64, Utf8View};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use populate_tpch::rng::{M, bound_all, draws, scale};
 use std::sync::{Arc, LazyLock};
@@ -167,7 +168,6 @@ macro_rules! schema {
 }
 
 pub(crate) static PART: LazyLock<SchemaRef> = LazyLock::new(|| {
-    use DataType::*;
     schema!(
         "p_partkey": Int32, "p_name": Utf8View, "p_mfgr": Utf8View, "p_category": Utf8View,
         "p_brand1": Utf8View, "p_color": Utf8View, "p_type": Utf8View, "p_size": Int32,
@@ -176,7 +176,6 @@ pub(crate) static PART: LazyLock<SchemaRef> = LazyLock::new(|| {
 });
 
 pub(crate) static SUPPLIER: LazyLock<SchemaRef> = LazyLock::new(|| {
-    use DataType::*;
     schema!(
         "s_suppkey": Int32, "s_name": Utf8View, "s_address": Utf8View, "s_city": Utf8View,
         "s_nation": Utf8View, "s_region": Utf8View, "s_phone": Utf8View,
@@ -184,7 +183,6 @@ pub(crate) static SUPPLIER: LazyLock<SchemaRef> = LazyLock::new(|| {
 });
 
 pub(crate) static CUSTOMER: LazyLock<SchemaRef> = LazyLock::new(|| {
-    use DataType::*;
     schema!(
         "c_custkey": Int32, "c_name": Utf8View, "c_address": Utf8View, "c_city": Utf8View,
         "c_nation": Utf8View, "c_region": Utf8View, "c_phone": Utf8View,
@@ -193,7 +191,6 @@ pub(crate) static CUSTOMER: LazyLock<SchemaRef> = LazyLock::new(|| {
 });
 
 pub(crate) static DATE: LazyLock<SchemaRef> = LazyLock::new(|| {
-    use DataType::*;
     schema!(
         "d_datekey": Int32, "d_date": Utf8View, "d_dayofweek": Utf8View, "d_month": Utf8View,
         "d_year": Int32, "d_yearmonthnum": Int32, "d_yearmonth": Utf8View,
@@ -206,7 +203,6 @@ pub(crate) static DATE: LazyLock<SchemaRef> = LazyLock::new(|| {
 
 /// `lineorder`'s fields, shared with `lineorder_flat`.
 pub(crate) fn lineorder_fields() -> Vec<Field> {
-    use DataType::*;
     [
         ("lo_orderkey", Int64),
         ("lo_linenumber", Int32),
@@ -242,8 +238,21 @@ fn i32s(v: Vec<i32>) -> ArrayRef {
     Arc::new(Int32Array::from(v))
 }
 
-fn u32s(v: Vec<u32>) -> ArrayRef {
-    i32s(v.into_iter().map(|x| x as i32).collect())
+/// The string column of views `$view(r)` for each row `r` of `$rows` (a
+/// macro, so the view expression is inlined into the loop).
+macro_rules! gather {
+    ($d:expr, $rows:expr, |$r:ident| $view:expr) => {
+        strs(
+            $d,
+            $rows
+                .iter()
+                .map(|&$r| {
+                    let $r = $r as usize;
+                    $view
+                })
+                .collect(),
+        )
+    };
 }
 
 fn strs(d: &Dict, views: Vec<u128>) -> ArrayRef {
@@ -257,49 +266,106 @@ fn keys(first: u64, n: usize) -> ArrayRef {
 // ---------------------------------------------------------------------------
 // part
 
+/// The drawn values of a run of parts, as small codes: what `part` and
+/// `lineorder_flat` both make their columns from.
+#[derive(Debug, Default)]
+pub(crate) struct PartRows {
+    /// `p_name`: the second and third colour, `a * COLORS + b`.
+    name: Vec<u16>,
+    /// `p_color`: the first colour.
+    color: Vec<u8>,
+    /// Manufacturer and category, `(m - 1) * 5 + c - 1`.
+    category: Vec<u8>,
+    /// `0..40`.
+    brand: Vec<u8>,
+    /// Indices into the type and container distributions.
+    kind: Vec<u8>,
+    container: Vec<u8>,
+    size: Vec<u8>,
+}
+
+impl PartRows {
+    /// Parts `first..first + n` (0-based).
+    pub(crate) fn new(d: &Dict, first: u64, n: usize) -> Self {
+        // p_name: dbgen shuffles all 92 colours (92 draws) and joins the
+        // first three; ssb-dbgen then moves the first to p_color
+        let shuffle = P_NAME.draws(first, n);
+        let mut name = Vec::with_capacity(n);
+        let mut color = Vec::with_capacity(n);
+        for row in shuffle.chunks_exact(COLORS) {
+            let [c, a, b] = first_three(row);
+            color.push(c as u8);
+            name.push((a * COLORS + b) as u16);
+        }
+        let mfgr = P_MFG.ints(first, n, 1, 5);
+        let cat = P_CAT.ints(first, n, 1, 5);
+        PartRows {
+            name,
+            color,
+            category: mfgr
+                .iter()
+                .zip(&cat)
+                .map(|(m, c)| ((m - 1) * 5 + c - 1) as u8)
+                .collect(),
+            brand: P_BRND
+                .ints(first, n, 0, 39)
+                .iter()
+                .map(|&b| b as u8)
+                .collect(),
+            kind: P_TYPE
+                .draws(first, n)
+                .iter()
+                .map(|&x| d.types.index(x) as u8)
+                .collect(),
+            container: P_CNTR
+                .draws(first, n)
+                .iter()
+                .map(|&x| d.containers.index(x) as u8)
+                .collect(),
+            size: P_SIZE
+                .ints(first, n, 1, 50)
+                .iter()
+                .map(|&s| s as u8)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn append(&mut self, o: PartRows) {
+        self.name.extend(o.name);
+        self.color.extend(o.color);
+        self.category.extend(o.category);
+        self.brand.extend(o.brand);
+        self.kind.extend(o.kind);
+        self.container.extend(o.container);
+        self.size.extend(o.size);
+    }
+
+    /// The columns after `p_partkey` of rows `rows` (indices into these).
+    pub(crate) fn columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
+        vec![
+            gather!(d, rows, |r| d.names[self.name[r] as usize]),
+            gather!(d, rows, |r| d.mfgrs[self.category[r] as usize / 5]),
+            gather!(d, rows, |r| d.categories[self.category[r] as usize]),
+            gather!(d, rows, |r| d.brands
+                [self.category[r] as usize * 40 + self.brand[r] as usize]),
+            gather!(d, rows, |r| d.colors[self.color[r] as usize]),
+            gather!(d, rows, |r| d.types.views[self.kind[r] as usize]),
+            i32s(rows.iter().map(|&r| self.size[r as usize] as i32).collect()),
+            gather!(d, rows, |r| d.containers.views[self.container[r] as usize]),
+        ]
+    }
+}
+
+/// `0..n`, the rows of a whole run.
+fn all(n: usize) -> Vec<u32> {
+    (0..n as u32).collect()
+}
+
 /// Parts `first..first + n` (0-based).
 pub(crate) fn part(d: &Dict, first: u64, n: usize) -> RecordBatch {
-    // p_name: dbgen shuffles all 92 colours (92 draws) and joins the first
-    // three; ssb-dbgen then moves the first to p_color
-    let shuffle = P_NAME.draws(first, n);
-    let mut names = Vec::with_capacity(n);
-    let mut colors = Vec::with_capacity(n);
-    for row in shuffle.chunks_exact(COLORS) {
-        let [c, a, b] = first_three(row);
-        colors.push(d.colors[c]);
-        names.push(d.names[a * COLORS + b]);
-    }
-    let mfgr = P_MFG.ints(first, n, 1, 5);
-    let cat = P_CAT.ints(first, n, 1, 5);
-    let brand = P_BRND.ints(first, n, 1, 40);
-    let mut mfgrs = Vec::with_capacity(n);
-    let mut cats = Vec::with_capacity(n);
-    let mut brands = Vec::with_capacity(n);
-    for i in 0..n {
-        let mc = ((mfgr[i] - 1) * 5 + cat[i] - 1) as usize;
-        mfgrs.push(d.mfgrs[mfgr[i] as usize - 1]);
-        cats.push(d.categories[mc]);
-        brands.push(d.brands[mc * 40 + brand[i] as usize - 1]);
-    }
-    let types = P_TYPE.draws(first, n);
-    let containers = P_CNTR.draws(first, n);
-    batch(
-        &PART,
-        vec![
-            keys(first, n),
-            strs(d, names),
-            strs(d, mfgrs),
-            strs(d, cats),
-            strs(d, brands),
-            strs(d, colors),
-            strs(d, types.iter().map(|&x| d.types.view(x)).collect()),
-            u32s(P_SIZE.ints(first, n, 1, 50)),
-            strs(
-                d,
-                containers.iter().map(|&x| d.containers.view(x)).collect(),
-            ),
-        ],
-    )
+    let mut cols = vec![keys(first, n)];
+    cols.extend(PartRows::new(d, first, n).columns(d, &all(n)));
+    batch(&PART, cols)
 }
 
 /// The first three entries of dbgen's shuffle of `0..92` by these draws
@@ -340,9 +406,11 @@ fn address(row: &[u32], out: &mut Vec<u8>) {
     }
 }
 
-/// Append `prefix` and `k` in 9 zero-padded digits.
+/// Append `prefix` and `k` in 9 zero-padded digits (dbgen's `%09ld`; keys
+/// stay below 10^9 up to `MAX_SCALE_FACTOR`).
 #[inline]
 fn name(prefix: &[u8], k: u64, out: &mut Vec<u8>) {
+    debug_assert!(k < 1_000_000_000);
     out.extend_from_slice(prefix);
     let mut digits = [b'0'; 9];
     let mut k = k;
@@ -352,6 +420,9 @@ fn name(prefix: &[u8], k: u64, out: &mut Vec<u8>) {
     }
     out.extend_from_slice(&digits);
 }
+
+/// Bytes of a phone number.
+const PHONE: usize = 15;
 
 /// Append a phone number: the nation's country code, then three draws.
 #[inline]
@@ -380,105 +451,173 @@ fn phone(nation: u32, draws: &[u32], out: &mut Vec<u8>) {
     ]);
 }
 
-/// The columns supplier and customer share: name, address, city, nation,
-/// region and phone of rows `first..first + n`, whose city and phone are
-/// at row `shared` of those streams.
-struct Party {
-    names: StringViewArray,
-    addresses: StringViewArray,
-    cities: Vec<u128>,
-    nations: Vec<u128>,
-    regions: Vec<u128>,
-    phones: StringViewArray,
+/// Supplier or customer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Party {
+    Supplier,
+    Customer,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn party(
-    d: &Dict,
-    prefix: &[u8],
-    addr: Stream,
-    nation: Stream,
+impl Party {
+    fn prefix(self) -> &'static [u8] {
+        match self {
+            Party::Supplier => b"Supplier#",
+            Party::Customer => b"Customer#",
+        }
+    }
+}
+
+/// The drawn values of a run of suppliers or customers (rows `first..`):
+/// what their tables and `lineorder_flat` make their columns from.
+#[derive(Debug)]
+pub(crate) struct PartyRows {
+    party: Party,
     first: u64,
-    shared: u64,
-    n: usize,
-) -> Party {
-    let mut names = Views::with_capacity(n, n * (prefix.len() + 9));
-    for i in 0..n as u64 {
-        let s = names.data.len();
-        name(prefix, first + i + 1, &mut names.data);
-        names.end_string(s);
+    nation: Vec<u8>,
+    /// City digit.
+    city: Vec<u8>,
+    /// Address `i` is `addresses[ends[i - 1]..ends[i]]`.
+    ends: Vec<u32>,
+    addresses: Vec<u8>,
+    /// `PHONE` bytes per row.
+    phones: Vec<u8>,
+    /// Market segment (customers only).
+    segment: Vec<u8>,
+}
+
+impl PartyRows {
+    /// Rows `first..first + n` of a data set of scale `s`: customers draw
+    /// their city and phone where the suppliers left those streams.
+    pub(crate) fn new(d: &Dict, s: &Scale, party: Party, first: u64, n: usize) -> Self {
+        let (addr, nation, shared) = match party {
+            Party::Supplier => (S_ADDR, S_NTRG, first),
+            Party::Customer => (C_ADDR, C_NTRG, s.suppliers + first),
+        };
+        let mut addresses = Vec::with_capacity(n * ADDR_MAX as usize);
+        let mut ends = Vec::with_capacity(n);
+        for row in addr.draws(first, n).chunks_exact(ADDR_DRAWS as usize) {
+            address(row, &mut addresses);
+            ends.push(addresses.len() as u32);
+        }
+        let nat = nation.ints(first, n, 0, 24);
+        let mut phones = Vec::with_capacity(n * PHONE);
+        for (row, &k) in C_PHNE.draws(shared, n).chunks_exact(3).zip(&nat) {
+            phone(k, row, &mut phones);
+        }
+        let segment = match party {
+            Party::Supplier => Vec::new(),
+            Party::Customer => C_MSEG
+                .draws(first, n)
+                .iter()
+                .map(|&x| d.segments.index(x) as u8)
+                .collect(),
+        };
+        PartyRows {
+            party,
+            first,
+            nation: nat.iter().map(|&k| k as u8).collect(),
+            city: CITY
+                .ints(shared, n, 0, 9)
+                .iter()
+                .map(|&c| c as u8)
+                .collect(),
+            ends,
+            addresses,
+            phones,
+            segment,
+        }
     }
-    let mut addresses = Views::with_capacity(n, n * ADDR_MAX as usize);
-    for row in addr.draws(first, n).chunks_exact(ADDR_DRAWS as usize) {
-        let s = addresses.data.len();
-        address(row, &mut addresses.data);
-        addresses.end_string(s);
+
+    pub(crate) fn append(&mut self, o: PartyRows) {
+        let base = self.addresses.len() as u32;
+        self.nation.extend(o.nation);
+        self.city.extend(o.city);
+        self.ends.extend(o.ends.iter().map(|e| e + base));
+        self.addresses.extend(o.addresses);
+        self.phones.extend(o.phones);
+        self.segment.extend(o.segment);
     }
-    let nat = nation.ints(first, n, 0, 24);
-    let city = CITY.ints(shared, n, 0, 9);
-    let mut phones = Views::with_capacity(n, n * 15);
-    for (row, &k) in C_PHNE.draws(shared, n).chunks_exact(3).zip(&nat) {
-        let s = phones.data.len();
-        phone(k, row, &mut phones.data);
-        phones.end_string(s);
+
+    fn address(&self, r: usize) -> &[u8] {
+        let start = if r == 0 { 0 } else { self.ends[r - 1] as usize };
+        &self.addresses[start..self.ends[r] as usize]
     }
-    Party {
-        names: names.finish(d),
-        addresses: addresses.finish(d),
-        cities: nat
-            .iter()
-            .zip(&city)
-            .map(|(&k, &c)| d.cities[(k * 10 + c) as usize])
-            .collect(),
-        nations: nat.iter().map(|&k| d.nations[k as usize]).collect(),
-        regions: nat.iter().map(|&k| d.regions[k as usize]).collect(),
-        phones: phones.finish(d),
+
+    pub(crate) fn len(&self) -> usize {
+        self.nation.len()
+    }
+
+    /// Name, address and phone of rows `rows` (indices into these),
+    /// written into their own buffers.
+    pub(crate) fn unique_columns(&self, d: &Dict, rows: &[u32]) -> [ArrayRef; 3] {
+        let n = rows.len();
+        let prefix = self.party.prefix();
+        let mut names = Views::with_capacity(n, n * (prefix.len() + 9));
+        let mut addresses = Views::with_capacity(n, n * ADDR_MAX as usize);
+        let mut phones = Views::with_capacity(n, n * PHONE);
+        for &r in rows {
+            let r = r as usize;
+            let s = names.data.len();
+            name(prefix, self.first + r as u64 + 1, &mut names.data);
+            names.end_string(s);
+            let s = addresses.data.len();
+            addresses.data.extend_from_slice(self.address(r));
+            addresses.end_string(s);
+            let s = phones.data.len();
+            phones
+                .data
+                .extend_from_slice(&self.phones[r * PHONE..(r + 1) * PHONE]);
+            phones.end_string(s);
+        }
+        [
+            Arc::new(names.finish(d)),
+            Arc::new(addresses.finish(d)),
+            Arc::new(phones.finish(d)),
+        ]
+    }
+
+    /// City, nation, region and, for customers, market segment of rows
+    /// `rows`: views into the dictionary.
+    pub(crate) fn coded_columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
+        let nation = |r: usize| self.nation[r] as usize;
+        let mut cols = vec![
+            gather!(d, rows, |r| d.cities
+                [nation(r) * 10 + self.city[r] as usize]),
+            gather!(d, rows, |r| d.nations[nation(r)]),
+            gather!(d, rows, |r| d.regions[nation(r)]),
+        ];
+        if let Party::Customer = self.party {
+            cols.push(gather!(d, rows, |r| d.segments.views[self.segment[r] as usize]));
+        }
+        cols
+    }
+
+    /// The columns after the key of rows `rows` (indices into these):
+    /// name, address, city, nation, region, phone and, for customers,
+    /// market segment.
+    pub(crate) fn columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
+        let [names, addresses, phones] = self.unique_columns(d, rows);
+        let mut coded = self.coded_columns(d, rows);
+        let mut cols = vec![names, addresses];
+        cols.extend(coded.drain(..3));
+        cols.push(phones);
+        cols.extend(coded);
+        cols
     }
 }
 
 /// Suppliers `first..first + n`.
-pub(crate) fn supplier(d: &Dict, first: u64, n: usize) -> RecordBatch {
-    let p = party(d, b"Supplier#", S_ADDR, S_NTRG, first, first, n);
-    batch(
-        &SUPPLIER,
-        vec![
-            keys(first, n),
-            Arc::new(p.names),
-            Arc::new(p.addresses),
-            strs(d, p.cities),
-            strs(d, p.nations),
-            strs(d, p.regions),
-            Arc::new(p.phones),
-        ],
-    )
+pub(crate) fn supplier(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
+    let mut cols = vec![keys(first, n)];
+    cols.extend(PartyRows::new(d, s, Party::Supplier, first, n).columns(d, &all(n)));
+    batch(&SUPPLIER, cols)
 }
 
-/// Customers `first..first + n`, of a data set with `s.suppliers`
-/// suppliers (generated first, on the same city and phone streams).
+/// Customers `first..first + n`.
 pub(crate) fn customer(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
-    let p = party(
-        d,
-        b"Customer#",
-        C_ADDR,
-        C_NTRG,
-        first,
-        s.suppliers + first,
-        n,
-    );
-    let segments = C_MSEG.draws(first, n);
-    batch(
-        &CUSTOMER,
-        vec![
-            keys(first, n),
-            Arc::new(p.names),
-            Arc::new(p.addresses),
-            strs(d, p.cities),
-            strs(d, p.nations),
-            strs(d, p.regions),
-            Arc::new(p.phones),
-            strs(d, segments.iter().map(|&x| d.segments.view(x)).collect()),
-        ],
-    )
+    let mut cols = vec![keys(first, n)];
+    cols.extend(PartyRows::new(d, s, Party::Customer, first, n).columns(d, &all(n)));
+    batch(&CUSTOMER, cols)
 }
 
 // ---------------------------------------------------------------------------
@@ -509,13 +648,13 @@ pub(crate) fn date(d: &Dict, first: u64, n: usize) -> RecordBatch {
             col(&|i| days[i].yday),
             col(&|i| days[i].month),
             col(&|i| days[i].yday / 7 + 1),
-            txt(&|i| d.seasons[crate::dict::season(days[i].month, days[i].mday)]),
+            txt(&|i| d.seasons[season(days[i].month, days[i].mday)]),
             txt(&|i| flag(dnw[i] == 7)),
             txt(&|i| {
                 let t = days[i];
-                flag(t.mday == crate::dict::days_in_month(t.year, t.month))
+                flag(t.mday == days_in_month(t.year, t.month))
             }),
-            txt(&|i| flag(crate::dict::holiday(days[i].month, days[i].mday))),
+            txt(&|i| flag(holiday(days[i].month, days[i].mday))),
             txt(&|i| flag(dnw[i] != 1 && dnw[i] != 7)),
         ],
     )
@@ -525,100 +664,118 @@ pub(crate) fn date(d: &Dict, first: u64, n: usize) -> RecordBatch {
 // lineorder
 
 /// The line orders of orders `first..first + n` (0-based).
+///
+/// Column at a time: the draws of every stream for the whole block, then
+/// the slots the orders use (`line_count` of each order's 7), then each
+/// column gathered from its draws through that list.
 pub(crate) fn lineorder(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
     let ord = s.dates + first;
+    let lcnt = O_LCNT.ints(ord, n, 1, LINES as i32);
+
+    // `slot[i]`: the draw (order * 7 + line) of line `i`; `order[i]`: its
+    // order. Each order writes all 7 and keeps `line_count`, so there is
+    // no branch per line.
+    let lines: usize = lcnt.iter().map(|&c| c as usize).sum();
+    let mut slot = vec![0u32; lines + LINES];
+    let mut order = vec![0u32; lines + LINES];
+    let mut at = 0;
+    for (o, &c) in lcnt.iter().enumerate() {
+        let (sl, or) = (&mut slot[at..at + LINES], &mut order[at..at + LINES]);
+        for l in 0..LINES {
+            sl[l] = (o * LINES + l) as u32;
+            or[l] = o as u32;
+        }
+        at += c as usize;
+    }
+    slot.truncate(lines);
+    order.truncate(lines);
+    let gather = |v: &[u32]| -> Vec<i32> { slot.iter().map(|&j| v[j as usize] as i32).collect() };
+    let per_order = |v: &[i32]| -> Vec<i32> { order.iter().map(|&o| v[o as usize]).collect() };
+
+    // order-level columns
     let odate = O_ODATE.ints(ord, n, 0, ODATE_MAX);
     let cmax = s.customers as i32;
-    let ckey = O_CKEY.ints(ord, n, 1, cmax);
-    let prio = O_PRIO.draws(ord, n);
-    let lcnt = O_LCNT.ints(ord, n, 1, LINES as i32);
-    let pkey = L_PKEY.ints(first, n, 1, s.part_keys as i32);
-    let skey = L_SKEY.ints(first, n, 1, s.suppliers as i32);
-    let qty = L_QTY.ints(first, n, 1, 50);
-    let disc = L_DCNT.ints(first, n, 0, 10);
-    let tax = L_TAX.ints(first, n, 0, 8);
+    let cust: Vec<i32> = O_CKEY
+        .ints(ord, n, 1, cmax)
+        .into_iter()
+        .map(|c| {
+            // a third of customers have no orders: step off multiples of
+            // 3, alternating up and down
+            let mut c = c as i32;
+            let mut delta = 1;
+            while c % 3 == 0 {
+                c = (c + delta).min(cmax);
+                delta = -delta;
+            }
+            c
+        })
+        .collect();
+    let prio: Vec<u128> = O_PRIO
+        .draws(ord, n)
+        .iter()
+        .map(|&x| d.priorities.view(x))
+        .collect();
+    let okey: Vec<i64> = order
+        .iter()
+        .map(|&o| order_key((first + o as u64 + 1) as i64))
+        .collect();
+    let line_no: Vec<i32> = slot
+        .iter()
+        .map(|&j| (j % LINES as u32) as i32 + 1)
+        .collect();
+
+    // line-level columns
+    let pkey = gather(&L_PKEY.ints(first, n, 1, s.part_keys as i32));
+    let qty = gather(&L_QTY.ints(first, n, 1, 50));
+    let disc = gather(&L_DCNT.ints(first, n, 0, 10));
+    let tax = gather(&L_TAX.ints(first, n, 0, 8));
+    // every product fits in 31 bits: prices are under 210,000 cents, so
+    // `price * 50 * 100` and `revenue * 108` are under 2^31
+    let price: Vec<i32> = pkey.iter().map(|&p| part_price(p as i64) as i32).collect();
+    let eprice: Vec<i32> = price.iter().zip(&qty).map(|(p, q)| p * q).collect();
+    let rev: Vec<i32> = eprice
+        .iter()
+        .zip(&disc)
+        .map(|(e, dc)| e * (100 - dc) / 100)
+        .collect();
+    let cost: Vec<i32> = price.iter().map(|p| 6 * p / 10).collect();
+    let mut total = vec![0i32; n];
+    for ((&o, &r), &t) in order.iter().zip(&rev).zip(&tax) {
+        total[o as usize] += r * (100 + t) / 100;
+    }
+    let date = |o: u32, plus: i32| d.keys[(odate[o as usize] as i32 + plus) as usize];
     let cdate = L_CDTE.ints(first, n, CDATE_MIN, CDATE_MAX);
     let mode = L_SMODE.draws(first, n);
-
-    let lines: usize = lcnt.iter().map(|&c| c as usize).sum();
-    let mut c_okey = Vec::with_capacity(lines);
-    let mut c_line = Vec::with_capacity(lines);
-    let mut c_cust = Vec::with_capacity(lines);
-    let mut c_part = Vec::with_capacity(lines);
-    let mut c_supp = Vec::with_capacity(lines);
-    let mut c_odate = Vec::with_capacity(lines);
-    let mut c_prio = Vec::with_capacity(lines);
-    let mut c_qty = Vec::with_capacity(lines);
-    let mut c_eprice = Vec::with_capacity(lines);
-    let mut c_total = Vec::with_capacity(lines);
-    let mut c_disc = Vec::with_capacity(lines);
-    let mut c_rev = Vec::with_capacity(lines);
-    let mut c_cost = Vec::with_capacity(lines);
-    let mut c_tax = Vec::with_capacity(lines);
-    let mut c_cdate = Vec::with_capacity(lines);
-    let mut c_mode = Vec::with_capacity(lines);
-    for o in 0..n {
-        let okey = order_key((first + o as u64 + 1) as i64);
-        // a third of customers have no orders: step off multiples of 3,
-        // alternating up and down
-        let mut cust = ckey[o] as i32;
-        let mut delta = 1;
-        while cust % 3 == 0 {
-            cust = (cust + delta).min(cmax);
-            delta = -delta;
-        }
-        let od = odate[o] as usize;
-        let pr = d.priorities.view(prio[o]);
-        let mut total = 0i64;
-        let start = c_okey.len();
-        for l in 0..lcnt[o] as usize {
-            let j = o * LINES + l;
-            let p = pkey[j] as i64;
-            let price = part_price(p);
-            let q = qty[j] as i64;
-            let dc = disc[j] as i64;
-            let t = tax[j] as i64;
-            let ep = price * q;
-            let rev = ep * (100 - dc) / 100;
-            total += rev * (100 + t) / 100;
-            c_okey.push(okey);
-            c_line.push(l as i32 + 1);
-            c_cust.push(cust);
-            c_part.push(p as i32);
-            c_supp.push(skey[j] as i32);
-            c_odate.push(d.keys[od]);
-            c_prio.push(pr);
-            c_qty.push(q as i32);
-            c_eprice.push(ep as i32);
-            c_disc.push(dc as i32);
-            c_rev.push(rev as i32);
-            c_cost.push((6 * price / 10) as i32);
-            c_tax.push(t as i32);
-            c_cdate.push(d.keys[od + cdate[j] as usize]);
-            c_mode.push(d.modes.view(mode[j]));
-        }
-        c_total.extend(std::iter::repeat_n(total as i32, c_okey.len() - start));
-    }
     batch(
         &LINEORDER,
         vec![
-            Arc::new(Int64Array::from(c_okey)),
-            i32s(c_line),
-            i32s(c_cust),
-            i32s(c_part),
-            i32s(c_supp),
-            i32s(c_odate),
-            strs(d, c_prio),
+            Arc::new(Int64Array::from(okey)),
+            i32s(line_no),
+            i32s(per_order(&cust)),
+            i32s(pkey),
+            i32s(gather(&L_SKEY.ints(first, n, 1, s.suppliers as i32))),
+            i32s(order.iter().map(|&o| date(o, 0)).collect()),
+            strs(d, order.iter().map(|&o| prio[o as usize]).collect()),
             i32s(vec![0; lines]),
-            i32s(c_qty),
-            i32s(c_eprice),
-            i32s(c_total),
-            i32s(c_disc),
-            i32s(c_rev),
-            i32s(c_cost),
-            i32s(c_tax),
-            i32s(c_cdate),
-            strs(d, c_mode),
+            i32s(qty),
+            i32s(eprice),
+            i32s(per_order(&total)),
+            i32s(disc),
+            i32s(rev),
+            i32s(cost),
+            i32s(tax),
+            i32s(
+                slot.iter()
+                    .zip(&order)
+                    .map(|(&j, &o)| date(o, cdate[j as usize] as i32))
+                    .collect(),
+            ),
+            strs(
+                d,
+                slot.iter()
+                    .map(|&j| d.modes.view(mode[j as usize]))
+                    .collect(),
+            ),
         ],
     )
 }

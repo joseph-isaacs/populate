@@ -48,13 +48,14 @@ them from [`tpchgen`](https://crates.io/crates/tpchgen)). This crate is a
 clean reimplementation of its output; no ssb-dbgen code is used. It
 reproduces ssb-dbgen's quirks, because they are in the data:
 
-- `part` has `200,000 * floor(1 + log2(SF))` rows, but `lo_partkey` is drawn
-  up to `200,000 * (floor(ln(SF)) + 1)`;
+- from SF 1 `part` has `200,000 * floor(1 + log2(SF))` rows, but
+  `lo_partkey` is drawn up to `200,000 * (floor(ln(SF)) + 1)`;
 - below SF 1 every table is scaled, including `date`; from SF 1 the scale is
   truncated to an integer (SF 2.5 is SF 2);
 - supplier and customer share the city and phone streams (customer `c`
   continues where the suppliers stopped), and each `date` row skips a row
-  of the order-level streams, so `lineorder` starts them at row 2557.
+  of the order-level streams, so `lineorder` starts them at row 2557 (below
+  SF 1, at the scaled `date` row count).
   These hold for the default run of all five tables; `dbgen -T c` alone
   gives other customer cities and phone numbers;
 - `d_dayofweek` is a day late (1992-01-01, a Wednesday, is `Thursday`),
@@ -63,11 +64,13 @@ reproduces ssb-dbgen's quirks, because they are in the data:
 ## Byte-identical: how it's checked
 
 - All five `.tbl` files from `ssb-gen --format tbl` are identical (`cmp`)
-  to `dbgen -s SF` (default CMake build) at SF 0.01, 0.1, 0.37, 1, 2, 3, 8
-  and 10.
+  to `dbgen -s SF` (default CMake build) at SF 0.0001, 0.003, 0.01, 0.1,
+  0.37, 1, 1.5, 2, 3, 8 and 10, and the first 100+ MB of every file at SF 100
+  and 1100 (where key ranges pass 2^21 and the floating-point mapping is
+  used). `scripts/ssb-check.sh` builds ssb-dbgen and repeats the check.
 - The tests check FNV hashes of ssb-dbgen's files: every table at SF 0.01,
-  the dimension tables at SF 1 and 8, and ranges of `lineorder` deep in
-  SF 1 and SF 8. With `SSB_DBGEN=/path/to/dbgen`, an ignored test runs
+  the dimension tables at SF 1 and 8, and ranges of `lineorder` and
+  `customer` deep in SF 1, 8, 100 and 1100. With `SSB_DBGEN=/path/to/dbgen`, an ignored test runs
   dbgen and compares whole files at four more scale factors.
 - Chunked, multi-threaded output equals one sequential chunk for every
   table and many chunk / batch sizes; Parquet round-trips;
@@ -89,8 +92,10 @@ On `populate-tpch`'s streams and `populate-table`'s engine:
   (nations, cities, the 92² part names, the 1,000 brands, the date table's
   names). They are built once into one buffer, and those columns are
   `Utf8View`s into it, 16 bytes per row and no string copied.
-- **`lineorder_flat`** builds `customer`, `supplier` and `part` once, then
-  gathers their rows per `lineorder` batch (views again, so no copy).
+- **`lineorder_flat`** draws `customer`, `supplier` and `part` once, kept as
+  a few bytes of codes per row plus their name, address and phone columns,
+  then joins each `lineorder` batch by key: dictionary views from the
+  codes, and views into the dimension columns for the rest (no copy).
 - Parquet row groups and `.tbl` text are encoded on the workers by
   `populate-table`, as for TPC-H and TPC-DS.
 

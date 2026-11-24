@@ -1,76 +1,34 @@
 //! `lineorder_flat`: `lineorder` joined with its customer, supplier and
 //! part (the denormalised SSB-flat table, as ClickHouse defines it).
 //!
-//! The three dimension tables are generated once (on all cores) and kept;
-//! each `lineorder` batch is then joined by gathering dimension rows by
-//! key. Strings are gathered as views, so no text is copied.
+//! The three dimension tables are drawn once (on all cores) and kept as
+//! small per-row codes (about 8 bytes a part, 3 a customer), and the
+//! columns unique per row (names, addresses, phone numbers) as whole
+//! `Utf8View` columns. Each `lineorder` batch is then joined by key:
+//! dictionary columns become views into the shared dictionary, and the
+//! unique columns are gathered as views into the dimension's buffers. So no
+//! text is copied, but those columns of every batch share (and keep alive)
+//! the dimension's whole buffer.
 
 use crate::dict::Dict;
-use crate::tables::{self, Scale, lineorder_fields};
-use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+use crate::tables::{self, PartRows, Party, PartyRows, Scale, lineorder_fields};
+use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, UInt32Array};
 use arrow_schema::{Field, Schema, SchemaRef};
-use arrow_select::concat::concat_batches;
 use arrow_select::take::take;
 use populate_table::par_ordered;
 use std::convert::Infallible;
 use std::sync::{Arc, LazyLock};
 
-/// Dimension columns appended to `lineorder`: `(table, column)`.
-const DIMS: [(Dim, &str); 21] = [
-    (Dim::Customer, "c_name"),
-    (Dim::Customer, "c_address"),
-    (Dim::Customer, "c_city"),
-    (Dim::Customer, "c_nation"),
-    (Dim::Customer, "c_region"),
-    (Dim::Customer, "c_phone"),
-    (Dim::Customer, "c_mktsegment"),
-    (Dim::Supplier, "s_name"),
-    (Dim::Supplier, "s_address"),
-    (Dim::Supplier, "s_city"),
-    (Dim::Supplier, "s_nation"),
-    (Dim::Supplier, "s_region"),
-    (Dim::Supplier, "s_phone"),
-    (Dim::Part, "p_name"),
-    (Dim::Part, "p_mfgr"),
-    (Dim::Part, "p_category"),
-    (Dim::Part, "p_brand1"),
-    (Dim::Part, "p_color"),
-    (Dim::Part, "p_type"),
-    (Dim::Part, "p_size"),
-    (Dim::Part, "p_container"),
-];
-
-#[derive(Clone, Copy)]
-enum Dim {
-    Customer,
-    Supplier,
-    Part,
-}
-
-impl Dim {
-    fn schema(self) -> &'static SchemaRef {
-        match self {
-            Dim::Customer => &tables::CUSTOMER,
-            Dim::Supplier => &tables::SUPPLIER,
-            Dim::Part => &tables::PART,
-        }
-    }
-
-    /// The `lineorder` column holding this table's (1-based) key.
-    fn key(self) -> usize {
-        match self {
-            Dim::Customer => 2,
-            Dim::Supplier => 4,
-            Dim::Part => 3,
-        }
-    }
-}
+/// `lineorder`'s key columns.
+const CUSTKEY: usize = 2;
+const PARTKEY: usize = 3;
+const SUPPKEY: usize = 4;
 
 pub(crate) static FLAT: LazyLock<SchemaRef> = LazyLock::new(|| {
     let mut fields = lineorder_fields();
-    for (t, c) in DIMS {
-        let f = t.schema().field_with_name(c).expect("dimension column");
-        fields.push(Field::clone(f));
+    for t in [&tables::CUSTOMER, &tables::SUPPLIER, &tables::PART] {
+        // every column but the key
+        fields.extend(t.fields().iter().skip(1).map(|f| Field::clone(f)));
     }
     Arc::new(Schema::new(fields))
 });
@@ -78,21 +36,53 @@ pub(crate) static FLAT: LazyLock<SchemaRef> = LazyLock::new(|| {
 /// The dimension tables, whole.
 #[derive(Debug)]
 pub(crate) struct Dims {
-    customer: RecordBatch,
-    supplier: RecordBatch,
-    part: RecordBatch,
+    customer: Dim,
+    supplier: Dim,
+    part: PartRows,
+}
+
+/// A supplier or customer table: its codes, and its whole name, address
+/// and phone columns.
+#[derive(Debug)]
+struct Dim {
+    rows: PartyRows,
+    unique: [ArrayRef; 3],
+}
+
+impl Dim {
+    fn new(d: &Dict, rows: PartyRows) -> Self {
+        let n = rows.len();
+        let all: Vec<u32> = (0..n as u32).collect();
+        let unique = rows.unique_columns(d, &all);
+        Dim { rows, unique }
+    }
+
+    /// The columns after the key of rows `idx`.
+    fn columns(&self, d: &Dict, idx: Vec<u32>) -> Vec<ArrayRef> {
+        let at = UInt32Array::from(idx);
+        let gather = |a: &ArrayRef| take(a.as_ref(), &at, None).expect("keys in range");
+        let [names, addresses, phones] = &self.unique;
+        let mut cols = vec![gather(names), gather(addresses)];
+        let mut coded = self.rows.coded_columns(d, at.values());
+        // city, nation, region, then the phone, then the segment
+        cols.extend(coded.drain(..3));
+        cols.push(gather(phones));
+        cols.extend(coded);
+        cols
+    }
 }
 
 /// Rows per generation job when building the dimensions.
 const JOB: u64 = 64 * 1024;
 
-fn whole(
-    schema: &SchemaRef,
+/// Rows `0..rows` made by `f(first, n)` in jobs on `threads` threads,
+/// appended in order.
+fn whole<T: Send>(
     rows: u64,
     threads: usize,
-    f: impl Fn(u64, usize) -> RecordBatch + Sync,
-) -> RecordBatch {
-    let mut parts = Vec::new();
+    f: impl Fn(u64, usize) -> T + Sync,
+    mut append: impl FnMut(T),
+) {
     let r: Result<(), Infallible> = par_ordered(
         rows.div_ceil(JOB),
         threads,
@@ -101,59 +91,55 @@ fn whole(
             f(first, (rows - first).min(JOB) as usize)
         },
         |b| {
-            parts.push(b);
+            append(b);
             Ok(())
         },
     );
     r.unwrap_or_else(|e| match e {});
-    concat_batches(schema, &parts).expect("same schema")
+}
+
+fn party(d: &Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> PartyRows {
+    let mut all = PartyRows::new(d, s, p, 0, 0);
+    whole(
+        rows,
+        threads,
+        |f, n| PartyRows::new(d, s, p, f, n),
+        |r| all.append(r),
+    );
+    all
 }
 
 impl Dims {
     pub(crate) fn build(s: &Scale, threads: usize) -> Dims {
         let d = Dict::get();
+        let mut part = PartRows::default();
+        whole(
+            s.parts,
+            threads,
+            |f, n| PartRows::new(d, f, n),
+            |r| part.append(r),
+        );
         Dims {
-            customer: whole(&tables::CUSTOMER, s.customers, threads, |f, n| {
-                tables::customer(d, s, f, n)
-            }),
-            supplier: whole(&tables::SUPPLIER, s.suppliers, threads, |f, n| {
-                tables::supplier(d, f, n)
-            }),
-            part: whole(&tables::PART, s.parts, threads, |f, n| {
-                tables::part(d, f, n)
-            }),
-        }
-    }
-
-    fn table(&self, t: Dim) -> &RecordBatch {
-        match t {
-            Dim::Customer => &self.customer,
-            Dim::Supplier => &self.supplier,
-            Dim::Part => &self.part,
+            customer: Dim::new(d, party(d, s, Party::Customer, s.customers, threads)),
+            supplier: Dim::new(d, party(d, s, Party::Supplier, s.suppliers, threads)),
+            part,
         }
     }
 
     /// `lineorder` batch `lo` joined with the dimensions.
-    pub(crate) fn join(&self, lo: RecordBatch) -> RecordBatch {
-        let idx = |col: usize| -> Int32Array {
+    pub(crate) fn join(&self, d: &Dict, lo: RecordBatch) -> RecordBatch {
+        let rows = |col: usize| -> Vec<u32> {
             let keys = lo
                 .column(col)
                 .as_any()
                 .downcast_ref::<Int32Array>()
                 .expect("Int32 key");
-            keys.unary(|k| k - 1)
+            keys.values().iter().map(|&k| k as u32 - 1).collect()
         };
-        let indices = [
-            (Dim::Customer.key(), idx(Dim::Customer.key())),
-            (Dim::Supplier.key(), idx(Dim::Supplier.key())),
-            (Dim::Part.key(), idx(Dim::Part.key())),
-        ];
         let mut cols: Vec<ArrayRef> = lo.columns().to_vec();
-        for (t, c) in DIMS {
-            let i = &indices.iter().find(|(k, _)| *k == t.key()).expect("key").1;
-            let src = self.table(t).column_by_name(c).expect("dimension column");
-            cols.push(take(src.as_ref(), i, None).expect("keys in range"));
-        }
+        cols.extend(self.customer.columns(d, rows(CUSTKEY)));
+        cols.extend(self.supplier.columns(d, rows(SUPPKEY)));
+        cols.extend(self.part.columns(d, &rows(PARTKEY)));
         RecordBatch::try_new(FLAT.clone(), cols).expect("columns match the schema")
     }
 }

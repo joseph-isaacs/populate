@@ -12,6 +12,7 @@ use arrow_array::{
     Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
     TimestampMicrosecondArray, TimestampSecondArray,
 };
+use arrow_cast::cast;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
@@ -378,4 +379,47 @@ fn float_column_indexes_match_arrow_rs() {
         }
     }
     assert_eq!(checked, 4 * a.num_row_groups());
+}
+
+/// Long strings in different batches of one row group whose views are
+/// equal (same buffer index, offset, length and prefix) but whose bytes
+/// differ: the dictionary must tell them apart.
+#[test]
+fn equal_views_in_different_batches_are_different_strings() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "s",
+        DataType::Utf8View,
+        false,
+    )]));
+    let batch = |words: &[&str]| {
+        let a: StringViewArray = words.iter().map(|w| Some(*w)).collect();
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(a) as ArrayRef]).unwrap()
+    };
+    let one = batch(&[
+        "same prefix, first tail",
+        "short",
+        "same prefix, first tail",
+    ]);
+    let two = batch(&[
+        "same prefix, other tail",
+        "short",
+        "same prefix, other tail",
+    ]);
+    let views = |b: &RecordBatch| b.column(0).as_string_view().views().to_vec();
+    assert_eq!(views(&one)[0], views(&two)[0], "the test needs equal views");
+    let d = Groups(schema.clone(), vec![vec![one.clone(), two.clone()]]);
+    let file = write_parquet(&d, Vec::new(), 1, Some(props())).unwrap();
+    let opts = ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Required);
+    let b = ParquetRecordBatchReaderBuilder::try_new_with_options(Bytes::from(file), opts).unwrap();
+    let got: Vec<RecordBatch> = b.build().unwrap().map(Result::unwrap).collect();
+    let got = arrow_select::concat::concat_batches(&schema, &got).unwrap();
+    let strings = |a: &ArrayRef| -> Vec<String> {
+        let a = cast(a, &DataType::Utf8).unwrap();
+        a.as_string::<i32>()
+            .iter()
+            .map(|s| s.unwrap().to_string())
+            .collect()
+    };
+    let want = [strings(one.column(0)), strings(two.column(0))].concat();
+    assert_eq!(strings(got.column(0)), want);
 }

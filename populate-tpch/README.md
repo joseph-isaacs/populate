@@ -92,8 +92,12 @@ it. The generators are this crate's own:
   and string columns), and `.tbl` text is formatted from the Arrow
   batches by the writer shared with TPC-DS (`populate_table::text`) and
   written by whichever worker finds the file idle. Dictionary encoding is
-  off for decimals, 64-bit keys and the high-cardinality text (comments,
-  names, addresses, phones), where it never pays (`parquet_props`).
+  off for 64-bit keys, the high-cardinality text (comments, names,
+  addresses, phones) and the decimals with many distinct values (prices,
+  balances), where it never pays (`parquet_props`).
+- **Huge pages for the pool.** On Linux the pool asks for 2 MiB pages
+  (`madvise`), so the random comment reads don't also miss the TLB:
+  about 6% off a `.tbl` run on one thread, 10% on four.
 
 The largest supported scale factor is 10,000: above ~10,737 dbgen's part
 keys overflow 32 bits, and from 30,000 tpchgen switches to a 64-bit

@@ -5,9 +5,10 @@
 //! and the calling thread appends finished row groups to the file in order.
 //! The file's contents are the same for any thread count.
 
-use crate::chunks::{Chunks, Jobs, MultiChunks};
+use crate::chunks::{Chunks, MultiChunks};
 use crate::parquet_direct::{DirectColumn, eligible};
-use crate::table::{Table, par_ordered};
+use crate::sched::par_sources;
+use crate::table::Table;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
@@ -36,7 +37,8 @@ pub fn write_parquet<W: Write + Send>(
 /// busy together. A source may produce several tables ([`MultiChunks`]);
 /// `writers` has one writer per output, sources in order, each source's
 /// outputs in order. Each chunk becomes one row group in each output it
-/// produced rows for. Jobs run in `srcs` order (put the biggest first).
+/// produced rows for. Sources with the most remaining work go first
+/// ([`par_sources`]), whatever their order in `srcs`.
 /// Returns the writers in order.
 pub fn write_parquet_many<W: Write + Send>(
     srcs: &[&dyn MultiChunks],
@@ -63,11 +65,10 @@ pub fn write_parquet_many<W: Write + Send>(
         files.push(file);
         factories.push(factory);
     }
-    let jobs = Jobs::new(srcs.iter().map(|s| s.num_chunks()));
+    let chunks: Vec<u64> = srcs.iter().map(|s| s.num_chunks()).collect();
 
     type Encoded = Vec<(usize, Vec<Leaf>)>;
-    let encode = |j: u64| -> Result<Encoded, ParquetError> {
-        let (s, g) = jobs.locate(j);
+    let encode = |s: usize, g: u64| -> Result<Encoded, ParquetError> {
         let mut cols: Vec<Option<Group>> = (0..srcs[s].schemas().len()).map(|_| None).collect();
         let mut err = Ok(());
         srcs[s].chunk(g, &mut |k, batch| {
@@ -95,7 +96,8 @@ pub fn write_parquet_many<W: Write + Send>(
         }
         Ok(out)
     };
-    par_ordered(jobs.total(), threads, encode, |groups| {
+    // each output belongs to one source, so per-source order is file order
+    par_sources(&chunks, threads, encode, |_, groups| {
         for (o, leaves) in groups? {
             let mut rg = files[o].next_row_group()?;
             for leaf in leaves {

@@ -28,6 +28,18 @@ fn mulmod(a: u64, b: u64) -> u64 {
     if x >= M { x - M } else { x }
 }
 
+/// One Lehmer step: the stream's next draw after `seed`.
+#[inline]
+pub(crate) fn lehmer(seed: u64) -> u64 {
+    mulmod(seed, A)
+}
+
+/// Two Lehmer steps.
+#[inline]
+pub(crate) fn lehmer2(seed: u64) -> u64 {
+    mulmod(seed, A * A % M)
+}
+
 /// `A^k mod M` for `k < MAX_SEEDS`.
 static POW: [u64; MAX_SEEDS] = {
     let mut p = [1u64; MAX_SEEDS];

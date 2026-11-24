@@ -14,7 +14,7 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
+use populate_table::{Chunks, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -391,17 +391,16 @@ pub fn for_each_batch_many(
     mut f: impl FnMut(usize, RecordBatch),
 ) {
     let units = plan(tables, false);
-    let jobs = Jobs::new(units.iter().map(MultiChunks::num_chunks));
-    let r: Result<(), Infallible> = par_ordered(
-        jobs.total(),
+    let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
+    let r: Result<(), Infallible> = par_sources(
+        &chunks,
         threads,
-        |j| {
-            let (u, i) = jobs.locate(j);
+        |u, i| {
             let mut v = Vec::new();
             units[u].chunk(i, &mut |k, b| v.push((units[u].idx[k], b)));
             v
         },
-        |v| {
+        |_, v| {
             v.into_iter().for_each(|(t, b)| f(t, b));
             Ok(())
         },

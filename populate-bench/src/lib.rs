@@ -38,13 +38,13 @@ use arrow_schema::{DataType, Field, Schema};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use populate::arrow::{ArrowBackend, DistributionArrow};
-use populate::dist::{list, range};
+use populate::dist::{list, range, uniform};
 use populate::parquet::{DistributionParquet, write_parquet};
-use populate::traits::{DefaultSink, Distribution, SampleIter, Sink};
+use populate::traits::Distribution;
+use rand::SeedableRng;
 use rand::distr::uniform::SampleUniform;
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use std::hint::black_box;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -107,67 +107,6 @@ fn parquet_props_60() -> parquet::file::properties::WriterProperties {
         .set_compression(parquet::basic::Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .build()
-}
-
-// ============================================================================
-// populate: a uniform leaf distribution
-// ============================================================================
-
-/// Uniform over `lo..=hi`, drawn from the caller's RNG. populate doesn't
-/// ship a random leaf yet; this is the obvious one a user would write.
-pub struct Uniform<T: SampleUniform> {
-    dist: RandUniform<T>,
-}
-
-pub fn uniform<T: SampleUniform>(lo: T, hi: T) -> Uniform<T> {
-    Uniform {
-        dist: RandUniform::new_inclusive(lo, hi).expect("lo <= hi"),
-    }
-}
-
-pub struct UniformIter<T: SampleUniform> {
-    dist: RandUniform<T>,
-}
-
-impl<T: SampleUniform> SampleIter for UniformIter<T>
-where
-    RandUniform<T>: Clone,
-{
-    type Item = T;
-
-    fn next(&mut self, rng: &mut impl Rng) -> T {
-        self.dist.sample(rng)
-    }
-}
-
-impl<T> Distribution<ArrowBackend> for Uniform<T>
-where
-    T: SampleUniform + DefaultSink<ArrowBackend>,
-    RandUniform<T>: Clone,
-    <T as DefaultSink<ArrowBackend>>::Sink: Sink<T>,
-{
-    type Item = T;
-    type RowIter = UniformIter<T>;
-
-    fn row_iter(&mut self) -> UniformIter<T> {
-        UniformIter {
-            dist: self.dist.clone(),
-        }
-    }
-
-    fn collect_into(
-        &mut self,
-        mut sink: <T as DefaultSink<ArrowBackend>>::Sink,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> <T as DefaultSink<ArrowBackend>>::Sink {
-        sink.reserve(n);
-        // as populate's own `uniform`: one `extend` of a `TrustedLen`
-        // iterator, no capacity check per value
-        let dist = &self.dist;
-        sink.push_n((0..n).map(|_| dist.sample(rng)));
-        sink
-    }
 }
 
 // ============================================================================
@@ -892,18 +831,5 @@ mod tests {
         let tq = tpch_list_parquet(4 * N);
         assert_eq!(pq.rows, N);
         assert!(pq.bytes > 0 && tq.bytes > 0);
-    }
-
-    #[test]
-    fn uniform_stays_in_range() {
-        let mut d = uniform(3i32, 9);
-        let b = d.collect_record_batch(&mut rng(), 1000).expect("batch");
-        let c = b
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .expect("i32");
-        assert!(c.values().iter().all(|v| (3..=9).contains(v)));
-        assert_eq!(c.len(), 1000);
     }
 }

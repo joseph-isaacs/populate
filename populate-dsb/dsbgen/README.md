@@ -1,8 +1,7 @@
-# TPC-DS Data Generator Crate
+# dsbgen
 
-This crate provides the core data generator logic for TPC-DS, in pure Rust with
-zero dependencies, and is easy to embed in any other Rust project.
-
-See the [docs.rs page](https://docs.rs/tpcdsgen/latest/tpcdsgen/) for the API and
-the tpcgen-rs [README.md](https://github.com/datafusion-contrib/tpcgen-rs) for
-more information on the project.
+tpcdsgen 4.0 (the Apache-2.0 Rust port of TPC-DS dsdgen from
+[tpchgen-rs](https://github.com/datafusion-contrib/tpcgen-rs)) with
+Microsoft [DSB](https://github.com/microsoft/dsb)'s changes to dsdgen
+ported in. Its row generators produce DSB dsdgen's rows; `populate-dsb`
+runs them in parallel chunks. See `../NOTICE.md` and `../README.md`.

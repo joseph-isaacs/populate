@@ -1,5 +1,5 @@
 // Ported from Microsoft DSB's dsdgen (MIT; Copyright (c) Microsoft
-// Corporation), genrand.c, permute.c and dist.c. See NOTICE.md.
+// Corporation), genrand.c, permute.c and dist.c. See populate-dsb/NOTICE.md.
 
 //! DSB's random primitives: exponential ("rank") skew, bucketed ranges,
 //! permutations of value domains, and the hierarchical and correlated keys

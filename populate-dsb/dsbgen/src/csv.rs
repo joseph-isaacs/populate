@@ -954,7 +954,7 @@ impl Display for InventoryCsv<'_> {
 /// assert_eq!(
 ///   csv,
 ///   "i_item_sk,i_item_id,i_rec_start_date,i_rec_end_date,i_item_desc,i_current_price,i_wholesale_cost,i_brand_id,i_brand,i_class_id,i_class,i_category_id,i_category,i_manufact_id,i_manufact,i_size,i_formulation,i_color,i_units,i_container,i_manager_id,i_product_name\n\
-///    1,AAAAAAAABAAAAAAA,1997-12-26,,\"Lines could delive\",1.96,0.62,0,amalgexporti #2,1,newborn,3,Children,259,n stantiable,petite,5687137aquamarine622,smoke,Carton,Unknown,86,ought\n\
+///    1,AAAAAAAABAAAAAAA,1997-12-26,,\"Lines could delive\",1.96,0.62,3001002,amalgexporti #2,0,newborn,3,Children,259,n stantiable,petite,5687137aquamarine622,smoke,Carton,Unknown,86,ought\n\
 ///    2,AAAAAAAACAAAAAAA,1997-12-26,2000-12-25,\"Firm centres demonstrate in a houses; fairly free months contribute more also labour sales; elections c\",0.74,0.23,6010003,univbrand #3,10,jewelry boxes,6,Jewelry,326,callyablepri,N/A,8light82873159702475,almond,Dram,Unknown,100,able\n\
 ///    3,AAAAAAAACAAAAAAA,2000-12-26,,\"Firm centres demonstrate in a houses; fairly free months contribute more also labour sales; elections c\",5.35,0.23,2001002,amalgimporto #2,1,accessories,2,Men,326,callyablepri,petite,8light82873159702475,linen,Bunch,Unknown,44,pri\n"
 /// );

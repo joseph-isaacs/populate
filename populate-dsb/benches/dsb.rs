@@ -12,14 +12,14 @@
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
 use populate_dsb::TableName::{self, *};
-use populate_dsb::{DsTable, Encoding, Tpcds, parquet_props};
+use populate_dsb::{DsTable, Dsb, Encoding, parquet_props};
 
 fn main() {
     divan::main();
 }
 
 fn table(t: TableName) -> DsTable {
-    Tpcds::new(1.0)
+    Dsb::new(1.0)
         .table(t)
         .limit_source_rows(64 * 1024)
         .chunk_rows(64 * 1024)

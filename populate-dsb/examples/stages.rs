@@ -5,7 +5,7 @@
 //! `cargo run -p populate-dsb --release --example stages`
 use dsbgen::config::{SessionBuilder, Table as T};
 use dsbgen::row::*;
-use populate_dsb::{Encoding, TableName, Tpcds};
+use populate_dsb::{Dsb, Encoding, TableName};
 use populate_table::Chunks;
 use std::hint::black_box;
 use std::io::sink;
@@ -38,7 +38,7 @@ macro_rules! rows {
 
 fn main() {
     use TableName::*;
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     println!("| table | rows | dsbgen rows | +Arrow | +.dat | +Parquet |");
     println!("|---|---:|---:|---:|---:|---:|");
     let mut tot = [0f64; 4];

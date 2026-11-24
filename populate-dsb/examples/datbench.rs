@@ -1,10 +1,10 @@
 //! Times Arrow → `.dat` formatting alone, over batches held in memory.
 use populate_dsb::dat::write_batch;
-use populate_dsb::{Encoding, TableName, Tpcds};
+use populate_dsb::{Dsb, Encoding, TableName};
 use std::time::Instant;
 
 fn main() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     for t in [
         TableName::StoreSales,
         TableName::CatalogSales,

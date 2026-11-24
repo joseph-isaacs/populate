@@ -1,4 +1,4 @@
-//! Generate TPC-DS tables, byte-identical to dsdgen.
+//! Generate DSB tables, byte-identical to DSB's dsdgen.
 //!
 //! ```text
 //! dsb-gen [--sf 1] [--out DIR] [--format parquet|dat|none] [--tables a,b,...]
@@ -23,7 +23,7 @@ use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
 use populate_dsb::{
-    DsTable, Encoding, TableName, Tpcds, for_each_batch_many, parquet_props, write_dat_many,
+    DsTable, Dsb, Encoding, TableName, for_each_batch_many, parquet_props, write_dat_many,
     write_parquet_many,
 };
 use std::fs::File;
@@ -115,8 +115,12 @@ fn parse() -> Result<Args, String> {
             f => return Err(format!("unknown flag `{f}`")),
         }
     }
-    if a.sf <= 0.0 || a.batch == 0 || a.row_group == Some(0) {
-        return Err("--sf, --batch and --row-group must be > 0".into());
+    // DSB's dsdgen crashes below scale 1.
+    if a.sf.is_nan() || a.sf < 1.0 {
+        return Err("--sf must be at least 1".into());
+    }
+    if a.batch == 0 || a.row_group == Some(0) {
+        return Err("--batch and --row-group must be > 0".into());
     }
     Ok(a)
 }
@@ -126,7 +130,7 @@ fn main() {
         eprintln!("{e}\n{USAGE}");
         exit(2);
     });
-    let ds = Tpcds::new(a.sf);
+    let ds = Dsb::new(a.sf);
     let fail = |what: &dyn std::fmt::Display, e: &dyn std::fmt::Display| -> ! {
         eprintln!("{what}: {e}");
         exit(1);
@@ -224,7 +228,7 @@ fn main() {
 /// choices of [`parquet_props`].
 fn no_dictionary(mut p: WriterPropertiesBuilder) -> WriterPropertiesBuilder {
     for t in TableName::ALL {
-        for f in Tpcds::new(1.0).table(t).schema().fields() {
+        for f in Dsb::new(1.0).table(t).schema().fields() {
             p = p.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), false);
         }
     }

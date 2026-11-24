@@ -1,6 +1,6 @@
 // Ported from Microsoft DSB's dsdgen (MIT; Copyright (c) Microsoft
 // Corporation), scaling.c, pricing.c, joint_distribution.c and the
-// w_*_sales.c files. See NOTICE.md.
+// w_*_sales.c files. See populate-dsb/NOTICE.md.
 
 //! What DSB's three sales channels share: the exponential date scaling of
 //! orders, skewed pricing on one global stream, the joint item and customer

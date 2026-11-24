@@ -1,23 +1,25 @@
-//! TPC-DS data, byte-identical to the reference `dsdgen`, on all cores.
+//! DSB data (Microsoft's skewed, correlated TPC-DS), byte-identical to
+//! DSB's `dsdgen`, on all cores.
 //!
-//! The values come from [`dsbgen`], the Apache-2.0 Rust port of dsdgen
-//! from the tpchgen-rs project (its default `CompatMode::C` reproduces
-//! dsdgen's output, bugs included). This crate adds the parallel engine:
+//! The values come from [`dsbgen`]: tpcdsgen (the Apache-2.0 Rust port of
+//! TPC-DS dsdgen from the tpchgen-rs project) with DSB's changes to dsdgen
+//! ported in: exponentially skewed, permuted values and keys, correlated
+//! attributes, skewed sales dates and joint item/customer draws. This
+//! crate adds the parallel engine:
 //!
 //! - every table is split into small, independent ranges of *source rows*
 //!   (a ticket, an order, a customer). dsbgen's random streams skip
 //!   exactly to any row, so the chunks concatenate to the sequential output
 //!   for any chunk size and thread count;
 //! - chunks run on all cores through [`populate_table`]'s ordered drivers,
-//!   whatever the scale factor (dsdgen and tpcgen-cli only split tables
-//!   above 1M source rows, so at SF 1 `store_sales` runs on one core);
+//!   whatever the scale factor;
 //! - Parquet row groups are generated *and* encoded on the worker threads;
 //! - `.dat` output is the exact dsdgen text format, for diffing.
 //!
 //! ```
-//! use populate_dsb::{Encoding, TableName, Tpcds};
+//! use populate_dsb::{Encoding, TableName, Dsb};
 //!
-//! let ds = Tpcds::new(1.0);
+//! let ds = Dsb::new(1.0);
 //! let ship_mode = ds.table(TableName::ShipMode);
 //! assert_eq!(ship_mode.source_rows(), 20);
 //!
@@ -27,7 +29,7 @@
 //! assert_eq!(rows, 20);
 //!
 //! // dsdgen's `ship_mode.dat`, byte for byte
-//! let dat = ship_mode.write_dat(Vec::new(), 0, Encoding::Latin1).unwrap();
+//! let dat = ship_mode.write_dat(Vec::new(), 0, Encoding::Utf8).unwrap();
 //! assert!(dat.starts_with(b"1|AAAAAAAABAAAAAAA|"));
 //! ```
 
@@ -46,7 +48,7 @@ use dsbgen::config::{Session, SessionBuilder};
 use std::fmt;
 use std::str::FromStr;
 
-/// Every TPC-DS table.
+/// Every DSB table (TPC-DS's 24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TableName {
     CallCenter,
@@ -166,28 +168,28 @@ impl FromStr for TableName {
         TableName::ALL
             .into_iter()
             .find(|t| t.as_str() == s)
-            .ok_or_else(|| format!("unknown TPC-DS table `{s}`"))
+            .ok_or_else(|| format!("unknown DSB table `{s}`"))
     }
 }
 
-/// A TPC-DS data set at one scale factor.
+/// A DSB data set at one scale factor (at least 1: dsdgen crashes below).
 #[derive(Debug, Clone)]
-pub struct Tpcds {
+pub struct Dsb {
     sf: f64,
     session: Session,
 }
 
-impl Tpcds {
+impl Dsb {
     /// Scale factor `sf` (1 = about 1 GB of `.dat` text). dsdgen's scale
     /// factors are 1, 10, 100, 300, 1000, ...; others are interpolated the
     /// way dsdgen does.
     pub fn new(sf: f64) -> Self {
-        assert!(sf > 0.0, "scale factor must be > 0");
+        assert!(sf >= 1.0, "scale factor must be at least 1");
         let session = SessionBuilder::new()
             .with_scale_factor(sf)
             .build()
-            .expect("valid TPC-DS session");
-        Tpcds { sf, session }
+            .expect("valid DSB session");
+        Dsb { sf, session }
     }
 
     pub fn sf(&self) -> f64 {

@@ -5,9 +5,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use dsbgen::config::{SessionBuilder, Table as Ds};
 use dsbgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
+use populate_dsb::Dsb;
 use populate_dsb::Encoding::{Latin1, Utf8};
 use populate_dsb::TableName::{self, *};
-use populate_dsb::Tpcds;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 
@@ -20,13 +20,13 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
 }
 
 /// Small enough to run unoptimised: whole dimensions, prefixes of facts.
-fn small(ds: &Tpcds, t: TableName) -> populate_dsb::DsTable {
+fn small(ds: &Dsb, t: TableName) -> populate_dsb::DsTable {
     ds.table(t).limit_source_rows(3_000)
 }
 
 #[test]
 fn chunks_and_threads_do_not_change_the_data() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     for t in TableName::ALL {
         let one = small(&ds, t).chunk_source_rows(u64::MAX).collect(1);
         let many = small(&ds, t)
@@ -40,7 +40,7 @@ fn chunks_and_threads_do_not_change_the_data() {
 
 #[test]
 fn dat_is_dsdgen_text_for_any_chunking() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     for t in [CallCenter, StoreSales, WebReturns, Item, DateDim] {
         let one = small(&ds, t)
             .chunk_source_rows(u64::MAX)
@@ -56,7 +56,7 @@ fn dat_is_dsdgen_text_for_any_chunking() {
 /// `Display` writes, for every table and both encodings.
 #[test]
 fn dat_matches_dsbgen_display_for_every_table() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     for t in TableName::ALL {
         let table = ds.table(t).limit_source_rows(2_000).chunk_source_rows(333);
         for enc in [Utf8, Latin1] {
@@ -83,7 +83,7 @@ fn dat_matches_dsbgen_display_for_every_table() {
 /// dsdgen writes those bytes as they are: UTF-8. Latin-1 output has `?`.
 #[test]
 fn birth_countries_are_dsbs() {
-    let c = Tpcds::new(1.0).table(Customer);
+    let c = Dsb::new(1.0).table(Customer);
     let dat = c.write_dat(Vec::new(), 0, Utf8).unwrap();
     assert!(
         std::str::from_utf8(&dat)
@@ -106,7 +106,7 @@ fn dat_matches_dsbgen_sequential() {
     for r in CallCenterRowGenerator::new(session.clone(), n) {
         writeln!(want, "{r}").unwrap();
     }
-    let got = Tpcds::new(1.0)
+    let got = Dsb::new(1.0)
         .table(CallCenter)
         .chunk_source_rows(1)
         .write_dat(Vec::new(), 3, Utf8)
@@ -120,7 +120,7 @@ fn dat_matches_dsbgen_sequential() {
     for r in g {
         writeln!(want, "{r}").unwrap();
     }
-    let got = Tpcds::new(1.0)
+    let got = Dsb::new(1.0)
         .table(WebReturns)
         .limit_source_rows(500)
         .chunk_source_rows(7)
@@ -132,7 +132,7 @@ fn dat_matches_dsbgen_sequential() {
 /// The first line of dsdgen's SF 1 `store_sales.dat`.
 #[test]
 fn store_sales_first_row_is_dsdgens() {
-    let dat = Tpcds::new(1.0)
+    let dat = Dsb::new(1.0)
         .table(StoreSales)
         .limit_source_rows(1)
         .write_dat(Vec::new(), 1, Utf8)
@@ -152,7 +152,7 @@ fn store_sales_first_row_is_dsdgens() {
 
 #[test]
 fn source_rows_at_sf1() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     let want = [
         (CallCenter, 6),
         (CatalogPage, 11_718),
@@ -183,7 +183,7 @@ fn source_rows_at_sf1() {
 
 #[test]
 fn schema_types() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     let s = ds.table(StoreSales).schema();
     assert_eq!(s.fields().len(), 23);
     assert_eq!(s.field(0).name(), "ss_sold_date_sk");
@@ -200,7 +200,7 @@ fn schema_types() {
 
 #[test]
 fn parquet_round_trips_and_is_thread_independent() {
-    let t = Tpcds::new(1.0).table(Customer).limit_source_rows(2_000);
+    let t = Dsb::new(1.0).table(Customer).limit_source_rows(2_000);
     let a = t
         .clone()
         .chunk_source_rows(300)
@@ -233,7 +233,7 @@ fn parquet_round_trips_and_is_thread_independent() {
 /// must match generating each on its own.
 #[test]
 fn channels_in_many() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     let t = |n| ds.table(n).limit_source_rows(1_500).chunk_source_rows(211);
     let tables = [
         t(StoreReturns),
@@ -295,7 +295,7 @@ impl Write for Failing {
 /// returned, it does not hang the pool.
 #[test]
 fn dat_write_error_is_returned() {
-    let ds = Tpcds::new(1.0);
+    let ds = Dsb::new(1.0);
     let t = |n| ds.table(n).limit_source_rows(3_000).chunk_source_rows(100);
     let tables = [t(StoreSales), t(Customer)];
     let writers = vec![Failing(100_000), Failing(usize::MAX)];

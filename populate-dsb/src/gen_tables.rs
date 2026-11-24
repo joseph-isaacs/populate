@@ -31,7 +31,7 @@ pub const DEFAULT_BATCH_SIZE: usize = GEN_BATCH;
 /// in cache: at 8Ki rows `catalog_sales` (~400 B/row) converts 5x slower.
 const GEN_BATCH: usize = 2048;
 
-/// One table of a [`Tpcds`](crate::Tpcds) data set.
+/// One table of a [`Dsb`](crate::Dsb) data set.
 ///
 /// The table is split into chunks of consecutive source rows. Each chunk is
 /// generated from scratch by a fresh dsbgen generator that skips straight

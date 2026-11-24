@@ -14,7 +14,7 @@ use dsbgen::config::{Session, SessionBuilder};
 use dsbgen::table::Table as DsTable;
 use dsbgen_arrow::arrow::array::RecordBatch as RecordBatch60;
 use dsbgen_arrow::*;
-use populate_dsb::{TableName, Tpcds};
+use populate_dsb::{Dsb, TableName};
 use std::time::{Duration, Instant};
 
 const BATCH: usize = 8192;
@@ -90,7 +90,7 @@ fn dsbgen(t: TableName, threads: usize) -> (u64, u64) {
 }
 
 fn populate(t: TableName, threads: usize) -> (u64, u64) {
-    let table = Tpcds::new(1.0).table(t).batch_size(BATCH);
+    let table = Dsb::new(1.0).table(t).batch_size(BATCH);
     let (mut rows, mut bytes) = (0u64, 0u64);
     table.for_each_batch(threads, |b| {
         rows += b.num_rows() as u64;

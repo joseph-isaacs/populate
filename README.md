@@ -64,6 +64,20 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --fo
 
 See [`populate-tpcds/README.md`](populate-tpcds/README.md).
 
+## DSB
+
+`populate-dsb` generates all 24 tables of Microsoft's
+[DSB](https://github.com/microsoft/dsb) (TPC-DS with skewed, correlated
+data) byte-identical to DSB's `dsdgen`, on all cores. Its generator is
+tpcdsgen with DSB's changes to dsdgen ported in, run through the same
+`Chunks` engine as populate-tpcds.
+
+```sh
+cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat # DSB dsdgen text
+```
+
+See [`populate-dsb/README.md`](populate-dsb/README.md).
+
 ## TPC-H
 
 `populate-tpch` generates all 8 TPC-H tables byte-identical to `dbgen` (and
@@ -102,6 +116,7 @@ See [`populate-ssb/README.md`](populate-ssb/README.md).
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
+| `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
 | `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 

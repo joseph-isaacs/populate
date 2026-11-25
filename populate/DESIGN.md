@@ -51,6 +51,9 @@ pub trait Sink<T> {
 | `String`, `&'static str`  | `StrCol`: `i32` offsets and bytes (Arrow `Utf8`) |
 | `Vec<T>`                  | `ListCol<Columns<T>>`: `i32` offsets and `T`'s columns (Arrow `List`) |
 | `(A, B, ...)`             | `(Columns<A>, Columns<B>, ...)`                  |
+| `Date32`, `Decimal<P, S>` | `Vec` of them: `i32` days, `i128` units (Arrow `Date32`, `Decimal128(P, S)`) |
+| `[T; N]`                  | `Vec<[T; N]>`: `N` values per row, end to end    |
+| `Children<T>`             | `ChildCols`: `T`'s columns, every child end to end |
 
 The columns nest the way the rows do, and they are already in Arrow's
 memory layout. `populate-sink-arrow` moves the buffers into Arrow arrays
@@ -97,6 +100,43 @@ position should override it. It draws from a throwaway RNG, so it lands
 exactly on row `n` only when the state doesn't depend on the values drawn:
 a counter does, a random walk doesn't.
 
+## Schemas come from the distribution
+
+`schema_of(&dist)` (`populate-sink-arrow`) is a table's schema without
+generating a row. The types come from the sinks: every column type's
+`IntoArrowColumns::data_types` says what Arrow array it becomes, so
+`Vec<i64>` is `Int64`, `Vec<Date32>` is `Date32` and a tuple of columns
+lists its fields' types in order. The names come from the distribution:
+`Distribution::column_names`, which `named` / `named_all` set and a tuple
+concatenates. `DistTable` (`populate-table`) runs a distribution over any
+range of rows (clone, `skip`, collect) with that schema.
+
+## Seekable streams
+
+A `SeekRng` is a stream of draws that can jump `n` draws ahead.
+`draws::<K>(stream)` is the leaf that reserves `K` draws per row (or
+`draws_reserving` for rows that use the first `K` of more): its rows are
+`[Draw; K]`, collected by one `SeekRng::fill` and skipped by
+`advance(n * per_row)`. It ignores the caller's RNG, so a row depends only
+on its position. This is how the reference generators seed their columns
+(dbgen gives every column its own Lehmer stream), and why a chunk of such a
+table starts at its first row in `O(log n)`.
+
+## Columns from columns, and child rows
+
+- `derive(source, f)` collects `source` column by column, then maps each
+  row: a column computed from others, with the source columns as scratch.
+- `children(counts, slots)` is a child table column: for every source
+  row, the first `count` of the `K` values `slots` makes for it (each line
+  stream of an order reserves 7 slots). A tuple of `children` over the
+  same counts is the child table.
+- `flat_map(source, count, f)` writes `count(row)` children for each
+  source row straight into the child columns, for children whose columns
+  share work. Rows are read in place (`RowRefs`), not copied out.
+
+A distribution of `Children<T>` is a table of `T` rows: its columns are
+the children's, and the source rows only drive them.
+
 ## Writing a leaf
 
 Implement `sample`. That is enough: the default `collect_into` reserves
@@ -120,12 +160,14 @@ straight into the `StrCol` buffer.
 
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
-| `populate-core`         | the three traits, `StrCol`, `ListCol`, tuple impls    |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, random leaves |
-| `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`             |
+| `populate-core`         | the three traits, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, tuple impls |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `children`, `flat_map`, `named`, random leaves |
+| `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
-| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `Chunks` and the drivers every benchmark generator runs on |
+| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on |
 | `populate`              | facade re-exporting the above                         |
 
-The benchmark generators (TPC-H, TPC-DS and the rest) implement `Chunks`
-from `populate-table` directly and do not use `Distribution`.
+TPC-H (`populate-tpch`) is built on `Distribution`: each table is one
+distribution run by `DistTable`, its schema read off it. The other
+benchmark generators (TPC-DS and the rest) implement `Chunks` from
+`populate-table` directly.

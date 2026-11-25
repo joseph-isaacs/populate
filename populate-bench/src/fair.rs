@@ -14,10 +14,9 @@
 
 use crate::lanes::{A, LANES, M, mulmod, powmod};
 use crate::{BATCH, LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, numeric_schema_60, rng};
-use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::arrow::DistributionArrow;
 use populate::dist::{Uniform, list, map, range, uniform};
-use populate::hlist::{HCons, HNil};
-use populate::traits::{DefaultSink, Distribution, SampleIter};
+use populate::{Columnar, Distribution};
 use rand::Rng;
 use std::hint::black_box;
 use std::marker::PhantomData;
@@ -263,12 +262,9 @@ pub fn p2_list_fair(n: usize) -> Output {
             map((elem, uniform(1i64, 50)), |(p, q): (i64, i64)| price(p) * q),
         ),
     );
-    let b = DistributionArrow::<ArrowBackend>::collect_record_batch(
-        &mut d,
-        &mut rng(),
-        n / LINES_PER_ORDER,
-    )
-    .expect("batch");
+    let b = d
+        .collect_record_batch(&mut rng(), n / LINES_PER_ORDER)
+        .expect("batch");
     black_box(Output {
         rows: b.num_rows(),
         bytes: batch_bytes(&b),
@@ -344,35 +340,19 @@ pub fn lcg<T>(seed: i64, lo: i32, hi: i32) -> Lcg<T> {
     }
 }
 
-pub struct LcgIter<T>(RandomBoundedInt, PhantomData<T>);
-
-impl<T: From<i32>> SampleIter for LcgIter<T> {
-    type Item = T;
-    fn next(&mut self, _rng: &mut impl Rng) -> T {
-        T::from(self.0.next_value())
-    }
-}
-
-impl<T> Distribution<ArrowBackend> for Lcg<T>
+impl<T> Distribution for Lcg<T>
 where
-    T: From<i32> + DefaultSink<ArrowBackend, Sink = HCons<Vec<T>, HNil>>,
+    T: From<i32> + Columnar<Columns = Vec<T>>,
 {
     type Item = T;
-    type RowIter = LcgIter<T>;
 
-    fn row_iter(&mut self) -> LcgIter<T> {
-        LcgIter(self.g, PhantomData)
+    fn sample(&mut self, _rng: &mut impl Rng) -> T {
+        T::from(self.g.next_value())
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: HCons<Vec<T>, HNil>,
-        _rng: &mut impl Rng,
-        n: usize,
-    ) -> HCons<Vec<T>, HNil> {
+    fn collect_into(&mut self, cols: &mut Vec<T>, _rng: &mut impl Rng, n: usize) {
         let g = &mut self.g;
-        sink.0.extend((0..n).map(|_| T::from(g.next_value())));
-        sink
+        cols.extend((0..n).map(|_| T::from(g.next_value())));
     }
 }
 
@@ -440,26 +420,21 @@ impl<T: From<i32>> LaneLcg<T> {
     }
 }
 
-impl<T> Distribution<ArrowBackend> for LaneLcg<T>
+impl<T> Distribution for LaneLcg<T>
 where
-    T: From<i32> + DefaultSink<ArrowBackend, Sink = HCons<Vec<T>, HNil>>,
+    T: From<i32> + Columnar<Columns = Vec<T>>,
 {
     type Item = T;
-    type RowIter = LcgIter<T>;
 
-    fn row_iter(&mut self) -> LcgIter<T> {
-        unimplemented!("LaneLcg is columnar only")
+    fn sample(&mut self, _rng: &mut impl Rng) -> T {
+        let mut one = Vec::with_capacity(1);
+        self.fill(&mut one, 1);
+        one.pop().expect("one value")
     }
 
-    fn collect_into(
-        &mut self,
-        mut sink: HCons<Vec<T>, HNil>,
-        _rng: &mut impl Rng,
-        n: usize,
-    ) -> HCons<Vec<T>, HNil> {
-        sink.0.reserve(n);
-        self.fill(&mut sink.0, n);
-        sink
+    fn collect_into(&mut self, cols: &mut Vec<T>, _rng: &mut impl Rng, n: usize) {
+        cols.reserve(n);
+        self.fill(cols, n);
     }
 }
 
@@ -576,8 +551,8 @@ mod tests {
             );
             // uneven batches, so lanes straddle them
             for n in [1, 15, 16, 17, 8192, 5, 1000, 33] {
-                let want = a.collect_into(HCons(Vec::new(), HNil), &mut r, n);
-                let got = b.collect_into(HCons(Vec::new(), HNil), &mut r, n);
+                let want = a.collect(&mut r, n);
+                let got = b.collect(&mut r, n);
                 assert_eq!(got, want, "{lo}..={hi}, batch {n}");
             }
         }

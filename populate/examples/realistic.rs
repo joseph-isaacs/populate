@@ -5,9 +5,9 @@
 //! ```
 
 use arrow_cast::pretty::pretty_format_batches;
-use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::Distribution;
+use populate::arrow::DistributionArrow;
 use populate::dist::{range, uniform, weighted, with_column};
-use populate::traits::Distribution;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -17,7 +17,7 @@ const COUNTRIES: [&[&str]; 3] = [&["UK", "FR", "DE"], &["US", "CA"], &["JP", "KR
 /// country (drawn given region).
 type Order = (i64, (i32, i32, bool), (i32, &'static str));
 
-fn orders() -> impl Distribution<ArrowBackend, Item = Order> {
+fn orders() -> impl Distribution<Item = Order> {
     let receipt = with_column(uniform(8035i32, 10_591), |ship, rng| {
         ship + rng.random_range(1..=30)
     });

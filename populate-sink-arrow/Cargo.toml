@@ -1,6 +1,6 @@
 [package]
 name = "populate-sink-arrow"
-description = "Arrow output for populate: ArrowBackend and RecordBatch conversion"
+description = "Arrow output for populate: collected columns to Arrow arrays and RecordBatch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

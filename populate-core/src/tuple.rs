@@ -1,125 +1,68 @@
-//! Tuples of distributions are distributions: `(D1, D2)` yields `(D1::Item,
-//! D2::Item)` and collects column by column, appending each part's HList sink.
+//! Tuples, as rows and as distributions.
+//!
+//! - A tuple of row types is a row type: `(A, B)` is stored as `(A`'s
+//!   columns`, B`'s columns`)`.
+//! - A tuple of sinks takes tuples: pushing `(a, b)` pushes `a` to the first
+//!   and `b` to the second.
+//! - A tuple of distributions is a distribution of tuples. Collected, it
+//!   fills its columns one after the other, each by its own distribution's
+//!   `collect_into`, so every column goes at full columnar speed.
+//!
+//! Up to 12 fields; nest tuples for more.
+//!
+//! These impls live in this crate because only the crate that defines a
+//! trait may implement it for tuples (the orphan rule).
 
-use crate::traits::{Backend, DefaultSink, Distribution, HAppend, SampleIter};
+use crate::{Columnar, Columns, Distribution, Sink};
 use rand::Rng;
 
-// ============================================================================
-// Row iterators: one struct per arity, generated
-// ============================================================================
+macro_rules! tuple_impls {
+    ($($T:ident $S:ident $idx:tt),+) => {
+        impl<$($T: Columnar),+> Columnar for ($($T,)+) {
+            type Columns = ($($T::Columns,)+);
+        }
 
-macro_rules! tuple_iter {
-    ($name:ident; $($i:ident $idx:tt),+) => {
-        pub struct $name<$($i),+>($(pub $i),+);
+        impl<$($T, $S: Sink<$T>),+> Sink<($($T,)+)> for ($($S,)+) {
+            fn push(&mut self, value: ($($T,)+)) {
+                $(self.$idx.push(value.$idx);)+
+            }
 
-        impl<$($i: SampleIter),+> SampleIter for $name<$($i),+> {
-            type Item = ($($i::Item),+);
-
-            fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-                ($(self.$idx.next(rng)),+)
+            fn reserve(&mut self, additional: usize) {
+                $(self.$idx.reserve(additional);)+
             }
         }
-    };
-}
 
-tuple_iter!(TupleIter2; I1 0, I2 1);
-tuple_iter!(TupleIter3; I1 0, I2 1, I3 2);
-tuple_iter!(TupleIter4; I1 0, I2 1, I3 2, I4 3);
-tuple_iter!(TupleIter5; I1 0, I2 1, I3 2, I4 3, I5 4);
-tuple_iter!(TupleIter6; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5);
-tuple_iter!(TupleIter7; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6);
-tuple_iter!(TupleIter8; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7);
-tuple_iter!(TupleIter9; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8);
-tuple_iter!(TupleIter10; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9);
-tuple_iter!(TupleIter11; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9, I11 10);
-tuple_iter!(TupleIter12; I1 0, I2 1, I3 2, I4 3, I5 4, I6 5, I7 6, I8 7, I9 8, I10 9, I11 10, I12 11);
+        impl<$($T: Distribution),+> Distribution for ($($T,)+) {
+            type Item = ($($T::Item,)+);
 
-// ============================================================================
-// Distribution for tuples — col-by-col, one macro for every arity
-// ============================================================================
-
-/// One step of tuple collection: split `sink` into the columns of the first
-/// k-1 distributions and those of the k-th, fill the prefix with `prefix`,
-/// then the last part with `last`, and append them back together.
-pub fn collect_split<B, P, D, F, R>(
-    sink: P::Output,
-    rng: &mut R,
-    n: usize,
-    prefix: F,
-    last: &mut D,
-) -> P::Output
-where
-    B: Backend,
-    D: Distribution<B>,
-    P: HAppend<<D::Item as DefaultSink<B>>::Sink>,
-    F: FnOnce(P, &mut R) -> P,
-    R: Rng,
-{
-    let (p, s) = P::unappend(sink);
-    let p = prefix(p, rng);
-    let s = last.collect_into(s, rng, n);
-    p.append(s)
-}
-
-type SinkOf<B, D> = <<D as Distribution<B>>::Item as DefaultSink<B>>::Sink;
-
-macro_rules! impl_tuple_distribution {
-    // All distributions folded in: emit the impl.
-    (@emit $iter:ident [$($d:ident $i:ident $idx:tt),+] [$($bounds:tt)*]
-        $self:ident $sink:ident $rng:ident $n:ident $body:expr) => {
-        impl<B: Backend, $($d: Distribution<B>),+> Distribution<B> for ($($d),+)
-        where $($bounds)*
-        {
-            type Item = ($($d::Item),+);
-            type RowIter = $iter<$($d::RowIter),+>;
-
-            fn row_iter(&mut self) -> Self::RowIter {
-                $iter($(self.$idx.row_iter()),+)
+            fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
+                ($(self.$idx.sample(rng),)+)
             }
 
             fn collect_into(
-                &mut $self,
-                $sink: <Self::Item as DefaultSink<B>>::Sink,
-                $rng: &mut impl Rng,
-                $n: usize,
-            ) -> <Self::Item as DefaultSink<B>>::Sink {
-                $body
+                &mut self,
+                cols: &mut Columns<Self::Item>,
+                rng: &mut impl Rng,
+                n: usize,
+            ) {
+                $(self.$idx.collect_into(&mut cols.$idx, rng, n);)+
+            }
+
+            fn skip(&mut self, n: u64) {
+                $(self.$idx.skip(n);)+
             }
         }
     };
-    // Fold in the next distribution: its sink is appended to the prefix's.
-    (@fold $iter:ident $all:tt $acc:ty; [$($bounds:tt)*] [$self:ident $sink:ident $rng:ident $n:ident]
-        $prev:expr; $next:ident $idx:tt $(, $rest:ident $ridx:tt)*) => {
-        impl_tuple_distribution!(@fold $iter $all
-            <$acc as HAppend<SinkOf<B, $next>>>::Output;
-            [$($bounds)* $acc: HAppend<SinkOf<B, $next>>,]
-            [$self $sink $rng $n]
-            |s, rng| collect_split::<B, $acc, $next, _, _>(s, rng, $n, $prev, &mut $self.$idx);
-            $($rest $ridx),*
-        );
-    };
-    (@fold $iter:ident $all:tt $acc:ty; $bounds:tt [$self:ident $sink:ident $rng:ident $n:ident]
-        $prev:expr;) => {
-        impl_tuple_distribution!(@emit $iter $all $bounds $self $sink $rng $n ($prev)($sink, $rng));
-    };
-    // Entry: `TupleIterN; D1 I1 0, D2 I2 1, ...`
-    ($iter:ident; $d1:ident $i1:ident $idx1:tt $(, $d:ident $i:ident $idx:tt)+) => {
-        impl_tuple_distribution!(@fold $iter [$d1 $i1 $idx1 $(, $d $i $idx)+]
-            SinkOf<B, $d1>; [] [self sink rng n]
-            |s, rng| self.$idx1.collect_into(s, rng, n);
-            $($d $idx),+
-        );
-    };
 }
 
-impl_tuple_distribution!(TupleIter2; D1 I1 0, D2 I2 1);
-impl_tuple_distribution!(TupleIter3; D1 I1 0, D2 I2 1, D3 I3 2);
-impl_tuple_distribution!(TupleIter4; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3);
-impl_tuple_distribution!(TupleIter5; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4);
-impl_tuple_distribution!(TupleIter6; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5);
-impl_tuple_distribution!(TupleIter7; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6);
-impl_tuple_distribution!(TupleIter8; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7);
-impl_tuple_distribution!(TupleIter9; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8);
-impl_tuple_distribution!(TupleIter10; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9);
-impl_tuple_distribution!(TupleIter11; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9, D11 I11 10);
-impl_tuple_distribution!(TupleIter12; D1 I1 0, D2 I2 1, D3 I3 2, D4 I4 3, D5 I5 4, D6 I6 5, D7 I7 6, D8 I8 7, D9 I9 8, D10 I10 9, D11 I11 10, D12 I12 11);
+tuple_impls!(A SA 0, B SB 1);
+tuple_impls!(A SA 0, B SB 1, C SC 2);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6, H SH 7);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6, H SH 7, I SI 8);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6, H SH 7, I SI 8, J SJ 9);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6, H SH 7, I SI 8, J SJ 9, K SK 10);
+tuple_impls!(A SA 0, B SB 1, C SC 2, D SD 3, E SE 4, F SF 5, G SG 6, H SH 7, I SI 8, J SJ 9, K SK 10, L SL 11);

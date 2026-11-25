@@ -5,31 +5,29 @@
 //!
 //! ```
 //! # #[cfg(feature = "arrow")] {
-//! use populate::arrow::{ArrowBackend, DistributionArrow};
+//! use populate::arrow::DistributionArrow;
 //! use populate::dist::{constant, list, range};
 //!
 //! // id: i64, tags: list<i64> (every row has 3 tags)
 //! let mut dist = (range(0i64, 1), list(constant(3usize), range(0i64, 1)));
 //!
-//! let batch = DistributionArrow::<ArrowBackend>::collect_record_batch(&mut dist, &mut rand::rng(), 1_000)
-//!     .unwrap();
+//! let batch = dist.collect_record_batch(&mut rand::rng(), 1_000).unwrap();
 //! assert_eq!(batch.num_rows(), 1_000);
 //! assert_eq!(batch.num_columns(), 2);
 //! # }
 //! ```
 //!
-//! | module      | crate                   | contents                                    |
+//! | item        | crate                   | contents                                    |
 //! |-------------|-------------------------|---------------------------------------------|
-//! | [`traits`]  | `populate-core`         | `Distribution`, `SampleIter`, `Sink`, ...   |
-//! | [`hlist`]   | `populate-core`         | HList sink plumbing                         |
-//! | [`tuple`]   | `populate-core`         | tuple-of-distributions combinators          |
+//! | crate root  | `populate-core`         | [`Distribution`], [`Columnar`], [`Sink`],   |
+//! |             |                         | and the columns [`StrCol`] and [`ListCol`]  |
 //! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `map`, `list`, ...     |
-//! | [`arrow`]   | `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output        |
+//! | [`arrow`]   | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output       |
 //! | [`parquet`] | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)|
 //! | [`table`]   | `populate-table`        | named, typed tables; parallel batches       |
 
 pub use populate_builtins as dist;
-pub use populate_core::{hlist, traits, tuple};
+pub use populate_core::{Columnar, Columns, Distribution, ListCol, Sink, StrBuf, StrCol, in_local};
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as arrow;
 #[cfg(feature = "parquet")]

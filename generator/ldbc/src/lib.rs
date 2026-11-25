@@ -55,6 +55,8 @@ use populate_builtins::{fan_out, named_all, range};
 use populate_core::{Distribution, Sink};
 use populate_table::text::TextChunks;
 use populate_table::{DistTables, resolve_threads};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use rows::{
     DYNAMIC, DYNAMIC_COLUMNS, DYNAMIC_NAMES, Raw, RawCols, Rows, STATIC_TABLES, StaticCols,
     Statics, TableDef, rows_of,
@@ -348,11 +350,13 @@ impl Ldbc {
         }
     }
 
-    /// Chunk `i`'s rows of every dynamic table.
+    /// Chunk `i`'s rows of every dynamic table: row `i` of
+    /// [`Self::raw_dist`].
     fn chunk(&self, i: u64) -> RawCols {
-        let mut out = RawCols::default();
-        self.chunk_into(i, &mut out);
-        out
+        let mut d = self.raw_dist();
+        d.skip(i);
+        // the chunks draw from their own `java.util.Random` farms
+        d.collect(&mut SmallRng::seed_from_u64(0), 1)
     }
 
     /// Chunk `i`'s rows, one [`Rows`] per [`rows::DYNAMIC`] table.
@@ -426,9 +430,10 @@ impl Ldbc {
 
     /// The four static tables ([`rows::STATIC`]).
     pub fn static_rows(&self) -> Vec<Rows> {
-        let mut cols = StaticCols::default();
-        self.static_into(&mut cols);
-        rows_of(cols)
+        rows_of(
+            self.static_dist()
+                .collect(&mut SmallRng::seed_from_u64(0), 1),
+        )
     }
 
     fn static_into(&self, out: &mut StaticCols) {

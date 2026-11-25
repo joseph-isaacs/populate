@@ -805,6 +805,7 @@ dependencies = [
  "populate-core",
  "populate-sink-arrow",
  "populate-table",
+ "rand",
  "unicode-normalization",
 ]
 

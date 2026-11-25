@@ -54,7 +54,9 @@ on all cores, Parquet row groups encoded on the workers.
 Each generator is a crate with its own CLI, built on the `Chunks` engine:
 Arrow, Parquet or the reference tool's own text format, on all cores, with
 output that does not depend on the thread count. Each crate's README covers
-its flags, how it was verified and its performance.
+its flags, how it was verified and its performance;
+[`BENCHMARKS.md`](BENCHMARKS.md) lists how each compares to its reference
+tool.
 
 | benchmark | crate | CLI | matches |
 |---|---|---|---|

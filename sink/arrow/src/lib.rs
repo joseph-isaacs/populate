@@ -45,7 +45,7 @@ use arrow_buffer::{
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use populate_core::{
     ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
-    Timestamp, time_unit,
+    Timestamp, WideCols, time_unit,
 };
 use rand::Rng;
 use std::iter::repeat_n;
@@ -362,6 +362,19 @@ pub trait IntoArrowColumns {
         out.extend(repeat_n(false, Self::LEN));
     }
 
+    /// The type and nullability of each array these columns will make, in
+    /// order. The default is [`data_types`](Self::data_types) with
+    /// [`nullables`](Self::nullables); columns whose width is set at run
+    /// time ([`WideCols`]) answer from the instance, and tuples ask each
+    /// field. [`schema_of`] reads this off [`Distribution::columns`].
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        let mut types = Vec::with_capacity(Self::LEN);
+        Self::data_types(&mut types);
+        let mut nullable = Vec::with_capacity(types.len());
+        Self::nullables(&mut nullable);
+        out.extend(types.into_iter().zip(nullable));
+    }
+
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
@@ -387,6 +400,9 @@ macro_rules! tuple_columns {
             }
             fn nullables(out: &mut Vec<bool>) {
                 $($C::nullables(out);)+
+            }
+            fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+                $(self.$idx.column_types(out);)+
             }
             fn into_arrays(self, out: &mut Vec<ArrayRef>) {
                 $(self.$idx.into_arrays(out);)+
@@ -437,6 +453,9 @@ impl<V: IntoArrowColumns> IntoArrowColumns for ChildCols<V> {
     fn nullables(out: &mut Vec<bool>) {
         V::nullables(out);
     }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        self.values.column_types(out);
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         self.values.into_arrays(out);
     }
@@ -462,15 +481,39 @@ impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> 
     }
 }
 
+/// One group of columns per element, in order. The width is the
+/// instance's, so `WideCols` has no static types: it can be a top-level
+/// group of columns (read by
+/// [`column_types`](IntoArrowColumns::column_types)), not a list's values.
+impl<C: IntoArrowColumns> IntoArrowColumns for WideCols<C> {
+    const LEN: usize = 0;
+    fn data_types(_: &mut Vec<DataType>) {
+        panic!("a run-time-width group of columns has no static types: use `column_types`");
+    }
+    fn nullables(_: &mut Vec<bool>) {
+        panic!("a run-time-width group of columns has no static types: use `column_types`");
+    }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        for c in &self.0 {
+            c.column_types(out);
+        }
+    }
+    fn into_arrays(self, out: &mut Vec<ArrayRef>) {
+        for c in self.0 {
+            c.into_arrays(out);
+        }
+    }
+}
+
 // ============================================================================
 // Schema
 // ============================================================================
 
 /// The schema of the rows `dist` makes, without making any: the names
 /// from the distribution ([`Distribution::column_names`]), the types from
-/// the columns it collects into ([`IntoArrowColumns::data_types`]).
-/// Unnamed columns are `c0, c1, ...`; a field is nullable where its column
-/// says so ([`IntoArrowColumns::nullables`]: `Option` rows).
+/// the columns it collects into ([`IntoArrowColumns::column_types`] of
+/// [`Distribution::columns`]). Unnamed columns are `c0, c1, ...`; a field
+/// is nullable where its column says so (`Option` rows).
 ///
 /// # Panics
 ///
@@ -480,11 +523,9 @@ where
     Columns<D::Item>: IntoArrowColumns,
 {
     let mut types = Vec::with_capacity(<Columns<D::Item>>::LEN);
-    <Columns<D::Item>>::data_types(&mut types);
+    dist.columns().column_types(&mut types);
     let mut names = Vec::with_capacity(types.len());
     dist.column_names(&mut names);
-    let mut nullable = Vec::with_capacity(types.len());
-    <Columns<D::Item>>::nullables(&mut nullable);
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
@@ -499,8 +540,7 @@ where
         names
             .into_iter()
             .zip(types)
-            .zip(nullable)
-            .map(|((n, t), null)| Field::new(n, t, null))
+            .map(|(n, (t, null))| Field::new(n, t, null))
             .collect::<Vec<_>>(),
     )
 }

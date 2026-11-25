@@ -1,20 +1,21 @@
-//! The two thread pools every driver runs on.
+//! The thread pool every driver runs on.
 //!
-//! - [`par_ordered`]: run jobs `0..n` and consume the results in index
-//!   order. One table, or anything else with a single order.
 //! - [`par_sources`]: run the chunks of several sources, biggest remaining
 //!   work first, and consume each source's results in order.
+//! - [`par_ordered`]: the same for one source: jobs `0..n`, results in index
+//!   order.
 //!
-//! Why two: [`par_ordered`] hands results back in one global order. With
-//! several tables on one pool that has two costs. Chunks of different tables differ in cost by 20x or
-//! more (a TPC-DS store_sales chunk against an inventory one), and whichever
-//! table comes last leaves a tail of big chunks with the other cores idle.
-//! And a finished chunk of one table waits behind an unrelated slow chunk
-//! of another, though only each table's own order matters.
+//! Several tables are several sources, not one sequence of jobs in one
+//! global order. Chunks of different tables differ in cost by 20x or more
+//! (a TPC-DS store_sales chunk against an inventory one), so whichever table
+//! comes last in a global order leaves a tail of big chunks with the other
+//! cores idle. And a finished chunk of one table would wait behind an
+//! unrelated slow chunk of another, though only each table's own order
+//! matters.
 //!
-//! So in [`par_sources`] each source's chunks still start in order (a source's results
-//! come back nearly in order and wait in a small buffer), but which source
-//! a free worker takes is chosen by remaining work: the one with the most
+//! So each source's chunks start in order (a source's results come back
+//! nearly in order and wait in a small buffer), but which source a free
+//! worker takes is chosen by remaining work: the one with the most
 //! `chunks left * mean chunk time`, the mean measured as chunks finish. A
 //! source not yet timed runs one chunk first, to be measured. Big tables
 //! start early, and the tail is made of the small chunks. Only timing
@@ -23,62 +24,31 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Instant;
 
+/// `threads`, or every core when it is 0: what every driver's `threads`
+/// argument means.
+pub fn resolve_threads(threads: usize) -> usize {
+    match threads {
+        0 => thread::available_parallelism().map_or(1, |t| t.get()),
+        t => t,
+    }
+}
+
 /// Run `work(0..n)` on `threads` threads (0 = all cores) and feed the
 /// results to `consume` in index order on the calling thread, stopping at
 /// the first error. Workers run at most about `2 * threads` tasks ahead.
+/// This is [`par_sources`] with one source.
 pub fn par_ordered<T: Send, E>(
     n: u64,
     threads: usize,
     work: impl Fn(u64) -> T + Sync,
     mut consume: impl FnMut(T) -> Result<(), E>,
 ) -> Result<(), E> {
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-    .min(n.max(1) as usize);
-    if threads <= 1 {
-        return (0..n).try_for_each(|i| consume(work(i)));
-    }
-    let next = AtomicU64::new(0);
-    let stop = AtomicBool::new(false);
-    thread::scope(|s| {
-        let (tx, rx) = sync_channel::<(u64, T)>(threads * 2);
-        for _ in 0..threads {
-            let tx = tx.clone();
-            let (next, stop, work) = (&next, &stop, &work);
-            s.spawn(move || {
-                while !stop.load(Relaxed) {
-                    let i = next.fetch_add(1, Relaxed);
-                    if i >= n || tx.send((i, work(i))).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-        // Reorder. `rx` is dropped when this closure returns, before the
-        // scope joins, so a worker blocked on a full channel wakes up (its
-        // send fails) when we stop early.
-        let mut pending = BTreeMap::new();
-        let mut want = 0u64;
-        for (i, t) in rx.iter() {
-            pending.insert(i, t);
-            while let Some(t) = pending.remove(&want) {
-                want += 1;
-                if let Err(e) = consume(t) {
-                    stop.store(true, Relaxed);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(())
-    })
+    par_sources(&[n], threads, |_, i| work(i), |_, t| consume(t))
 }
 
 /// Who runs next: each source's next chunk, how many it has, and what its
@@ -153,11 +123,7 @@ pub fn par_sources<T: Send, E>(
     mut consume: impl FnMut(usize, T) -> Result<(), E>,
 ) -> Result<(), E> {
     let jobs: u64 = chunks.iter().sum();
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-    .min(jobs.max(1) as usize);
+    let threads = resolve_threads(threads).min(jobs.max(1) as usize);
     if threads <= 1 {
         for (s, &n) in chunks.iter().enumerate() {
             for i in 0..n {

@@ -23,11 +23,11 @@
 //!
 //! // per order: a date, and up to 3 lines, each with a quantity
 //! let orders = (
-//!     named("day", derive(draws::<_, 1>(Toy(0)), |[x]| Date32(x as i32))),
-//!     named("lines", derive(draws::<_, 1>(Toy(0)), |[x]| (x % 3 + 1) as usize)),
+//!     named("day", derive(draws::<_, 1>(Toy(0)), |&[x]| Date32(x as i32))),
+//!     named("lines", derive(draws::<_, 1>(Toy(0)), |&[x]| (x % 3 + 1) as usize)),
 //! );
 //! let qty = children(
-//!     derive(draws::<_, 1>(Toy(0)), |[x]| (x % 3 + 1) as usize),
+//!     derive(draws::<_, 1>(Toy(0)), |&[x]| (x % 3 + 1) as usize),
 //!     derive(draws::<_, 3>(Toy(5)), |xs| xs.map(|x| x as i64)),
 //! );
 //! let mut rng = rand::rng();
@@ -121,11 +121,14 @@ pub struct Derive<D, F, Out> {
 /// Unlike [`map`](crate::map), `source` is collected column by column
 /// first (a tuple of streams fills each stream's block in one go), then
 /// `f` runs in one pass over those columns. The source columns are
-/// scratch: only `f`'s output is kept.
+/// scratch: only `f`'s output is kept. Rows are read in place
+/// ([`RowRefs`]): a row of a `Vec<T>` column is a `&T`, so a wide row
+/// (blocks of draws from several streams) is never copied out.
 pub fn derive<D, F, Out>(source: D, f: F) -> Derive<D, F, Out>
 where
     D: Distribution,
-    F: Fn(D::Item) -> Out,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>) -> Out,
 {
     Derive {
         source,
@@ -137,20 +140,22 @@ where
 impl<D, F, Out> Distribution for Derive<D, F, Out>
 where
     D: Distribution,
-    Columns<D::Item>: ReadRows<Row = D::Item>,
-    F: Fn(D::Item) -> Out,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>) -> Out,
     Out: Columnar,
 {
     type Item = Out;
 
+    /// One source row, collected (so read the way `collect` reads it).
     fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        (self.f)(self.source.sample(rng))
+        let src = self.source.collect(rng, 1);
+        (self.f)(src.row_refs().next().expect("one row"))
     }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
         cols.reserve(n);
-        cols.push_n(src.rows_from(0).map(&self.f));
+        cols.push_n(src.row_refs().map(&self.f));
     }
 
     fn skip(&mut self, n: u64) {
@@ -382,8 +387,8 @@ mod tests {
 
     #[test]
     fn children_keep_the_first_count_slots() {
-        let counts = derive(range(0usize, 1), |i| i % 3);
-        let mut k = children(counts, derive(draws::<_, 2>(Count(0)), |x| x));
+        let counts = derive(range(0usize, 1), |&i| i % 3);
+        let mut k = children(counts, derive(draws::<_, 2>(Count(0)), |x| *x));
         let c = k.collect(&mut rng(), 4);
         assert_eq!(c.sources, 4);
         // row 0: none, row 1: [3], row 2: [5, 6], row 3: none
@@ -393,7 +398,7 @@ mod tests {
 
     #[test]
     fn flat_map_writes_counted_children() {
-        let src = (range(1i64, 1), derive(range(0usize, 1), |i| i % 3));
+        let src = (range(1i64, 1), derive(range(0usize, 1), |&i| i % 3));
         let mut f = flat_map::<_, (i64, i32), _, _>(
             src,
             |(_, n): (&i64, &usize)| *n,

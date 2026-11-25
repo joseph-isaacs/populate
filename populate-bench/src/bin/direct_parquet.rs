@@ -26,8 +26,9 @@ use parquet::file::properties::WriterProperties;
 use populate::Distribution;
 use populate::arrow::{DistributionArrow, IntoArrowColumns};
 use populate::dist::{chars, choose, list, range, text, uniform};
+use populate::parquet::ParquetColumns;
 use populate::table::direct::group_rng;
-use populate::table::{DirectColumns, ParquetOptions, Table, par_ordered, write_dist_parquet};
+use populate::table::{ParquetOptions, Table, par_ordered, write_dist_parquet};
 use populate_bench::CountingWriter;
 use std::env::args;
 use std::time::Instant;
@@ -102,7 +103,7 @@ fn time(reps: usize, mut f: impl FnMut() -> usize) -> (f64, usize) {
 fn direct<D>(d: &D, rows: u64, threads: usize, props: &WriterProperties) -> usize
 where
     D: Distribution + Clone + Sync,
-    populate::Columns<D::Item>: DirectColumns,
+    populate::Columns<D::Item>: ParquetColumns,
 {
     let opts = ParquetOptions {
         rows_per_group: ROWS_PER_GROUP,

@@ -2,7 +2,6 @@
 //! rows, and the drivers that run several tables on one pool.
 
 use crate::TableName;
-use crate::dict::Dict;
 use crate::flat::{self, Dims};
 use crate::tables::{self, Scale, TableGen};
 use arrow_array::RecordBatch;
@@ -12,8 +11,7 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{Encoding, TextChunks, write_batch, write_text_many};
-use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
-use std::convert::Infallible;
+use populate_table::{Chunks, MultiChunks, chunks};
 use std::io::{self, Write};
 use std::sync::{Arc, LazyLock, OnceLock};
 
@@ -37,9 +35,10 @@ pub struct SsbTable {
     source_rows: u64,
     chunk_source_rows: u64,
     batch_size: usize,
-    /// The table's distribution, run over any range of source rows. For
-    /// `lineorder_flat` it holds the dimension tables, so it is built on
-    /// first use and shared by every table of the data set.
+    /// The table's distribution, run over any range of source rows: set
+    /// when the table is made, except for `lineorder_flat`, whose
+    /// distribution holds the dimension tables, so it is built on first
+    /// use and shared by every `lineorder_flat` of the data set.
     generator: Arc<OnceLock<Arc<dyn TableGen>>>,
 }
 
@@ -66,8 +65,14 @@ impl TableName {
     /// `lo_orderkey`), `Utf8View` text, column names as in ssb-dbgen's
     /// `ssb.ddl`.
     pub fn schema(self) -> SchemaRef {
-        let i = TableName::ALL.iter().position(|&t| t == self);
-        SCHEMAS[i.unwrap_or(TableName::ALL.len())].clone()
+        let i = match self {
+            TableName::LineOrderFlat => TableName::ALL.len(),
+            t => TableName::ALL
+                .iter()
+                .position(|&a| a == t)
+                .expect("a base table"),
+        };
+        SCHEMAS[i].clone()
     }
 }
 
@@ -154,18 +159,20 @@ impl SsbTable {
         )
     }
 
-    /// Build what generation needs before the first chunk (the
-    /// dictionary, and for `lineorder_flat` the dimension tables), on
-    /// `threads` threads.
+    /// Build what generation needs before the first chunk: for
+    /// `lineorder_flat`, the dimension tables, on `threads` threads.
     fn prepare(&self, threads: usize) {
-        Dict::get();
         self.generator(threads);
     }
 
     fn generator(&self, threads: usize) -> &dyn TableGen {
         let s = &self.scale;
         self.generator
-            .get_or_init(|| flat::generator(s, Arc::new(Dims::build(s, threads))))
+            .get_or_init(|| {
+                // only `lineorder_flat`'s is not set in `new`
+                debug_assert_eq!(self.name, TableName::LineOrderFlat);
+                flat::generator(s, Arc::new(Dims::build(s, threads)))
+            })
             .as_ref()
     }
 
@@ -333,26 +340,8 @@ pub fn write_tbl_many<W: Write + Send>(
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
-pub fn for_each_batch_many(
-    tables: &[SsbTable],
-    threads: usize,
-    mut f: impl FnMut(usize, RecordBatch),
-) {
+pub fn for_each_batch_many(tables: &[SsbTable], threads: usize, f: impl FnMut(usize, RecordBatch)) {
     prepare_all(tables, threads);
-    let jobs = Jobs::new(tables.iter().map(SsbTable::num_chunks));
-    let r: Result<(), Infallible> = par_ordered(
-        jobs.total(),
-        threads,
-        |j| {
-            let (t, i) = jobs.locate(j);
-            let mut v = Vec::new();
-            Chunks::chunk(&tables[t], i, &mut |b| v.push(b));
-            (t, v)
-        },
-        |(t, v)| {
-            v.into_iter().for_each(|b| f(t, b));
-            Ok(())
-        },
-    );
-    r.unwrap_or_else(|e| match e {});
+    let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
+    chunks::for_each_batch_many(&srcs, threads, f)
 }

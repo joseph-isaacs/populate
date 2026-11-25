@@ -178,7 +178,7 @@ fn key() -> impl Col<i32> {
 fn day<T: Columnar + Clone + 'static>(
     f: impl Fn(usize) -> T + Clone + Send + Sync + 'static,
 ) -> impl Col<T> {
-    derive(range(0usize, 1), f)
+    derive(range(0usize, 1), move |&i| f(i))
 }
 
 // ---------------------------------------------------------------------------
@@ -252,15 +252,15 @@ pub(crate) fn part_codes(d: &'static Dict) -> impl Col<PartCode> {
         // p_name: dbgen shuffles all 92 colours (92 draws) and joins the
         // first three; ssb-dbgen then moves the first to p_color
         derive(stream::<COLORS>(P_NAME), |x| {
-            let [c, a, b] = first_three(&x);
+            let [c, a, b] = first_three(x);
             ((a * COLORS + b) as u16, c as u8)
         }),
-        derive((ints(P_MFG, 1, 5), ints(P_CAT, 1, 5)), |(m, c)| {
+        derive((ints(P_MFG, 1, 5), ints(P_CAT, 1, 5)), |(&m, &c)| {
             ((m - 1) * 5 + c - 1) as u8
         }),
-        derive(ints(P_BRND, 0, 39), |b| b as u8),
-        derive(stream::<1>(P_TYPE), |[x]| d.types.index(x) as u8),
-        derive(stream::<1>(P_CNTR), |[x]| d.containers.index(x) as u8),
+        derive(ints(P_BRND, 0, 39), |&b| b as u8),
+        derive(stream::<1>(P_TYPE), |&[x]| d.types.index(x) as u8),
+        derive(stream::<1>(P_CNTR), |&[x]| d.containers.index(x) as u8),
         ints(P_SIZE, 1, 50),
     )
 }
@@ -304,7 +304,9 @@ fn part(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
             named("p_partkey", key()),
             named_all(
                 &PART_COLUMNS,
-                derive(part_codes(d), move |c| part_words(d, c)),
+                derive(part_codes(d), move |((&n, &c), &cat, &b, &k, &ct, &sz)| {
+                    part_words(d, ((n, c), cat, b, k, ct, sz))
+                }),
             ),
         ),
     )
@@ -487,7 +489,7 @@ pub(crate) fn party_words(d: &Dict, (nation, city): PartyCode) -> (Word, Word, W
 
 /// A customer's market segment (an index into the distribution).
 pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> {
-    derive(stream::<1>(C_MSEG), |[x]| d.segments.index(x) as u8)
+    derive(stream::<1>(C_MSEG), |&[x]| d.segments.index(x) as u8)
 }
 
 fn party_name(p: Party) -> impl Col<Bytes> {
@@ -516,7 +518,7 @@ pub(crate) fn party_text(p: Party, s: &Scale) -> impl Col<(Bytes, Bytes, Bytes)>
 
 fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
     let c = p.columns();
-    let words = derive(party_codes(p, s), move |code| party_words(d, code));
+    let words = derive(party_codes(p, s), move |(&n, &c)| party_words(d, (n, c)));
     let row = (
         named(c[0], key()),
         named(c[1], party_name(p)),
@@ -533,7 +535,7 @@ fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
                 row,
                 named(
                     c[7],
-                    derive(segment_codes(d), |i| Word(d.segments.views[i as usize])),
+                    derive(segment_codes(d), |&i| Word(d.segments.views[i as usize])),
                 ),
             ),
         ),
@@ -654,7 +656,8 @@ pub(crate) type Order = (
 /// Every order's streams. The order streams start at row `dates`.
 pub(crate) fn orders(s: &Scale) -> impl Col<Order> {
     let cmax = s.customers as i32;
-    let custkey = derive(ints(O_CKEY, 1, cmax), move |mut c| {
+    let custkey = derive(ints(O_CKEY, 1, cmax), move |&c| {
+        let mut c = c;
         // a third of customers have no orders: step off multiples of 3,
         // alternating up and down
         let mut delta = 1;
@@ -696,6 +699,11 @@ pub(crate) fn lines(d: &'static Dict) -> impl Fn(&Columns<Order>, &mut Columns<L
     move |src, out| {
         let ((index, odate, cust, prio, lcnt), (pk, sk, qty, disc, tax, cd, mode)) = src;
         let lines: usize = lcnt.iter().map(|&c| c as usize).sum();
+        assert!(
+            lcnt.len() * LINES <= u32::MAX as usize,
+            "a block of {} orders is too many to index",
+            lcnt.len()
+        );
         // each order writes all 7 entries and keeps `line count`, so there
         // is no branch per line
         let mut slot = vec![0u32; lines + LINES];

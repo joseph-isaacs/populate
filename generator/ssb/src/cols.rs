@@ -196,8 +196,18 @@ impl IntoArrowArray for SharedCols {
     }
 
     fn into_array(self) -> ArrayRef {
-        // SAFETY: the views come from a valid `StringViewArray` over these
-        // buffers (`flat::Text`), in the same order
+        // Only `flat::Text::gather` pushes views here, and it sets the
+        // buffers of the column they came from (a full check would cost
+        // as much as the join)
+        debug_assert!(
+            self.views.iter().all(|&v| {
+                let len = v as u32;
+                len <= 12 || ((v >> 64) as u32 as usize) < self.buffers.len()
+            }),
+            "shared views without their buffers"
+        );
+        // SAFETY: every view comes from a valid `StringViewArray` over
+        // these buffers (`flat::Text`), in the same order
         Arc::new(unsafe {
             StringViewArray::new_unchecked(ScalarBuffer::from(self.views), self.buffers, None)
         })

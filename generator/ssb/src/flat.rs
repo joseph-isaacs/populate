@@ -2,7 +2,7 @@
 //! part (the denormalised SSB-flat table, as ClickHouse defines it).
 //!
 //! The three dimension tables are drawn once (on all cores) and kept as
-//! their code columns ([`part_codes`], [`party_codes`]: about 8 bytes a
+//! their code columns ([`part_codes`], [`party_codes`]: about 11 bytes a
 //! part, 9 a customer), and the columns unique per row (names, addresses,
 //! phone numbers) as `Utf8View` text with one buffer per 64Ki rows. Then
 //! each block of `lineorder` rows is joined by key ([`Join`]), a column at

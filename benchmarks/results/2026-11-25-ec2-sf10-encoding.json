@@ -1,0 +1,1527 @@
+{
+  "$schema": "../../xtask/benchmark-report.schema.json",
+  "schema_version": 2,
+  "started_at_unix_seconds": 1795647044.0,
+  "finished_at_unix_seconds": 1795647094.0,
+  "complete": true,
+  "source": {
+    "revision": "90ef4142d9e234fbe9612f3363e9e7bccf1604be",
+    "worktree_dirty": false
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "aarch64",
+    "os_version": "Linux-6.18.51-120.163.amzn2023.aarch64-aarch64-with-glibc2.34",
+    "cpu": null,
+    "memory_bytes": 66162655232,
+    "logical_cpus": 32,
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "cargo": null,
+    "rustflags": null,
+    "cargo_encoded_rustflags": null,
+    "build_profile": "release",
+    "output_directory": "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+    "ldbc_resources": null
+  },
+  "invocation": [
+    "/home/ec2-user/data-comb-bench-20261125/tools/venv/bin/python",
+    "/home/ec2-user/data-comb-bench-20261125/export_pr_results.py"
+  ],
+  "configuration": {
+    "scales": [
+      10
+    ],
+    "threads": [
+      32
+    ],
+    "generators": [
+      "tpch",
+      "tpcds",
+      "ssb-parallel"
+    ],
+    "formats": [
+      "parquet",
+      "text"
+    ],
+    "runs": 3,
+    "max_runs": 5,
+    "noise_threshold": 0.1,
+    "sync_output": false,
+    "warmup_runs": 0,
+    "statistic": "median"
+  },
+  "engines": [
+    {
+      "id": "tpcgen-cli",
+      "version": "4.0.0",
+      "revision": null
+    },
+    {
+      "id": "populate",
+      "version": "0.1.0",
+      "revision": "90ef4142d9e234fbe9612f3363e9e7bccf1604be"
+    },
+    {
+      "id": "ssb-dbgen-parallel",
+      "version": null,
+      "revision": "ae1e254aa4d603d8ef1f44078e5abed011634b23"
+    }
+  ],
+  "measurements": [
+    {
+      "engine": "tpcgen-cli",
+      "workload": "tpch",
+      "scale": 10,
+      "size": "SF10",
+      "format": "parquet",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb-bench-20261125/tools/tpcgen/bin/tpcgen-cli",
+        "args": [
+          "tpch",
+          "parquet",
+          "-s",
+          "10",
+          "--num-threads",
+          "32",
+          "--output-dir",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+          "--overwrite"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:50:44Z",
+          "wall_time_seconds": 2.743241094984114,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 61.29,
+          "system_cpu_seconds": 0.87,
+          "peak_rss_bytes": 1360531456,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:50:48Z",
+          "wall_time_seconds": 2.776769543066621,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 60.9,
+          "system_cpu_seconds": 1.23,
+          "peak_rss_bytes": 1405427712,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:50:51Z",
+          "wall_time_seconds": 2.754372201859951,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 61.25,
+          "system_cpu_seconds": 1.11,
+          "peak_rss_bytes": 1342238720,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 2.754372201859951,
+        "min_wall_time_seconds": 2.743241094984114,
+        "max_wall_time_seconds": 2.776769543066621,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "tpch",
+      "scale": 10,
+      "size": "SF10",
+      "format": "parquet",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/tpch-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "parquet",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:50:46Z",
+          "wall_time_seconds": 1.000913938973099,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 29.57,
+          "system_cpu_seconds": 0.35,
+          "peak_rss_bytes": 5135810560,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:50:47Z",
+          "wall_time_seconds": 1.0121994582004845,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 29.94,
+          "system_cpu_seconds": 0.19,
+          "peak_rss_bytes": 5125332992,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:50:54Z",
+          "wall_time_seconds": 1.0008009979501367,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 29.61,
+          "system_cpu_seconds": 0.24,
+          "peak_rss_bytes": 4370190336,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 1.000913938973099,
+        "min_wall_time_seconds": 1.0008009979501367,
+        "max_wall_time_seconds": 1.0121994582004845,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "tpcgen-cli",
+      "workload": "tpch",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb-bench-20261125/tools/tpcgen/bin/tpcgen-cli",
+        "args": [
+          "tpch",
+          "tbl",
+          "-s",
+          "10",
+          "--num-threads",
+          "32",
+          "--output-dir",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+          "--overwrite"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:50:55Z",
+          "wall_time_seconds": 2.128461488056928,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 36.55,
+          "system_cpu_seconds": 0.83,
+          "peak_rss_bytes": 2433015808,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:50:59Z",
+          "wall_time_seconds": 2.1069481149315834,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 36.45,
+          "system_cpu_seconds": 0.89,
+          "peak_rss_bytes": 2348531712,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:01Z",
+          "wall_time_seconds": 2.081578308250755,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 36.29,
+          "system_cpu_seconds": 0.92,
+          "peak_rss_bytes": 2305077248,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 2.1069481149315834,
+        "min_wall_time_seconds": 2.081578308250755,
+        "max_wall_time_seconds": 2.128461488056928,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "tpch",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/tpch-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "tbl",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:50:57Z",
+          "wall_time_seconds": 0.9132297192700207,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 24.04,
+          "system_cpu_seconds": 0.38,
+          "peak_rss_bytes": 5927297024,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:50:58Z",
+          "wall_time_seconds": 0.9199538831599057,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 24.35,
+          "system_cpu_seconds": 0.24,
+          "peak_rss_bytes": 5774032896,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:03Z",
+          "wall_time_seconds": 0.9069531969726086,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 24.21,
+          "system_cpu_seconds": 0.13,
+          "peak_rss_bytes": 5937741824,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 0.9132297192700207,
+        "min_wall_time_seconds": 0.9069531969726086,
+        "max_wall_time_seconds": 0.9199538831599057,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "tpcgen-cli",
+      "workload": "tpcds",
+      "scale": 10,
+      "size": "SF10",
+      "format": "parquet",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb-bench-20261125/tools/tpcgen/bin/tpcgen-cli",
+        "args": [
+          "tpcds",
+          "parquet",
+          "-s",
+          "10",
+          "--num-threads",
+          "32",
+          "--output-dir",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+          "--overwrite"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:04Z",
+          "wall_time_seconds": 3.3317362116649747,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 86.23,
+          "system_cpu_seconds": 1.88,
+          "peak_rss_bytes": 1909395456,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:09Z",
+          "wall_time_seconds": 3.3664354663342237,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 86.88,
+          "system_cpu_seconds": 2.01,
+          "peak_rss_bytes": 1991319552,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:12Z",
+          "wall_time_seconds": 3.348440221976489,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 86.75,
+          "system_cpu_seconds": 1.94,
+          "peak_rss_bytes": 1895251968,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 3.348440221976489,
+        "min_wall_time_seconds": 3.3317362116649747,
+        "max_wall_time_seconds": 3.3664354663342237,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "tpcds",
+      "scale": 10,
+      "size": "SF10",
+      "format": "parquet",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/tpcds-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "parquet",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:07Z",
+          "wall_time_seconds": 0.8338511940091848,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 21.61,
+          "system_cpu_seconds": 0.32,
+          "peak_rss_bytes": 4908589056,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:08Z",
+          "wall_time_seconds": 0.8426435799337924,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 21.73,
+          "system_cpu_seconds": 0.28,
+          "peak_rss_bytes": 4862476288,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:16Z",
+          "wall_time_seconds": 0.8385871080681682,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 21.55,
+          "system_cpu_seconds": 0.34,
+          "peak_rss_bytes": 4876947456,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 0.8385871080681682,
+        "min_wall_time_seconds": 0.8338511940091848,
+        "max_wall_time_seconds": 0.8426435799337924,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "tpcgen-cli",
+      "workload": "tpcds",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb-bench-20261125/tools/tpcgen/bin/tpcgen-cli",
+        "args": [
+          "tpcds",
+          "dat",
+          "-s",
+          "10",
+          "--num-threads",
+          "32",
+          "--output-dir",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+          "--overwrite"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:17Z",
+          "wall_time_seconds": 2.479737351182848,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 61.51,
+          "system_cpu_seconds": 0.49,
+          "peak_rss_bytes": 1622118400,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:20Z",
+          "wall_time_seconds": 2.4866410307586193,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 61.54,
+          "system_cpu_seconds": 0.38,
+          "peak_rss_bytes": 1458724864,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:23Z",
+          "wall_time_seconds": 2.4610248329117894,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 61.32,
+          "system_cpu_seconds": 0.49,
+          "peak_rss_bytes": 1298612224,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 2.479737351182848,
+        "min_wall_time_seconds": 2.4610248329117894,
+        "max_wall_time_seconds": 2.4866410307586193,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "tpcds",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "all-data-tables",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/tpcds-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "dat",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+          "--encoding",
+          "utf8"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:19Z",
+          "wall_time_seconds": 0.6515346420928836,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 17.43,
+          "system_cpu_seconds": 0.16,
+          "peak_rss_bytes": 7440990208,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:20Z",
+          "wall_time_seconds": 0.6561176748946309,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 17.55,
+          "system_cpu_seconds": 0.16,
+          "peak_rss_bytes": 7575207936,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:25Z",
+          "wall_time_seconds": 0.6590802213177085,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 17.64,
+          "system_cpu_seconds": 0.17,
+          "peak_rss_bytes": 7637905408,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 0.6561176748946309,
+        "min_wall_time_seconds": 0.6515346420928836,
+        "max_wall_time_seconds": 0.6590802213177085,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "ssb-parallel",
+      "scale": 10,
+      "size": "SF10",
+      "format": "parquet",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "parallel-reference-comparison",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Native reference uses 32 processes, populate 32 threads. Partitioned native data differs from serial; validated at SF1. Arrow/Parquet populate runs repeat the ordinary SSB dataset, not a different implementation.",
+        "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/ssb-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "parquet",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:26Z",
+          "wall_time_seconds": 0.5639164629392326,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 10.33,
+          "system_cpu_seconds": 1.14,
+          "peak_rss_bytes": 2477117440,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:27Z",
+          "wall_time_seconds": 0.5529147950001061,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 10.31,
+          "system_cpu_seconds": 1.09,
+          "peak_rss_bytes": 2466226176,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:27Z",
+          "wall_time_seconds": 0.5521270972676575,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 10.32,
+          "system_cpu_seconds": 1.22,
+          "peak_rss_bytes": 2537091072,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 0.5529147950001061,
+        "min_wall_time_seconds": 0.5521270972676575,
+        "max_wall_time_seconds": 0.5639164629392326,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "ssb-dbgen-parallel",
+      "workload": "ssb-parallel",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "parallel-reference-comparison",
+      "validation_status": "not_run",
+      "notes": [
+        "Native -C 32 partitioned generator; output differs from native serial generator, see ssb-parallel-validation.json.Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Native reference uses 32 processes, populate 32 threads. Partitioned native data differs from serial; validated at SF1. Arrow/Parquet populate runs repeat the ordinary SSB dataset, not a different implementation.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb-bench-20261125/tools/ssb-dbgen/build/dbgen",
+        "args": [
+          "-q",
+          "-f",
+          "-s",
+          "10",
+          "-b",
+          "/home/ec2-user/data-comb-bench-20261125/tools/ssb-dbgen/dists.dss",
+          "-C",
+          "32"
+        ],
+        "cwd": "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:28Z",
+          "wall_time_seconds": 1.5002940283156931,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 46.61,
+          "system_cpu_seconds": 0.09,
+          "peak_rss_bytes": 1449984,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:30Z",
+          "wall_time_seconds": 1.510596888139844,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 46.8,
+          "system_cpu_seconds": 0.22,
+          "peak_rss_bytes": 1441792,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:32Z",
+          "wall_time_seconds": 1.5366754550486803,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 47.56,
+          "system_cpu_seconds": 0.15,
+          "peak_rss_bytes": 1445888,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 1.510596888139844,
+        "min_wall_time_seconds": 1.5002940283156931,
+        "max_wall_time_seconds": 1.5366754550486803,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    },
+    {
+      "engine": "populate",
+      "workload": "ssb-parallel",
+      "scale": 10,
+      "size": "SF10",
+      "format": "text",
+      "threads": 32,
+      "sink": "discard",
+      "variant": "parallel-reference-comparison",
+      "validation_status": "not_run",
+      "notes": [
+        "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
+        "Native reference uses 32 processes, populate 32 threads. Partitioned native data differs from serial; validated at SF1. Arrow/Parquet populate runs repeat the ordinary SSB dataset, not a different implementation.",
+        "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
+      ],
+      "command": {
+        "program": "/home/ec2-user/data-comb/target/release/ssb-gen",
+        "args": [
+          "--sf",
+          "10",
+          "--threads",
+          "32",
+          "--format",
+          "tbl",
+          "--out",
+          "/mnt/vortex-ssd/data-comb-bench-20261125/output"
+        ],
+        "cwd": "/home/ec2-user/data-comb",
+        "stdout_file": null,
+        "env": {}
+      },
+      "samples": [
+        {
+          "status": "ok",
+          "trial": 1,
+          "started_at": "2026-11-25T22:51:29Z",
+          "wall_time_seconds": 0.3808569391258061,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 6.52,
+          "system_cpu_seconds": 0.54,
+          "peak_rss_bytes": 2250379264,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 2,
+          "started_at": "2026-11-25T22:51:30Z",
+          "wall_time_seconds": 0.3826269037090242,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 6.53,
+          "system_cpu_seconds": 0.56,
+          "peak_rss_bytes": 2277847040,
+          "files": {}
+        },
+        {
+          "status": "ok",
+          "trial": 3,
+          "started_at": "2026-11-25T22:51:33Z",
+          "wall_time_seconds": 0.3855375749990344,
+          "output_bytes": 0,
+          "flush_time_seconds": null,
+          "flushed_wall_time_seconds": null,
+          "user_cpu_seconds": 6.49,
+          "system_cpu_seconds": 0.6,
+          "peak_rss_bytes": 2304684032,
+          "files": {}
+        }
+      ],
+      "summary": {
+        "statistic": "median",
+        "wall_time_seconds": 0.3826269037090242,
+        "min_wall_time_seconds": 0.3808569391258061,
+        "max_wall_time_seconds": 0.3855375749990344,
+        "output_bytes": 0,
+        "flush_time_seconds": null,
+        "flushed_wall_time_seconds": null
+      }
+    }
+  ],
+  "specification": {
+    "producer": "Imported from an external Python harness; these SF10 measurements were not produced by the updated xtask runner.",
+    "scope": {
+      "generators": [
+        "tpch",
+        "tpcds",
+        "ssb",
+        "dsb"
+      ],
+      "scale": 10,
+      "sf100": "Not run; stopped after scope was narrowed to four generators and a final table.",
+      "supplemental": "Already completed SSB serial/parallel and flattened variants retained."
+    },
+    "methodology": {
+      "scale_factor": 10,
+      "sample_count": 33,
+      "minimum_trials": 3,
+      "maximum_trials": 5,
+      "noise_threshold_range_over_median": 0.1,
+      "sampling": "Sequential subprocesses. Alternate reference/populate order each trial. If either engine has (max-min)/median > 0.10 after three trials, extend the pair to five. The later DSB text extension reran only noisy populate; its stable native reference retained three trials.",
+      "summary": "Median wall time, minimum and maximum; independent medians for bytes and flush, median of per-sample wall-plus-flush totals.",
+      "timed_region": "Monotonic clock around subprocess launch through exit; includes GNU time wrapper, startup, generation, encoding, writes and close. Excludes output setup, metadata scans, hashes, final fsync and cleanup. A resource monitor polls every 0.2 seconds.",
+      "flush": "File-output samples attempt fsync on each output file after process timing. Historical harness ignored OSError from fsync and did not sync directories: totals are attempted file-flush measurements, not a durability guarantee. Memory/discard flush fields are null; original near-zero empty-loop timings are omitted.",
+      "arrow": "Generate and drop RecordBatches with no IPC serialization or file output. Upstream reference uses an external shared 32-thread adapter, default 8000-row batches, and all data tables.",
+      "discard": "For controls, create per-output-file symlinks to /dev/null using the preceding SSD file manifest. Also create .inprogress symlinks and pass --overwrite for tpcgen-cli. Verify zero actual file bytes after each attempt. Generator, encoder and write calls still execute; encoded byte throughput is not measured.",
+      "threads": "32 threads for populate and tpcgen; SSB native serial and DSB native use one core; SSB native -C 32 uses 32 processes. Native DSB uses its documented serial all-table invocation to respect metadata dependencies.",
+      "warmup_runs": 0,
+      "global_page_cache_drops": false,
+      "seed": "No seed override; implementation defaults, with the explicit command arguments recorded per measurement.",
+      "parquet": "Snappy defaults on both tested Rust writers; byte equality is not expected from different batching/file layouts. TPC-DS reference also emits dbgen_version.parquet.",
+      "resource_guards": {
+        "disk_reserve_bytes": 68719476736,
+        "available_memory_reserve_bytes": 6442450944,
+        "poll_interval_seconds": 0.2,
+        "sample_timeout_seconds": 7200,
+        "details": "Root EBS checked before launch; root EBS and SSD checked while running. Outputs removed after every attempt. Reserves are polled, not hard quotas."
+      },
+      "memory_metric": "peak_rss_bytes is GNU time maximum RSS, converted from KiB. For multiprocess SSB this is not the sum of simultaneously resident processes. Additional sampled tree RSS observations are preserved separately and may miss sub-0.2-second peaks.",
+      "noise": "All successful attempts retained. Range is observed variation, not a confidence interval. Comparisons are against the tested references, not an exhaustive fastest-implementation search.",
+      "finish_timestamp": "Suite completion marker includes subsequent validation and discard controls; it is not the exact end of the last main subprocess."
+    },
+    "storage": {
+      "sink": "discard",
+      "device": "/dev/nvme0n1",
+      "model": "Amazon EC2 NVMe Instance Storage",
+      "mount": "/mnt/vortex-ssd",
+      "output_directory": "/mnt/vortex-ssd/data-comb-bench-20261125/output",
+      "reported_capacity": "1.7 TiB",
+      "filesystem": "xfs",
+      "workspace_device": "Amazon EBS /dev/nvme1n1p1",
+      "workspace_role": "Sources, binaries and small harness logs only; final timed datasets do not use root EBS.",
+      "workspace_measured_flush_mb_per_second_approx": 130,
+      "cleanup_freed_gib": 438.91403579711914,
+      "ssd_free_gib_at_suite_completion": 474.346923828125,
+      "earlier_ebs_and_tmpfs_trials_included": false
+    },
+    "hardware": {
+      "architecture": "aarch64",
+      "logical_cpus": 32,
+      "cores": 32,
+      "threads_per_core": 1,
+      "sockets": 1,
+      "numa_nodes": 1,
+      "memory_bytes": 66162655232,
+      "cpu_model_name": null,
+      "cpu_model_field": "1",
+      "cpu_stepping": "r0p1",
+      "ec2_instance_type": null
+    },
+    "builds": {
+      "populate": {
+        "revision": "90ef4142d9e234fbe9612f3363e9e7bccf1604be",
+        "profile": "release",
+        "lto": "thin",
+        "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+        "dependency_lock_sha256": "e194f02426bc20837bb28f94d898c993a90659cfafaed7e39b675977a1fc327b"
+      },
+      "tpcgen-cli": {
+        "version": "4.0.0",
+        "profile": "release",
+        "lto": "thin",
+        "arrow_version": "60.0.0"
+      },
+      "tpcgen-arrow": {
+        "libraries": {
+          "tpchgen": "4.0.0",
+          "tpchgen-arrow": "4.0.0",
+          "tpcdsgen": "4.0.0",
+          "tpcdsgen-arrow": "4.0.0"
+        },
+        "profile": "release",
+        "lto": "thin"
+      },
+      "ssb-dbgen": {
+        "repository": "https://github.com/eyalroz/ssb-dbgen",
+        "revision": "ae1e254aa4d603d8ef1f44078e5abed011634b23",
+        "build": "CMake Release"
+      },
+      "dsb-dsdgen": {
+        "repository": "https://github.com/microsoft/dsb",
+        "revision": "ec9a156ceee923db1114cbe388f6183b53d49787",
+        "compiler": "GCC",
+        "flags": "-O3 -Wall -fcommon"
+      }
+    },
+    "validation": [
+      {
+        "check": "Zero regular-file output bytes for every discard attempt",
+        "passed": true
+      },
+      {
+        "check": "Output equivalence",
+        "status": "not_run",
+        "related_file": "2026-11-25-ec2-sf10.json",
+        "note": "Related SSD checks include DSB and parallel SSB mismatches. Discarded output cannot be checked."
+      }
+    ],
+    "provenance": {
+      "input_file": "encoding-samples.jsonl",
+      "input_sha256": "15f745c162f8db63b3fb418192d117f48bd27ff0b95976ecc68aa08041e0a25a",
+      "measured_source_revision": "90ef4142d9e234fbe9612f3363e9e7bccf1604be",
+      "export_invocation": [
+        "/home/ec2-user/data-comb-bench-20261125/tools/venv/bin/python",
+        "/home/ec2-user/data-comb-bench-20261125/export_pr_results.py"
+      ],
+      "original_driver_argv": null,
+      "original_driver_argv_note": "Full original driver argv was not retained. Exact child commands, working directories, per-command overrides and timestamps are preserved. Harness source and shared environment overrides are archived in the main report.",
+      "shared_environment_overrides": {
+        "GODEBUG": "randseednop=0,randautoseed=0",
+        "R_LIBS_USER": "/home/ec2-user/data-comb-bench-20261125/tools/Rlib",
+        "YCSB_REF_DIR": "/home/ec2-user/data-comb-bench-20261125/tools/ycsb",
+        "LDBC_DATAGEN_RESOURCES": "/home/ec2-user/data-comb/target/ldbc_snb_datagen_spark/src/main/resources",
+        "SPARK_LOCAL_IP": "127.0.0.1",
+        "SPARK_LOCAL_DIRS": "/mnt/vortex-ssd/data-comb-bench-20261125/output/spark-tmp",
+        "OMP_NUM_THREADS": "32"
+      }
+    },
+    "resource_observations": [
+      {
+        "key": "tpch-sf10-parquet-reference-1-discard",
+        "load_before": [
+          6.17,
+          2.74,
+          2.4
+        ],
+        "min_available_memory": 61479231488,
+        "peak_tree_rss": 1354731520,
+        "min_free_disk": 364637536256,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-parquet-populate-1-discard",
+        "load_before": [
+          6.17,
+          2.74,
+          2.4
+        ],
+        "min_available_memory": 57375023104,
+        "peak_tree_rss": 4961505280,
+        "min_free_disk": 364637659136,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-parquet-populate-2-discard",
+        "load_before": [
+          6.17,
+          2.74,
+          2.4
+        ],
+        "min_available_memory": 57440989184,
+        "peak_tree_rss": 4795621376,
+        "min_free_disk": 364637609984,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-parquet-reference-2-discard",
+        "load_before": [
+          8.32,
+          3.24,
+          2.56
+        ],
+        "min_available_memory": 61091090432,
+        "peak_tree_rss": 1303904256,
+        "min_free_disk": 364637560832,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-parquet-reference-3-discard",
+        "load_before": [
+          8.32,
+          3.24,
+          2.56
+        ],
+        "min_available_memory": 61084573696,
+        "peak_tree_rss": 1286795264,
+        "min_free_disk": 364637532160,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-parquet-populate-3-discard",
+        "load_before": [
+          10.22,
+          3.72,
+          2.72
+        ],
+        "min_available_memory": 57708605440,
+        "peak_tree_rss": 4302823424,
+        "min_free_disk": 364637507584,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-reference-1-discard",
+        "load_before": [
+          10.22,
+          3.72,
+          2.72
+        ],
+        "min_available_memory": 61239611392,
+        "peak_tree_rss": 1473482752,
+        "min_free_disk": 364637458432,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-populate-1-discard",
+        "load_before": [
+          10.22,
+          3.72,
+          2.72
+        ],
+        "min_available_memory": 55973920768,
+        "peak_tree_rss": 5909987328,
+        "min_free_disk": 364637450240,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-populate-2-discard",
+        "load_before": [
+          10.22,
+          3.72,
+          2.72
+        ],
+        "min_available_memory": 56010674176,
+        "peak_tree_rss": 5773725696,
+        "min_free_disk": 364637401088,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-reference-2-discard",
+        "load_before": [
+          12.04,
+          4.2,
+          2.88
+        ],
+        "min_available_memory": 60767924224,
+        "peak_tree_rss": 1533038592,
+        "min_free_disk": 364637319168,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-reference-3-discard",
+        "load_before": [
+          12.04,
+          4.2,
+          2.88
+        ],
+        "min_available_memory": 60109062144,
+        "peak_tree_rss": 1854275584,
+        "min_free_disk": 364637290496,
+        "abort_reason": null
+      },
+      {
+        "key": "tpch-sf10-text-populate-3-discard",
+        "load_before": [
+          12.04,
+          4.2,
+          2.88
+        ],
+        "min_available_memory": 55382429696,
+        "peak_tree_rss": 5931040768,
+        "min_free_disk": 364637265920,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-reference-1-discard",
+        "load_before": [
+          14.04,
+          4.75,
+          3.07
+        ],
+        "min_available_memory": 59801255936,
+        "peak_tree_rss": 1672462336,
+        "min_free_disk": 364637216768,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-populate-1-discard",
+        "load_before": [
+          14.04,
+          4.75,
+          3.07
+        ],
+        "min_available_memory": 55886819328,
+        "peak_tree_rss": 4904611840,
+        "min_free_disk": 364637167616,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-populate-2-discard",
+        "load_before": [
+          14.04,
+          4.75,
+          3.07
+        ],
+        "min_available_memory": 55979958272,
+        "peak_tree_rss": 4864163840,
+        "min_free_disk": 364637138944,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-reference-2-discard",
+        "load_before": [
+          15.56,
+          5.22,
+          3.23
+        ],
+        "min_available_memory": 59919077376,
+        "peak_tree_rss": 1806888960,
+        "min_free_disk": 364637089792,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-reference-3-discard",
+        "load_before": [
+          15.56,
+          5.22,
+          3.23
+        ],
+        "min_available_memory": 59979010048,
+        "peak_tree_rss": 1698279424,
+        "min_free_disk": 364637061120,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-parquet-populate-3-discard",
+        "load_before": [
+          16.87,
+          5.66,
+          3.38
+        ],
+        "min_available_memory": 56295993344,
+        "peak_tree_rss": 4870856704,
+        "min_free_disk": 364637052928,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-reference-1-discard",
+        "load_before": [
+          16.87,
+          5.66,
+          3.38
+        ],
+        "min_available_memory": 60612034560,
+        "peak_tree_rss": 1574617088,
+        "min_free_disk": 364637028352,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-populate-1-discard",
+        "load_before": [
+          18.17,
+          6.12,
+          3.54
+        ],
+        "min_available_memory": 54403473408,
+        "peak_tree_rss": 7442518016,
+        "min_free_disk": 364636999680,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-populate-2-discard",
+        "load_before": [
+          18.17,
+          6.12,
+          3.54
+        ],
+        "min_available_memory": 54260518912,
+        "peak_tree_rss": 7576834048,
+        "min_free_disk": 364636950528,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-reference-2-discard",
+        "load_before": [
+          18.17,
+          6.12,
+          3.54
+        ],
+        "min_available_memory": 61047734272,
+        "peak_tree_rss": 1434681344,
+        "min_free_disk": 364636999680,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-reference-3-discard",
+        "load_before": [
+          18.17,
+          6.12,
+          3.54
+        ],
+        "min_available_memory": 61096345600,
+        "peak_tree_rss": 1241968640,
+        "min_free_disk": 364636975104,
+        "abort_reason": null
+      },
+      {
+        "key": "tpcds-sf10-text-populate-3-discard",
+        "load_before": [
+          19.35,
+          6.56,
+          3.7
+        ],
+        "min_available_memory": 54187028480,
+        "peak_tree_rss": 7639826432,
+        "min_free_disk": 364637032448,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-parquet-populate-1-discard",
+        "load_before": [
+          19.35,
+          6.56,
+          3.7
+        ],
+        "min_available_memory": 60079398912,
+        "peak_tree_rss": 2393411584,
+        "min_free_disk": 364636979200,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-parquet-populate-2-discard",
+        "load_before": [
+          19.35,
+          6.56,
+          3.7
+        ],
+        "min_available_memory": 59996819456,
+        "peak_tree_rss": 2314973184,
+        "min_free_disk": 364636930048,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-parquet-populate-3-discard",
+        "load_before": [
+          19.35,
+          6.56,
+          3.7
+        ],
+        "min_available_memory": 59827040256,
+        "peak_tree_rss": 2286157824,
+        "min_free_disk": 364636880896,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-reference-1-discard",
+        "load_before": [
+          19.35,
+          6.56,
+          3.7
+        ],
+        "min_available_memory": 62105051136,
+        "peak_tree_rss": 51228672,
+        "min_free_disk": 364636827648,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-populate-1-discard",
+        "load_before": [
+          20.37,
+          6.99,
+          3.85
+        ],
+        "min_available_memory": 60269744128,
+        "peak_tree_rss": 2241298432,
+        "min_free_disk": 364636803072,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-populate-2-discard",
+        "load_before": [
+          20.37,
+          6.99,
+          3.85
+        ],
+        "min_available_memory": 60241231872,
+        "peak_tree_rss": 2267435008,
+        "min_free_disk": 364636753920,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-reference-2-discard",
+        "load_before": [
+          20.37,
+          6.99,
+          3.85
+        ],
+        "min_available_memory": 62234386432,
+        "peak_tree_rss": 46776320,
+        "min_free_disk": 364636704768,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-reference-3-discard",
+        "load_before": [
+          20.37,
+          6.99,
+          3.85
+        ],
+        "min_available_memory": 62240219136,
+        "peak_tree_rss": 46448640,
+        "min_free_disk": 364636745728,
+        "abort_reason": null
+      },
+      {
+        "key": "ssb-parallel-sf10-text-populate-3-discard",
+        "load_before": [
+          20.37,
+          6.99,
+          3.85
+        ],
+        "min_available_memory": 60187586560,
+        "peak_tree_rss": 2288832512,
+        "min_free_disk": 364636696576,
+        "abort_reason": null
+      }
+    ],
+    "external_harness": {
+      "source_archive": "2026-11-25-ec2-sf10.json#/specification/external_harness",
+      "environment": {
+        "BENCH_STORAGE": "discard",
+        "BENCH_TAG": "encoding-"
+      }
+    }
+  },
+  "skipped": [
+    {
+      "engine": "populate",
+      "workload": null,
+      "reason": "SF100 not run; final scope limited to SF10 on this host."
+    }
+  ]
+}

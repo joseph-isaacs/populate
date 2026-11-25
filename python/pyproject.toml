@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "populate"
+description = "Columnar test data from composable distributions, and the TPC-H and SSB generators, as Arrow"
+requires-python = ">=3.10"
+license = "MIT"
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pyarrow>=14"]
+
+[tool.maturin]
+features = ["python", "tpch", "ssb"]
+module-name = "populate"

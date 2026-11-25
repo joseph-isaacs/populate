@@ -1,0 +1,32 @@
+[package]
+name = "populate-py"
+description = "Python bindings for populate (feature `python`): compose distributions, run the generators, get Arrow without a copy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Only an rlib: `cargo build` / `cargo test` never link libpython. maturin
+# builds the extension module itself (`--crate-type cdylib`).
+[lib]
+name = "populate_py"
+doctest = false
+
+[dependencies]
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
+populate-table = { workspace = true, features = ["parquet"] }
+rand = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "snap"] }
+populate-tpch = { path = "../generator/tpch", optional = true, default-features = false }
+populate-ssb = { workspace = true, optional = true }
+pyo3 = { version = "0.30", optional = true }
+
+[features]
+# Everything Python, and the Arrow C interfaces it hands data over with.
+python = ["dep:pyo3", "arrow-array/ffi", "arrow-schema/ffi"]
+tpch = ["dep:populate-tpch"]
+ssb = ["dep:populate-ssb"]

@@ -35,7 +35,7 @@ pub use chunks::{Chunks, Jobs, MultiChunks};
 pub use direct::{ParquetOptions, write_dist_parquet};
 pub use dist::{DistTable, DistTables};
 #[cfg(feature = "parquet")]
-pub use parquet::{write_parquet, write_parquet_many};
+pub use parquet::{write_parquet, write_parquet_many, write_parquet_many_in_batches};
 pub use sched::{Schedule, par_ordered, par_sources, resolve_threads};
 pub use stream::{Stream, hash_str, mix64};
 pub use table::{BatchCtx, DecimalRepr, Table};

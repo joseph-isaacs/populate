@@ -15,9 +15,10 @@ arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"], optional = true }
 populate-sink-parquet = { workspace = true, optional = true }
+arrow-select = { version = "60", optional = true }
 
 [features]
-parquet = ["dep:parquet", "dep:populate-sink-parquet"]
+parquet = ["dep:parquet", "dep:populate-sink-parquet", "dep:arrow-select"]
 
 [dev-dependencies]
 populate-builtins = { workspace = true }

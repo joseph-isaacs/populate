@@ -5,7 +5,6 @@ use crate::dat::Encoding;
 use crate::{TableName, Tpcds, channels, dims, inventory};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
-use arrow_select::concat::concat_batches;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
@@ -13,7 +12,9 @@ use parquet::schema::types::ColumnPath;
 use populate_core::{Columns, Distribution};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables};
 use populate_table::text::{TextChunks, TextColumns, TextTables, write_text_many};
-use populate_table::{Chunks, DistTable, DistTables, MultiChunks, chunks, par_sources};
+use populate_table::{
+    Chunks, DistTable, DistTables, MultiChunks, chunks, par_sources, write_parquet_many_in_batches,
+};
 use std::convert::Infallible;
 use std::fmt;
 use std::io::{self, Write};
@@ -392,15 +393,22 @@ pub fn write_parquet_many<W: Write + Send>(
 ) -> Result<Vec<W>, ParquetError> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
     let props = props.unwrap_or_else(|| parquet_props().build());
-    let units = plan(tables, Some(props.write_batch_size().max(1)));
+    let units = plan(tables);
     let srcs: Vec<&dyn MultiChunks> = units.iter().map(|u| u as &dyn MultiChunks).collect();
+    // generated batches vary in length (a ticket has 8 to 16 lines), and
+    // Parquet pages end at batch ends: written as batches of `batch_size`
+    let batch: Vec<usize> = units
+        .iter()
+        .map(|u| u.tables[u.idx[0]].batch_size)
+        .collect();
     // writers in output order (units' tables, in order), and back
     let mut by_table: Vec<Option<W>> = writers.into_iter().map(Some).collect();
     let order: Vec<usize> = units.iter().flat_map(|u| u.idx.iter().copied()).collect();
     let ordered = order
         .iter()
         .map(|&t| by_table[t].take().expect("one writer per table"));
-    let done = populate_table::write_parquet_many(&srcs, ordered.collect(), threads, Some(props))?;
+    let done =
+        write_parquet_many_in_batches(&srcs, ordered.collect(), threads, Some(props), &batch)?;
     for (t, w) in order.into_iter().zip(done) {
         by_table[t] = Some(w);
     }
@@ -418,7 +426,7 @@ pub fn write_dat_many<W: Write + Send>(
     encoding: Encoding,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
-    let units = plan(tables, None);
+    let units = plan(tables);
     let srcs: Vec<DatUnit<'_>> = units.iter().map(|u| DatUnit(u, encoding)).collect();
     let dyns: Vec<&dyn TextChunks> = srcs.iter().map(|u| u as &dyn TextChunks).collect();
     // writers in output order (units' tables, in order), and back
@@ -479,7 +487,7 @@ pub fn for_each_batch_many(
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let units = plan(tables, None);
+    let units = plan(tables);
     let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
     let r: Result<(), Infallible> = par_sources(
         &chunks,
@@ -504,14 +512,12 @@ struct Unit<'a> {
     /// Indexes into `tables` of this unit's outputs: one table, or a
     /// channel's sales and returns, in that order.
     idx: Vec<usize>,
-    /// For Parquet: the writer's `write_batch_size` (see [`Unit::chunk`]).
-    parquet_batch: Option<usize>,
 }
 
 /// Units for `tables`, in order; a sales table and its returns with the
 /// same chunks and batch size become one unit (sales first) at the first
 /// one's place.
-fn plan(tables: &[DsTable], parquet_batch: Option<usize>) -> Vec<Unit<'_>> {
+fn plan(tables: &[DsTable]) -> Vec<Unit<'_>> {
     // partner[i]: the table generated together with tables[i]
     let mut partner = vec![None; tables.len()];
     for (i, a) in tables.iter().enumerate() {
@@ -539,11 +545,7 @@ fn plan(tables: &[DsTable], parquet_batch: Option<usize>) -> Vec<Unit<'_>> {
             Some(j) => vec![j, i],
             None => vec![i],
         };
-        units.push(Unit {
-            tables,
-            idx,
-            parquet_batch,
-        });
+        units.push(Unit { tables, idx });
     }
     units
 }
@@ -568,13 +570,7 @@ impl MultiChunks for Unit<'_> {
         self.tables[self.idx[0]].num_chunks()
     }
 
-    /// Batches of about `batch_size` rows. For Parquet, whose pages end at
-    /// batch boundaries, cut so the files are those of batches of exactly
-    /// `batch_size` rows: arrow-rs (and populate's encoder, which follows
-    /// it) writes each batch in mini-batches of `write_batch_size` rows,
-    /// so batches whose lengths are multiples of it (when `batch_size` is)
-    /// give the same pages. Only the rows that span two generated batches
-    /// are copied.
+    /// Batches of about `batch_size` rows.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
         let paired = self.idx.len() == 2;
@@ -583,93 +579,13 @@ impl MultiChunks for Unit<'_> {
             (false, true) => Some(0),
             (false, false) => None,
         };
-        let Some(w) = self.parquet_batch else {
-            return t.for_each_range(t.range(i), |first, n| {
-                t.source.batches(first, n, &mut |k, b| {
-                    if let Some(o) = out(k) {
-                        emit(o, b)
-                    }
-                });
-            });
-        };
-        let align = if t.batch_size % w == 0 {
-            w
-        } else {
-            t.batch_size
-        };
-        let mut cut: Vec<Rebatch> = (0..t.source.schemas().len())
-            .map(|_| Rebatch::new(align))
-            .collect();
         t.for_each_range(t.range(i), |first, n| {
             t.source.batches(first, n, &mut |k, b| {
                 if let Some(o) = out(k) {
-                    cut[k].push(b, &mut |b| emit(o, b));
+                    emit(o, b)
                 }
             });
         });
-        for (k, c) in cut.into_iter().enumerate() {
-            if let Some(o) = out(k) {
-                c.finish(&mut |b| emit(o, b));
-            }
-        }
-    }
-}
-
-/// Cuts a stream of batches into batches whose lengths are multiples of
-/// `size`, the last one shorter.
-struct Rebatch {
-    size: usize,
-    /// Fewer than `size` rows, waiting for the next batch.
-    pending: Vec<RecordBatch>,
-    rows: usize,
-}
-
-impl Rebatch {
-    fn new(size: usize) -> Self {
-        Rebatch {
-            size,
-            pending: Vec::new(),
-            rows: 0,
-        }
-    }
-
-    fn push(&mut self, b: RecordBatch, emit: &mut dyn FnMut(RecordBatch)) {
-        let mut at = 0;
-        if self.rows > 0 {
-            let take = (self.size - self.rows).min(b.num_rows());
-            self.pending.push(b.slice(0, take));
-            self.rows += take;
-            at = take;
-            if self.rows == self.size {
-                emit(self.take());
-            }
-        }
-        let whole = (b.num_rows() - at) / self.size * self.size;
-        if whole > 0 {
-            emit(b.slice(at, whole));
-            at += whole;
-        }
-        if at < b.num_rows() {
-            self.rows += b.num_rows() - at;
-            self.pending.push(b.slice(at, b.num_rows() - at));
-        }
-    }
-
-    /// The pending rows as one batch.
-    fn take(&mut self) -> RecordBatch {
-        self.rows = 0;
-        if self.pending.len() == 1 {
-            return self.pending.pop().expect("one batch");
-        }
-        let b = concat_batches(&self.pending[0].schema(), &self.pending).expect("one schema");
-        self.pending.clear();
-        b
-    }
-
-    fn finish(mut self, emit: &mut dyn FnMut(RecordBatch)) {
-        if self.rows > 0 {
-            emit(self.take());
-        }
     }
 }
 

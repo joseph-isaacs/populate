@@ -4,101 +4,36 @@
 //! generator for the table and maps every row to a tuple of typed values,
 //! and [`named_all`] names them. The Arrow schema is [`schema_of`] that
 //! distribution: the types come from the values (`Option<_>` is a nullable
-//! column, [`Text`] is `Utf8View`, [`Decimal<P, S>`] is `Decimal128(P, S)`,
+//! column, [`Str`] is `Utf8View`, [`Decimal<P, S>`] is `Decimal128(P, S)`,
 //! [`Date32`] is `Date32`), the names from [`named_all`].
 //!
 //! [`schema_of`]: populate_sink_arrow::schema_of
 
-use arrow_array::builder::make_view;
-use arrow_array::{ArrayRef, RecordBatch, StringViewArray};
-use arrow_buffer::{Buffer, ScalarBuffer};
-use arrow_schema::{DataType, SchemaRef};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use dsbgen::config::{Session, Table as Ds};
 use dsbgen::row::*;
 use dsbgen::types::{Address, Decimal as DsDecimal};
-use crate::dat::{self, Encoding};
-use crate::seeds;
-use populate_table::text::{decimal2_field, int_field};
+use crate::dat::Encoding;
+use populate_combinators::lehmer::{A, M, mulmod};
+use populate_combinators::text::{Gmt, Interned, Str, StrViews};
+use populate_table::text::{TextColumns, TextTables, write_columns};
 use dsbgen::distribution::DemographicsDistributions as Demo;
 use dsbgen::generator::InventoryGeneratorColumn as Inv;
 use dsbgen::random::RandomNumberStream;
 use dsbgen::slowly_changing_dimension_utils::match_surrogate_key;
 use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
-use populate_builtins::{ReadRows, derive_columns, named_all, range};
+use populate_builtins::{derive_columns, named_all, range};
 use std::iter::repeat_n;
 use populate_core::{Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink};
-use populate_sink_arrow::{IntoArrowArray, IntoArrowColumns, IntoArrowTables, into_record_batch_with};
+use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, into_record_batch_with};
 use populate_table::{DistTable, DistTables};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::fmt::Write as _;
 use std::marker::PhantomData;
 use std::sync::Arc;
-
-// ============================================================================
-// Text: Utf8View strings
-// ============================================================================
-
-/// A string value, collected into a `Utf8View` column.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Text(pub String);
-
-impl From<&str> for Text {
-    fn from(s: &str) -> Self {
-        Text(s.to_owned())
-    }
-}
-
-/// [`Text`] values as Arrow string views: a view per value, and the bytes
-/// of values longer than 12 bytes in one buffer.
-#[derive(Debug, Default)]
-pub struct Views {
-    views: Vec<u128>,
-    data: Vec<u8>,
-}
-
-impl Columnar for Text {
-    type Columns = Views;
-}
-
-impl Views {
-    #[inline]
-    fn push_str(&mut self, s: &str) {
-        let b = s.as_bytes();
-        let offset = u32::try_from(self.data.len()).expect("view data under 4 GiB");
-        if b.len() > 12 {
-            self.data.extend_from_slice(b);
-        }
-        self.views.push(make_view(b, 0, offset));
-    }
-}
-
-impl Sink<Text> for Views {
-    #[inline]
-    fn push(&mut self, s: Text) {
-        self.push_str(&s.0);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.views.reserve(n);
-    }
-}
-
-impl IntoArrowArray for Views {
-    fn data_type() -> DataType {
-        DataType::Utf8View
-    }
-
-    fn into_array(self) -> ArrayRef {
-        let views = ScalarBuffer::from(self.views);
-        // SAFETY: every view was made by `make_view` from a whole `str`, over
-        // bytes appended to `data` (buffer 0) at the view's offset.
-        Arc::new(unsafe {
-            StringViewArray::new_unchecked(views, Arc::from([Buffer::from(self.data)]), None)
-        })
-    }
-}
 
 // ============================================================================
 // Values: dsbgen's fields and null bitmap, as dsbgen-arrow reads them
@@ -136,16 +71,16 @@ fn int_of(nbm: i64, pos: u32, v: i64) -> Option<i32> {
 }
 
 #[inline(always)]
-fn text(nbm: i64, pos: u32, s: &str) -> Option<Text> {
-    (!null(nbm, pos)).then(|| Text::from(s))
+fn text(nbm: i64, pos: u32, s: &str) -> Option<Str> {
+    (!null(nbm, pos)).then(|| Str::from(s))
 }
 
-fn yes_no(b: bool) -> Text {
-    Text::from(if b { "Y" } else { "N" })
+fn yes_no(b: bool) -> Str {
+    Str::from(if b { "Y" } else { "N" })
 }
 
 #[inline(always)]
-fn flag(nbm: i64, pos: u32, b: bool) -> Option<Text> {
+fn flag(nbm: i64, pos: u32, b: bool) -> Option<Str> {
     (!null(nbm, pos)).then(|| yes_no(b))
 }
 
@@ -164,39 +99,39 @@ fn dec<const P: u8, const S: i8>(nbm: i64, pos: u32, d: DsDecimal) -> Option<Dec
 mod addr {
     use super::*;
 
-    pub(super) fn street_number(n: i64, base: u32, a: &Address) -> Option<Text> {
-        (!null(n, base)).then(|| Text(a.get_street_number().to_string()))
+    pub(super) fn street_number(n: i64, base: u32, a: &Address) -> Option<Str> {
+        (!null(n, base)).then(|| Str(a.get_street_number().to_string()))
     }
-    pub(super) fn street_name(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn street_name(n: i64, base: u32, a: &Address) -> Option<Str> {
         (!null(n, base + 1)).then(|| {
             let mut s = String::new();
             write!(s, "{} {}", a.get_street_name1(), a.get_street_name2()).expect("a String");
-            Text(s)
+            Str(s)
         })
     }
-    pub(super) fn street_type(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn street_type(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 2, a.get_street_type())
     }
-    pub(super) fn suite_number(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn suite_number(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 3, a.get_suite_number())
     }
-    pub(super) fn city(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn city(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 4, a.get_city())
     }
-    pub(super) fn county(n: i64, base: u32, a: &Address) -> Option<Text> {
-        a.get_county().filter(|_| !null(n, base + 5)).map(Text::from)
+    pub(super) fn county(n: i64, base: u32, a: &Address) -> Option<Str> {
+        a.get_county().filter(|_| !null(n, base + 5)).map(Str::from)
     }
-    pub(super) fn state(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn state(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 6, a.get_state())
     }
-    pub(super) fn zip(n: i64, base: u32, a: &Address) -> Option<Text> {
-        (!null(n, base + 7)).then(|| Text(format!("{:05}", a.get_zip())))
+    pub(super) fn zip(n: i64, base: u32, a: &Address) -> Option<Str> {
+        (!null(n, base + 7)).then(|| Str(format!("{:05}", a.get_zip())))
     }
-    pub(super) fn country(n: i64, base: u32, a: &Address) -> Option<Text> {
+    pub(super) fn country(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 8, a.get_country())
     }
-    pub(super) fn gmt_offset(n: i64, base: u32, a: &Address) -> Option<Decimal<5, 2>> {
-        valid(n, base + 9, Decimal(i128::from(a.get_gmt_offset()) * 100))
+    pub(super) fn gmt_offset(n: i64, base: u32, a: &Address) -> Option<Gmt> {
+        valid(n, base + 9, Gmt(a.get_gmt_offset()))
     }
 }
 
@@ -365,43 +300,53 @@ pub(crate) trait Gen: Send + Sync {
     /// Source rows `first..=last` (1-based) as batches of up to `batch` rows.
     fn range(&self, first: u64, last: u64, batch: usize, emit: &mut dyn FnMut(RecordBatch));
 
-    /// [`range`](Self::range) as `.dat` lines appended to `out`.
-    fn range_dat(&self, first: u64, last: u64, batch: usize, encoding: Encoding, out: &mut Vec<u8>) {
-        self.range(first, last, batch, &mut |b| dat::write_batch(&b, encoding, out));
-    }
+    /// [`range`](Self::range) as `.dat` lines appended to `out`, written
+    /// from the columns.
+    fn range_dat(&self, first: u64, last: u64, batch: usize, encoding: Encoding, out: &mut Vec<u8>);
 }
 
 impl<D> Gen for DistTable<D>
 where
     D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowColumns,
+    Columns<D::Item>: IntoArrowColumns + TextColumns,
 {
+    fn range_dat(&self, first: u64, last: u64, batch: usize, encoding: Encoding, out: &mut Vec<u8>) {
+        blocks(self.dist(), first, last, batch, |cols| write_columns(&cols, encoding, out));
+    }
+
     fn schema(&self) -> SchemaRef {
         DistTable::schema(self).clone()
     }
 
     fn range(&self, first: u64, last: u64, batch: usize, emit: &mut dyn FnMut(RecordBatch)) {
-        // one stream from `first` on, not a skip per batch: DSB's
-        // generators are cheap to step and dearer to open
-        let mut d = self.dist().clone();
-        d.skip(first - 1);
-        // the leaves draw from their own streams, not this
-        let mut rng = SmallRng::seed_from_u64(0);
         let schema = DistTable::schema(self);
-        let mut at = first;
-        while at <= last {
-            let n = batch.min((last - at + 1) as usize);
-            let cols = d.collect(&mut rng, n);
-            emit(into_record_batch_with(schema, cols).expect("columns match the schema"));
-            at += n as u64;
-        }
+        blocks(self.dist(), first, last, batch, |cols| {
+            emit(into_record_batch_with(schema, cols).expect("columns match the schema"))
+        });
+    }
+}
+
+/// Source rows `first..=last` (1-based) of `dist`, `f` on the columns of
+/// each block of up to `block` of them. One stream from `first` on, not a
+/// skip per block (as `DistTable::range` makes): DSB's generators are
+/// cheap to step and dear to open.
+fn blocks<D: Distribution + Clone>(dist: &D, first: u64, last: u64, block: usize, mut f: impl FnMut(Columns<D::Item>)) {
+    let mut d = dist.clone();
+    d.skip(first - 1);
+    // the leaves draw from their own streams, not this
+    let mut rng = SmallRng::seed_from_u64(0);
+    let mut at = first;
+    while at <= last {
+        let n = block.min((last - at + 1) as usize);
+        f(d.collect(&mut rng, n));
+        at += n as u64;
     }
 }
 
 fn boxed<D>(dist: D) -> Box<dyn Gen>
 where
     D: Distribution + Clone + Send + Sync + 'static,
-    Columns<D::Item>: IntoArrowColumns,
+    Columns<D::Item>: IntoArrowColumns + TextColumns,
 {
     Box::new(DistTable::new("dsb", 0, dist))
 }
@@ -436,7 +381,7 @@ fn call_center(s: &Session) -> Box<dyn Gen> {
     table!(s, CallCenterRowGenerator, |r, n| r.get_null_bit_map();
     [
         cc_call_center_sk = r.get_cc_call_center_sk() as i32,
-        cc_call_center_id = Text::from(r.get_cc_call_center_id()),
+        cc_call_center_id = Str::from(r.get_cc_call_center_id()),
         cc_rec_start_date = julian(n, 2, r.get_cc_rec_start_date_id()),
         cc_rec_end_date = julian(n, 3, r.get_cc_rec_end_date_id()),
         cc_closed_date_sk = sk(n, 4, r.get_cc_closed_date_id()),
@@ -477,7 +422,7 @@ fn catalog_page(s: &Session) -> Box<dyn Gen> {
     table!(s, CatalogPageRowGenerator, |r, n| r.null_bit_map();
     [
         cp_catalog_page_sk = r.get_cp_catalog_page_sk() as i32,
-        cp_catalog_page_id = Text::from(r.get_cp_catalog_page_id()),
+        cp_catalog_page_id = Str::from(r.get_cp_catalog_page_id()),
         cp_start_date_sk = sk(n, 2, r.get_cp_start_date_id()),
         cp_end_date_sk = sk(n, 3, r.get_cp_end_date_id()),
     ]
@@ -495,7 +440,7 @@ fn customer(s: &Session) -> Box<dyn Gen> {
     table!(s, CustomerRowGenerator, |r, n| r.null_bit_map();
     [
         c_customer_sk = r.get_c_customer_sk() as i32,
-        c_customer_id = Text::from(r.get_c_customer_id()),
+        c_customer_id = Str::from(r.get_c_customer_id()),
         c_current_cdemo_sk = sk(n, 2, r.get_c_current_cdemo_sk()),
         c_current_hdemo_sk = sk(n, 3, r.get_c_current_hdemo_sk()),
         c_current_addr_sk = sk(n, 4, r.get_c_current_addr_sk()),
@@ -512,7 +457,7 @@ fn customer(s: &Session) -> Box<dyn Gen> {
         c_birth_year = int(n, 13, r.get_c_birth_year()),
         c_birth_country = text(n, 14, r.get_c_birth_country()),
         // always NULL, as TPC-DS specifies
-        c_login = None::<Text>,
+        c_login = None::<Str>,
         c_email_address = text(n, 16, r.get_c_email_address()),
         c_last_review_date_sk = int(n, 17, r.get_c_last_review_date()),
     ])
@@ -522,7 +467,7 @@ fn customer_address(s: &Session) -> Box<dyn Gen> {
     table!(s, CustomerAddressRowGenerator, |r, n| r.null_bit_map();
     [
         ca_address_sk = r.get_ca_addr_sk() as i32,
-        ca_address_id = Text::from(r.get_ca_addr_id()),
+        ca_address_id = Str::from(r.get_ca_addr_id()),
     ]
     [
         ca_street_number = addr::street_number(n, 2, r.get_ca_address()),
@@ -561,7 +506,7 @@ fn date_dim(s: &Session) -> Box<dyn Gen> {
     table!(s, DateDimRowGenerator, |r, n| 0;
     [
         d_date_sk = r.d_date_sk as i32,
-        d_date_id = Text::from(r.d_date_id.as_str()),
+        d_date_id = Str::from(r.d_date_id.as_str()),
         d_date = Some(Date32(
             (i64::from(r.d_date.to_julian_days()) - UNIX_EPOCH_JULIAN) as i32,
         )),
@@ -578,8 +523,8 @@ fn date_dim(s: &Session) -> Box<dyn Gen> {
     [
         d_fy_quarter_seq = Some(r.d_fy_quarter_seq),
         d_fy_week_seq = Some(r.d_fy_week_seq),
-        d_day_name = Some(Text::from(r.d_day_name.as_str())),
-        d_quarter_name = Some(Text::from(r.d_quarter_name.as_str())),
+        d_day_name = Some(Str::from(r.d_day_name.as_str())),
+        d_quarter_name = Some(Str::from(r.d_quarter_name.as_str())),
         d_holiday = Some(yes_no(r.d_holiday)),
         d_weekend = Some(yes_no(r.d_weekend)),
         d_following_holiday = Some(yes_no(r.d_following_holiday)),
@@ -623,7 +568,7 @@ fn item(s: &Session) -> Box<dyn Gen> {
     table!(s, ItemRowGenerator, |r, n| r.null_bit_map();
     [
         i_item_sk = r.get_i_item_sk() as i32,
-        i_item_id = Text::from(r.get_i_item_id()),
+        i_item_id = Str::from(r.get_i_item_id()),
         i_rec_start_date = julian(n, 2, r.get_i_rec_start_date_id()),
         // ignores the bitmap: only a negative day is NULL
         i_rec_end_date = julian(0, 3, r.get_i_rec_end_date_id()),
@@ -654,7 +599,7 @@ fn promotion(s: &Session) -> Box<dyn Gen> {
     table!(s, PromotionRowGenerator, |r, n| r.null_bit_map();
     [
         p_promo_sk = r.get_p_promo_sk() as i32,
-        p_promo_id = Text::from(r.get_p_promo_id()),
+        p_promo_id = Str::from(r.get_p_promo_id()),
         p_start_date_sk = sk(n, 2, r.get_p_start_date_id()),
         p_end_date_sk = sk(n, 3, r.get_p_end_date_id()),
         p_item_sk = sk(n, 4, r.get_p_item_sk()),
@@ -681,7 +626,7 @@ fn reason(s: &Session) -> Box<dyn Gen> {
     table!(s, ReasonRowGenerator, |r, n| r.null_bit_map();
     [
         r_reason_sk = r.get_r_reason_sk() as i32,
-        r_reason_id = Text::from(r.get_r_reason_id()),
+        r_reason_id = Str::from(r.get_r_reason_id()),
         r_reason_desc = text(n, 2, r.get_r_reason_desc()),
     ])
 }
@@ -690,7 +635,7 @@ fn ship_mode(s: &Session) -> Box<dyn Gen> {
     table!(s, ShipModeRowGenerator, |r, n| r.null_bit_map();
     [
         sm_ship_mode_sk = r.get_sm_ship_mode_sk() as i32,
-        sm_ship_mode_id = Text::from(r.get_sm_ship_mode_id()),
+        sm_ship_mode_id = Str::from(r.get_sm_ship_mode_id()),
         sm_type = text(n, 2, r.get_sm_type()),
     ]
     [
@@ -704,7 +649,7 @@ fn store(s: &Session) -> Box<dyn Gen> {
     table!(s, StoreRowGenerator, |r, n| r.null_bit_map();
     [
         s_store_sk = r.get_store_sk() as i32,
-        s_store_id = Text::from(r.get_store_id()),
+        s_store_id = Str::from(r.get_store_id()),
         s_rec_start_date = julian(n, 2, r.get_rec_start_date_id()),
         // only a negative day is NULL here, not the bitmap
         s_rec_end_date = julian(0, 3, r.get_rec_end_date_id()),
@@ -745,7 +690,7 @@ fn time_dim(s: &Session) -> Box<dyn Gen> {
     table!(s, TimeDimRowGenerator, |r, n| r.null_bit_map();
     [
         t_time_sk = r.t_time_sk as i32,
-        t_time_id = Text::from(r.t_time_id.as_str()),
+        t_time_id = Str::from(r.t_time_id.as_str()),
         t_time = int(n, 2, r.t_time),
         t_hour = int(n, 3, r.t_hour),
         t_minute = int(n, 4, r.t_minute),
@@ -756,7 +701,7 @@ fn time_dim(s: &Session) -> Box<dyn Gen> {
         t_shift = text(n, 7, r.t_shift.as_str()),
         t_sub_shift = text(n, 8, r.t_sub_shift.as_str()),
         // NULL when empty, whatever the bitmap
-        t_meal_time = (!r.t_meal_time.is_empty()).then(|| Text::from(r.t_meal_time.as_str())),
+        t_meal_time = (!r.t_meal_time.is_empty()).then(|| Str::from(r.t_meal_time.as_str())),
     ])
 }
 
@@ -764,7 +709,7 @@ fn warehouse(s: &Session) -> Box<dyn Gen> {
     table!(s, WarehouseRowGenerator, |r, n| r.null_bit_map();
     [
         w_warehouse_sk = r.get_w_warehouse_sk() as i32,
-        w_warehouse_id = Text::from(r.get_w_warehouse_id()),
+        w_warehouse_id = Str::from(r.get_w_warehouse_id()),
         w_warehouse_name = text(n, 2, r.get_w_warehouse_name()),
         w_warehouse_sq_ft = int(n, 3, r.get_w_warehouse_sq_ft()),
     ]
@@ -786,7 +731,7 @@ fn web_page(s: &Session) -> Box<dyn Gen> {
     table!(s, WebPageRowGenerator, |r, n| r.null_bit_map();
     [
         wp_web_page_sk = r.get_wp_page_sk() as i32,
-        wp_web_page_id = Text::from(r.get_wp_page_id()),
+        wp_web_page_id = Str::from(r.get_wp_page_id()),
         wp_rec_start_date = julian(n, 2, r.get_wp_rec_start_date_id()),
         // ignores the bitmap: only a negative day is NULL
         wp_rec_end_date = julian(0, 3, r.get_wp_rec_end_date_id()),
@@ -809,7 +754,7 @@ fn web_site(s: &Session) -> Box<dyn Gen> {
     table!(s, WebSiteRowGenerator, |r, n| r.null_bit_map();
     [
         web_site_sk = r.get_web_site_sk() as i32,
-        web_site_id = Text::from(r.get_web_site_id()),
+        web_site_id = Str::from(r.get_web_site_id()),
         web_rec_start_date = julian(n, 2, r.get_web_rec_start_date_id()),
         // only a negative day is NULL here, not the bitmap
         web_rec_end_date = julian(0, 3, r.get_web_rec_end_date_id()),
@@ -846,99 +791,13 @@ fn web_site(s: &Session) -> Box<dyn Gen> {
 // inventory and customer_demographics: computed columns, not row structs
 // ============================================================================
 
-/// A fixed string, collected into a `Utf8View` column like [`Text`].
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Word(pub &'static str);
-
-impl Columnar for Word {
-    type Columns = Words;
-}
-
-/// [`Word`]s as string views. A column holds few distinct words, so each
-/// one's bytes are stored once and its view reused.
-#[derive(Debug, Default)]
-pub struct Words {
-    views: Views,
-    /// The words seen and their views.
-    seen: Vec<(&'static str, u128)>,
-    /// The last word pushed, as an index into `seen`.
-    last: usize,
-}
-
-impl Words {
-    #[inline]
-    fn view(&mut self, w: &'static str) -> u128 {
-        if let Some(&(s, v)) = self.seen.get(self.last)
-            && std::ptr::eq(s, w)
-        {
-            return v;
-        }
-        if let Some(i) = self.seen.iter().position(|&(s, _)| std::ptr::eq(s, w)) {
-            self.last = i;
-            return self.seen[i].1;
-        }
-        self.views.push_str(w);
-        let v = self.views.views.pop().expect("just pushed");
-        self.last = self.seen.len();
-        self.seen.push((w, v));
-        v
-    }
-}
-
-impl Sink<Word> for Words {
-    #[inline]
-    fn push(&mut self, w: Word) {
-        let v = self.view(w.0);
-        self.views.views.push(v);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.views.views.reserve(n);
-    }
-
-    fn push_n(&mut self, values: impl Iterator<Item = Word>) {
-        let (lo, _) = values.size_hint();
-        self.views.views.reserve(lo);
-        for w in values {
-            let v = self.view(w.0);
-            self.views.views.push(v);
-        }
-    }
-}
-
-impl ReadRows for Words {
-    type Row = Word;
-
-    fn rows(&self) -> usize {
-        self.views.views.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Word> + '_ {
-        // a view's word is the seen word with that view
-        self.views.views[start..].iter().map(|v| {
-            let (s, _) = self.seen.iter().find(|(_, sv)| sv == v).expect("a seen word");
-            Word(s)
-        })
-    }
-}
-
-impl IntoArrowArray for Words {
-    fn data_type() -> DataType {
-        DataType::Utf8View
-    }
-
-    fn into_array(self) -> ArrayRef {
-        self.views.into_array()
-    }
-}
-
 type DemoRow = (
     i32,
-    Option<Word>,
-    Option<Word>,
-    Option<Word>,
+    Option<Str>,
+    Option<Str>,
+    Option<Str>,
     Option<i32>,
-    Option<Word>,
+    Option<Str>,
     Option<i32>,
     Option<i32>,
     Option<i32>,
@@ -952,8 +811,8 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
     if NullTable::CustomerDemographics.get_null_basis_points() != 0 {
         return customer_demographics_rows(s);
     }
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
-        (0..n as i64).map(|i| Word(f(i))).collect()
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[&'static str]> {
+        (0..n as i64).map(f).collect()
     };
     let gender = list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size);
     let marital = list(
@@ -1015,8 +874,11 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
             let Some(&first) = rows.first() else { return };
             let i = first - 1;
             out.0.extend(rows.iter().map(|&r| r as i32));
-            let words = |col: &mut Nullable<Words>, list: &[Word], d: usize| {
-                col.values.push_n(digits(i, n, d).map(|v| list[v]));
+            // each word's bytes once per block, not once per row
+            let words = |col: &mut Nullable<StrViews>, list: &[&str], d: usize| {
+                let views: Vec<Interned> = list.iter().map(|w| col.values.intern(w)).collect();
+                Sink::<Str>::reserve(&mut col.values, n);
+                digits(i, n, d).for_each(|v| col.values.push_interned(views[v]));
                 col.valid.push_valid(n);
             };
             words(&mut out.1, &gender, 0);
@@ -1034,6 +896,9 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
         }),
     ))
 }
+
+/// Two steps of a Lehmer stream: `A^2 mod m`.
+const TWO_DRAWS: u64 = A * A % M;
 
 /// inventory: row `r` is item `(r-1) % items`, then warehouse, then week,
 /// slowest; one random quantity and a null bitmap per row.
@@ -1159,8 +1024,9 @@ impl Distribution for Inventory {
                     0
                 };
                 qty.valid.push(nbm & (1 << 3) == 0);
-                s.n1 = seeds::lehmer2(s.n1);
-                s.n2 = seeds::lehmer2(s.n2);
+                // the null stream reserves two draws per row
+                s.n1 = mulmod(s.n1, TWO_DRAWS);
+                s.n2 = mulmod(s.n2, TWO_DRAWS);
             }
             left -= run;
             s.item += run as u64;
@@ -1216,46 +1082,6 @@ pub(crate) trait Fact {
     /// [`cols`](Self::cols) written straight into the columns, without
     /// making the tuple.
     fn push(&self, cols: &mut Columns<Self::Cols>);
-    /// The row as a `.dat` line, the bytes [`dat::write_batch`] makes of
-    /// its columns.
-    fn dat(&self, out: &mut Vec<u8>);
-}
-
-/// A fact column's value as a `.dat` field and its `|`.
-trait DatField {
-    fn dat(self, out: &mut Vec<u8>);
-}
-
-impl DatField for i32 {
-    #[inline(always)]
-    fn dat(self, out: &mut Vec<u8>) {
-        int_field(out, self.into());
-    }
-}
-
-impl DatField for i64 {
-    #[inline(always)]
-    fn dat(self, out: &mut Vec<u8>) {
-        int_field(out, self);
-    }
-}
-
-impl DatField for Decimal<7, 2> {
-    #[inline(always)]
-    fn dat(self, out: &mut Vec<u8>) {
-        // seven digits always fit an i64
-        decimal2_field(out, self.0 as i64);
-    }
-}
-
-impl<T: DatField> DatField for Option<T> {
-    #[inline(always)]
-    fn dat(self, out: &mut Vec<u8>) {
-        match self {
-            Some(v) => v.dat(out),
-            None => out.push(b'|'),
-        }
-    }
 }
 
 /// [`Fact`] for dsbgen row `$row`: column names `$names` and row type
@@ -1281,13 +1107,6 @@ macro_rules! fact {
                 let $r = self;
                 let $n = $r.null_bit_map();
                 $($(cols.$g.$i.push($e);)+)+
-            }
-            #[inline]
-            fn dat(&self, out: &mut Vec<u8>) {
-                let $r = self;
-                let $n = $r.null_bit_map();
-                $($(DatField::dat($e, out);)+)+
-                out.push(b'\n');
             }
         }
     };
@@ -1732,26 +1551,19 @@ pub(crate) trait PairGen: Send + Sync {
     /// source rows; `emit(k, batch)` for table `k` (0 sales, 1 returns).
     fn range(&self, first: u64, last: u64, per_batch: u64, emit: &mut dyn FnMut(usize, RecordBatch));
 
-    /// Source rows `first..=last` as `.dat` lines of the sales and returns.
-    fn range_dat(&self, first: u64, last: u64, sales: &mut Vec<u8>, returns: &mut Vec<u8>);
+    /// Source rows `first..=last` in blocks of `per_batch`, as `.dat`
+    /// lines of the sales (`bufs[0]`) and returns (`bufs[1]`), written from
+    /// the columns.
+    fn range_dat(&self, first: u64, last: u64, per_batch: u64, encoding: Encoding, bufs: &mut [Vec<u8>]);
 }
 
-impl<G> PairGen for DistTables<Pairs<G>>
+impl<D> PairGen for DistTables<D>
 where
-    G: WithSale + Send + Sync,
-    G::Sale: Fact + Send + Sync,
-    G::Item: Fact + Send + Sync,
-    Columns<<Pairs<G> as Distribution>::Item>: IntoArrowTables,
+    D: Distribution + Clone + Send + Sync,
+    Columns<D::Item>: IntoArrowTables + TextTables,
 {
-    fn range_dat(&self, first: u64, last: u64, sales: &mut Vec<u8>, returns: &mut Vec<u8>) {
-        let mut d = self.dist().clone();
-        d.skip(first - 1);
-        d.lines(last - first + 1, |s, r| {
-            s.dat(sales);
-            if let Some(r) = r {
-                r.dat(returns);
-            }
-        });
+    fn range_dat(&self, first: u64, last: u64, per_batch: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        blocks(self.dist(), first, last, per_batch as usize, |cols| cols.write_tables(encoding, bufs));
     }
 
     fn range(&self, first: u64, last: u64, per_batch: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
@@ -1776,31 +1588,6 @@ where
     }
 }
 
-/// A sales or returns table alone, with its `.dat` lines written straight
-/// from the rows.
-struct FactTable<G: Iterator>(DistTable<Lines<G>>);
-
-impl<G> Gen for FactTable<G>
-where
-    G: Source + Send + Sync,
-    G::Item: Line + Fact + Send + Sync,
-    Columns<Children<<G::Item as Fact>::Cols>>: IntoArrowColumns,
-{
-    fn schema(&self) -> SchemaRef {
-        self.0.schema().clone()
-    }
-
-    fn range(&self, first: u64, last: u64, batch: usize, emit: &mut dyn FnMut(RecordBatch)) {
-        Gen::range(&self.0, first, last, batch, emit)
-    }
-
-    fn range_dat(&self, first: u64, last: u64, _: usize, _: Encoding, out: &mut Vec<u8>) {
-        let mut d = self.0.dist().clone();
-        d.skip(first - 1);
-        d.lines(last - first + 1, |r| r.dat(out));
-    }
-}
-
 /// Sales or returns table `t` alone, or `None` for a dimension.
 pub(crate) fn fact(t: crate::TableName, s: &Session) -> Option<Box<dyn Gen>> {
     use crate::TableName as T;
@@ -1808,14 +1595,13 @@ pub(crate) fn fact(t: crate::TableName, s: &Session) -> Option<Box<dyn Gen>> {
     where
         G: Source + Send + Sync + 'static,
         G::Item: Line + Fact + Send + Sync,
-        Columns<Children<<G::Item as Fact>::Cols>>: IntoArrowColumns,
+        Columns<Children<<G::Item as Fact>::Cols>>: IntoArrowColumns + TextColumns,
     {
-        let lines = Lines::<G> {
+        boxed(Lines::<G> {
             session: s.clone(),
             next: 1,
             open: None,
-        };
-        Box::new(FactTable(DistTable::new("dsb", 0, lines)))
+        })
     }
     Some(match t {
         T::StoreSales => lines::<StoreSalesRowGenerator>(s),
@@ -1836,7 +1622,7 @@ pub(crate) fn pair(t: crate::TableName, s: &Session) -> Option<Box<dyn PairGen>>
         G: WithSale + Send + Sync + 'static,
         G::Sale: Fact + Send + Sync,
         G::Item: Fact + Send + Sync,
-        Columns<<Pairs<G> as Distribution>::Item>: IntoArrowTables,
+        Columns<<Pairs<G> as Distribution>::Item>: IntoArrowTables + TextTables,
     {
         let dist = Pairs::<G> {
             session: s.clone(),

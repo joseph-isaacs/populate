@@ -5,5 +5,8 @@
 //!
 //! - [`lehmer`]: the Park–Miller stream of dbgen and dsdgen (TPC-H, SSB,
 //!   TPC-DS, DSB), positioned anywhere in `O(log n)` and drawn in lanes.
+//! - [`text`]: dsdgen's text and GMT offset columns (TPC-DS, DSB), as
+//!   Arrow `Utf8View` and `.dat` fields.
 
 pub mod lehmer;
+pub mod text;

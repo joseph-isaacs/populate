@@ -36,7 +36,6 @@
 pub mod dat;
 mod dist;
 mod gen_tables;
-mod seeds;
 
 pub use dat::Encoding;
 pub use gen_tables::{

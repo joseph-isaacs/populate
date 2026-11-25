@@ -897,6 +897,23 @@ pub trait TextTables {
     fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]);
 }
 
+/// A child table's rows: the children's columns.
+impl<V: TextColumns> TextColumns for ChildCols<V> {
+    fn text_rows(&self) -> usize {
+        self.values.text_rows()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.values.text_bytes()
+    }
+
+    #[inline(always)]
+    unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: as the caller's
+        unsafe { self.values.write_row(r, w, encoding) }
+    }
+}
+
 impl<V: TextColumns> TextTables for ChildCols<V> {
     fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]) {
         write_columns(&self.values, encoding, &mut bufs[0]);

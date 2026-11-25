@@ -524,13 +524,13 @@ impl Unit<'_> {
     fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
-        match (self.idx.len(), bufs) {
-            (2, [sales, returns]) => {
-                let pair = t.pair.as_ref().expect("a sales table pairs");
-                pair.0.range_dat(first, last, sales, returns);
-            }
-            (_, [out]) => t.dist.0.range_dat(first, last, t.batch_source_rows() as usize, encoding, out),
-            _ => unreachable!("a buffer per table"),
+        let per_batch = t.batch_source_rows();
+        if self.idx.len() == 2 {
+            // `idx` is sales, returns: the pair's tables 0 and 1
+            let pair = t.pair.as_ref().expect("a sales table pairs");
+            pair.0.range_dat(first, last, per_batch, encoding, bufs);
+        } else {
+            t.dist.0.range_dat(first, last, per_batch as usize, encoding, &mut bufs[0]);
         }
     }
 }

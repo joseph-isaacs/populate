@@ -1,15 +1,17 @@
-//! [`Str`]: TPC-DS text, collected as an Arrow `Utf8View` column.
+//! The text columns of dsdgen's tables (TPC-DS, DSB), collected as Arrow
+//! `Utf8View` and printed as `.dat` fields.
 //!
-//! A string of up to 12 bytes is stored in its view; longer ones are
-//! copied into the column's one data buffer. The column type says it is
-//! `Utf8View`, which is where the tables' schemas get their text type from.
+//! [`Str`] and [`Word`] go into [`StrViews`]: a string of up to 12 bytes
+//! is stored in its view, longer ones are copied into the column's one
+//! data buffer. [`Gmt`] is dsdgen's GMT offset, a `decimal(5,2)` printed
+//! with no decimals.
 
 use arrow_array::builder::make_view;
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
 use populate_builtins::ReadRows;
-use populate_core::{Columnar, Nullable, Sink};
+use populate_core::{Columnar, Decimal as Fixed, Nullable, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use populate_table::text::{Cursor, Encoding, TextField};
 use std::sync::Arc;
@@ -58,6 +60,23 @@ impl StrViews {
         }
     }
 
+    /// The view of `s`, its bytes stored once, to append as many rows as
+    /// needed with [`push_interned`](Self::push_interned): for columns of a
+    /// few distinct values, whose long ones are then not copied per row.
+    pub fn intern(&mut self, s: &str) -> Interned {
+        let views = self.views.len();
+        self.push_str(s);
+        let v = self.views.pop().expect("just pushed");
+        debug_assert_eq!(self.views.len(), views);
+        Interned(v)
+    }
+
+    /// Append a row of a string [`intern`](Self::intern)ed in this column.
+    #[inline]
+    pub fn push_interned(&mut self, s: Interned) {
+        self.views.push(s.0);
+    }
+
     /// The string of row `i`.
     fn get(&self, i: usize) -> String {
         let v = self.views[i];
@@ -73,8 +92,19 @@ impl StrViews {
     }
 }
 
+/// A string's view in one [`StrViews`] column, from
+/// [`StrViews::intern`].
+#[derive(Debug, Clone, Copy)]
+pub struct Interned(u128);
+
 impl Columnar for Str {
     type Columns = StrViews;
+}
+
+impl From<&str> for Str {
+    fn from(s: &str) -> Self {
+        Str(s.to_owned())
+    }
 }
 
 /// A string from a fixed list (a distribution's values), collected into
@@ -165,7 +195,7 @@ impl IntoArrowArray for StrViews {
 }
 
 /// Nullable text written in place.
-pub(crate) trait PushText {
+pub trait PushText {
     /// `s`, or NULL.
     fn push_text(&mut self, s: Option<&str>);
 
@@ -191,5 +221,67 @@ impl PushText for Nullable<StrViews> {
         } else {
             self.values.views.push(0);
         }
+    }
+}
+
+/// A GMT offset in whole hours, kept as `decimal(5,2)` and printed in
+/// `.dat` files with no decimals (`-5`), as dsdgen does.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Gmt(pub i32);
+
+/// The column of [`Gmt`]: the offsets as `decimal(5,2)` units.
+#[derive(Debug, Clone, Default)]
+pub struct GmtCol(Vec<Fixed<5, 2>>);
+
+impl Columnar for Gmt {
+    type Columns = GmtCol;
+}
+
+impl Sink<Gmt> for GmtCol {
+    #[inline]
+    fn push(&mut self, g: Gmt) {
+        self.0.push(Fixed(i128::from(g.0) * 100));
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n);
+    }
+}
+
+impl ReadRows for GmtCol {
+    type Row = Gmt;
+
+    fn rows(&self) -> usize {
+        self.0.len()
+    }
+
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Gmt> + '_ {
+        self.0[start..].iter().map(|d| Gmt((d.0 / 100) as i32))
+    }
+}
+
+impl IntoArrowArray for GmtCol {
+    fn data_type() -> DataType {
+        <Vec<Fixed<5, 2>>>::data_type()
+    }
+
+    fn into_array(self) -> ArrayRef {
+        IntoArrowArray::into_array(self.0)
+    }
+}
+
+impl TextField for GmtCol {
+    fn text_rows(&self) -> usize {
+        self.0.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        TextField::text_bytes(&self.0)
+    }
+
+    #[inline]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, _: Encoding) {
+        // SAFETY: as the caller's
+        unsafe { w.int((self.0.get_unchecked(r).0 / 100) as i64) }
     }
 }

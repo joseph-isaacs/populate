@@ -2,7 +2,9 @@
 
 Synthetic tables shaped like data people benchmark on, on
 `populate-table`'s `Chunks` engine: Arrow `RecordBatch`es or Parquet, on all
-cores, deterministic. There is no reference generator to match, so these are
+cores, deterministic. Each shape is one populate `Distribution`, made a
+`DistTable`, its Arrow schema read off the distribution's names and column
+types. There is no reference generator to match, so these are
 examples and fixtures, not benchmarks.
 
 | Shape | Looks like | Columns |
@@ -18,13 +20,14 @@ cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 10000
 ```
 
 Flags: `--rows`, `--seed`, `--threads` (default all cores), `--batch-size`,
-`--chunk-rows` (rows per row group), `--dim` (embeddings), `--out`. Without
+`--chunk-rows` (rows per row group), `--dim` (embeddings: 16, 32, 64, 128,
+256, 384, 512, 768, 1024, 1536, 2048, 3072 or 4096), `--out`. Without
 `--out` the batches are generated and dropped, to time generation alone.
 
 ```rust
-use populate_synth::{Hits, Synth};
+use populate_synth::{Hits, Shape};
 
-let hits = Synth::new(Hits::new(42), 100_000_000);
+let hits = Hits::new(42).table(100_000_000);
 hits.for_each_batch(0, |batch| { /* in order */ });
 hits.write_parquet(std::fs::File::create("hits.parquet")?, 0, None)?;
 ```
@@ -58,10 +61,10 @@ thread, 4-core cloud VM):
 
 | Shape | Arrow | Parquet |
 |---|---|---|
-| taxi | 13.2 M rows/s | 3.5 M rows/s |
-| hits | 4.7 M rows/s | 1.19 M rows/s |
-| features | 3.8 M rows/s | 1.49 M rows/s |
-| embeddings (384-d) | 0.86 M rows/s | 0.30 M rows/s |
+| taxi | 12.0 M rows/s | 3.4 M rows/s |
+| hits | 6.0 M rows/s | 1.33 M rows/s |
+| features | 3.7 M rows/s | 1.84 M rows/s |
+| embeddings (384-d) | 0.87 M rows/s | 0.29 M rows/s |
 
 The benches use the system allocator; `synth-gen` uses mimalloc (feature
 `mimalloc`, on by default), which makes generation 20-65% faster here

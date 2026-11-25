@@ -214,7 +214,13 @@ where
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
+        let before = cols.rows();
         (self.f)(&src, cols);
+        debug_assert_eq!(
+            cols.rows() - before,
+            n,
+            "derive_columns: f must write one row per source row"
+        );
     }
 
     fn skip(&mut self, n: u64) {

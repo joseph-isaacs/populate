@@ -1,4 +1,4 @@
-//! Like-for-like baselines from an adversarial review of the comparison.
+//! Like-for-like baselines for the tpchgen comparison.
 //!
 //! - [`tpch_direct_numeric`]: tpchgen's own RNG streams and row logic for the
 //!   11 numeric columns, written straight into column `Vec`s. Output is

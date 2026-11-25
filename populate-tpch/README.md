@@ -119,11 +119,11 @@ generator whose partitioned output differs from its sequential output.
 
 ## Performance
 
-On a 4-core container, `scripts/e2e-bench.sh --suite tpch` against
-`tpcgen-cli tpch` (the CLI of tpchgen-rs). The container is noisy, so the
+On a 4-core cloud VM, `scripts/e2e-bench.sh --suite tpch` against
+`tpcgen-cli tpch` (the CLI of tpchgen-rs). The VM is noisy, so the
 two tools run interleaved and each keeps its best time: best of 3 at SF 1
 (output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
-not fit in this container's tmpfs).
+not fit in this VM's tmpfs).
 
 | SF | output           | threads | tpcgen-cli | populate-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|

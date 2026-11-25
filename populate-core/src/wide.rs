@@ -7,6 +7,11 @@
 //! fields of a tuple. [`Distribution::columns`] gives the columns their
 //! width before the first row arrives, so a schema can be read off them;
 //! columns made by `Default` take their width from the first rows.
+//!
+//! A wrapper whose rows are its inner distribution's (`named`, tuples,
+//! lists) forwards `columns`. One whose rows a closure makes (`derive`,
+//! `map`, `flat_map`) can't know a `Wide` width before it runs, so put the
+//! `Vec` outside it, not inside.
 
 use crate::{Columnar, Columns, Distribution, Sink};
 use rand::Rng;

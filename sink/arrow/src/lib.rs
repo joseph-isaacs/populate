@@ -164,11 +164,12 @@ impl<V: IntoArrowColumns> IntoArrowArray for ListCol<V> {
 /// columns (a tuple) become a `StructArray` with fields `c0, c1, ...`.
 pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     let mut cols = Vec::with_capacity(V::LEN);
+    let null = nullables_of(&values);
     values.into_arrays(&mut cols);
     if cols.len() == 1 {
         return cols.pop().expect("one column");
     }
-    Arc::new(StructArray::new(column_fields::<V>(&cols), cols, None))
+    Arc::new(StructArray::new(column_fields(&cols, null), cols, None))
 }
 
 /// Whether [`columns_to_value_array`] of `V` may hold nulls: its one
@@ -199,12 +200,18 @@ pub fn value_type<V: IntoArrowColumns>() -> DataType {
     )
 }
 
-/// Fields `c0, c1, ...` typed after `cols`, nullable where `V`'s columns
-/// are.
-fn column_fields<V: IntoArrowColumns>(cols: &[ArrayRef]) -> Fields {
-    let mut null = Vec::with_capacity(V::LEN);
-    V::nullables(&mut null);
-    cols.iter()
+/// Whether each of `cols`' arrays may hold nulls, read off the instance
+/// ([`IntoArrowColumns::column_types`]) so run-time-width columns count.
+fn nullables_of<V: IntoArrowColumns>(cols: &V) -> Vec<bool> {
+    let mut types = Vec::with_capacity(V::LEN);
+    cols.column_types(&mut types);
+    types.into_iter().map(|(_, null)| null).collect()
+}
+
+/// Fields `c0, c1, ...` typed after `arrays`, nullable where `null` says.
+fn column_fields(arrays: &[ArrayRef], null: Vec<bool>) -> Fields {
+    arrays
+        .iter()
         .zip(null)
         .enumerate()
         .map(|(i, (a, null))| Field::new(format!("c{i}"), a.data_type().clone(), null))
@@ -426,8 +433,9 @@ tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 /// Top-level columns -> `RecordBatch` with columns `c0, c1, ...`.
 pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, ArrowError> {
     let mut cols = Vec::with_capacity(S::LEN);
+    let null = nullables_of(&sink);
     sink.into_arrays(&mut cols);
-    let schema = Schema::new(column_fields::<S>(&cols));
+    let schema = Schema::new(column_fields(&cols, null));
     RecordBatch::try_new(Arc::new(schema), cols)
 }
 
@@ -642,6 +650,13 @@ mod tests {
             .collect(&mut rand::rngs::SmallRng::seed_from_u64(0), 2);
         let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
         assert_eq!((b.num_rows(), b.column(3).null_count()), (2, 2));
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+        let b = d
+            .clone()
+            .collect_record_batch(&mut rng, 2)
+            .expect("columns");
+        assert_eq!(b.num_columns(), 5);
+        assert!(b.schema().field(3).is_nullable());
     }
 
     #[test]

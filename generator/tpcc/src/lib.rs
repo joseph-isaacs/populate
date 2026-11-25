@@ -23,9 +23,11 @@
 //! assert_eq!(rows, 200_000);
 //! ```
 
+mod cols;
 mod engine;
 mod rng;
 mod strings;
+mod tables;
 mod text;
 pub mod tpcc;
 

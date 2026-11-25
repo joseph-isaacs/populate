@@ -1,15 +1,20 @@
-//! The five SSB tables, generated straight into Arrow columns.
+//! The five SSB tables, each one populate [`Distribution`].
+//!
+//! A table is a tuple of named columns, each a distribution over source
+//! rows (orders for `lineorder`). Its schema is read off that expression:
+//! the names from [`named`], the types from the columns the values are
+//! collected into ([`schema_of`](populate_sink_arrow::schema_of)).
 //!
 //! ssb-dbgen is TPC-H's dbgen with the tables reshaped, and keeps dbgen's
-//! random streams: one Park–Miller stream per column, each reserving a
-//! fixed number of draws per row. So each generator takes a range of
-//! source rows (orders for `lineorder`), positions every stream at the
-//! range's first row, and draws the whole range at once
-//! ([`draws`]) before mapping the draws to values.
+//! random streams: one Park–Miller stream per column ([`Lcg`]), each
+//! reserving a fixed number of draws per row. [`draws`] and [`Ints`] make
+//! such a stream a leaf, collected by one vectorised fill and skipped by
+//! an `O(log n)` jump, so any range of rows starts where the sequential
+//! generator would be.
 //!
 //! The sequential run (`dbgen -s N`, all tables, in the order part,
 //! supplier, customer, date, lineorder) shares some streams between
-//! tables, which moves where later tables start in them:
+//! tables, which moves where later tables start in them ([`at`]):
 //!
 //! - supplier and customer both draw their city from one stream and their
 //!   phone number from another, so customer row `r` uses those streams at
@@ -18,73 +23,60 @@
 //!   table has the index the order table has in TPC-H, and dbgen skips a
 //!   finished row's unused draws for the table's streams), so `lineorder`
 //!   starts those streams at row `dates`.
+//!
+//! `lineorder` is [`children_of`] the orders: each block of orders writes
+//! its lines a column at a time ([`lines`]).
+//!
+//! The dimension columns are made in two steps, so `lineorder_flat` can
+//! keep the dimensions as a few bytes per row: a distribution of small
+//! codes ([`part_codes`], [`party_codes`]) and a [`derive()`] of those into
+//! dictionary views ([`part_words`], [`party_words`]).
 
-use crate::dict::{COLORS, DAYS, Dict, Views, days_in_month, holiday, season};
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
-use arrow_schema::DataType::{Int32, Int64, Utf8View};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use populate_combinators::lehmer::{M, bound_all, draws, scale};
-use std::sync::{Arc, LazyLock};
+use crate::TableName;
+use crate::cols::{Bytes, Word, children_of, format};
+use crate::dict::{COLORS, DAYS, Dict, NATIONS, days_in_month, holiday, season};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use populate_builtins::{Draws, derive, draws, named, named_all, range};
+use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
+use populate_core::{Columnar, Columns, Distribution, Sink};
+use populate_sink_arrow::IntoArrowColumns;
+use populate_table::DistTable;
+use std::fmt;
+use std::sync::Arc;
 
 /// Most lines an order has, and the draws per order of the line streams.
 pub(crate) const LINES: usize = 7;
 
-/// One stream: its seed and draws reserved per row.
-#[derive(Clone, Copy)]
-struct Stream {
-    seed: i64,
-    per_row: u64,
-}
-
-impl Stream {
-    const fn new(seed: i64, per_row: u64) -> Self {
-        Stream { seed, per_row }
-    }
-
-    /// The draws of rows `row..row + n`, every reserved one.
-    fn draws(self, row: u64, n: usize) -> Vec<u32> {
-        let mut v = vec![0; n * self.per_row as usize];
-        draws(self.seed, row * self.per_row, &mut v);
-        v
-    }
-
-    /// [`Stream::draws`], mapped to `lo..=hi`.
-    fn ints(self, row: u64, n: usize, lo: i32, hi: i32) -> Vec<u32> {
-        let mut v = self.draws(row, n);
-        bound_all(&mut v, lo, hi);
-        v
-    }
-}
-
-// Seeds and per-row draws of the streams SSB uses (dbgen's `Seed` table).
-const P_MFG: Stream = Stream::new(1, 1);
-const P_BRND: Stream = Stream::new(46_831_694, 1);
-const P_TYPE: Stream = Stream::new(1_841_581_359, 1);
-const P_SIZE: Stream = Stream::new(1_193_163_244, 1);
-const P_CNTR: Stream = Stream::new(727_633_698, 1);
-const P_NAME: Stream = Stream::new(709_314_158, COLORS as u64);
-const P_CAT: Stream = Stream::new(637_858_759, 1);
-const O_ODATE: Stream = Stream::new(1_066_728_069, 1);
-const O_PRIO: Stream = Stream::new(591_449_447, 1);
-const O_CKEY: Stream = Stream::new(851_767_375, 1);
-const O_LCNT: Stream = Stream::new(1_434_868_289, 1);
-const L_QTY: Stream = Stream::new(209_208_115, LINES as u64);
-const L_DCNT: Stream = Stream::new(554_590_007, LINES as u64);
-const L_TAX: Stream = Stream::new(721_958_466, LINES as u64);
-const L_SMODE: Stream = Stream::new(675_466_456, LINES as u64);
-const L_PKEY: Stream = Stream::new(1_808_217_256, LINES as u64);
-const L_SKEY: Stream = Stream::new(2_095_021_727, LINES as u64);
-const L_CDTE: Stream = Stream::new(904_914_315, LINES as u64);
-const C_ADDR: Stream = Stream::new(881_155_353, ADDR_DRAWS);
-const C_NTRG: Stream = Stream::new(1_489_529_863, 1);
-const C_PHNE: Stream = Stream::new(1_521_138_112, 3);
-const C_MSEG: Stream = Stream::new(1_140_279_430, 1);
-const S_ADDR: Stream = Stream::new(706_178_559, ADDR_DRAWS);
-const S_NTRG: Stream = Stream::new(110_356_601, 1);
-const CITY: Stream = Stream::new(1_495_190_827, 1);
+// Seeds of the streams SSB uses (dbgen's `Seed` table).
+const P_MFG: i64 = 1;
+const P_BRND: i64 = 46_831_694;
+const P_TYPE: i64 = 1_841_581_359;
+const P_SIZE: i64 = 1_193_163_244;
+const P_CNTR: i64 = 727_633_698;
+const P_NAME: i64 = 709_314_158;
+const P_CAT: i64 = 637_858_759;
+const O_ODATE: i64 = 1_066_728_069;
+const O_PRIO: i64 = 591_449_447;
+const O_CKEY: i64 = 851_767_375;
+const O_LCNT: i64 = 1_434_868_289;
+const L_QTY: i64 = 209_208_115;
+const L_DCNT: i64 = 554_590_007;
+const L_TAX: i64 = 721_958_466;
+const L_SMODE: i64 = 675_466_456;
+const L_PKEY: i64 = 1_808_217_256;
+const L_SKEY: i64 = 2_095_021_727;
+const L_CDTE: i64 = 904_914_315;
+const C_ADDR: i64 = 881_155_353;
+const C_NTRG: i64 = 1_489_529_863;
+const C_PHNE: i64 = 1_521_138_112;
+const C_MSEG: i64 = 1_140_279_430;
+const S_ADDR: i64 = 706_178_559;
+const S_NTRG: i64 = 110_356_601;
+const CITY: i64 = 1_495_190_827;
 
 /// Draws reserved per address: a length, then one draw per 5 characters.
-const ADDR_DRAWS: u64 = 9;
+const ADDR_DRAWS: usize = 9;
 /// Address lengths: 0.4x to 1.6x of 15.
 const ADDR_MIN: i32 = 6;
 const ADDR_MAX: i32 = 24;
@@ -153,225 +145,177 @@ fn part_price(p: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// Schemas: ssb-dbgen's columns, as `doc/ssb.ddl` names them. Integers are
-// `Int32` (`lo_orderkey`, which passes 2^31 from SF 358, is `Int64`), dates
-// `Int32` `YYYYMMDD` as dbgen prints them, text `Utf8View`.
+// Leaves
 
-fn field(name: &str, t: DataType) -> Field {
-    Field::new(name, t, false)
+/// Trait bounds every column distribution meets, so helpers can return
+/// one as `impl Col<T>`.
+pub(crate) trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
+
+impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
+
+/// `d` from its row `row` on: for a stream another table used first.
+pub(crate) fn at<D: Distribution>(mut d: D, row: u64) -> D {
+    d.skip(row);
+    d
 }
 
-macro_rules! schema {
-    ($($name:literal : $t:expr),* $(,)?) => {
-        Arc::new(Schema::new(vec![$(field($name, $t)),*]))
-    };
+/// The stream seeded `seed`, `K` draws per row.
+fn stream<const K: usize>(seed: i64) -> Draws<Lcg, K> {
+    draws(Lcg::new(seed))
 }
 
-pub(crate) static PART: LazyLock<SchemaRef> = LazyLock::new(|| {
-    schema!(
-        "p_partkey": Int32, "p_name": Utf8View, "p_mfgr": Utf8View, "p_category": Utf8View,
-        "p_brand1": Utf8View, "p_color": Utf8View, "p_type": Utf8View, "p_size": Int32,
-        "p_container": Utf8View,
-    )
-});
-
-pub(crate) static SUPPLIER: LazyLock<SchemaRef> = LazyLock::new(|| {
-    schema!(
-        "s_suppkey": Int32, "s_name": Utf8View, "s_address": Utf8View, "s_city": Utf8View,
-        "s_nation": Utf8View, "s_region": Utf8View, "s_phone": Utf8View,
-    )
-});
-
-pub(crate) static CUSTOMER: LazyLock<SchemaRef> = LazyLock::new(|| {
-    schema!(
-        "c_custkey": Int32, "c_name": Utf8View, "c_address": Utf8View, "c_city": Utf8View,
-        "c_nation": Utf8View, "c_region": Utf8View, "c_phone": Utf8View,
-        "c_mktsegment": Utf8View,
-    )
-});
-
-pub(crate) static DATE: LazyLock<SchemaRef> = LazyLock::new(|| {
-    schema!(
-        "d_datekey": Int32, "d_date": Utf8View, "d_dayofweek": Utf8View, "d_month": Utf8View,
-        "d_year": Int32, "d_yearmonthnum": Int32, "d_yearmonth": Utf8View,
-        "d_daynuminweek": Int32, "d_daynuminmonth": Int32, "d_daynuminyear": Int32,
-        "d_monthnuminyear": Int32, "d_weeknuminyear": Int32, "d_sellingseason": Utf8View,
-        "d_lastdayinweekfl": Utf8View, "d_lastdayinmonthfl": Utf8View, "d_holidayfl": Utf8View,
-        "d_weekdayfl": Utf8View,
-    )
-});
-
-/// `lineorder`'s fields, shared with `lineorder_flat`.
-pub(crate) fn lineorder_fields() -> Vec<Field> {
-    [
-        ("lo_orderkey", Int64),
-        ("lo_linenumber", Int32),
-        ("lo_custkey", Int32),
-        ("lo_partkey", Int32),
-        ("lo_suppkey", Int32),
-        ("lo_orderdate", Int32),
-        ("lo_orderpriority", Utf8View),
-        ("lo_shippriority", Int32),
-        ("lo_quantity", Int32),
-        ("lo_extendedprice", Int32),
-        ("lo_ordtotalprice", Int32),
-        ("lo_discount", Int32),
-        ("lo_revenue", Int32),
-        ("lo_supplycost", Int32),
-        ("lo_tax", Int32),
-        ("lo_commitdate", Int32),
-        ("lo_shipmode", Utf8View),
-    ]
-    .into_iter()
-    .map(|(n, t)| field(n, t))
-    .collect()
+/// `lo..=hi`, one draw per row.
+fn ints(seed: i64, lo: i32, hi: i32) -> Int {
+    Int(Ints::new(seed, lo, hi))
 }
 
-pub(crate) static LINEORDER: LazyLock<SchemaRef> =
-    LazyLock::new(|| Arc::new(Schema::new(lineorder_fields())));
-
-fn batch(schema: &SchemaRef, cols: Vec<ArrayRef>) -> RecordBatch {
-    RecordBatch::try_new(schema.clone(), cols).expect("columns match the schema")
+/// The 1-based row number: every dimension's key.
+fn key() -> impl Col<i32> {
+    range(1i32, 1)
 }
 
-fn i32s(v: Vec<i32>) -> ArrayRef {
-    Arc::new(Int32Array::from(v))
+/// The value `f` of the row's day, for the `date` table.
+fn day<T: Columnar + Clone + 'static>(
+    f: impl Fn(usize) -> T + Clone + Send + Sync + 'static,
+) -> impl Col<T> {
+    derive(range(0usize, 1), move |&i| f(i))
 }
 
-/// The string column of views `$view(r)` for each row `r` of `$rows` (a
-/// macro, so the view expression is inlined into the loop).
-macro_rules! gather {
-    ($d:expr, $rows:expr, |$r:ident| $view:expr) => {
-        strs(
-            $d,
-            $rows
-                .iter()
-                .map(|&$r| {
-                    let $r = $r as usize;
-                    $view
-                })
-                .collect(),
-        )
-    };
+// ---------------------------------------------------------------------------
+// Tables
+
+/// A table, generated from any range of its source rows.
+pub(crate) trait TableGen: Send + Sync {
+    fn schema(&self) -> SchemaRef;
+
+    /// Source rows `first..first + n`.
+    fn batch(&self, first: u64, n: u64) -> RecordBatch;
 }
 
-fn strs(d: &Dict, views: Vec<u128>) -> ArrayRef {
-    Arc::new(d.array(views, Vec::new()))
+impl fmt::Debug for dyn TableGen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableGen").finish_non_exhaustive()
+    }
 }
 
-fn keys(first: u64, n: usize) -> ArrayRef {
-    i32s((first as i32 + 1..).take(n).collect())
+impl<D> TableGen for DistTable<D>
+where
+    D: Distribution + Clone + Send + Sync,
+    Columns<D::Item>: IntoArrowColumns,
+{
+    fn schema(&self) -> SchemaRef {
+        DistTable::schema(self).clone()
+    }
+
+    fn batch(&self, first: u64, n: u64) -> RecordBatch {
+        DistTable::batch(self, first, n)
+    }
+}
+
+pub(crate) fn table<D>(t: TableName, rows: u64, dist: D) -> Arc<dyn TableGen>
+where
+    D: Distribution + Clone + Send + Sync + 'static,
+    Columns<D::Item>: IntoArrowColumns,
+{
+    Arc::new(DistTable::new(t.as_str(), rows, dist))
+}
+
+/// Base table `t` (not `lineorder_flat`) at scale `s`.
+pub(crate) fn generator(t: TableName, s: &Scale) -> Arc<dyn TableGen> {
+    let d = Dict::get();
+    match t {
+        TableName::Part => part(d, s),
+        TableName::Supplier => party(d, s, Party::Supplier),
+        TableName::Customer => party(d, s, Party::Customer),
+        TableName::Date => date(d, s),
+        TableName::LineOrder => table(
+            t,
+            s.orders,
+            named_all(&LINEORDER, children_of::<_, Line, _>(orders(s), lines(d))),
+        ),
+        TableName::LineOrderFlat => unreachable!("lineorder_flat is built by `flat`"),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // part
 
-/// The drawn values of a run of parts, as small codes: what `part` and
-/// `lineorder_flat` both make their columns from.
-#[derive(Debug, Default)]
-pub(crate) struct PartRows {
-    /// `p_name`: the second and third colour, `a * COLORS + b`.
-    name: Vec<u16>,
-    /// `p_color`: the first colour.
-    color: Vec<u8>,
-    /// Manufacturer and category, `(m - 1) * 5 + c - 1`.
-    category: Vec<u8>,
-    /// `0..40`.
-    brand: Vec<u8>,
-    /// Indices into the type and container distributions.
-    kind: Vec<u8>,
-    container: Vec<u8>,
-    size: Vec<u8>,
-}
+/// A part's drawn values, as small codes: the name (second and third
+/// colour, `a * COLORS + b`) and first colour, manufacturer and category
+/// (`(m - 1) * 5 + c - 1`), brand (`0..40`), type and container (indices
+/// into their distributions) and size.
+pub(crate) type PartCode = ((u16, u8), u8, u8, u8, u8, i32);
 
-impl PartRows {
-    /// Parts `first..first + n` (0-based).
-    pub(crate) fn new(d: &Dict, first: u64, n: usize) -> Self {
+/// The codes of every part.
+pub(crate) fn part_codes(d: &'static Dict) -> impl Col<PartCode> {
+    (
         // p_name: dbgen shuffles all 92 colours (92 draws) and joins the
         // first three; ssb-dbgen then moves the first to p_color
-        let shuffle = P_NAME.draws(first, n);
-        let mut name = Vec::with_capacity(n);
-        let mut color = Vec::with_capacity(n);
-        for row in shuffle.chunks_exact(COLORS) {
-            let [c, a, b] = first_three(row);
-            color.push(c as u8);
-            name.push((a * COLORS + b) as u16);
-        }
-        let mfgr = P_MFG.ints(first, n, 1, 5);
-        let cat = P_CAT.ints(first, n, 1, 5);
-        PartRows {
-            name,
-            color,
-            category: mfgr
-                .iter()
-                .zip(&cat)
-                .map(|(m, c)| ((m - 1) * 5 + c - 1) as u8)
-                .collect(),
-            brand: P_BRND
-                .ints(first, n, 0, 39)
-                .iter()
-                .map(|&b| b as u8)
-                .collect(),
-            kind: P_TYPE
-                .draws(first, n)
-                .iter()
-                .map(|&x| d.types.index(x) as u8)
-                .collect(),
-            container: P_CNTR
-                .draws(first, n)
-                .iter()
-                .map(|&x| d.containers.index(x) as u8)
-                .collect(),
-            size: P_SIZE
-                .ints(first, n, 1, 50)
-                .iter()
-                .map(|&s| s as u8)
-                .collect(),
-        }
-    }
-
-    pub(crate) fn append(&mut self, o: PartRows) {
-        self.name.extend(o.name);
-        self.color.extend(o.color);
-        self.category.extend(o.category);
-        self.brand.extend(o.brand);
-        self.kind.extend(o.kind);
-        self.container.extend(o.container);
-        self.size.extend(o.size);
-    }
-
-    /// The columns after `p_partkey` of rows `rows` (indices into these).
-    pub(crate) fn columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
-        vec![
-            gather!(d, rows, |r| d.names[self.name[r] as usize]),
-            gather!(d, rows, |r| d.mfgrs[self.category[r] as usize / 5]),
-            gather!(d, rows, |r| d.categories[self.category[r] as usize]),
-            gather!(d, rows, |r| d.brands
-                [self.category[r] as usize * 40 + self.brand[r] as usize]),
-            gather!(d, rows, |r| d.colors[self.color[r] as usize]),
-            gather!(d, rows, |r| d.types.views[self.kind[r] as usize]),
-            i32s(rows.iter().map(|&r| self.size[r as usize] as i32).collect()),
-            gather!(d, rows, |r| d.containers.views[self.container[r] as usize]),
-        ]
-    }
+        derive(stream::<COLORS>(P_NAME), |x| {
+            let [c, a, b] = first_three(x);
+            ((a * COLORS + b) as u16, c as u8)
+        }),
+        derive((ints(P_MFG, 1, 5), ints(P_CAT, 1, 5)), |(&m, &c)| {
+            ((m - 1) * 5 + c - 1) as u8
+        }),
+        derive(ints(P_BRND, 0, 39), |&b| b as u8),
+        derive(stream::<1>(P_TYPE), |&[x]| d.types.index(x) as u8),
+        derive(stream::<1>(P_CNTR), |&[x]| d.containers.index(x) as u8),
+        ints(P_SIZE, 1, 50),
+    )
 }
 
-/// `0..n`, the rows of a whole run.
-fn all(n: usize) -> Vec<u32> {
-    (0..n as u32).collect()
+/// The columns after `p_partkey`.
+pub(crate) const PART_COLUMNS: [&str; 8] = [
+    "p_name",
+    "p_mfgr",
+    "p_category",
+    "p_brand1",
+    "p_color",
+    "p_type",
+    "p_size",
+    "p_container",
+];
+
+/// The columns after `p_partkey` of a part's codes.
+pub(crate) type PartWords = (Word, Word, Word, Word, Word, Word, i32, Word);
+
+#[inline(always)]
+pub(crate) fn part_words(d: &Dict, code: PartCode) -> PartWords {
+    let ((name, color), category, brand, kind, container, size) = code;
+    let category = category as usize;
+    (
+        Word(d.names[name as usize]),
+        Word(d.mfgrs[category / 5]),
+        Word(d.categories[category]),
+        Word(d.brands[category * 40 + brand as usize]),
+        Word(d.colors[color as usize]),
+        Word(d.types.views[kind as usize]),
+        size,
+        Word(d.containers.views[container as usize]),
+    )
 }
 
-/// Parts `first..first + n` (0-based).
-pub(crate) fn part(d: &Dict, first: u64, n: usize) -> RecordBatch {
-    let mut cols = vec![keys(first, n)];
-    cols.extend(PartRows::new(d, first, n).columns(d, &all(n)));
-    batch(&PART, cols)
+fn part(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
+    table(
+        TableName::Part,
+        s.parts,
+        (
+            named("p_partkey", key()),
+            named_all(
+                &PART_COLUMNS,
+                derive(part_codes(d), move |((&n, &c), &cat, &b, &k, &ct, &sz)| {
+                    part_words(d, ((n, c), cat, b, k, ct, sz))
+                }),
+            ),
+        ),
+    )
 }
 
 /// The first three entries of dbgen's shuffle of `0..92` by these draws
 /// (`permute`: for each `i`, swap `i` with a uniform position).
 #[inline]
-fn first_three(draws: &[u32]) -> [usize; 3] {
+fn first_three(draws: &[u32; COLORS]) -> [usize; 3] {
     let mut a = [0u8; COLORS];
     for (i, x) in a.iter_mut().enumerate() {
         *x = i as u8;
@@ -394,7 +338,7 @@ fn full_range(x: u32) -> u64 {
 /// Append the address the draws of one row make (`a_rnd`): a length, then
 /// 5 characters of 6 bits from each further draw.
 #[inline]
-fn address(row: &[u32], out: &mut Vec<u8>) {
+fn address(row: &[u32; ADDR_DRAWS], out: &mut Vec<u8>) {
     let len = ADDR_MIN as usize + scale(row[0], (ADDR_MAX - ADDR_MIN + 1) as u32) as usize;
     let mut bits = 0;
     for i in 0..len {
@@ -421,16 +365,13 @@ fn name(prefix: &[u8], k: u64, out: &mut Vec<u8>) {
     out.extend_from_slice(&digits);
 }
 
-/// Bytes of a phone number.
-const PHONE: usize = 15;
-
 /// Append a phone number: the nation's country code, then three draws.
 #[inline]
-fn phone(nation: u32, draws: &[u32], out: &mut Vec<u8>) {
+fn phone(nation: i32, draws: [u32; 3], out: &mut Vec<u8>) {
     let a = 100 + scale(draws[0], 900);
     let b = 100 + scale(draws[1], 900);
     let c = 1000 + scale(draws[2], 9000);
-    let cc = 10 + nation;
+    let cc = 10 + nation as u32;
     let digit = |v: u32| b'0' + v as u8;
     out.extend_from_slice(&[
         digit(cc / 10),
@@ -452,334 +393,394 @@ fn phone(nation: u32, draws: &[u32], out: &mut Vec<u8>) {
 }
 
 /// Supplier or customer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Party {
     Supplier,
     Customer,
 }
 
 impl Party {
+    fn table(self) -> TableName {
+        match self {
+            Party::Supplier => TableName::Supplier,
+            Party::Customer => TableName::Customer,
+        }
+    }
+
+    fn rows(self, s: &Scale) -> u64 {
+        match self {
+            Party::Supplier => s.suppliers,
+            Party::Customer => s.customers,
+        }
+    }
+
     fn prefix(self) -> &'static [u8] {
         match self {
             Party::Supplier => b"Supplier#",
             Party::Customer => b"Customer#",
         }
     }
-}
 
-/// The drawn values of a run of suppliers or customers (rows `first..`):
-/// what their tables and `lineorder_flat` make their columns from.
-#[derive(Debug)]
-pub(crate) struct PartyRows {
-    party: Party,
-    first: u64,
-    nation: Vec<u8>,
-    /// City digit.
-    city: Vec<u8>,
-    /// Address `i` is `addresses[ends[i - 1]..ends[i]]`.
-    ends: Vec<u32>,
-    addresses: Vec<u8>,
-    /// `PHONE` bytes per row.
-    phones: Vec<u8>,
-    /// Market segment (customers only).
-    segment: Vec<u8>,
-}
-
-impl PartyRows {
-    /// Rows `first..first + n` of a data set of scale `s`: customers draw
-    /// their city and phone where the suppliers left those streams.
-    pub(crate) fn new(d: &Dict, s: &Scale, party: Party, first: u64, n: usize) -> Self {
-        let (addr, nation, shared) = match party {
-            Party::Supplier => (S_ADDR, S_NTRG, first),
-            Party::Customer => (C_ADDR, C_NTRG, s.suppliers + first),
-        };
-        let mut addresses = Vec::with_capacity(n * ADDR_MAX as usize);
-        let mut ends = Vec::with_capacity(n);
-        for row in addr.draws(first, n).chunks_exact(ADDR_DRAWS as usize) {
-            address(row, &mut addresses);
-            ends.push(addresses.len() as u32);
-        }
-        let nat = nation.ints(first, n, 0, 24);
-        let mut phones = Vec::with_capacity(n * PHONE);
-        for (row, &k) in C_PHNE.draws(shared, n).chunks_exact(3).zip(&nat) {
-            phone(k, row, &mut phones);
-        }
-        let segment = match party {
-            Party::Supplier => Vec::new(),
-            Party::Customer => C_MSEG
-                .draws(first, n)
-                .iter()
-                .map(|&x| d.segments.index(x) as u8)
-                .collect(),
-        };
-        PartyRows {
-            party,
-            first,
-            nation: nat.iter().map(|&k| k as u8).collect(),
-            city: CITY
-                .ints(shared, n, 0, 9)
-                .iter()
-                .map(|&c| c as u8)
-                .collect(),
-            ends,
-            addresses,
-            phones,
-            segment,
+    /// Address and nation streams.
+    fn seeds(self) -> (i64, i64) {
+        match self {
+            Party::Supplier => (S_ADDR, S_NTRG),
+            Party::Customer => (C_ADDR, C_NTRG),
         }
     }
 
-    pub(crate) fn append(&mut self, o: PartyRows) {
-        let base = self.addresses.len() as u32;
-        self.nation.extend(o.nation);
-        self.city.extend(o.city);
-        self.ends.extend(o.ends.iter().map(|e| e + base));
-        self.addresses.extend(o.addresses);
-        self.phones.extend(o.phones);
-        self.segment.extend(o.segment);
-    }
-
-    fn address(&self, r: usize) -> &[u8] {
-        let start = if r == 0 { 0 } else { self.ends[r - 1] as usize };
-        &self.addresses[start..self.ends[r] as usize]
-    }
-
-    /// Drop the names', addresses' and phones' bytes, once they are in
-    /// columns of their own: only the codes are left.
-    pub(crate) fn drop_unique(&mut self) {
-        self.ends = Vec::new();
-        self.addresses = Vec::new();
-        self.phones = Vec::new();
-    }
-
-    /// Name, address and phone of rows `rows` (indices into these),
-    /// written into their own buffers.
-    pub(crate) fn unique_columns(&self, d: &Dict, rows: &[u32]) -> [ArrayRef; 3] {
-        let n = rows.len();
-        let prefix = self.party.prefix();
-        let mut names = Views::with_capacity(n, n * (prefix.len() + 9));
-        let mut addresses = Views::with_capacity(n, n * ADDR_MAX as usize);
-        let mut phones = Views::with_capacity(n, n * PHONE);
-        for &r in rows {
-            let r = r as usize;
-            let s = names.data.len();
-            name(prefix, self.first + r as u64 + 1, &mut names.data);
-            names.end_string(s);
-            let s = addresses.data.len();
-            addresses.data.extend_from_slice(self.address(r));
-            addresses.end_string(s);
-            let s = phones.data.len();
-            phones
-                .data
-                .extend_from_slice(&self.phones[r * PHONE..(r + 1) * PHONE]);
-            phones.end_string(s);
+    /// Where its rows start in the city and phone streams: customers draw
+    /// where the suppliers left them.
+    fn shared(self, s: &Scale) -> u64 {
+        match self {
+            Party::Supplier => 0,
+            Party::Customer => s.suppliers,
         }
-        [
-            Arc::new(names.finish(d)),
-            Arc::new(addresses.finish(d)),
-            Arc::new(phones.finish(d)),
-        ]
     }
 
-    /// City, nation, region and, for customers, market segment of rows
-    /// `rows`: views into the dictionary.
-    pub(crate) fn coded_columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
-        let nation = |r: usize| self.nation[r] as usize;
-        let mut cols = vec![
-            gather!(d, rows, |r| d.cities
-                [nation(r) * 10 + self.city[r] as usize]),
-            gather!(d, rows, |r| d.nations[nation(r)]),
-            gather!(d, rows, |r| d.regions[nation(r)]),
-        ];
-        if let Party::Customer = self.party {
-            cols.push(gather!(d, rows, |r| d.segments.views[self.segment[r] as usize]));
+    /// Column names, the key first.
+    pub(crate) fn columns(self) -> [&'static str; 8] {
+        match self {
+            Party::Supplier => [
+                "s_suppkey",
+                "s_name",
+                "s_address",
+                "s_city",
+                "s_nation",
+                "s_region",
+                "s_phone",
+                "",
+            ],
+            Party::Customer => [
+                "c_custkey",
+                "c_name",
+                "c_address",
+                "c_city",
+                "c_nation",
+                "c_region",
+                "c_phone",
+                "c_mktsegment",
+            ],
         }
-        cols
-    }
-
-    /// The columns after the key of rows `rows` (indices into these):
-    /// name, address, city, nation, region, phone and, for customers,
-    /// market segment.
-    pub(crate) fn columns(&self, d: &Dict, rows: &[u32]) -> Vec<ArrayRef> {
-        let [names, addresses, phones] = self.unique_columns(d, rows);
-        let mut coded = self.coded_columns(d, rows);
-        let mut cols = vec![names, addresses];
-        cols.extend(coded.drain(..3));
-        cols.push(phones);
-        cols.extend(coded);
-        cols
     }
 }
 
-/// Suppliers `first..first + n`.
-pub(crate) fn supplier(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
-    let mut cols = vec![keys(first, n)];
-    cols.extend(PartyRows::new(d, s, Party::Supplier, first, n).columns(d, &all(n)));
-    batch(&SUPPLIER, cols)
+/// A supplier's or customer's nation (`0..25`) and city digit.
+pub(crate) type PartyCode = (i32, i32);
+
+/// The codes of every supplier or customer.
+pub(crate) fn party_codes(p: Party, s: &Scale) -> impl Col<PartyCode> {
+    (
+        ints(p.seeds().1, 0, NATIONS as i32 - 1),
+        at(ints(CITY, 0, 9), p.shared(s)),
+    )
 }
 
-/// Customers `first..first + n`.
-pub(crate) fn customer(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
-    let mut cols = vec![keys(first, n)];
-    cols.extend(PartyRows::new(d, s, Party::Customer, first, n).columns(d, &all(n)));
-    batch(&CUSTOMER, cols)
+/// City, nation and region of a party's codes.
+#[inline(always)]
+pub(crate) fn party_words(d: &Dict, (nation, city): PartyCode) -> (Word, Word, Word) {
+    let n = nation as usize;
+    (
+        Word(d.cities[n * 10 + city as usize]),
+        Word(d.nations[n]),
+        Word(d.regions[n]),
+    )
+}
+
+/// A customer's market segment (an index into the distribution).
+pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> {
+    derive(stream::<1>(C_MSEG), |&[x]| d.segments.index(x) as u8)
+}
+
+fn party_name(p: Party) -> impl Col<Bytes> {
+    let prefix = p.prefix();
+    format(key(), move |k, out| name(prefix, k as u64, out))
+}
+
+fn party_address(p: Party) -> impl Col<Bytes> {
+    format(stream::<ADDR_DRAWS>(p.seeds().0), |x, out| address(&x, out))
+}
+
+fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
+    format(
+        (
+            ints(p.seeds().1, 0, NATIONS as i32 - 1),
+            at(stream::<3>(C_PHNE), p.shared(s)),
+        ),
+        |(n, x), out| phone(n, x, out),
+    )
+}
+
+/// The name, address and phone number of every supplier or customer.
+pub(crate) fn party_text(p: Party, s: &Scale) -> impl Col<(Bytes, Bytes, Bytes)> {
+    (party_name(p), party_address(p), party_phone(p, s))
+}
+
+fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
+    let c = p.columns();
+    let words = derive(party_codes(p, s), move |(&n, &c)| party_words(d, (n, c)));
+    let row = (
+        named(c[0], key()),
+        named(c[1], party_name(p)),
+        named(c[2], party_address(p)),
+        named_all(&c[3..6], words),
+        named(c[6], party_phone(p, s)),
+    );
+    match p {
+        Party::Supplier => table(p.table(), p.rows(s), row),
+        Party::Customer => table(
+            p.table(),
+            p.rows(s),
+            (
+                row,
+                named(
+                    c[7],
+                    derive(segment_codes(d), |&i| Word(d.segments.views[i as usize])),
+                ),
+            ),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // date
 
-/// Days `first..first + n` of the calendar.
-pub(crate) fn date(d: &Dict, first: u64, n: usize) -> RecordBatch {
-    let days = &d.days[first as usize..first as usize + n];
+fn date(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
+    let t = |i: usize| d.days[i];
     // ssb-dbgen numbers weekdays from Sunday = 1, but computes the number
     // as `(tm_wday + 1) % 7 + 1` and names the day from it: Wednesday is 5,
     // "Thursday"
-    let dnw: Vec<i32> = days.iter().map(|t| (t.wday + 1) % 7 + 1).collect();
-    let col = |f: &dyn Fn(usize) -> i32| i32s((0..n).map(f).collect());
-    let txt = |f: &dyn Fn(usize) -> u128| strs(d, (0..n).map(f).collect());
-    let flag = |b: bool| d.flags[b as usize];
-    batch(
-        &DATE,
-        vec![
-            col(&|i| days[i].key()),
-            txt(&|i| d.day_names[first as usize + i]),
-            txt(&|i| d.weekdays[dnw[i] as usize - 1]),
-            txt(&|i| d.months[days[i].month as usize - 1]),
-            col(&|i| days[i].year),
-            col(&|i| days[i].year * 100 + days[i].month),
-            txt(&|i| d.year_months[((days[i].year - 1992) * 12 + days[i].month - 1) as usize]),
-            col(&|i| dnw[i]),
-            col(&|i| days[i].mday),
-            col(&|i| days[i].yday),
-            col(&|i| days[i].month),
-            col(&|i| days[i].yday / 7 + 1),
-            txt(&|i| d.seasons[season(days[i].month, days[i].mday)]),
-            txt(&|i| flag(dnw[i] == 7)),
-            txt(&|i| {
-                let t = days[i];
-                flag(t.mday == days_in_month(t.year, t.month))
-            }),
-            txt(&|i| flag(holiday(days[i].month, days[i].mday))),
-            txt(&|i| flag(dnw[i] != 1 && dnw[i] != 7)),
-        ],
+    let dnw = move |i: usize| (t(i).wday + 1) % 7 + 1;
+    let flag = move |b: bool| Word(d.flags[b as usize]);
+    table(
+        TableName::Date,
+        s.dates,
+        (
+            (
+                named("d_datekey", day(move |i| t(i).key())),
+                named("d_date", day(|i| Word(d.day_names[i]))),
+                named(
+                    "d_dayofweek",
+                    day(move |i| Word(d.weekdays[dnw(i) as usize - 1])),
+                ),
+                named(
+                    "d_month",
+                    day(move |i| Word(d.months[t(i).month as usize - 1])),
+                ),
+                named("d_year", day(move |i| t(i).year)),
+                named("d_yearmonthnum", day(move |i| t(i).year * 100 + t(i).month)),
+                named(
+                    "d_yearmonth",
+                    day(move |i| {
+                        let t = t(i);
+                        Word(d.year_months[((t.year - 1992) * 12 + t.month - 1) as usize])
+                    }),
+                ),
+                named("d_daynuminweek", day(dnw)),
+                named("d_daynuminmonth", day(move |i| t(i).mday)),
+            ),
+            (
+                named("d_daynuminyear", day(move |i| t(i).yday)),
+                named("d_monthnuminyear", day(move |i| t(i).month)),
+                named("d_weeknuminyear", day(move |i| t(i).yday / 7 + 1)),
+                named(
+                    "d_sellingseason",
+                    day(move |i| Word(d.seasons[season(t(i).month, t(i).mday)])),
+                ),
+                named("d_lastdayinweekfl", day(move |i| flag(dnw(i) == 7))),
+                named(
+                    "d_lastdayinmonthfl",
+                    day(move |i| flag(t(i).mday == days_in_month(t(i).year, t(i).month))),
+                ),
+                named(
+                    "d_holidayfl",
+                    day(move |i| flag(holiday(t(i).month, t(i).mday))),
+                ),
+                named(
+                    "d_weekdayfl",
+                    day(move |i| flag(dnw(i) != 1 && dnw(i) != 7)),
+                ),
+            ),
+        ),
     )
 }
 
 // ---------------------------------------------------------------------------
 // lineorder
 
-/// The line orders of orders `first..first + n` (0-based).
-///
-/// Column at a time: the draws of every stream for the whole block, then
-/// the slots the orders use (`line_count` of each order's 7), then each
-/// column gathered from its draws through that list.
-pub(crate) fn lineorder(d: &Dict, s: &Scale, first: u64, n: usize) -> RecordBatch {
-    let ord = s.dates + first;
-    let lcnt = O_LCNT.ints(ord, n, 1, LINES as i32);
+/// `lineorder`'s columns.
+pub(crate) const LINEORDER: [&str; 17] = [
+    "lo_orderkey",
+    "lo_linenumber",
+    "lo_custkey",
+    "lo_partkey",
+    "lo_suppkey",
+    "lo_orderdate",
+    "lo_orderpriority",
+    "lo_shippriority",
+    "lo_quantity",
+    "lo_extendedprice",
+    "lo_ordtotalprice",
+    "lo_discount",
+    "lo_revenue",
+    "lo_supplycost",
+    "lo_tax",
+    "lo_commitdate",
+    "lo_shipmode",
+];
 
-    // `slot[i]`: the draw (order * 7 + line) of line `i`; `order[i]`: its
-    // order. Each order writes all 7 and keeps `line_count`, so there is
-    // no branch per line.
-    let lines: usize = lcnt.iter().map(|&c| c as usize).sum();
-    let mut slot = vec![0u32; lines + LINES];
-    let mut order = vec![0u32; lines + LINES];
-    let mut at = 0;
-    for (o, &c) in lcnt.iter().enumerate() {
-        let (sl, or) = (&mut slot[at..at + LINES], &mut order[at..at + LINES]);
-        for l in 0..LINES {
-            sl[l] = (o * LINES + l) as u32;
-            or[l] = o as u32;
-        }
-        at += c as usize;
-    }
-    slot.truncate(lines);
-    order.truncate(lines);
-    let gather = |v: &[u32]| -> Vec<i32> { slot.iter().map(|&j| v[j as usize] as i32).collect() };
-    let per_order = |v: &[i32]| -> Vec<i32> { order.iter().map(|&o| v[o as usize]).collect() };
+/// One `lineorder` row. Integers are `Int32` (`lo_orderkey`, which passes
+/// 2^31 from SF 358, is `Int64`), dates `Int32` `YYYYMMDD` as dbgen prints
+/// them.
+pub(crate) type Line = (
+    (i64, i32, i32, i32, i32, i32, Word, i32),
+    (i32, i32, i32, i32, i32, i32, i32, i32, Word),
+);
 
-    // order-level columns
-    let odate = O_ODATE.ints(ord, n, 0, ODATE_MAX);
+/// An order's own values (its number, date offset, customer, priority
+/// draw and line count), then the line streams, 7 slots each: part,
+/// supplier, quantity, discount, tax, commit delay and ship mode draw.
+pub(crate) type Order = (
+    (i64, i32, i32, [u32; 1], i32),
+    (
+        [i32; LINES],
+        [i32; LINES],
+        [i32; LINES],
+        [i32; LINES],
+        [i32; LINES],
+        [i32; LINES],
+        [u32; LINES],
+    ),
+);
+
+/// Every order's streams. The order streams start at row `dates`.
+pub(crate) fn orders(s: &Scale) -> impl Col<Order> {
     let cmax = s.customers as i32;
-    let cust: Vec<i32> = O_CKEY
-        .ints(ord, n, 1, cmax)
-        .into_iter()
-        .map(|c| {
-            // a third of customers have no orders: step off multiples of
-            // 3, alternating up and down
-            let mut c = c as i32;
-            let mut delta = 1;
-            while c % 3 == 0 {
-                c = (c + delta).min(cmax);
-                delta = -delta;
-            }
-            c
-        })
-        .collect();
-    let prio: Vec<u128> = O_PRIO
-        .draws(ord, n)
-        .iter()
-        .map(|&x| d.priorities.view(x))
-        .collect();
-    let okey: Vec<i64> = order
-        .iter()
-        .map(|&o| order_key((first + o as u64 + 1) as i64))
-        .collect();
-    let line_no: Vec<i32> = slot
-        .iter()
-        .map(|&j| (j % LINES as u32) as i32 + 1)
-        .collect();
-
-    // line-level columns
-    let pkey = gather(&L_PKEY.ints(first, n, 1, s.part_keys as i32));
-    let qty = gather(&L_QTY.ints(first, n, 1, 50));
-    let disc = gather(&L_DCNT.ints(first, n, 0, 10));
-    let tax = gather(&L_TAX.ints(first, n, 0, 8));
-    // every product fits in 31 bits: prices are under 210,000 cents, so
-    // `price * 50 * 100` and `revenue * 108` are under 2^31
-    let price: Vec<i32> = pkey.iter().map(|&p| part_price(p as i64) as i32).collect();
-    let eprice: Vec<i32> = price.iter().zip(&qty).map(|(p, q)| p * q).collect();
-    let rev: Vec<i32> = eprice
-        .iter()
-        .zip(&disc)
-        .map(|(e, dc)| e * (100 - dc) / 100)
-        .collect();
-    let cost: Vec<i32> = price.iter().map(|p| 6 * p / 10).collect();
-    let mut total = vec![0i32; n];
-    for ((&o, &r), &t) in order.iter().zip(&rev).zip(&tax) {
-        total[o as usize] += r * (100 + t) / 100;
-    }
-    let date = |o: u32, plus: i32| d.keys[(odate[o as usize] as i32 + plus) as usize];
-    let cdate = L_CDTE.ints(first, n, CDATE_MIN, CDATE_MAX);
-    let mode = L_SMODE.draws(first, n);
-    batch(
-        &LINEORDER,
-        vec![
-            Arc::new(Int64Array::from(okey)),
-            i32s(line_no),
-            i32s(per_order(&cust)),
-            i32s(pkey),
-            i32s(gather(&L_SKEY.ints(first, n, 1, s.suppliers as i32))),
-            i32s(order.iter().map(|&o| date(o, 0)).collect()),
-            strs(d, order.iter().map(|&o| prio[o as usize]).collect()),
-            i32s(vec![0; lines]),
-            i32s(qty),
-            i32s(eprice),
-            i32s(per_order(&total)),
-            i32s(disc),
-            i32s(rev),
-            i32s(cost),
-            i32s(tax),
-            i32s(
-                slot.iter()
-                    .zip(&order)
-                    .map(|(&j, &o)| date(o, cdate[j as usize] as i32))
-                    .collect(),
-            ),
-            strs(
-                d,
-                slot.iter()
-                    .map(|&j| d.modes.view(mode[j as usize]))
-                    .collect(),
-            ),
-        ],
+    let custkey = derive(ints(O_CKEY, 1, cmax), move |&c| {
+        let mut c = c;
+        // a third of customers have no orders: step off multiples of 3,
+        // alternating up and down
+        let mut delta = 1;
+        while c % 3 == 0 {
+            c = (c + delta).min(cmax);
+            delta = -delta;
+        }
+        c
+    });
+    let o = s.dates;
+    (
+        (
+            range(1i64, 1),
+            at(ints(O_ODATE, 0, ODATE_MAX), o),
+            at(custkey, o),
+            at(stream::<1>(O_PRIO), o),
+            at(ints(O_LCNT, 1, LINES as i32), o),
+        ),
+        (
+            Ints::new(L_PKEY, 1, s.part_keys as i32),
+            Ints::new(L_SKEY, 1, s.suppliers as i32),
+            Ints::new(L_QTY, 1, 50),
+            Ints::new(L_DCNT, 0, 10),
+            Ints::new(L_TAX, 0, 8),
+            Ints::new(L_CDTE, CDATE_MIN, CDATE_MAX),
+            stream::<LINES>(L_SMODE),
+        ),
     )
+}
+
+/// `lineorder`'s lines of a block of orders, written into its columns.
+///
+/// A column at a time, as dbgen's line streams are laid out: every order
+/// reserves 7 slots of each, and an order of `k` lines uses the first `k`.
+/// So the slot (`order * 7 + line`) and order of every line are listed
+/// once, and each column is then one pass gathering its values through
+/// that list.
+pub(crate) fn lines(d: &'static Dict) -> impl Fn(&Columns<Order>, &mut Columns<Line>) + Clone {
+    move |src, out| {
+        let ((index, odate, cust, prio, lcnt), (pk, sk, qty, disc, tax, cd, mode)) = src;
+        let lines: usize = lcnt.iter().map(|&c| c as usize).sum();
+        assert!(
+            lcnt.len() * LINES <= u32::MAX as usize,
+            "a block of {} orders is too many to index",
+            lcnt.len()
+        );
+        // each order writes all 7 entries and keeps `line count`, so there
+        // is no branch per line
+        let mut slot = vec![0u32; lines + LINES];
+        let mut order = vec![0u32; lines + LINES];
+        let mut at = 0;
+        for (o, &c) in lcnt.iter().enumerate() {
+            let (sl, or) = (&mut slot[at..at + LINES], &mut order[at..at + LINES]);
+            for l in 0..LINES {
+                sl[l] = (o * LINES + l) as u32;
+                or[l] = o as u32;
+            }
+            at += c as usize;
+        }
+        slot.truncate(lines);
+        order.truncate(lines);
+        let line = |v: &Vec<[i32; LINES]>| -> Vec<i32> {
+            let v = v.as_flattened();
+            slot.iter().map(|&j| v[j as usize]).collect()
+        };
+        let per_order = |v: &[i32]| -> Vec<i32> { order.iter().map(|&o| v[o as usize]).collect() };
+        let (pkey, qty, disc, tax) = (line(pk), line(qty), line(disc), line(tax));
+        // every product fits in 31 bits: prices are under 210,000 cents, so
+        // `price * 50 * 100` and `revenue * 108` are under 2^31
+        let price: Vec<i32> = pkey.iter().map(|&p| part_price(p as i64) as i32).collect();
+        let eprice: Vec<i32> = price.iter().zip(&qty).map(|(p, q)| p * q).collect();
+        let revenue: Vec<i32> = eprice
+            .iter()
+            .zip(&disc)
+            .map(|(e, dc)| e * (100 - dc) / 100)
+            .collect();
+        let mut total = vec![0i32; lcnt.len()];
+        for ((&o, &r), &t) in order.iter().zip(&revenue).zip(&tax) {
+            total[o as usize] += r * (100 + t) / 100;
+        }
+        let date = |o: u32| odate[o as usize] as usize;
+        let (cd, mode) = (cd.as_flattened(), mode.as_flattened());
+        let (
+            (o_key, o_line, o_cust, o_part, o_supp, o_date, o_prio, o_ship),
+            (o_qty, o_eprice, o_total, o_disc, o_revenue, o_cost, o_tax, o_commit, o_mode),
+        ) = out;
+        o_key.extend(order.iter().map(|&o| order_key(index[o as usize])));
+        o_line.extend(slot.iter().map(|&j| (j % LINES as u32) as i32 + 1));
+        o_cust.extend(per_order(cust));
+        o_supp.extend(line(sk));
+        o_date.extend(order.iter().map(|&o| d.keys[date(o)]));
+        o_prio.push_n(
+            order
+                .iter()
+                .map(|&o| Word(d.priorities.view(prio[o as usize][0]))),
+        );
+        o_ship.resize(o_ship.len() + lines, 0);
+        o_cost.extend(price.iter().map(|p| 6 * p / 10));
+        o_total.extend(per_order(&total));
+        o_commit.extend(
+            slot.iter()
+                .zip(&order)
+                .map(|(&j, &o)| d.keys[date(o) + cd[j as usize] as usize]),
+        );
+        o_mode.push_n(slot.iter().map(|&j| Word(d.modes.view(mode[j as usize]))));
+        for (col, v) in [
+            (o_part, pkey),
+            (o_qty, qty),
+            (o_eprice, eprice),
+            (o_disc, disc),
+            (o_revenue, revenue),
+            (o_tax, tax),
+        ] {
+            append(col, v);
+        }
+    }
+}
+
+/// `v` appended to `col`, moved if `col` is empty.
+fn append<T>(col: &mut Vec<T>, v: Vec<T>) {
+    if col.is_empty() {
+        *col = v;
+    } else {
+        col.extend(v);
+    }
 }

@@ -1,0 +1,3704 @@
+{
+  "complete": true,
+  "configuration": {
+    "formats": [
+      "text",
+      "parquet",
+      "arrow"
+    ],
+    "generators": [
+      "tpch",
+      "tpcds",
+      "dsb",
+      "ssb",
+      "h2o-groupby",
+      "h2o-join",
+      "tpcc",
+      "ycsb-load",
+      "ycsb-run",
+      "synth-taxi",
+      "synth-hits",
+      "synth-features",
+      "synth-embeddings",
+      "tsbs-devops",
+      "ldbc"
+    ],
+    "runs": 3,
+    "scales": [
+      1.0
+    ],
+    "statistic": "min",
+    "threads": [
+      1,
+      14
+    ],
+    "warmup_runs": 0
+  },
+  "engines": [
+    {
+      "id": "populate",
+      "revision": "5b82c5068000938f4965df335b7243186346d8ba",
+      "version": "0.1.0"
+    }
+  ],
+  "environment": {
+    "architecture": "aarch64",
+    "build_profile": "release",
+    "cargo": "cargo 1.92.0 (344c4567c 2025-10-21)",
+    "cargo_encoded_rustflags": null,
+    "cpu": "Apple M3 Max",
+    "ldbc_resources": null,
+    "logical_cpus": 14,
+    "memory_bytes": 103079215104,
+    "os": "macos",
+    "os_version": "Darwin 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:42 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6031",
+    "output_directory": "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench",
+    "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)\nbinary: rustc\ncommit-hash: ded5c06cf21d2b93bffd5d884aa6e96934ee4234\ncommit-date: 2025-12-08\nhost: aarch64-apple-darwin\nrelease: 1.92.0\nLLVM version: 21.1.3",
+    "rustflags": null
+  },
+  "finished_at_unix_seconds": 1795644806.980115,
+  "invocation": [
+    "target/debug/xtask",
+    "bench",
+    "--json",
+    "benchmarks/results/2026-11-25-m3-max.json"
+  ],
+  "measurements": [
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "tbl",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "tbl",
+      "samples": [
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 2.139184209
+        },
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 2.948923916
+        },
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 1.96049725
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1100693130,
+        "statistic": "min",
+        "wall_time_seconds": 1.96049725
+      },
+      "threads": 1,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "tbl",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "tbl",
+      "samples": [
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 0.760437333
+        },
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 0.792299917
+        },
+        {
+          "output_bytes": 1100693130,
+          "status": "ok",
+          "wall_time_seconds": 0.817251167
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1100693130,
+        "statistic": "min",
+        "wall_time_seconds": 0.760437333
+      },
+      "threads": 14,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 1.960678709
+        },
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 1.974454291
+        },
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 2.275470791
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 333406919,
+        "statistic": "min",
+        "wall_time_seconds": 1.960678709
+      },
+      "threads": 1,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 0.490406625
+        },
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 0.592550041
+        },
+        {
+          "output_bytes": 333406919,
+          "status": "ok",
+          "wall_time_seconds": 0.665912459
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 333406919,
+        "statistic": "min",
+        "wall_time_seconds": 0.490406625
+      },
+      "threads": 14,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.592805292
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.597343541
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.598003334
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.592805292
+      },
+      "threads": 1,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpch-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.127497167
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.1201905
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.1284545
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.1201905
+      },
+      "threads": 14,
+      "workload": "tpch"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "dat",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench",
+          "--encoding",
+          "utf8"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "dat",
+      "samples": [
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 2.105177833
+        },
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 1.8438380840000002
+        },
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 1.8477197909999998
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1253309523,
+        "statistic": "min",
+        "wall_time_seconds": 1.8438380840000002
+      },
+      "threads": 1,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "dat",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench",
+          "--encoding",
+          "utf8"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "dat",
+      "samples": [
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 1.016401917
+        },
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 0.8041455
+        },
+        {
+          "output_bytes": 1253309523,
+          "status": "ok",
+          "wall_time_seconds": 0.914264583
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1253309523,
+        "statistic": "min",
+        "wall_time_seconds": 0.8041455
+      },
+      "threads": 14,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 1.827859541
+        },
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 1.811569084
+        },
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 1.537217458
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 393450608,
+        "statistic": "min",
+        "wall_time_seconds": 1.537217458
+      },
+      "threads": 1,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 0.328125708
+        },
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 0.307709833
+        },
+        {
+          "output_bytes": 393450608,
+          "status": "ok",
+          "wall_time_seconds": 0.304872958
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 393450608,
+        "statistic": "min",
+        "wall_time_seconds": 0.304872958
+      },
+      "threads": 14,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.758681917
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.763040042
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.74787125
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.74787125
+      },
+      "threads": 1,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcds-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.149700542
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.13916375
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.146477625
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.13916375
+      },
+      "threads": 14,
+      "workload": "tpcds"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "dat",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "dat",
+      "samples": [
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 2.999271916
+        },
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 2.90301475
+        },
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 4.706121416
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1316097235,
+        "statistic": "min",
+        "wall_time_seconds": 2.90301475
+      },
+      "threads": 1,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "dat",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "dat",
+      "samples": [
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 3.342823167
+        },
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 1.686903042
+        },
+        {
+          "output_bytes": 1316097235,
+          "status": "ok",
+          "wall_time_seconds": 0.888383917
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1316097235,
+        "statistic": "min",
+        "wall_time_seconds": 0.888383917
+      },
+      "threads": 14,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 2.623833459
+        },
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 2.631853583
+        },
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 2.611798041
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 390501221,
+        "statistic": "min",
+        "wall_time_seconds": 2.611798041
+      },
+      "threads": 1,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 0.419699417
+        },
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 0.417729
+        },
+        {
+          "output_bytes": 390501221,
+          "status": "ok",
+          "wall_time_seconds": 0.4128305
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 390501221,
+        "statistic": "min",
+        "wall_time_seconds": 0.4128305
+      },
+      "threads": 14,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.581568042
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.576678542
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.559984417
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.559984417
+      },
+      "threads": 1,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/dsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.268781875
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.269503958
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.266089209
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.266089209
+      },
+      "threads": 14,
+      "workload": "dsb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "tbl",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "tbl",
+      "samples": [
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 1.144053584
+        },
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 0.872264709
+        },
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 0.84284325
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 619468797,
+        "statistic": "min",
+        "wall_time_seconds": 0.84284325
+      },
+      "threads": 1,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "tbl",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "tbl",
+      "samples": [
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 0.351311667
+        },
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 0.416579292
+        },
+        {
+          "output_bytes": 619468797,
+          "status": "ok",
+          "wall_time_seconds": 0.415410667
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 619468797,
+        "statistic": "min",
+        "wall_time_seconds": 0.351311667
+      },
+      "threads": 14,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.504376042
+        },
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.519297875
+        },
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.49751475
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 174953805,
+        "statistic": "min",
+        "wall_time_seconds": 0.49751475
+      },
+      "threads": 1,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.1880225
+        },
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.103253291
+        },
+        {
+          "output_bytes": 174953805,
+          "status": "ok",
+          "wall_time_seconds": 0.14875725
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 174953805,
+        "statistic": "min",
+        "wall_time_seconds": 0.103253291
+      },
+      "threads": 14,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.147485041
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.147869084
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.147631625
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.147485041
+      },
+      "threads": 1,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ssb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.054070625
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.053247583
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.052545792
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.052545792
+      },
+      "threads": 14,
+      "workload": "ssb"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 1.455102375
+        },
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 1.116041458
+        },
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 0.72091625
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 509181759,
+        "statistic": "min",
+        "wall_time_seconds": 0.72091625
+      },
+      "threads": 1,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 0.292285125
+        },
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 0.267877916
+        },
+        {
+          "output_bytes": 509181759,
+          "status": "ok",
+          "wall_time_seconds": 0.260463459
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 509181759,
+        "statistic": "min",
+        "wall_time_seconds": 0.260463459
+      },
+      "threads": 14,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 1.0503717909999999
+        },
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 1.072745459
+        },
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 1.056580417
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 312265218,
+        "statistic": "min",
+        "wall_time_seconds": 1.0503717909999999
+      },
+      "threads": 1,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 0.30424175
+        },
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 0.261163917
+        },
+        {
+          "output_bytes": 312265218,
+          "status": "ok",
+          "wall_time_seconds": 0.261272083
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 312265218,
+        "statistic": "min",
+        "wall_time_seconds": 0.261163917
+      },
+      "threads": 14,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.399118833
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.396060125
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.398823833
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.396060125
+      },
+      "threads": 1,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "groupby",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.101310375
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.096250541
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.097249166
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.096250541
+      },
+      "threads": 14,
+      "workload": "h2o-groupby"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 1.054404334
+        },
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 1.101838375
+        },
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 1.112209333
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 923274705,
+        "statistic": "min",
+        "wall_time_seconds": 1.054404334
+      },
+      "threads": 1,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 0.863795125
+        },
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 0.805104417
+        },
+        {
+          "output_bytes": 923274705,
+          "status": "ok",
+          "wall_time_seconds": 0.858592209
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 923274705,
+        "statistic": "min",
+        "wall_time_seconds": 0.805104417
+      },
+      "threads": 14,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 3.574025334
+        },
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 2.43626325
+        },
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 2.476864875
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 677709090,
+        "statistic": "min",
+        "wall_time_seconds": 2.43626325
+      },
+      "threads": 1,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 0.772780084
+        },
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 0.719291375
+        },
+        {
+          "output_bytes": 677709090,
+          "status": "ok",
+          "wall_time_seconds": 0.857062875
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 677709090,
+        "statistic": "min",
+        "wall_time_seconds": 0.719291375
+      },
+      "threads": 14,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.852457291
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.832048083
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.851257417
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.832048083
+      },
+      "threads": 1,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "join",
+          "--n",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/h2o-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.352410875
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.349880916
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.347918917
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.347918917
+      },
+      "threads": 14,
+      "workload": "h2o-join"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "1",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 1.417640458
+        },
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 1.164984958
+        },
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 1.1810209170000001
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 718098564,
+        "statistic": "min",
+        "wall_time_seconds": 1.164984958
+      },
+      "threads": 1,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "14",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 0.552311667
+        },
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 0.386200833
+        },
+        {
+          "output_bytes": 718098564,
+          "status": "ok",
+          "wall_time_seconds": 0.415500792
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 718098564,
+        "statistic": "min",
+        "wall_time_seconds": 0.386200833
+      },
+      "threads": 14,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 1.3198973330000001
+        },
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 1.256863416
+        },
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 1.233660708
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 571085220,
+        "statistic": "min",
+        "wall_time_seconds": 1.233660708
+      },
+      "threads": 1,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 0.470055958
+        },
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 1.03403525
+        },
+        {
+          "output_bytes": 571085220,
+          "status": "ok",
+          "wall_time_seconds": 0.471345375
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 571085220,
+        "statistic": "min",
+        "wall_time_seconds": 0.470055958
+      },
+      "threads": 14,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.446003792
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.44521775
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.44516725
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.44516725
+      },
+      "threads": 1,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "--warehouses",
+          "10",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tpcc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.09439725
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.089449583
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.092486542
+        }
+      ],
+      "scale": 1.0,
+      "size": "10 wh",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.089449583
+      },
+      "threads": 14,
+      "workload": "tpcc"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "1",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 1.473955167
+        },
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 0.788394959
+        },
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 0.757654375
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 1033879874,
+        "statistic": "min",
+        "wall_time_seconds": 0.757654375
+      },
+      "threads": 1,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "14",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 0.690887417
+        },
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 0.707541083
+        },
+        {
+          "output_bytes": 1033879874,
+          "status": "ok",
+          "wall_time_seconds": 0.808836417
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 1033879874,
+        "statistic": "min",
+        "wall_time_seconds": 0.690887417
+      },
+      "threads": 14,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 1.094830083
+        },
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 1.18597625
+        },
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 1.098935291
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 1059195585,
+        "statistic": "min",
+        "wall_time_seconds": 1.094830083
+      },
+      "threads": 1,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 1.796996333
+        },
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 1.903379042
+        },
+        {
+          "output_bytes": 1059195585,
+          "status": "ok",
+          "wall_time_seconds": 2.325394834
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 1059195585,
+        "statistic": "min",
+        "wall_time_seconds": 1.796996333
+      },
+      "threads": 14,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.324690375
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.321004042
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.326281042
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.321004042
+      },
+      "threads": 1,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "load",
+          "--records",
+          "1000000",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.077413583
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.0717515
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.07577675
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M records",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.0717515
+      },
+      "threads": 14,
+      "workload": "ycsb-load"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 1.7842503330000001
+        },
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 1.702858709
+        },
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 1.7229403749999999
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 918678237,
+        "statistic": "min",
+        "wall_time_seconds": 1.702858709
+      },
+      "threads": 1,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "text",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "text",
+      "samples": [
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 0.514616792
+        },
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 0.682483709
+        },
+        {
+          "output_bytes": 918678237,
+          "status": "ok",
+          "wall_time_seconds": 0.470894167
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 918678237,
+        "statistic": "min",
+        "wall_time_seconds": 0.470894167
+      },
+      "threads": 14,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 2.920255166
+        },
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 2.794462083
+        },
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 2.795573792
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 689310364,
+        "statistic": "min",
+        "wall_time_seconds": 2.794462083
+      },
+      "threads": 1,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 0.581525875
+        },
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 0.400193375
+        },
+        {
+          "output_bytes": 689310364,
+          "status": "ok",
+          "wall_time_seconds": 0.379225584
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 689310364,
+        "statistic": "min",
+        "wall_time_seconds": 0.379225584
+      },
+      "threads": 14,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.659770792
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.666275333
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.661291792
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.659770792
+      },
+      "threads": 1,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "run",
+          "--workload",
+          "a",
+          "--records",
+          "1000000",
+          "--operations",
+          "10000000",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ycsb-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.254941792
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.254693167
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.252808084
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M ops",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.252808084
+      },
+      "threads": 14,
+      "workload": "ycsb-run"
+    },
+    {
+      "command": {
+        "args": [
+          "taxi",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/taxi.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 1.833433292
+        },
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 1.620286375
+        },
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 1.5868872920000001
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 230387943,
+        "statistic": "min",
+        "wall_time_seconds": 1.5868872920000001
+      },
+      "threads": 1,
+      "workload": "synth-taxi"
+    },
+    {
+      "command": {
+        "args": [
+          "taxi",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/taxi.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 0.195874458
+        },
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 0.197041625
+        },
+        {
+          "output_bytes": 230387943,
+          "status": "ok",
+          "wall_time_seconds": 0.201162875
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 230387943,
+        "statistic": "min",
+        "wall_time_seconds": 0.195874458
+      },
+      "threads": 14,
+      "workload": "synth-taxi"
+    },
+    {
+      "command": {
+        "args": [
+          "taxi",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.334050292
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.335710041
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.334230042
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.334050292
+      },
+      "threads": 1,
+      "workload": "synth-taxi"
+    },
+    {
+      "command": {
+        "args": [
+          "taxi",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.061141334
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.060238625
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.063612625
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.060238625
+      },
+      "threads": 14,
+      "workload": "synth-taxi"
+    },
+    {
+      "command": {
+        "args": [
+          "hits",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/hits.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 4.304486333
+        },
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 4.064919375
+        },
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 4.131850333
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 724349472,
+        "statistic": "min",
+        "wall_time_seconds": 4.064919375
+      },
+      "threads": 1,
+      "workload": "synth-hits"
+    },
+    {
+      "command": {
+        "args": [
+          "hits",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/hits.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 0.544123459
+        },
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 0.531184916
+        },
+        {
+          "output_bytes": 724349472,
+          "status": "ok",
+          "wall_time_seconds": 0.6975775
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 724349472,
+        "statistic": "min",
+        "wall_time_seconds": 0.531184916
+      },
+      "threads": 14,
+      "workload": "synth-hits"
+    },
+    {
+      "command": {
+        "args": [
+          "hits",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.150696583
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.14814775
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.143007292
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.143007292
+      },
+      "threads": 1,
+      "workload": "synth-hits"
+    },
+    {
+      "command": {
+        "args": [
+          "hits",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.148161833
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.146534083
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.146783875
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.146534083
+      },
+      "threads": 14,
+      "workload": "synth-hits"
+    },
+    {
+      "command": {
+        "args": [
+          "features",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/features.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 3.442328084
+        },
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 3.352598916
+        },
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 3.343337541
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 1541534048,
+        "statistic": "min",
+        "wall_time_seconds": 3.343337541
+      },
+      "threads": 1,
+      "workload": "synth-features"
+    },
+    {
+      "command": {
+        "args": [
+          "features",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/features.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 1.19973375
+        },
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 1.197103125
+        },
+        {
+          "output_bytes": 1541534048,
+          "status": "ok",
+          "wall_time_seconds": 3.386283791
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 1541534048,
+        "statistic": "min",
+        "wall_time_seconds": 1.197103125
+      },
+      "threads": 14,
+      "workload": "synth-features"
+    },
+    {
+      "command": {
+        "args": [
+          "features",
+          "--rows",
+          "10000000",
+          "--threads",
+          "1"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.244546458
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.243964917
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.230312292
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.230312292
+      },
+      "threads": 1,
+      "workload": "synth-features"
+    },
+    {
+      "command": {
+        "args": [
+          "features",
+          "--rows",
+          "10000000",
+          "--threads",
+          "14"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.151358125
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.158554666
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.152131792
+        }
+      ],
+      "scale": 1.0,
+      "size": "10M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.151358125
+      },
+      "threads": 14,
+      "workload": "synth-features"
+    },
+    {
+      "command": {
+        "args": [
+          "embeddings",
+          "--rows",
+          "1000000",
+          "--threads",
+          "1",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/embeddings.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 2.133153167
+        },
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 2.061260833
+        },
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 2.067297292
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M rows",
+      "summary": {
+        "output_bytes": 1546138416,
+        "statistic": "min",
+        "wall_time_seconds": 2.061260833
+      },
+      "threads": 1,
+      "workload": "synth-embeddings"
+    },
+    {
+      "command": {
+        "args": [
+          "embeddings",
+          "--rows",
+          "1000000",
+          "--threads",
+          "14",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench/embeddings.parquet"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 1.292181917
+        },
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 1.347501209
+        },
+        {
+          "output_bytes": 1546138416,
+          "status": "ok",
+          "wall_time_seconds": 1.376118375
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M rows",
+      "summary": {
+        "output_bytes": 1546138416,
+        "statistic": "min",
+        "wall_time_seconds": 1.292181917
+      },
+      "threads": 14,
+      "workload": "synth-embeddings"
+    },
+    {
+      "command": {
+        "args": [
+          "embeddings",
+          "--rows",
+          "1000000",
+          "--threads",
+          "1"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.307601541
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.305233583
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.308551916
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.305233583
+      },
+      "threads": 1,
+      "workload": "synth-embeddings"
+    },
+    {
+      "command": {
+        "args": [
+          "embeddings",
+          "--rows",
+          "1000000",
+          "--threads",
+          "14"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/synth-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.109546167
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.105523792
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.106183959
+        }
+      ],
+      "scale": 1.0,
+      "size": "1M rows",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.105523792
+      },
+      "threads": 14,
+      "workload": "synth-embeddings"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "1",
+          "--format=influx"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": "data.influx"
+      },
+      "engine": "populate",
+      "format": "influx",
+      "samples": [
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 5.595923042
+        },
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 3.246374084
+        },
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 3.762909042
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 3322640087,
+        "statistic": "min",
+        "wall_time_seconds": 3.246374084
+      },
+      "threads": 1,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "14",
+          "--format=influx"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": "data.influx"
+      },
+      "engine": "populate",
+      "format": "influx",
+      "samples": [
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 2.884860833
+        },
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 2.163723875
+        },
+        {
+          "output_bytes": 3322640087,
+          "status": "ok",
+          "wall_time_seconds": 2.343570542
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 3322640087,
+        "statistic": "min",
+        "wall_time_seconds": 2.163723875
+      },
+      "threads": 14,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "1",
+          "--format=parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 3.400123625
+        },
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 4.003286542
+        },
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 3.5415995000000002
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 273694622,
+        "statistic": "min",
+        "wall_time_seconds": 3.400123625
+      },
+      "threads": 1,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "14",
+          "--format=parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 0.718147458
+        },
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 0.712590542
+        },
+        {
+          "output_bytes": 273694622,
+          "status": "ok",
+          "wall_time_seconds": 0.707079959
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 273694622,
+        "statistic": "min",
+        "wall_time_seconds": 0.707079959
+      },
+      "threads": 14,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "1",
+          "--format=arrow"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.21116275
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.20225
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.214995208
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.20225
+      },
+      "threads": 1,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--use-case=devops",
+          "--scale=100",
+          "--seed=123",
+          "--timestamp-start=2016-01-01T00:00:00Z",
+          "--timestamp-end=2016-01-02T00:00:00Z",
+          "--log-interval=10s",
+          "--threads",
+          "14",
+          "--format=arrow"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/tsbs-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.268443417
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.270064042
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.268822542
+        }
+      ],
+      "scale": 1.0,
+      "size": "100 hosts",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.268443417
+      },
+      "threads": 14,
+      "workload": "tsbs-devops"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 3.011310833
+        },
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 2.6848972079999998
+        },
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 2.698335
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1541897139,
+        "statistic": "min",
+        "wall_time_seconds": 2.6848972079999998
+      },
+      "threads": 1,
+      "workload": "ldbc"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "csv",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "csv",
+      "samples": [
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 1.45112125
+        },
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 1.455184625
+        },
+        {
+          "output_bytes": 1541897139,
+          "status": "ok",
+          "wall_time_seconds": 1.468215375
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 1541897139,
+        "statistic": "min",
+        "wall_time_seconds": 1.45112125
+      },
+      "threads": 14,
+      "workload": "ldbc"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 1.778801084
+        },
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 1.763562375
+        },
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 1.756057458
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 347035196,
+        "statistic": "min",
+        "wall_time_seconds": 1.756057458
+      },
+      "threads": 1,
+      "workload": "ldbc"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "parquet",
+          "--out",
+          "/var/folders/2s/99bxp_q90ns2psnkn8mqxflr0000gn/T/populate-bench"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "parquet",
+      "samples": [
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 0.841177
+        },
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 0.978130875
+        },
+        {
+          "output_bytes": 347035196,
+          "status": "ok",
+          "wall_time_seconds": 0.827915417
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 347035196,
+        "statistic": "min",
+        "wall_time_seconds": 0.827915417
+      },
+      "threads": 14,
+      "workload": "ldbc"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "1",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.027672958
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.016011667
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 1.010348334
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 1.010348334
+      },
+      "threads": 1,
+      "workload": "ldbc"
+    },
+    {
+      "command": {
+        "args": [
+          "--sf",
+          "1",
+          "--threads",
+          "14",
+          "--format",
+          "none"
+        ],
+        "program": "/Users/joeisaacs/git/data-comb/target/release/ldbc-gen",
+        "stdout_file": null
+      },
+      "engine": "populate",
+      "format": "arrow",
+      "samples": [
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.58625
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.583878125
+        },
+        {
+          "output_bytes": 0,
+          "status": "ok",
+          "wall_time_seconds": 0.593841584
+        }
+      ],
+      "scale": 1.0,
+      "size": "SF 1",
+      "summary": {
+        "output_bytes": 0,
+        "statistic": "min",
+        "wall_time_seconds": 0.583878125
+      },
+      "threads": 14,
+      "workload": "ldbc"
+    }
+  ],
+  "schema_version": 1,
+  "skipped": [
+    {
+      "engine": "tpcgen-cli",
+      "reason": "reference not installed or disabled",
+      "workload": null
+    },
+    {
+      "engine": "tsbs_generate_data",
+      "reason": "reference not installed or disabled",
+      "workload": null
+    },
+    {
+      "engine": "populate",
+      "reason": "requested format unsupported",
+      "workload": "synth-taxi"
+    },
+    {
+      "engine": "populate",
+      "reason": "requested format unsupported",
+      "workload": "synth-hits"
+    },
+    {
+      "engine": "populate",
+      "reason": "requested format unsupported",
+      "workload": "synth-features"
+    },
+    {
+      "engine": "populate",
+      "reason": "requested format unsupported",
+      "workload": "synth-embeddings"
+    }
+  ],
+  "source": {
+    "revision": "5b82c5068000938f4965df335b7243186346d8ba",
+    "worktree_dirty": true
+  },
+  "started_at_unix_seconds": 1795644507.29217
+}

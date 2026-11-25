@@ -36,10 +36,12 @@ the history of how it was built.
   faster than main", "after review", "PR #N", "used to", "since X landed"
   in READMEs, doc comments or code comments. That history belongs in the
   commit message and PR description.
-- **No benchmark write-ups or result files in the tree.** Before/after
+- **No benchmark write-ups in the tree.** Before/after
   tables, run logs, benchmark result files and graphs (`*.png`, `*.svg`)
-  go in the PR description, not the repository. A crate README may keep a
-  current performance section with the command that reproduces it and the
+  go in the PR description, except versioned JSON baselines in
+  `benchmarks/results/` conforming to `xtask/benchmark-report.schema.json`.
+  A crate README may keep a current performance section with the command
+  that reproduces it and the
   machine it ran on; replace its numbers rather than adding before/after
   comparisons.
 - **No planning docs.** Surveys, TODO lists, design proposals and

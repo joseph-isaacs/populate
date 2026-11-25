@@ -456,13 +456,19 @@ impl TextChunks for DatUnit<'_> {
                 t.source.text(first, n, self.1, bufs);
             });
         }
-        // one table of a channel: the other's text is dropped
+        // one table of a channel: its text is written in place, the
+        // other's dropped
         let mut all = vec![Vec::new(); outputs];
+        std::mem::swap(&mut all[t.output], &mut bufs[0]);
         t.for_each_range(t.range(i), |first, n| {
             t.source.text(first, n, self.1, &mut all);
-            bufs[0].append(&mut all[t.output]);
-            all.iter_mut().for_each(Vec::clear);
+            for (k, b) in all.iter_mut().enumerate() {
+                if k != t.output {
+                    b.clear();
+                }
+            }
         });
+        std::mem::swap(&mut all[t.output], &mut bufs[0]);
     }
 }
 

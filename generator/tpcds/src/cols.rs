@@ -78,18 +78,53 @@ impl Columnar for Str {
 }
 
 /// A string from a fixed list (a distribution's values), collected into
-/// the same columns as [`Str`].
+/// the same columns as [`Str`]. Its view is made once, with the list, so
+/// a row costs a copy of it (and of the bytes, past 12).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Word(pub &'static str);
+pub struct Word {
+    s: &'static str,
+    /// The view, with buffer offset 0.
+    view: u128,
+}
+
+impl Word {
+    pub fn new(s: &'static str) -> Self {
+        Word {
+            s,
+            view: make_view(s.as_bytes(), 0, 0),
+        }
+    }
+}
 
 impl Columnar for Word {
     type Columns = StrViews;
 }
 
+impl Word {
+    /// Its view in a column whose data buffer is `data`, its bytes
+    /// appended there past 12.
+    #[inline(always)]
+    fn view_in(self, data: &mut Vec<u8>) -> u128 {
+        if self.s.len() <= 12 {
+            self.view
+        } else {
+            let offset = u32::try_from(data.len()).expect("string data exceeds 4GiB");
+            data.extend_from_slice(self.s.as_bytes());
+            self.view | (offset as u128) << 96
+        }
+    }
+}
+
 impl Sink<Word> for StrViews {
     #[inline]
-    fn push(&mut self, s: Word) {
-        self.push_str(s.0);
+    fn push(&mut self, w: Word) {
+        let v = w.view_in(&mut self.data);
+        self.views.push(v);
+    }
+
+    fn push_n(&mut self, words: impl Iterator<Item = Word>) {
+        let data = &mut self.data;
+        self.views.extend(words.map(|w| w.view_in(data)));
     }
 
     fn reserve(&mut self, n: usize) {

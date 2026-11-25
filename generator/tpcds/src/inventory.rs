@@ -3,11 +3,12 @@
 //! compute. Both are a cross product of keys; inventory adds a random
 //! quantity, nulled by its row's null bitmap.
 
-use crate::cols::Word;
+use crate::cols::{StrViews, Word};
 use crate::seeds::stream;
-use populate_builtins::{derive, draws, named_all, range};
-use populate_core::{Columns, Distribution};
+use populate_builtins::{derive, draws, named_all};
+use populate_core::{Columns, Distribution, Sink};
 use rand::Rng;
+use std::sync::Arc;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::distribution::DemographicsDistributions as Demo;
 use tpcdsgen::generator::InventoryGeneratorColumn as Inv;
@@ -126,68 +127,153 @@ pub(crate) fn inventory(
 /// A nullable column of a table with no nulls.
 type Opt<T> = Option<T>;
 
-/// `customer_demographics`: `cd_demo_sk` is the row, and the other columns
-/// are its digits in a mixed radix, gender fastest. The table has no nulls
-/// ([`demographics_have_nulls`]), so no random draw reaches it.
-#[allow(clippy::type_complexity)]
-pub(crate) fn customer_demographics() -> impl Distribution<
-    Item = (
-        i32,
-        Opt<Word>,
-        Opt<Word>,
-        Opt<Word>,
-        Opt<i32>,
-        Opt<Word>,
-        Opt<i32>,
-        Opt<i32>,
-        Opt<i32>,
-    ),
-> + Clone
-+ Sync {
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Vec<Word> {
-        (0..n as i64).map(|i| Word(f(i))).collect()
-    };
-    let gender = list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size);
-    let marital = list(
-        Demo::get_marital_status_size(),
-        Demo::get_marital_status_for_index_mod_size,
-    );
-    let education = list(
-        Demo::get_education_size(),
-        Demo::get_education_for_index_mod_size,
-    );
-    let credit = list(
-        Demo::get_credit_rating_size(),
-        Demo::get_credit_rating_for_index_mod_size,
-    );
-    let purchase: Vec<i32> = (0..Demo::get_purchase_band_size() as i64)
-        .map(Demo::get_purchase_band_for_index_mod_size)
-        .collect();
-    let radix = [
-        gender.len() as u64,
-        marital.len() as u64,
-        education.len() as u64,
-        purchase.len() as u64,
-        credit.len() as u64,
-    ];
-    let block: u32 = radix.iter().product::<u64>() as u32;
-    let first: Vec<(Word, Word, Word, i32, Word)> = (0..block as u64)
-        .map(|i| {
-            let mut d = i;
-            let mut digit = |r: u64| {
-                let x = d % r;
-                d /= r;
-                x as usize
-            };
-            (
-                gender[digit(radix[0])],
-                marital[digit(radix[1])],
-                education[digit(radix[2])],
-                purchase[digit(radix[3])],
-                credit[digit(radix[4])],
-            )
+/// A row of `customer_demographics`.
+type DemoRow = (
+    i32,
+    Opt<Word>,
+    Opt<Word>,
+    Opt<Word>,
+    Opt<i32>,
+    Opt<Word>,
+    Opt<i32>,
+    Opt<i32>,
+    Opt<i32>,
+);
+
+/// The rows of `customer_demographics`: `cd_demo_sk` is the row, and the
+/// other columns are its digits in a mixed radix, gender fastest, then
+/// marital status, education, purchase band, credit rating and the three
+/// dependent counts (radix 7 each).
+#[derive(Debug, Clone)]
+struct Demographics {
+    gender: Arc<[Word]>,
+    marital: Arc<[Word]>,
+    education: Arc<[Word]>,
+    purchase: Arc<[i32]>,
+    credit: Arc<[Word]>,
+    /// 0-based row of the next sample.
+    row: u32,
+}
+
+impl Demographics {
+    /// Each digit's radix, fastest first.
+    fn radix(&self) -> [u32; 8] {
+        let n = |l: usize| l as u32;
+        [
+            n(self.gender.len()),
+            n(self.marital.len()),
+            n(self.education.len()),
+            n(self.purchase.len()),
+            n(self.credit.len()),
+            7,
+            7,
+            7,
+        ]
+    }
+
+    /// Digit `d` of rows `row..row + n`, counted up rather than divided
+    /// out of each row.
+    fn digits(&self, d: usize, n: usize) -> impl Iterator<Item = usize> + use<> {
+        let radix = self.radix();
+        let div: u32 = radix[..d].iter().product();
+        let r = radix[d];
+        let (mut v, mut left) = (self.row / div % r, div - self.row % div);
+        (0..n).map(move |_| {
+            let x = v;
+            left -= 1;
+            if left == 0 {
+                left = div;
+                v = if v + 1 == r { 0 } else { v + 1 };
+            }
+            x as usize
         })
-        .collect();
+    }
+}
+
+impl Distribution for Demographics {
+    type Item = DemoRow;
+
+    fn sample(&mut self, _: &mut impl Rng) -> DemoRow {
+        let d = |k| self.digits(k, 1).next().unwrap_or(0);
+        let row = (
+            self.row as i32 + 1,
+            Some(self.gender[d(0)]),
+            Some(self.marital[d(1)]),
+            Some(self.education[d(2)]),
+            Some(self.purchase[d(3)]),
+            Some(self.credit[d(4)]),
+            Some(d(5) as i32),
+            Some(d(6) as i32),
+            Some(d(7) as i32),
+        );
+        self.row += 1;
+        row
+    }
+
+    fn collect_into(&mut self, c: &mut Columns<DemoRow>, _: &mut impl Rng, n: usize) {
+        let words = |list: &[Word], v: &mut StrViews, d| {
+            Sink::<Word>::reserve(v, n);
+            v.push_n(self.digits(d, n).map(|i| list[i]));
+        };
+        words(&self.gender, &mut c.1.values, 0);
+        words(&self.marital, &mut c.2.values, 1);
+        words(&self.education, &mut c.3.values, 2);
+        words(&self.credit, &mut c.5.values, 4);
+        c.0.extend((self.row..self.row + n as u32).map(|i| i as i32 + 1));
+        c.4.values
+            .extend(self.digits(3, n).map(|i| self.purchase[i]));
+        for (v, d) in [
+            (&mut c.6.values, 5),
+            (&mut c.7.values, 6),
+            (&mut c.8.values, 7),
+        ] {
+            v.extend(self.digits(d, n).map(|i| i as i32));
+        }
+        for valid in [
+            &mut c.1.valid,
+            &mut c.2.valid,
+            &mut c.3.valid,
+            &mut c.4.valid,
+            &mut c.5.valid,
+            &mut c.6.valid,
+            &mut c.7.valid,
+            &mut c.8.valid,
+        ] {
+            valid.push_valid(n);
+        }
+        self.row += n as u32;
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.row += n as u32;
+    }
+}
+
+/// `customer_demographics`. The table has no nulls
+/// ([`demographics_have_nulls`]), so no random draw reaches it.
+pub(crate) fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
+        (0..n as i64).map(|i| Word::new(f(i))).collect()
+    };
+    let demographics = Demographics {
+        gender: list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size),
+        marital: list(
+            Demo::get_marital_status_size(),
+            Demo::get_marital_status_for_index_mod_size,
+        ),
+        education: list(
+            Demo::get_education_size(),
+            Demo::get_education_for_index_mod_size,
+        ),
+        purchase: (0..Demo::get_purchase_band_size() as i64)
+            .map(Demo::get_purchase_band_for_index_mod_size)
+            .collect(),
+        credit: list(
+            Demo::get_credit_rating_size(),
+            Demo::get_credit_rating_for_index_mod_size,
+        ),
+        row: 0,
+    };
     named_all(
         &[
             "cd_demo_sk",
@@ -200,23 +286,7 @@ pub(crate) fn customer_demographics() -> impl Distribution<
             "cd_dep_employed_count",
             "cd_dep_college_count",
         ],
-        // the first five digits of every index below their radices'
-        // product, so a row costs one division by it and three by 7
-        derive(range(0u32, 1), move |&i| {
-            let (low, high) = ((i % block) as usize, i / block);
-            let (g, m, e, p, c) = first[low];
-            (
-                i as i32 + 1,
-                Some(g),
-                Some(m),
-                Some(e),
-                Some(p),
-                Some(c),
-                Some((high % 7) as i32),
-                Some((high / 7 % 7) as i32),
-                Some((high / 49 % 7) as i32),
-            )
-        }),
+        demographics,
     )
 }
 

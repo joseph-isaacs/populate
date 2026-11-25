@@ -14,11 +14,10 @@
 //! tpcdsgen's public helpers, so the values are dsdgen's; the tests compare
 //! every channel with tpcdsgen-arrow.
 
+use crate::masked::{Masked, NOT_NULL as N, NullBits};
 use crate::seeds::{RowSeeds, Streams};
 use populate_builtins::{fan_out, named_all, range};
-use populate_core::{
-    Children, Columns, Decimal as Fixed, Distribution, Nullable, Sink, Spread, SpreadCols,
-};
+use populate_core::{Children, Columns, Decimal as Fixed, Distribution, Sink, Spread, SpreadCols};
 use std::sync::Arc;
 use tpcdsgen::config::{Scaling, Session, Table as Ds};
 use tpcdsgen::distribution::hours_distribution::HoursWeights;
@@ -44,10 +43,20 @@ use tpcdsgen::types::{
     get_catalog_sales_pricing_limits, get_store_sales_pricing_limits, get_web_sales_pricing_limits,
 };
 
-/// A nullable surrogate key (`Int32`).
-pub(crate) type Sk = Option<i32>;
-/// A nullable `Decimal(7, 2)`.
-pub(crate) type Dec = Option<Fixed<7, 2>>;
+/// A `Decimal(7, 2)`.
+type Dec = Fixed<7, 2>;
+
+/// The [`NullBits`] of a table.
+macro_rules! null_bits {
+    ($name:ident = $bits:expr) => {
+        #[derive(Debug, Clone, PartialEq)]
+        pub(crate) struct $name;
+
+        impl NullBits for $name {
+            const BITS: &'static [i8] = &$bits;
+        }
+    };
+}
 
 /// Percentage of line items that are returned.
 const SR_RETURN_PCT: i32 = 10;
@@ -61,52 +70,34 @@ const CR_GIFT_PCT: i32 = 10;
 /// (of 0..99) in tpcdsgen; returns by the ship customer: below it.
 const WEB_GIFT_PCT: i32 = 7;
 
-/// Whether bit `pos` of a null bitmap leaves the value present.
+/// A key, NULL (bit `pos` of `nbm` set) also where it is negative
+/// (tpcdsgen-arrow's `int32_sk`).
 #[inline(always)]
-fn bit(nbm: i64, pos: u32) -> bool {
-    (nbm >> pos) & 1 == 0
+fn sk(nbm: &mut i64, pos: u32, v: i64) -> i32 {
+    *nbm |= ((v < 0) as i64) << pos;
+    v as i32
 }
 
-/// A key, NULL by bit `pos` of `nbm` or by being negative (tpcdsgen-arrow's
-/// `int32_sk`).
-#[inline(always)]
-fn sk(nbm: i64, pos: u32, v: i64) -> Sk {
-    (bit(nbm, pos) && v >= 0).then_some(v as i32)
-}
+/// The columns of `N` keys.
+type Sks<const N: usize> = SpreadCols<Vec<i32>, N>;
 
-/// A `Decimal(7, 2)`, NULL by bit `pos` of `nbm`.
+/// Push key `keys[i]` to column `i`, at bit `first + i` of `nbm`.
 #[inline(always)]
-fn dec(nbm: i64, pos: u32, v: Decimal) -> Dec {
-    bit(nbm, pos).then_some(Fixed(v.get_number() as i128))
-}
-
-/// An `Int32`, NULL by bit `pos` of `nbm`.
-#[inline(always)]
-fn int(nbm: i64, pos: u32, v: i32) -> Sk {
-    bit(nbm, pos).then_some(v)
-}
-
-/// The columns of `N` nullable keys.
-type Sks<const N: usize> = SpreadCols<Nullable<Vec<i32>>, N>;
-
-/// Push key `keys[i]` to column `i`, NULL by bit `first + i` of `nbm`.
-#[inline(always)]
-fn push_sks<const N: usize>(cols: &mut Sks<N>, nbm: i64, first: u32, keys: [i64; N]) {
+fn push_sks<const N: usize>(cols: &mut Sks<N>, nbm: &mut i64, first: u32, keys: [i64; N]) {
     for (i, (c, k)) in cols.0.iter_mut().zip(keys).enumerate() {
         c.push(sk(nbm, first + i as u32, k));
     }
 }
 
-/// The columns of `N` nullable decimals.
-type Decs<const N: usize> = SpreadCols<Nullable<Vec<Fixed<7, 2>>>, N>;
+/// The columns of `N` decimals.
+type Decs<const N: usize> = SpreadCols<Vec<Dec>, N>;
 
-/// Push decimal `v[i]` to column `i`, NULL by bit `bits[i]` of `nbm`.
-/// Written in place: a row of them built first and pushed would be moved
-/// through `memcpy`.
+/// Push decimal `v[i]` to column `i`. Written in place: a row of them
+/// built first and pushed would be moved through `memcpy`.
 #[inline(always)]
-fn push_decs<const N: usize>(cols: &mut Decs<N>, nbm: i64, bits: [u32; N], v: [Decimal; N]) {
-    for ((c, b), x) in cols.0.iter_mut().zip(bits).zip(v) {
-        c.push(dec(nbm, b, x));
+fn push_decs<const N: usize>(cols: &mut Decs<N>, v: [Decimal; N]) {
+    for (c, x) in cols.0.iter_mut().zip(v) {
+        c.push(Fixed(x.get_number() as i128));
     }
 }
 
@@ -239,9 +230,22 @@ fn uniform_int(lo: i32, hi: i32, s: &mut RandomNumberStream) -> i32 {
 
 /// date, time, item, customer, cdemo, hdemo, addr, store, promo (or
 /// reason), ticket, quantity.
-type StoreKeys = (Sk, Sk, i32, Sk, Sk, Sk, Sk, Sk, Sk, i64, Sk);
-type StoreSale = (StoreKeys, Spread<Dec, 12>);
-type StoreReturn = (StoreKeys, Spread<Dec, 9>);
+type StoreKeys = (i32, i32, i32, i32, i32, i32, i32, i32, i32, i64, i32);
+type StoreSale = Masked<(StoreKeys, Spread<Dec, 12>), StoreSaleBits>;
+type StoreReturn = Masked<(StoreKeys, Spread<Dec, 9>), StoreReturnBits>;
+
+// dsdgen prints the coupon amount as ss_ext_discount_amt (a bug kept for
+// compatibility), and again as ss_coupon_amt: both are bit 14
+null_bits!(
+    StoreSaleBits = [
+        0, 1, N, 3, 4, 5, 6, 7, 8, N, 10, 11, 12, 13, 14, 15, 16, 17, 18, 14, 19, 20, 21
+    ]
+);
+null_bits!(
+    StoreReturnBits = [
+        0, 1, N, 3, 4, 5, 6, 7, 8, N, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+    ]
+);
 pub(crate) type StoreTables = (Children<StoreSale>, Children<StoreReturn>);
 
 const STORE_NAMES: &[&str] = &[
@@ -357,28 +361,25 @@ fn store_ticket(
     for _ in 0..lines {
         let item = cx.next_item(&mut item_index, t.date);
         let returned = uniform_int(0, 99, sg.get(&S::SrIsReturned)) < SR_RETURN_PCT;
-        let nbm = create_null_bit_map(NullTable::StoreSales, sg.get(&S::SsNulls));
+        let mut nbm = create_null_bit_map(NullTable::StoreSales, sg.get(&S::SsNulls));
         let promo = cx.uniform(Ds::Promotion, sg.get(&S::SsSoldPromoSk));
         let p = sales_pricing(&cx.limits, sg.get(&S::SsPricing));
-        sales.0.push((
-            sk(nbm, 0, t.date),
-            sk(nbm, 1, t.time),
+        let n = &mut nbm;
+        sales.values.0.push((
+            sk(n, 0, t.date),
+            sk(n, 1, t.time),
             item as i32,
-            sk(nbm, 3, t.customer),
-            sk(nbm, 4, t.cdemo),
-            sk(nbm, 5, t.hdemo),
-            sk(nbm, 6, t.addr),
-            sk(nbm, 7, t.store),
-            sk(nbm, 8, promo),
+            sk(n, 3, t.customer),
+            sk(n, 4, t.cdemo),
+            sk(n, 5, t.hdemo),
+            sk(n, 6, t.addr),
+            sk(n, 7, t.store),
+            sk(n, 8, promo),
             t.ticket,
-            int(nbm, 10, p.get_quantity()),
+            p.get_quantity(),
         ));
         push_decs(
-            &mut sales.1,
-            nbm,
-            // dsdgen prints the coupon amount as ss_ext_discount_amt (a bug
-            // kept for compatibility), and again as ss_coupon_amt
-            [11, 12, 13, 14, 15, 16, 17, 18, 14, 19, 20, 21],
+            &mut sales.values.1,
             [
                 p.get_wholesale_cost(),
                 p.get_list_price(),
@@ -394,6 +395,7 @@ fn store_ticket(
                 p.get_net_profit(),
             ],
         );
+        sales.nbm.push(nbm);
         if returned {
             let rg = rg.get_or_insert_with(|| Streams::<R, 22>::at(r));
             store_return(cx, rg, &t, item, &p, returns);
@@ -410,7 +412,7 @@ fn store_return(
     out: &mut Columns<StoreReturn>,
 ) {
     let scaling = &cx.scaling;
-    let nbm = create_null_bit_map(NullTable::StoreReturns, rg.get(&R::SrNulls));
+    let mut nbm = create_null_bit_map(NullTable::StoreReturns, rg.get(&R::SrNulls));
     let mut customer = cx.uniform(Ds::Customer, rg.get(&R::SrCustomerSk));
     if uniform_int(1, 100, rg.get(&R::SrTicketNumber)) < SR_SAME_CUSTOMER {
         customer = t.customer;
@@ -429,20 +431,22 @@ fn store_return(
     let reason = cx.uniform(Ds::Reason, rg.get(&R::SrReasonSk));
     let quantity = uniform_int(1, sale.get_quantity(), rg.get(&R::SrPricing));
     let p = generate_pricing_for_returns_table(rg.get(&R::SrPricing), quantity, sale);
-    out.0.push((
-        sk(nbm, 0, date),
-        sk(nbm, 1, time),
+    let n = &mut nbm;
+    out.values.0.push((
+        sk(n, 0, date),
+        sk(n, 1, time),
         item as i32,
-        sk(nbm, 3, customer),
-        sk(nbm, 4, cdemo),
-        sk(nbm, 5, hdemo),
-        sk(nbm, 6, addr),
-        sk(nbm, 7, store),
-        sk(nbm, 8, reason),
+        sk(n, 3, customer),
+        sk(n, 4, cdemo),
+        sk(n, 5, hdemo),
+        sk(n, 6, addr),
+        sk(n, 7, store),
+        sk(n, 8, reason),
         t.ticket,
-        int(nbm, 10, p.get_quantity()),
+        p.get_quantity(),
     ));
-    push_return_decimals(&mut out.1, nbm, 11, &p);
+    push_return_decimals(&mut out.values.1, &p);
+    out.nbm.push(nbm);
 }
 
 // ============================================================================
@@ -468,10 +472,9 @@ struct LineSale {
     pricing: Pricing,
 }
 
-/// The 15 decimals of a catalog or web sale, NULL by `bits` (19 to 33, in
-/// the order of each table's own null bits).
+/// The 15 decimals of a catalog or web sale.
 #[inline(always)]
-fn push_sale_decimals(cols: &mut Decs<15>, nbm: i64, p: &Pricing, bits: [u32; 15]) {
+fn push_sale_decimals(cols: &mut Decs<15>, p: &Pricing) {
     let v = [
         p.get_wholesale_cost(),
         p.get_list_price(),
@@ -489,12 +492,12 @@ fn push_sale_decimals(cols: &mut Decs<15>, nbm: i64, p: &Pricing, bits: [u32; 15
         p.get_net_paid_including_shipping_and_tax(),
         p.get_net_profit(),
     ];
-    push_decs(cols, nbm, bits, v);
+    push_decs(cols, v);
 }
 
-/// The 9 decimals of a return, at bits `first..first + 9`.
+/// The 9 decimals of a return.
 #[inline(always)]
-fn push_return_decimals(cols: &mut Decs<9>, nbm: i64, first: u32, p: &Pricing) {
+fn push_return_decimals(cols: &mut Decs<9>, p: &Pricing) {
     let v = [
         p.get_net_paid(),
         p.get_ext_tax(),
@@ -506,16 +509,30 @@ fn push_return_decimals(cols: &mut Decs<9>, nbm: i64, first: u32, p: &Pricing) {
         p.get_store_credit(),
         p.get_net_loss(),
     ];
-    push_decs(cols, nbm, std::array::from_fn(|i| first + i as u32), v);
+    push_decs(cols, v);
 }
 
 /// date, time, ship date, bill (4), ship (4), call center, catalog page,
 /// ship mode, warehouse; item; promo; order number; quantity; decimals.
-type CatalogSale = (Spread<Sk, 15>, i32, Sk, i64, Sk, Spread<Dec, 15>);
+type CatalogSale = Masked<(Spread<i32, 15>, i32, i32, i64, i32, Spread<Dec, 15>), CatalogSaleBits>;
 /// date, time; item; refunded (4), returning (4), call center, page, ship
 /// mode, warehouse, reason; order number; quantity; decimals.
-type CatalogReturn = (Sk, Sk, i32, Spread<Sk, 13>, i64, Sk, Spread<Dec, 9>);
+type CatalogReturn =
+    Masked<(i32, i32, i32, Spread<i32, 13>, i64, i32, Spread<Dec, 9>), CatalogReturnBits>;
 pub(crate) type CatalogTables = (Children<CatalogSale>, Children<CatalogReturn>);
+
+null_bits!(
+    CatalogSaleBits = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, N, 16, N, 18, 19, 20, 21, 24, 23, 25, 26,
+        27, 22, 28, 29, 30, 31, 32, 33
+    ]
+);
+null_bits!(
+    CatalogReturnBits = [
+        0, 1, N, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, N, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26
+    ]
+);
 
 const CATALOG_NAMES: &[&str] = &[
     "cs_sold_date_sk",
@@ -694,7 +711,7 @@ fn catalog_order(
     for _ in 0..lines {
         let item = cx.next_item(&mut item_index, o.date);
         let returned = uniform_int(0, 99, sg.get(&CS::CrIsReturned)) < SR_RETURN_PCT;
-        let nbm = create_null_bit_map(NullTable::CatalogSales, sg.get(&CS::CsNulls));
+        let mut nbm = create_null_bit_map(NullTable::CatalogSales, sg.get(&CS::CsNulls));
         let lag = uniform_int(
             CS_MIN_SHIP_DELAY,
             CS_MAX_SHIP_DELAY,
@@ -731,17 +748,14 @@ fn catalog_order(
             ship_mode,
             warehouse,
         ];
-        push_sks(&mut sales.0, nbm, 0, keys);
-        sales.1.push(item as i32);
-        sales.2.push(sk(nbm, 16, promo));
-        sales.3.push(o.number);
-        sales.4.push(int(nbm, 18, p.get_quantity()));
-        push_sale_decimals(
-            &mut sales.5,
-            nbm,
-            &p,
-            [19, 20, 21, 24, 23, 25, 26, 27, 22, 28, 29, 30, 31, 32, 33],
-        );
+        let c = &mut sales.values;
+        push_sks(&mut c.0, &mut nbm, 0, keys);
+        c.1.push(item as i32);
+        c.2.push(sk(&mut nbm, 16, promo));
+        c.3.push(o.number);
+        c.4.push(p.get_quantity());
+        push_sale_decimals(&mut c.5, &p);
+        sales.nbm.push(nbm);
         if returned {
             let rg = rg.get_or_insert_with(|| Streams::<CR, 29>::at(r));
             let sale = LineSale {
@@ -762,7 +776,7 @@ fn catalog_return(
     s: &LineSale,
     out: &mut Columns<CatalogReturn>,
 ) {
-    let nbm = create_null_bit_map(NullTable::CatalogReturns, rg.get(&CR::CrNulls));
+    let mut nbm = create_null_bit_map(NullTable::CatalogReturns, rg.get(&CR::CrNulls));
     let mut returning = [
         cx.uniform(Ds::Customer, rg.get(&CR::CrReturningCustomerSk)),
         cx.uniform(Ds::CustomerDemographics, rg.get(&CR::CrReturningCdemoSk)),
@@ -807,22 +821,46 @@ fn catalog_return(
         warehouse,
         reason,
     ];
-    out.0.push(sk(nbm, 0, date));
-    out.1.push(sk(nbm, 1, time));
-    out.2.push(s.item as i32);
-    push_sks(&mut out.3, nbm, 3, keys);
-    out.4.push(o.number);
-    out.5.push(int(nbm, 17, p.get_quantity()));
-    push_return_decimals(&mut out.6, nbm, 18, &p);
+    let c = &mut out.values;
+    c.0.push(sk(&mut nbm, 0, date));
+    c.1.push(sk(&mut nbm, 1, time));
+    c.2.push(s.item as i32);
+    push_sks(&mut c.3, &mut nbm, 3, keys);
+    c.4.push(o.number);
+    c.5.push(p.get_quantity());
+    push_return_decimals(&mut c.6, &p);
+    out.nbm.push(nbm);
 }
 
 /// date, time, ship date; item; bill (4), ship (4), web page, web site,
 /// ship mode, warehouse, promo; order number; quantity; decimals.
-type WebSale = (Spread<Sk, 3>, i32, Spread<Sk, 13>, i64, Sk, Spread<Dec, 15>);
+type WebSale = Masked<
+    (
+        Spread<i32, 3>,
+        i32,
+        Spread<i32, 13>,
+        i64,
+        i32,
+        Spread<Dec, 15>,
+    ),
+    WebSaleBits,
+>;
 /// date, time; item; refunded (4), returning (4), web page, reason; order
 /// number; quantity; decimals.
-type WebReturn = (Sk, Sk, i32, Spread<Sk, 10>, i64, Sk, Spread<Dec, 9>);
+type WebReturn = Masked<(i32, i32, i32, Spread<i32, 10>, i64, i32, Spread<Dec, 9>), WebReturnBits>;
 pub(crate) type WebTables = (Children<WebSale>, Children<WebReturn>);
+
+null_bits!(
+    WebSaleBits = [
+        0, 1, 2, N, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, N, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32, 33
+    ]
+);
+null_bits!(
+    WebReturnBits = [
+        0, 1, N, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, N, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+    ]
+);
 
 const WEB_NAMES: &[&str] = &[
     "ws_sold_date_sk",
@@ -955,7 +993,7 @@ fn web_order(
     for _ in 0..lines {
         let item = cx.next_item(&mut item_index, o.date);
         let returned = uniform_int(0, 99, sg.get(&WS::WrIsReturned)) < SR_RETURN_PCT;
-        let nbm = create_null_bit_map(NullTable::WebSales, sg.get(&WS::WsNulls));
+        let mut nbm = create_null_bit_map(NullTable::WebSales, sg.get(&WS::WsNulls));
         let lag = uniform_int(1, 120, sg.get(&WS::WsShipDateSk));
         let ship_date = o.date + lag as i64;
         let page = generate_scd_join_key(Ds::WebPage, sg.get(&WS::WsWebPageSk), o.date, scaling);
@@ -968,17 +1006,14 @@ fn web_order(
             o.bill[0], o.bill[1], o.bill[2], o.bill[3], o.ship[0], o.ship[1], o.ship[2], o.ship[3],
             page, site, ship_mode, warehouse, promo,
         ];
-        push_sks(&mut sales.0, nbm, 0, [o.date, o.time, ship_date]);
-        sales.1.push(item as i32);
-        push_sks(&mut sales.2, nbm, 4, keys);
-        sales.3.push(o.number);
-        sales.4.push(int(nbm, 18, p.get_quantity()));
-        push_sale_decimals(
-            &mut sales.5,
-            nbm,
-            &p,
-            [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33],
-        );
+        let c = &mut sales.values;
+        push_sks(&mut c.0, &mut nbm, 0, [o.date, o.time, ship_date]);
+        c.1.push(item as i32);
+        push_sks(&mut c.2, &mut nbm, 4, keys);
+        c.3.push(o.number);
+        c.4.push(p.get_quantity());
+        push_sale_decimals(&mut c.5, &p);
+        sales.nbm.push(nbm);
         if returned {
             let rg = rg.get_or_insert_with(|| Streams::<WR, 26>::at(r));
             let sale = LineSale {
@@ -999,7 +1034,7 @@ fn web_return(
     s: &LineSale,
     out: &mut Columns<WebReturn>,
 ) {
-    let nbm = create_null_bit_map(NullTable::WebReturns, rg.get(&WR::WrNulls));
+    let mut nbm = create_null_bit_map(NullTable::WebReturns, rg.get(&WR::WrNulls));
     let date = generate_returns_date_join_key(
         rg.get(&WR::WrReturnedDateSk),
         s.ship_date,
@@ -1032,13 +1067,15 @@ fn web_return(
         s.page,
         reason,
     ];
-    out.0.push(sk(nbm, 0, date));
-    out.1.push(sk(nbm, 1, time));
-    out.2.push(s.item as i32);
-    push_sks(&mut out.3, nbm, 3, keys);
-    out.4.push(o.number);
-    out.5.push(int(nbm, 14, p.get_quantity()));
-    push_return_decimals(&mut out.6, nbm, 15, &p);
+    let c = &mut out.values;
+    c.0.push(sk(&mut nbm, 0, date));
+    c.1.push(sk(&mut nbm, 1, time));
+    c.2.push(s.item as i32);
+    push_sks(&mut c.3, &mut nbm, 3, keys);
+    c.4.push(o.number);
+    c.5.push(p.get_quantity());
+    push_return_decimals(&mut c.6, &p);
+    out.nbm.push(nbm);
 }
 
 #[cfg(test)]

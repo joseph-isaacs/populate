@@ -81,7 +81,17 @@ impl Validity {
 
     /// `n` more rows, all present.
     pub fn push_valid(&mut self, n: usize) {
-        self.extend(repeat_n(true, n));
+        let bit = self.len % 64;
+        let head = if bit == 0 { 0 } else { (64 - bit).min(n) };
+        if let Some(w) = self.words.last_mut().filter(|_| head > 0) {
+            *w |= (u64::MAX >> (64 - head)) << bit;
+        }
+        let rest = n - head;
+        self.words.extend(repeat_n(u64::MAX, rest / 64));
+        if rest % 64 > 0 {
+            self.words.push(u64::MAX >> (64 - rest % 64));
+        }
+        self.len += n;
     }
 
     /// `other`'s rows after these (a copy of its words if this is empty).
@@ -165,6 +175,25 @@ impl FromIterator<bool> for Validity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_valid_matches_pushing_each_row() {
+        for (start, n) in [
+            (0, 0),
+            (0, 64),
+            (3, 2),
+            (3, 61),
+            (3, 200),
+            (63, 1),
+            (64, 130),
+        ] {
+            let mut got: Validity = (0..start).map(|i| i % 3 == 0).collect();
+            let mut want = got.clone();
+            got.push_valid(n);
+            want.extend(repeat_n(true, n));
+            assert_eq!(got, want, "{start} + {n}");
+        }
+    }
 
     #[test]
     fn missing_rows_hold_the_default() {

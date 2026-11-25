@@ -37,6 +37,7 @@ pub mod dat;
 mod dims;
 mod gen_tables;
 mod inventory;
+mod masked;
 mod seeds;
 
 pub use dat::Encoding;

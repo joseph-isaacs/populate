@@ -308,20 +308,23 @@ impl Cursor {
                     .write_unaligned((d >> (8 * zeros)).to_le_bytes());
                 self.0 = self.0.add(8 - zeros as usize);
             } else {
-                self.big(v);
+                self.0 = Self::big(self.0, v);
             }
         }
     }
 
-    /// [`Self::uint`] of `v >= 10^8`: the high digits, then the low 8.
+    /// [`Self::uint`] of `v >= 10^8` at `at`: the high digits, then the
+    /// low 8; returns the end. It takes and returns the position, not
+    /// `&mut self`, so a caller's cursor can stay in a register.
     #[cold]
     #[inline(never)]
-    unsafe fn big(&mut self, v: u64) {
+    unsafe fn big(at: *mut u8, v: u64) -> *mut u8 {
+        let mut w = Cursor(at);
         unsafe {
-            self.uint(v / 100_000_000);
+            w.uint(v / 100_000_000);
             let d = eight((v % 100_000_000) as u32);
-            self.0.cast::<[u8; 8]>().write_unaligned(d.to_le_bytes());
-            self.0 = self.0.add(8);
+            w.0.cast::<[u8; 8]>().write_unaligned(d.to_le_bytes());
+            w.0.add(8)
         }
     }
 
@@ -368,15 +371,17 @@ impl Cursor {
             match i64::try_from(v) {
                 Ok(v) if scale == 2 && print == 2 => self.decimal2(v),
                 Ok(v) if scale <= 18 => self.decimal(v / 10i64.pow(scale - print), print),
-                _ => self.wide_decimal(v / 10i128.pow(scale - print), print),
+                _ => self.0 = Self::wide_decimal(self.0, v / 10i128.pow(scale - print), print),
             }
         }
     }
 
-    /// [`Self::decimal`] for any `i128` (up to 39 digits).
+    /// [`Self::decimal`] for any `i128` (up to 39 digits) at `at`; returns
+    /// the end (as [`Self::big`]).
     #[cold]
     #[inline(never)]
-    unsafe fn wide_decimal(&mut self, v: i128, scale: u32) {
+    unsafe fn wide_decimal(at: *mut u8, v: i128, scale: u32) -> *mut u8 {
+        let mut w = Cursor(at);
         let a = v.unsigned_abs();
         let p = 10u128.pow(scale);
         let mut text = (a / p).to_string();
@@ -388,10 +393,11 @@ impl Cursor {
         }
         unsafe {
             if v < 0 {
-                self.byte(b'-');
+                w.byte(b'-');
             }
-            self.bytes(text.as_bytes());
+            w.bytes(text.as_bytes());
         }
+        w.0
     }
 
     /// [`Self::decimal`] at scale 2, with constant divisors.
@@ -692,9 +698,46 @@ pub trait TextColumns {
     /// # Safety
     /// As [`TextField::write_field`].
     unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding);
+
+    /// Fields in a row.
+    const WIDTH: usize;
+
+    /// As [`write_row`](Self::write_row), but field `j` (counted from
+    /// `first`) is left empty, NULL, where `null(j)`: for columns whose
+    /// NULLs are kept once per row rather than per column.
+    ///
+    /// # Safety
+    /// As [`TextField::write_field`].
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    );
 }
 
 impl<T: TextField> TextColumns for T {
+    const WIDTH: usize = 1;
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        unsafe {
+            if !null(first) {
+                self.write_field(r, w, encoding);
+            }
+            w.byte(b'|');
+        }
+    }
+
     #[inline]
     fn text_rows(&self) -> usize {
         TextField::text_rows(self)
@@ -813,8 +856,14 @@ impl TextField for StrCol {
         // bounds and on character boundaries.
         unsafe {
             let o = self.offsets();
-            let (a, b) = (*o.get_unchecked(r) as usize, *o.get_unchecked(r + 1) as usize);
-            w.text(std::str::from_utf8_unchecked(self.data().get_unchecked(a..b)), encoding)
+            let (a, b) = (
+                *o.get_unchecked(r) as usize,
+                *o.get_unchecked(r + 1) as usize,
+            );
+            w.text(
+                std::str::from_utf8_unchecked(self.data().get_unchecked(a..b)),
+                encoding,
+            )
         }
     }
 }
@@ -854,6 +903,22 @@ impl<C: TextField, const N: usize> TextColumns for SpreadCols<C, N> {
             unsafe { c.write_row(r, w, encoding) }
         }
     }
+
+    const WIDTH: usize = N;
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        for (i, c) in self.0.iter().enumerate() {
+            unsafe { c.write_row_masked(r, w, encoding, first + i, null) }
+        }
+    }
 }
 
 macro_rules! tuple_text {
@@ -870,6 +935,25 @@ macro_rules! tuple_text {
             #[inline(always)]
             unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
                 unsafe { $(self.$i.write_row(r, w, encoding);)+ }
+            }
+
+            const WIDTH: usize = 0 $(+ $t::WIDTH)+;
+
+            #[inline(always)]
+            unsafe fn write_row_masked(
+                &self,
+                r: usize,
+                w: &mut Cursor,
+                encoding: Encoding,
+                first: usize,
+                null: &impl Fn(usize) -> bool,
+            ) {
+                let mut at = first;
+                $(
+                    unsafe { self.$i.write_row_masked(r, w, encoding, at, null) };
+                    at += $t::WIDTH;
+                )+
+                let _ = at;
             }
         }
     };

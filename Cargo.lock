@@ -890,7 +890,11 @@ dependencies = [
  "itoa",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]

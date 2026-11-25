@@ -6,17 +6,32 @@ use std::sync::Arc;
 
 /// A string column being built: views, and one data buffer for strings
 /// longer than 12 bytes (shorter ones live in their view).
+#[derive(Default)]
 pub(crate) struct Views {
     views: Vec<u128>,
     data: Vec<u8>,
 }
 
 impl Views {
-    /// Room for `n` strings of `bytes` bytes in all.
-    pub(crate) fn with_capacity(n: usize, bytes: usize) -> Self {
-        Views {
-            views: Vec::with_capacity(n),
-            data: Vec::with_capacity(bytes),
+    /// Room for `n` more strings of `bytes` more bytes.
+    pub(crate) fn reserve(&mut self, n: usize, bytes: usize) {
+        self.views.reserve(n);
+        self.data.reserve(bytes);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.views.len()
+    }
+
+    /// A copy of string `i`.
+    pub(crate) fn get(&self, i: usize) -> Vec<u8> {
+        let v = self.views[i];
+        let len = v as u32 as usize;
+        if len <= 12 {
+            v.to_le_bytes()[4..4 + len].to_vec()
+        } else {
+            let at = (v >> 96) as usize;
+            self.data[at..at + len].to_vec()
         }
     }
 
@@ -65,17 +80,6 @@ impl Views {
     }
 }
 
-/// A column of `n` copies of `s`.
-pub(crate) fn constant(s: &str, n: usize) -> ArrayRef {
-    let mut v = Views::with_capacity(n, if s.len() > 12 { s.len() } else { 0 });
-    if n > 0 {
-        v.push(s.as_bytes());
-        let view = v.views[0];
-        v.views.resize(n, view);
-    }
-    v.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +94,7 @@ mod tests {
             "thirteen byte",
             "a longer string than that",
         ];
-        let mut v = Views::with_capacity(words.len(), 64);
+        let mut v = Views::default();
         for w in words {
             v.push(w.as_bytes());
         }
@@ -99,7 +103,5 @@ mod tests {
         a.to_data().validate_full().expect("valid");
         let got: Vec<&str> = a.iter().map(|s| s.expect("non-null")).collect();
         assert_eq!(got, words);
-        let c = constant("a constant longer than 12", 3);
-        c.to_data().validate_full().expect("valid");
     }
 }

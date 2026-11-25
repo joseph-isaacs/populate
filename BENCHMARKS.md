@@ -58,7 +58,10 @@ minute.
 | `--threads` | `1,N` (N = cores) | comma-separated thread counts |
 | `--generators` | all | names from `--list`, or a family: `h2o`, `ycsb`, `synth` |
 | `--formats` | `text,parquet,arrow` | `text` is the reference tool's own format (`.tbl`, `.dat`, CSV, influx line protocol); `arrow` generates batches and drops them |
-| `--runs` | `3` | runs per configuration; the best wall time is kept |
+| `--runs` | `3` | minimum attempts per configuration; median and range are reported |
+| `--max-runs` | `max(5, runs)` | cap for noisy configurations; set equal to `--runs` for a fixed count |
+| `--noise-threshold` | `0.10` | extend each engine independently while `(max - min) / median` exceeds this fraction |
+| `--sync-output` | off | sync regular output files after process timing; record flush and total times separately |
 | `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; against a reference one output of each is kept to compare, so allow twice the output size; use a disk path when it will not fit in memory |
 | `--tpcgen-cli`, `--tsbs-generate-data` | found on `PATH` | reference binaries |
 | `--ssb-dbgen` | `ssb-dbgen` on `PATH` | SSB reference binary; text output only, single-threaded |
@@ -91,7 +94,7 @@ each configuration; `complete: false` identifies an interrupted run.
 unavailable tools were skipped. Failed samples still make the command exit
 with a nonzero status. Build time is excluded from measurements.
 
-Version 1 uses these conventions:
+Version 2 uses the following conventions. The schema also accepts version 1 reports, which retain minimum-time summaries and their original fixed sample counts:
 
 - `engines` identifies implementations by an open string ID, version and
   source revision. Unknown versions/revisions are `null`. Add an engine
@@ -109,11 +112,19 @@ Version 1 uses these conventions:
   measurement. Successful samples store process wall time in **seconds**
   and output-file size in **bytes**, without display rounding. This
   includes process startup and writing, but excludes directory setup,
-  size collection and cleanup; writes are not explicitly synced to disk.
+  size collection, final file sync and cleanup. With `--sync-output`,
+  `flush_time_seconds` measures the subsequent file sync and
+  `flushed_wall_time_seconds` is the sum for that sample. Both are `null`
+  when not measured, including Arrow-only runs. Directory metadata is not
+  synced; this is a file-flush measurement, not a crash-recovery guarantee.
   Failed samples carry an error string, never a fabricated zero timing.
-- `summary` selects the minimum wall time and the bytes from that same
-  sample. It is `null` if any attempt failed. There are no separate
-  warmups (`warmup_runs: 0`); filesystem caches are not flushed.
+- `summary` reports the median wall time and its observed minimum/maximum.
+  Bytes and flush times have independent medians; an even byte count is
+  rounded down. The flushed total is the median of per-sample totals,
+  rather than the sum of two medians. A failed attempt stops that engine
+  and makes its summary `null`. There are no separate warmups
+  (`warmup_runs: 0`) or global page-cache drops. Engine order reverses
+  each trial; only an engine with excessive spread gets extra attempts.
 - `arrow` means batches generated and dropped in memory, not Arrow IPC
   files. Its `output_bytes: 0` is a file count, not a memory or throughput
   measurement. No peak-memory or generated-row-count metric is inferred.
@@ -128,9 +139,31 @@ and thread counts match; this runner does not verify output equivalence.
 Keep separate reports for different machines or invocations, rather than
 appending measurements under another run's environment. Consumers should
 reject unknown `schema_version` values and check that engine IDs are unique,
-every measurement references a declared engine, and each sample count
-matches `configuration.runs`. Additional engines can emit this format from
+every measurement references a declared engine, and successful sample counts
+are between `configuration.runs` and `configuration.max_runs` (exactly
+`runs` for version 1). A failed engine may stop before the minimum count. Additional engines can emit this format from
 their own harness; running them through `xtask` requires a command adapter.
+
+`specification` contains the measurement method, storage setup and validation
+evidence as JSON. External harnesses can add build details and resource
+limits there. Optional per-measurement `sink`, `variant`, `validation_status`
+and `notes` distinguish discard controls and output mismatches; optional
+per-sample CPU times, peak RSS, file manifests and timestamps preserve
+external measurements without inferring missing values. Execution success
+and output equivalence are separate facts.
+
+For a repeated SF10 file-output measurement with final sync recorded:
+
+```bash
+cargo xtask bench --generators tpch,tpcds,ssb,dsb --scale 10 --threads 32 \
+  --runs 3 --max-runs 5 --sync-output --out /path/to/local-ssd \
+  --json /tmp/sf10.json
+```
+
+Use a scratch filesystem with capacity for the largest output plus working
+memory. The runner removes each attempt’s output; it does not enforce a
+free-space or memory reserve. External Arrow adapters, DSB native references,
+and encoding-to-discard controls must record their own exact commands.
 
 The [Apple M3 Max baseline](benchmarks/results/2026-11-25-m3-max.json)
 records the default matrix at the source revision named in the file.

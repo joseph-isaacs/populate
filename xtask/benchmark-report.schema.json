@@ -1,12 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Generator benchmark report v1",
+  "title": "Generator benchmark reports: v1 minima and v2 medians with flush timings",
   "description": "Engine-neutral process wall times and output-file byte counts. Complete means the requested matrix finished, not that every sample succeeded.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": 1
+      "enum": [
+        1,
+        2
+      ]
     },
     "started_at_unix_seconds": {
       "type": "number",
@@ -182,7 +185,21 @@
           "minimum": 0
         },
         "statistic": {
-          "const": "min"
+          "enum": [
+            "min",
+            "median"
+          ]
+        },
+        "max_runs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "noise_threshold": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sync_output": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -232,6 +249,32 @@
           "reason"
         ]
       }
+    },
+    "$schema": {
+      "type": "string"
+    },
+    "specification": {
+      "type": "object",
+      "description": "Machine-readable measurement specification, storage/build provenance and output-equivalence evidence. Producer-specific details are allowed within this object.",
+      "properties": {
+        "methodology": {
+          "type": "object"
+        },
+        "storage": {
+          "type": "object"
+        },
+        "validation": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "methodology",
+        "storage",
+        "validation"
+      ]
     }
   },
   "required": [
@@ -326,6 +369,12 @@
                 "type": "string"
               },
               "description": "Explicit environment overrides for this command; absent means no overrides."
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -344,7 +393,34 @@
         },
         "summary": {
           "$ref": "#/$defs/summary",
-          "description": "Minimum successful wall time and paired output bytes; null if any attempt failed."
+          "description": "Selected summary with medians/ranges in v2; null if any timed attempt failed. Median bytes are independent of timing and rounded down for an even count."
+        },
+        "sink": {
+          "enum": [
+            "memory",
+            "file",
+            "discard"
+          ],
+          "description": "Distinguishes in-memory Arrow, encoded file output, and encoded bytes discarded without storage."
+        },
+        "variant": {
+          "type": "string",
+          "description": "Distinguishes repeated comparison groups or dataset variants."
+        },
+        "validation_status": {
+          "enum": [
+            "passed",
+            "mismatch",
+            "not_run",
+            "partial"
+          ],
+          "description": "Execution success does not establish output equivalence."
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -408,6 +484,48 @@
               "type": "integer",
               "minimum": 0,
               "description": "Sum of generated file sizes in bytes; zero for in-memory Arrow generation. Not peak memory."
+            },
+            "flush_time_seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "null when file flush was not measured; flushed wall time is process wall plus the separately measured flush."
+            },
+            "flushed_wall_time_seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "null when file flush was not measured; flushed wall time is process wall plus the separately measured flush."
+            },
+            "user_cpu_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "system_cpu_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "peak_rss_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "trial": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "started_at": {
+              "type": "string"
+            },
+            "files": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
           "required": [
@@ -441,7 +559,10 @@
           "additionalProperties": false,
           "properties": {
             "statistic": {
-              "const": "min"
+              "enum": [
+                "min",
+                "median"
+              ]
             },
             "wall_time_seconds": {
               "type": "number",
@@ -450,12 +571,51 @@
             "output_bytes": {
               "type": "integer",
               "minimum": 0
+            },
+            "min_wall_time_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_wall_time_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "flush_time_seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "flushed_wall_time_seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
             }
           },
           "required": [
             "statistic",
             "wall_time_seconds",
             "output_bytes"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "statistic": {
+                    "const": "median"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "min_wall_time_seconds",
+                  "max_wall_time_seconds"
+                ]
+              }
+            }
           ]
         },
         {
@@ -484,6 +644,71 @@
         "properties": {
           "finished_at_unix_seconds": {
             "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "specification"
+        ],
+        "properties": {
+          "configuration": {
+            "properties": {
+              "statistic": {
+                "const": "median"
+              }
+            },
+            "required": [
+              "max_runs",
+              "noise_threshold",
+              "sync_output"
+            ]
+          },
+          "measurements": {
+            "items": {
+              "properties": {
+                "summary": {
+                  "properties": {
+                    "statistic": {
+                      "const": "median"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "configuration": {
+            "properties": {
+              "statistic": {
+                "const": "min"
+              }
+            }
+          },
+          "measurements": {
+            "items": {
+              "properties": {
+                "summary": {
+                  "properties": {
+                    "statistic": {
+                      "const": "min"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -6,11 +6,12 @@ use std::fs::{create_dir_all, read_to_string, rename, write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::available_parallelism;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use crate::{Cmd, Format, Opts, best};
+use crate::stats::{Sample, summarize};
+use crate::{Cmd, Format, Opts};
 
 pub(super) struct Report {
     path: Option<PathBuf>,
@@ -35,13 +36,15 @@ fn unix_seconds() -> f64 {
         .as_secs_f64()
 }
 
-fn samples(times: &[Result<(Duration, u64), String>]) -> Value {
+fn samples(times: &[Result<Sample, String>]) -> Value {
     Value::Array(
         times
             .iter()
             .map(|r| match r {
-                Ok((d, bytes)) => json!({
-                    "status": "ok", "wall_time_seconds": d.as_secs_f64(), "output_bytes": bytes
+                Ok(s) => json!({
+                    "status": "ok", "wall_time_seconds": s.wall.as_secs_f64(), "output_bytes": s.bytes,
+                    "flush_time_seconds": s.flush.map(|d| d.as_secs_f64()),
+                    "flushed_wall_time_seconds": s.flush.map(|d| (s.wall + d).as_secs_f64())
                 }),
                 Err(e) => json!({"status": "error", "error": e}),
             })
@@ -49,10 +52,13 @@ fn samples(times: &[Result<(Duration, u64), String>]) -> Value {
     )
 }
 
-fn summary(times: &[Result<(Duration, u64), String>]) -> Value {
-    match best(times) {
-        Ok((d, bytes)) => json!({
-            "statistic": "min", "wall_time_seconds": d.as_secs_f64(), "output_bytes": bytes
+fn summary(times: &[Result<Sample, String>]) -> Value {
+    match summarize(times) {
+        Ok(s) => json!({
+            "statistic": "median", "wall_time_seconds": s.wall.as_secs_f64(), "output_bytes": s.bytes,
+            "min_wall_time_seconds": s.min.as_secs_f64(), "max_wall_time_seconds": s.max.as_secs_f64(),
+            "flush_time_seconds": s.flush.map(|d| d.as_secs_f64()),
+            "flushed_wall_time_seconds": s.flushed_wall.map(|d| d.as_secs_f64())
         }),
         Err(_) => Value::Null,
     }
@@ -117,7 +123,7 @@ impl Report {
         let report = Self {
             path,
             data: json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "started_at_unix_seconds": unix_seconds(),
                 "finished_at_unix_seconds": null,
                 "complete": false,
@@ -144,7 +150,24 @@ impl Report {
                     }).collect::<Vec<_>>(),
                     "runs": o.runs,
                     "warmup_runs": 0,
-                    "statistic": "min"
+                    "statistic": "median",
+                    "max_runs": o.max_runs, "noise_threshold": o.noise_threshold, "sync_output": o.sync_output
+                },
+                "specification": {
+                    "methodology": {
+                        "sampling": "Reverse engine order each trial; extend only noisy engines, up to max_runs. Failures stop retries and invalidate the summary.",
+                        "wall_time": "Process startup through exit, including file close; excludes final fsync and cleanup.",
+                        "arrow": "Generate and drop RecordBatches in memory; no Arrow IPC serialization.",
+                        "flush": "Optional regular-file sync_all after timing. Flushed totals are computed per sample before taking the median; directory metadata is not synced.",
+                        "warmups": "No separate warmups or global page-cache drops. Where a reference runs, populate first runs once untimed: the reference takes its settings from that output, which is compared with the reference's first timed run."
+                    },
+                    "storage": {"output_directory": o.out, "sync_output": o.sync_output},
+                    "validation": [{
+                        "compared": "populate's untimed output against the reference's first timed run, per uncached reference configuration",
+                        "text": "byte for byte",
+                        "parquet": "row count, Arrow schema, decoded values, codecs and dictionary use",
+                        "result": "measurement validation_status: passed, mismatch (the run fails) or not_run"
+                    }]
                 },
                 "engines": engines,
                 "measurements": [],
@@ -168,9 +191,9 @@ impl Report {
         &mut self,
         engine: &str,
         (workload, scale, threads): (&str, f64, usize),
-        (size, format): (&str, &str),
+        (size, format, validation): (&str, &str, &str),
         cmd: &Cmd,
-        times: &[Result<(Duration, u64), String>],
+        times: &[Result<Sample, String>],
     ) {
         self.data["measurements"]
             .as_array_mut()
@@ -182,6 +205,8 @@ impl Report {
                 "size": size,
                 "format": if format == "none" { "arrow" } else { format },
                 "threads": threads,
+                "sink": if format == "none" { "memory" } else { "file" },
+                "validation_status": validation,
                 "command": {"program": cmd.program, "args": cmd.args, "stdout_file": cmd.stdout, "env": cmd.env},
                 "samples": samples(times),
                 "summary": summary(times)
@@ -212,24 +237,40 @@ mod tests {
     use std::env::temp_dir;
     use std::fs::remove_dir_all;
     use std::process::id;
+    use std::time::Duration;
 
     #[test]
-    fn preserves_samples_and_pairs_bytes_with_fastest_run() {
+    fn preserves_samples_and_reports_even_medians() {
         let times = vec![
-            Ok((Duration::from_micros(1234), 10)),
-            Ok((Duration::from_micros(1200), 20)),
+            Ok(Sample {
+                wall: Duration::from_micros(1234),
+                bytes: 10,
+                flush: None,
+            }),
+            Ok(Sample {
+                wall: Duration::from_micros(1200),
+                bytes: 20,
+                flush: None,
+            }),
         ];
         let data = samples(&times);
         assert_eq!(data[0]["wall_time_seconds"], 0.001234);
         assert_eq!(data[1]["output_bytes"], 20);
-        assert_eq!(summary(&times)["wall_time_seconds"], 0.0012);
-        assert_eq!(summary(&times)["output_bytes"], 20);
+        assert_eq!(summary(&times)["wall_time_seconds"], 0.001217);
+        assert_eq!(summary(&times)["min_wall_time_seconds"], 0.0012);
+        assert_eq!(summary(&times)["max_wall_time_seconds"], 0.001234);
+        assert!(data[0]["flush_time_seconds"].is_null());
+        assert_eq!(summary(&times)["output_bytes"], 15);
     }
 
     #[test]
     fn errors_are_not_zero_timings_or_successful_summaries() {
         let times = vec![
-            Ok((Duration::from_secs(1), 0)),
+            Ok(Sample {
+                wall: Duration::from_secs(1),
+                bytes: 0,
+                flush: None,
+            }),
             Err("bad \"engine\"\nfailed".into()),
         ];
         let data = samples(&times);

@@ -73,7 +73,7 @@ pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
 pub use logical::{Date32, Decimal, Timestamp, time_unit};
-pub use nullable::Nullable;
+pub use nullable::{Nullable, Validity};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 pub use seek::SeekRng;

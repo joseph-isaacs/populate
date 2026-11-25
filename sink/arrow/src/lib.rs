@@ -39,7 +39,9 @@ use arrow_array::{
     TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray, UInt64Array, make_array,
 };
-use arrow_buffer::{ArrowNativeType, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{
+    ArrowNativeType, BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer,
+};
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use populate_core::{
     ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
@@ -298,10 +300,11 @@ impl<C: IntoArrowArray> IntoArrowArray for Nullable<C> {
     fn into_array(self) -> ArrayRef {
         let array = self.values.into_array();
         assert_eq!(array.len(), self.valid.len(), "a validity flag per row");
-        let nulls = NullBuffer::from(self.valid);
-        if nulls.null_count() == 0 {
+        if self.valid.null_count() == 0 {
             return array;
         }
+        let (words, len) = self.valid.into_parts();
+        let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(words), 0, len));
         let data = array.into_data().into_builder().nulls(Some(nulls));
         // SAFETY: the array was valid, and only a null buffer of its own
         // length is added

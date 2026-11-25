@@ -108,8 +108,8 @@ impl<C: RowRefs> RowRefs for Nullable<C> {
     fn row_refs(&self) -> impl Iterator<Item = Self::Ref<'_>> + '_ {
         self.values
             .row_refs()
-            .zip(&self.valid)
-            .map(|(v, &ok)| ok.then_some(v))
+            .zip(self.valid.iter())
+            .map(|(v, ok)| ok.then_some(v))
     }
 }
 
@@ -121,8 +121,8 @@ impl<C: ReadRows> ReadRows for Nullable<C> {
     fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
         self.values
             .rows_from(start)
-            .zip(&self.valid[start..])
-            .map(|(v, &ok)| ok.then_some(v))
+            .zip(self.valid.iter().skip(start))
+            .map(|(v, ok)| ok.then_some(v))
     }
 }
 

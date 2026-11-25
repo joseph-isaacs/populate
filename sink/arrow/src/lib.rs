@@ -11,6 +11,10 @@
 //! | `Vec<bool>`              | `BooleanArray` (bit-packed)                  |
 //! | `Vec<usize>`             | `UInt64Array`                                |
 //! | `StrCol` (strings)       | `StringArray`, both buffers moved, no copy   |
+//! | `Vec<Date32>`, `Vec<Decimal>`, `Vec<Timestamp>` | `Date32Array`, `Decimal128Array`, timestamp arrays, buffer moved |
+//! | `Vec<[T; N]>`            | `FixedSizeListArray` of `N` values per row   |
+//! | `Nullable<C>` (`Option`) | `C`'s array with nulls; a nullable field     |
+//! | `SpreadCols<C, N>`       | `N` arrays, one per position                 |
 //! | `ListCol<V>`             | `ListArray`, offsets moved, with V's columns |
 //! |                          | as its values; several columns become a      |
 //! |                          | `StructArray`                                |
@@ -30,13 +34,21 @@ use arrow_array::types::{
     UInt32Type, UInt64Type,
 };
 use arrow_array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Date32Array, Decimal128Array, ListArray,
-    PrimitiveArray, RecordBatch, StringArray, StructArray, UInt64Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Date32Array, Decimal128Array,
+    FixedSizeListArray, ListArray, PrimitiveArray, RecordBatch, StringArray, StructArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt64Array, make_array,
 };
-use arrow_buffer::{ArrowNativeType, Buffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
-use populate_core::{ChildCols, Columns, Date32, Decimal, Distribution, ListCol, StrCol};
+use arrow_buffer::{
+    ArrowNativeType, BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer,
+};
+use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
+use populate_core::{
+    ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
+    Timestamp, time_unit,
+};
 use rand::Rng;
+use std::iter::repeat_n;
 use std::sync::Arc;
 
 // ============================================================================
@@ -48,6 +60,11 @@ pub trait IntoArrowArray {
     /// The type of the array [`into_array`](Self::into_array) makes, known
     /// from the column type alone: a schema needs no rows.
     fn data_type() -> DataType;
+
+    /// Whether the array may have nulls (the schema field's nullability).
+    fn nullable() -> bool {
+        false
+    }
 
     fn into_array(self) -> ArrayRef;
 }
@@ -121,13 +138,19 @@ impl IntoArrowArray for StrCol {
 /// copy.
 impl<V: IntoArrowColumns> IntoArrowArray for ListCol<V> {
     fn data_type() -> DataType {
-        DataType::List(Arc::new(Field::new_list_field(value_type::<V>(), false)))
+        DataType::List(Arc::new(Field::new_list_field(
+            value_type::<V>(),
+            value_nullable::<V>(),
+        )))
     }
 
     fn into_array(self) -> ArrayRef {
         let (offsets, values) = self.into_parts();
         let values = columns_to_value_array(values);
-        let field = Arc::new(Field::new_list_field(values.data_type().clone(), false));
+        let field = Arc::new(Field::new_list_field(
+            values.data_type().clone(),
+            value_nullable::<V>(),
+        ));
         Arc::new(ListArray::new(
             field,
             OffsetBuffer::new(offsets.into()),
@@ -145,7 +168,15 @@ pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     if cols.len() == 1 {
         return cols.pop().expect("one column");
     }
-    Arc::new(StructArray::new(column_fields(&cols), cols, None))
+    Arc::new(StructArray::new(column_fields::<V>(&cols), cols, None))
+}
+
+/// Whether [`columns_to_value_array`] of `V` may hold nulls: its one
+/// column's nullability (a struct of several columns is never null itself).
+fn value_nullable<V: IntoArrowColumns>() -> bool {
+    let mut null = Vec::with_capacity(V::LEN);
+    V::nullables(&mut null);
+    null.len() == 1 && null[0]
 }
 
 /// The type [`columns_to_value_array`] gives `V`: its one column's type,
@@ -156,20 +187,27 @@ pub fn value_type<V: IntoArrowColumns>() -> DataType {
     if types.len() == 1 {
         return types.pop().expect("one column");
     }
+    let mut null = Vec::with_capacity(V::LEN);
+    V::nullables(&mut null);
     DataType::Struct(
         types
             .into_iter()
+            .zip(null)
             .enumerate()
-            .map(|(i, t)| Field::new(format!("c{i}"), t, false))
+            .map(|(i, (t, null))| Field::new(format!("c{i}"), t, null))
             .collect(),
     )
 }
 
-/// Non-nullable fields `c0, c1, ...` typed after `cols`.
-fn column_fields(cols: &[ArrayRef]) -> Fields {
+/// Fields `c0, c1, ...` typed after `cols`, nullable where `V`'s columns
+/// are.
+fn column_fields<V: IntoArrowColumns>(cols: &[ArrayRef]) -> Fields {
+    let mut null = Vec::with_capacity(V::LEN);
+    V::nullables(&mut null);
     cols.iter()
+        .zip(null)
         .enumerate()
-        .map(|(i, a)| Field::new(format!("c{i}"), a.data_type().clone(), false))
+        .map(|(i, (a, null))| Field::new(format!("c{i}"), a.data_type().clone(), null))
         .collect()
 }
 
@@ -216,6 +254,93 @@ impl<const P: u8, const S: i8> IntoArrowArray for Vec<Decimal<P, S>> {
     }
 }
 
+/// `Timestamp<UNIT, UTC>` counts, moved into a timestamp array of that unit
+/// (zoned "UTC" when `UTC`).
+impl<const UNIT: u8, const UTC: bool> IntoArrowArray for Vec<Timestamp<UNIT, UTC>> {
+    fn data_type() -> DataType {
+        DataType::Timestamp(arrow_time_unit(UNIT), UTC.then(|| "UTC".into()))
+    }
+
+    fn into_array(self) -> ArrayRef {
+        // SAFETY: `Timestamp` is `#[repr(transparent)]` over `i64`
+        let counts: ScalarBuffer<i64> = unsafe { unwrap_vec::<_, i64>(self) }.into();
+        let tz = UTC.then_some("UTC");
+        match arrow_time_unit(UNIT) {
+            TimeUnit::Second => {
+                Arc::new(TimestampSecondArray::new(counts, None).with_timezone_opt(tz))
+            }
+            TimeUnit::Millisecond => {
+                Arc::new(TimestampMillisecondArray::new(counts, None).with_timezone_opt(tz))
+            }
+            TimeUnit::Microsecond => {
+                Arc::new(TimestampMicrosecondArray::new(counts, None).with_timezone_opt(tz))
+            }
+            TimeUnit::Nanosecond => {
+                Arc::new(TimestampNanosecondArray::new(counts, None).with_timezone_opt(tz))
+            }
+        }
+    }
+}
+
+fn arrow_time_unit(unit: u8) -> TimeUnit {
+    match unit {
+        time_unit::SECOND => TimeUnit::Second,
+        time_unit::MILLISECOND => TimeUnit::Millisecond,
+        time_unit::MICROSECOND => TimeUnit::Microsecond,
+        time_unit::NANOSECOND => TimeUnit::Nanosecond,
+        u => panic!("timestamp unit {u} is not one of `time_unit`'s"),
+    }
+}
+
+/// `[T; N]` rows, moved into a `FixedSizeListArray` of `N` non-null values
+/// per row.
+impl<T: ArrowNative, const N: usize> IntoArrowArray for Vec<[T; N]> {
+    fn data_type() -> DataType {
+        let item = Field::new_list_field(T::Arrow::DATA_TYPE, false);
+        DataType::FixedSizeList(Arc::new(item), N as i32)
+    }
+
+    fn into_array(self) -> ArrayRef {
+        // the row count is passed on, as `[T; 0]` rows have no values
+        let rows = self.len();
+        let values: Vec<T> = self.into_flattened();
+        let item = Arc::new(Field::new_list_field(T::Arrow::DATA_TYPE, false));
+        let values = Arc::new(PrimitiveArray::<T::Arrow>::new(values.into(), None));
+        Arc::new(
+            FixedSizeListArray::try_new_with_length(item, N as i32, values, None, rows)
+                .expect("N values per row"),
+        )
+    }
+}
+
+/// `Option` rows: `C`'s array with the missing rows null (no nulls at all
+/// if every row is present).
+impl<C: IntoArrowArray> IntoArrowArray for Nullable<C> {
+    fn data_type() -> DataType {
+        C::data_type()
+    }
+
+    fn nullable() -> bool {
+        true
+    }
+
+    fn into_array(self) -> ArrayRef {
+        let array = self.values.into_array();
+        assert_eq!(array.len(), self.valid.len(), "a validity flag per row");
+        if self.valid.null_count() == 0 {
+            return array;
+        }
+        let (words, len) = self.valid.into_parts();
+        let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(words), 0, len));
+        // an `Option<Option<T>>`'s inner nulls stay null
+        let nulls = NullBuffer::union(Some(&nulls), array.nulls());
+        let data = array.into_data().into_builder().nulls(nulls);
+        // SAFETY: the array was valid, and only a null buffer of its own
+        // length is added
+        make_array(unsafe { data.build_unchecked() })
+    }
+}
+
 // ============================================================================
 // Columns -> Vec<ArrayRef>
 // ============================================================================
@@ -231,6 +356,12 @@ pub trait IntoArrowColumns {
     /// distribution collects into know what they will become.
     fn data_types(out: &mut Vec<DataType>);
 
+    /// Whether each array may have nulls, in the order of
+    /// [`data_types`](Self::data_types).
+    fn nullables(out: &mut Vec<bool>) {
+        out.extend(repeat_n(false, Self::LEN));
+    }
+
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
@@ -238,6 +369,9 @@ impl<C: IntoArrowArray> IntoArrowColumns for C {
     const LEN: usize = 1;
     fn data_types(out: &mut Vec<DataType>) {
         out.push(C::data_type());
+    }
+    fn nullables(out: &mut Vec<bool>) {
+        out.push(C::nullable());
     }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         out.push(self.into_array());
@@ -250,6 +384,9 @@ macro_rules! tuple_columns {
             const LEN: usize = 0 $(+ $C::LEN)+;
             fn data_types(out: &mut Vec<DataType>) {
                 $($C::data_types(out);)+
+            }
+            fn nullables(out: &mut Vec<bool>) {
+                $($C::nullables(out);)+
             }
             fn into_arrays(self, out: &mut Vec<ArrayRef>) {
                 $(self.$idx.into_arrays(out);)+
@@ -274,7 +411,7 @@ tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, ArrowError> {
     let mut cols = Vec::with_capacity(S::LEN);
     sink.into_arrays(&mut cols);
-    let schema = Schema::new(column_fields(&cols));
+    let schema = Schema::new(column_fields::<S>(&cols));
     RecordBatch::try_new(Arc::new(schema), cols)
 }
 
@@ -297,8 +434,31 @@ impl<V: IntoArrowColumns> IntoArrowColumns for ChildCols<V> {
     fn data_types(out: &mut Vec<DataType>) {
         V::data_types(out);
     }
+    fn nullables(out: &mut Vec<bool>) {
+        V::nullables(out);
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         self.values.into_arrays(out);
+    }
+}
+
+/// `N` positions, each its own columns, in order.
+impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> {
+    const LEN: usize = N * V::LEN;
+    fn data_types(out: &mut Vec<DataType>) {
+        for _ in 0..N {
+            V::data_types(out);
+        }
+    }
+    fn nullables(out: &mut Vec<bool>) {
+        for _ in 0..N {
+            V::nullables(out);
+        }
+    }
+    fn into_arrays(self, out: &mut Vec<ArrayRef>) {
+        for c in self.0 {
+            c.into_arrays(out);
+        }
     }
 }
 
@@ -309,7 +469,8 @@ impl<V: IntoArrowColumns> IntoArrowColumns for ChildCols<V> {
 /// The schema of the rows `dist` makes, without making any: the names
 /// from the distribution ([`Distribution::column_names`]), the types from
 /// the columns it collects into ([`IntoArrowColumns::data_types`]).
-/// Unnamed columns are `c0, c1, ...`; every field is non-nullable.
+/// Unnamed columns are `c0, c1, ...`; a field is nullable where its column
+/// says so ([`IntoArrowColumns::nullables`]: `Option` rows).
 ///
 /// # Panics
 ///
@@ -322,6 +483,8 @@ where
     <Columns<D::Item>>::data_types(&mut types);
     let mut names = Vec::with_capacity(types.len());
     dist.column_names(&mut names);
+    let mut nullable = Vec::with_capacity(types.len());
+    <Columns<D::Item>>::nullables(&mut nullable);
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
@@ -336,7 +499,8 @@ where
         names
             .into_iter()
             .zip(types)
-            .map(|(n, t)| Field::new(n, t, false))
+            .zip(nullable)
+            .map(|((n, t), null)| Field::new(n, t, null))
             .collect::<Vec<_>>(),
     )
 }
@@ -378,8 +542,10 @@ impl<D: Distribution> DistributionArrow for D {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use populate_core::{Children, Sink};
+    use arrow_array::cast::AsArray;
+    use populate_core::{Children, Sink, Spread};
     use rand::SeedableRng;
+    use rand::rngs::SmallRng;
 
     /// One `Decimal<9, 2>` and one `Date32` per row.
     #[derive(Clone)]
@@ -401,9 +567,72 @@ mod tests {
         assert_eq!(s.field(0).name(), "price");
         assert_eq!(s.field(0).data_type(), &DataType::Decimal128(9, 2));
         assert_eq!(s.field(1).data_type(), &DataType::Date32);
-        let cols = Row.collect(&mut rand::rngs::SmallRng::seed_from_u64(0), 3);
+        let cols = Row.collect(&mut SmallRng::seed_from_u64(0), 3);
         let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
         assert_eq!(b.num_rows(), 3);
+    }
+
+    #[test]
+    fn options_timestamps_and_fixed_lists() {
+        type Ts = Timestamp<{ time_unit::MILLISECOND }, true>;
+        #[derive(Clone)]
+        struct R(i64);
+        impl Distribution for R {
+            type Item = (Option<i32>, Ts, [f32; 2], Spread<i16, 2>);
+            fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
+                self.0 += 1;
+                let x = self.0;
+                (
+                    (x % 2 == 0).then_some(x as i32),
+                    Timestamp(x),
+                    [x as f32; 2],
+                    Spread([1, 2]),
+                )
+            }
+        }
+        let s = schema_of(&R(0));
+        assert!(s.field(0).is_nullable() && !s.field(1).is_nullable());
+        assert_eq!(
+            s.field(1).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+        );
+        assert!(matches!(
+            s.field(2).data_type(),
+            DataType::FixedSizeList(_, 2)
+        ));
+        assert_eq!(s.fields().len(), 5);
+        let cols = R(0).collect(&mut SmallRng::seed_from_u64(0), 3);
+        let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
+        assert_eq!(b.column(0).null_count(), 2);
+        // all present: no null buffer
+        let cols = R(1).collect(&mut SmallRng::seed_from_u64(0), 1);
+        let b = into_record_batch_with(&Arc::new(schema_of(&R(0))), cols).unwrap();
+        assert!(b.column(0).nulls().is_none());
+    }
+
+    #[test]
+    fn nulls_inside_lists_structs_and_options() {
+        let mut c = <Columns<(Option<i32>, Vec<Option<i64>>, Vec<(Option<i8>, i8)>)>>::default();
+        c.push((None, vec![Some(1), None], vec![(None, 1)]));
+        c.push((Some(2), vec![], vec![(Some(3), 4)]));
+        let b = into_record_batch(c).expect("nullable fields");
+        assert!(b.schema().field(0).is_nullable());
+        assert_eq!(b.column(1).as_list::<i32>().values().null_count(), 1);
+        let s = b.column(2).as_list::<i32>().values().as_struct().clone();
+        assert!(s.fields()[0].is_nullable() && !s.fields()[1].is_nullable());
+        assert_eq!(
+            b.column(1).data_type(),
+            &<ListCol<Nullable<Vec<i64>>>>::data_type()
+        );
+
+        let mut o = <Columns<Option<Option<i32>>>>::default();
+        o.push(Some(None));
+        o.push(None);
+        o.push(Some(Some(5)));
+        assert_eq!(o.into_array().null_count(), 2);
+
+        let z: Vec<[f32; 0]> = vec![[]];
+        assert_eq!(IntoArrowArray::into_array(z).len(), 1);
     }
 
     #[test]

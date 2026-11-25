@@ -1,6 +1,6 @@
 //! Leaves and combinators for tables whose columns come from seekable
 //! random streams and depend on each other: [`draws`], [`derive()`],
-//! [`children`], [`flat_map`] and [`named`].
+//! [`derive_columns`], [`children`], [`flat_map`] and [`named`].
 //!
 //! ```
 //! use populate_builtins::{children, derive, draws, named};
@@ -156,6 +156,71 @@ where
         let src = self.source.collect(rng, n);
         cols.reserve(n);
         cols.push_n(src.row_refs().map(&self.f));
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.source.skip(n);
+    }
+}
+
+/// Columns `f` writes from blocks of `source`'s columns. See
+/// [`derive_columns`].
+#[derive(Debug, Clone)]
+pub struct DeriveColumns<D, F, Out> {
+    pub source: D,
+    pub f: F,
+    _out: PhantomData<fn() -> Out>,
+}
+
+/// Columns computed a block at a time: `source` collects `n` rows, then
+/// `f(source_columns, out)` appends exactly `n` rows to `out`.
+///
+/// For columns that share intermediate values (a trip's distance sets its
+/// fare, tip and total), so they are worked out once per block and written
+/// with plain loops over whole columns, and for column types a writer
+/// fills in place (strings into a shared buffer). `Out` is usually a
+/// tuple, each field one or more output columns.
+pub fn derive_columns<D, F, Out>(source: D, f: F) -> DeriveColumns<D, F, Out>
+where
+    D: Distribution,
+    Out: Columnar,
+    F: Fn(&Columns<D::Item>, &mut Columns<Out>),
+{
+    DeriveColumns {
+        source,
+        f,
+        _out: PhantomData,
+    }
+}
+
+impl<D, F, Out> Distribution for DeriveColumns<D, F, Out>
+where
+    D: Distribution,
+    Out: Columnar,
+    Columns<Out>: ReadRows<Row = Out>,
+    F: Fn(&Columns<D::Item>, &mut Columns<Out>),
+{
+    type Item = Out;
+
+    /// One row, written as `collect` writes it.
+    fn sample(&mut self, rng: &mut impl Rng) -> Out {
+        let src = self.source.collect(rng, 1);
+        let mut out = Columns::<Out>::default();
+        (self.f)(&src, &mut out);
+        out.rows_from(0)
+            .next()
+            .expect("derive_columns wrote no row")
+    }
+
+    fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
+        let src = self.source.collect(rng, n);
+        let before = cols.rows();
+        (self.f)(&src, cols);
+        debug_assert_eq!(
+            cols.rows() - before,
+            n,
+            "derive_columns: f must write one row per source row"
+        );
     }
 
     fn skip(&mut self, n: u64) {
@@ -353,6 +418,7 @@ impl<D: Distribution> Distribution for Named<D> {
 mod tests {
     use super::*;
     use crate::{constant, range};
+    use populate_core::Nullable;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 
@@ -413,6 +479,26 @@ mod tests {
         assert_eq!(c.values, (vec![2, 3, 3], vec![0, 0, 1]));
         g.skip(2);
         assert_eq!(g.sample(&mut rng()).0, [(3, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn derive_columns_writes_blocks() {
+        let mut d = derive_columns::<_, _, (i64, Option<i32>)>(
+            range(10i64, 1),
+            |src: &Vec<i64>, out: &mut (Vec<i64>, Nullable<Vec<i32>>)| {
+                out.0.extend(src.iter().map(|x| x * 2));
+                for &x in src {
+                    out.1.push((x % 2 == 0).then_some(x as i32));
+                }
+            },
+        );
+        let mut e = d.clone();
+        let (a, b) = d.collect(&mut rng(), 3);
+        assert_eq!(a, [20, 22, 24]);
+        assert_eq!(b.values, [10, 0, 12]);
+        assert_eq!(b.valid.iter().collect::<Vec<_>>(), [true, false, true]);
+        e.skip(1);
+        assert_eq!(e.sample(&mut rng()), (22, None));
     }
 
     #[test]

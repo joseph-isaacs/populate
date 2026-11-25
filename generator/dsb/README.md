@@ -13,7 +13,7 @@ cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb
 cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat
 ```
 
-Flags as `tpcds-gen` (see [`populate-tpcds`](../populate-tpcds/README.md)):
+Flags as `tpcds-gen` (see [`populate-tpcds`](../tpcds/README.md)):
 `--sf` (a whole number, at least 1, as dsdgen takes it), `--out`,
 `--format parquet|dat|none`, `--tables`, `--threads`, `--batch`,
 `--row-group`, `--compression snappy|none`, `--no-dictionary`,

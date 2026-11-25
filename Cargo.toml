@@ -3,21 +3,21 @@ members = [
     "populate",
     "populate-core",
     "populate-builtins",
-    "populate-sink-arrow",
-    "populate-sink-parquet",
+    "sink/arrow",
+    "sink/parquet",
     "populate-table",
-    "populate-tpcds",
-    "populate-tpch",
-    "populate-tsbs",
-    "populate-ssb",
-    "populate-h2o",
-    "populate-tpcc",
-    "populate-ycsb",
-    "populate-synth",
-    "populate-dsb",
-    "populate-dsb/dsbgen",
-    "populate-dsb/dsbgen-arrow",
-    "populate-ldbc",
+    "generator/tpcds",
+    "generator/tpch",
+    "generator/tsbs",
+    "generator/ssb",
+    "generator/h2o",
+    "generator/tpcc",
+    "generator/ycsb",
+    "generator/synth",
+    "generator/dsb",
+    "generator/dsb/dsbgen",
+    "generator/dsb/dsbgen-arrow",
+    "generator/ldbc",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -27,21 +27,21 @@ default-members = [
     "populate",
     "populate-core",
     "populate-builtins",
-    "populate-sink-arrow",
-    "populate-sink-parquet",
+    "sink/arrow",
+    "sink/parquet",
     "populate-table",
-    "populate-tpcds",
-    "populate-tpch",
-    "populate-tsbs",
-    "populate-ssb",
-    "populate-h2o",
-    "populate-tpcc",
-    "populate-ycsb",
-    "populate-synth",
-    "populate-dsb",
-    "populate-dsb/dsbgen",
-    "populate-dsb/dsbgen-arrow",
-    "populate-ldbc",
+    "generator/tpcds",
+    "generator/tpch",
+    "generator/tsbs",
+    "generator/ssb",
+    "generator/h2o",
+    "generator/tpcc",
+    "generator/ycsb",
+    "generator/synth",
+    "generator/dsb",
+    "generator/dsb/dsbgen",
+    "generator/dsb/dsbgen-arrow",
+    "generator/ldbc",
 ]
 resolver = "2"
 
@@ -62,18 +62,18 @@ parquet = { version = "60", default-features = false }
 populate = { path = "populate" }
 populate-core = { path = "populate-core" }
 populate-builtins = { path = "populate-builtins" }
-populate-sink-arrow = { path = "populate-sink-arrow" }
-populate-sink-parquet = { path = "populate-sink-parquet" }
+populate-sink-arrow = { path = "sink/arrow" }
+populate-sink-parquet = { path = "sink/parquet" }
 populate-table = { path = "populate-table" }
-populate-tpcds = { path = "populate-tpcds" }
-populate-tpch = { path = "populate-tpch" }
-populate-tsbs = { path = "populate-tsbs" }
-populate-ssb = { path = "populate-ssb" }
-populate-h2o = { path = "populate-h2o" }
-populate-tpcc = { path = "populate-tpcc" }
-populate-ycsb = { path = "populate-ycsb" }
-populate-synth = { path = "populate-synth" }
-populate-ldbc = { path = "populate-ldbc" }
+populate-tpcds = { path = "generator/tpcds" }
+populate-tpch = { path = "generator/tpch" }
+populate-tsbs = { path = "generator/tsbs" }
+populate-ssb = { path = "generator/ssb" }
+populate-h2o = { path = "generator/h2o" }
+populate-tpcc = { path = "generator/tpcc" }
+populate-ycsb = { path = "generator/ycsb" }
+populate-synth = { path = "generator/synth" }
+populate-ldbc = { path = "generator/ldbc" }
 
 # populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
 # in test builds too (its dependencies stay as they are)

@@ -178,5 +178,5 @@ Factor tables add 0.7 s at SF 1 (`--generate-factors --factor-format csv`
 with the raw CSV: 3.4 s in all). The datagen takes 379 s for the same
 run, against 85 s without factors.
 
-`populate-ldbc/scripts/compare-parquet.py REF_OUT MINE_DIR` (needs `pyarrow`) is the
+`generator/ldbc/scripts/compare-parquet.py REF_OUT MINE_DIR` (needs `pyarrow`) is the
 value-by-value comparison with a datagen run's raw Parquet.

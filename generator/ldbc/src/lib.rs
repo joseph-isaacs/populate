@@ -558,6 +558,6 @@ pub fn default_resources() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/ldbc_snb_datagen_spark/src/main/resources");
+        .join("../../target/ldbc_snb_datagen_spark/src/main/resources");
     p.join("dictionaries").is_dir().then_some(p)
 }

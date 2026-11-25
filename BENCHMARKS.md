@@ -35,7 +35,7 @@ table of wall time and output size. Where a reference tool is on `PATH` it
 runs alternately with ours and the table gets a speedup column:
 `tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
 `tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
-takes about 8 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
+takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
 minute.
 
 | flag | default | |

@@ -14,8 +14,9 @@ use parquet::file::statistics::Statistics;
 use populate_builtins::{choose, constant, list, range, text, uniform};
 use populate_core::Distribution;
 use populate_sink_arrow::IntoArrowColumns;
+use populate_sink_parquet::ParquetColumns;
 use populate_table::direct::group_rng;
-use populate_table::{DirectColumns, ParquetOptions, write_dist_parquet};
+use populate_table::{ParquetOptions, write_dist_parquet};
 
 const WORDS: &[&str] = &["alpha", "beta", "gamma", "delta", "a much longer word"];
 
@@ -238,5 +239,5 @@ fn columns_are_named_in_order() {
         .map(|f| f.name().clone())
         .collect();
     assert_eq!(names, ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"]);
-    assert_eq!(<populate_core::Columns<Row> as DirectColumns>::COLUMNS, 8);
+    assert_eq!(<populate_core::Columns<Row> as ParquetColumns>::COLUMNS, 8);
 }

@@ -129,6 +129,8 @@ impl fmt::Debug for Table {
     }
 }
 
+/// `v.into_array()` as a method call would collide with an unstable
+/// `Vec::into_array` in std (`unstable_name_collisions`).
 fn prim<T: ArrowNative>(v: Vec<T>) -> ArrayRef {
     IntoArrowArray::into_array(v)
 }

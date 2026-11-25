@@ -13,6 +13,7 @@ use crate::rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
 use crate::{Ldbc, csv, to_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use populate_core::StrCol;
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 
@@ -46,10 +47,8 @@ pub struct OutTable {
 impl OutTable {
     /// This table's rows of the raw table's `rows`.
     pub fn apply(&self, rows: &Rows) -> Rows {
-        match &self.op {
-            Op::Project(cols) => Rows {
-                cols: cols.iter().map(|&c| rows.cols[c].clone()).collect(),
-            },
+        let cols = match &self.op {
+            Op::Project(cols) => cols.iter().map(|&c| rows.cols[c].clone()).collect(),
             Op::Explode {
                 keep,
                 id,
@@ -57,75 +56,60 @@ impl OutTable {
                 list_first,
             } => {
                 let mut idx = Vec::new();
-                let mut vals = Rows::new(&TableDef {
-                    name: "",
-                    cols: &[("", Kind::Str)],
-                });
-                let vals_col = &mut vals.cols[0];
+                let mut strs = StrCol::new();
                 let mut nums: Vec<i64> = Vec::new();
-                let is_str = matches!(rows.cols[*list], Col::Str(..) | Col::OptStr(..));
+                let src = &rows.cols[*list];
                 for r in 0..rows.len() {
                     let r32 = r as u32;
-                    match &rows.cols[*list] {
-                        Col::Str(d, o) => split_into(str_at(d, o, r), r32, &mut idx, vals_col),
-                        Col::OptStr(d, o, v) => {
-                            if v[r] {
-                                split_into(str_at(d, o, r), r32, &mut idx, vals_col)
+                    let num = match src {
+                        Col::Str(_) | Col::OptStr(_) => {
+                            if let Some(s) = src.str_at(r) {
+                                // `explode(split(s, ";"))`: every piece, empty ones included
+                                for piece in s.split(';') {
+                                    idx.push(r32);
+                                    strs.push_str(piece);
+                                }
                             }
+                            continue;
                         }
-                        Col::I64(v) => {
-                            idx.push(r32);
-                            nums.push(v[r]);
-                        }
-                        Col::I32(v) => {
-                            idx.push(r32);
-                            nums.push(v[r] as i64);
-                        }
-                        Col::OptI64(v, n) => {
-                            if n[r] {
-                                idx.push(r32);
-                                nums.push(v[r]);
-                            }
-                        }
-                        Col::OptI32(v, n) => {
-                            if n[r] {
-                                idx.push(r32);
-                                nums.push(v[r] as i64);
-                            }
-                        }
-                        Col::Bool(_) => unreachable!("not a list column"),
+                        Col::I64(v) => Some(v[r]),
+                        Col::I32(v) => Some(v[r] as i64),
+                        Col::OptI64(v) => v.valid.get(r).then(|| v.values[r]),
+                        Col::OptI32(v) => v.valid.get(r).then(|| v.values[r] as i64),
+                        _ => unreachable!("not a list column"),
+                    };
+                    if let Some(v) = num {
+                        idx.push(r32);
+                        nums.push(v);
                     }
                 }
-                let value = if is_str {
-                    vals.cols.pop().expect("values")
-                } else {
-                    Col::I64(nums)
+                let value = match src {
+                    Col::Str(_) | Col::OptStr(_) => Col::Str(strs),
+                    _ => Col::I64(nums),
                 };
                 let mut cols: Vec<Col> = keep.iter().map(|&c| rows.cols[c].gather(&idx)).collect();
                 let id = rows.cols[*id].gather(&idx);
                 if *list_first {
-                    cols.push(value);
-                    cols.push(id);
+                    cols.extend([value, id]);
                 } else {
-                    cols.push(id);
-                    cols.push(value);
+                    cols.extend([id, value]);
                 }
-                Rows { cols }
+                cols
             }
-        }
-    }
-}
-
-fn str_at<'a>(d: &'a [u8], o: &[u32], r: usize) -> &'a [u8] {
-    let s = if r == 0 { 0 } else { o[r - 1] as usize };
-    &d[s..o[r] as usize]
-}
-
-/// `explode(split(s, ";"))`: every piece, empty ones included.
-fn split_into(s: &[u8], r: u32, idx: &mut Vec<u32>, out: &mut Col) {
-    for piece in s.split(|&c| c == b';') {
-        idx.push(r);
-        out.str(piece);
+        };
+        // `--epoch-millis`: timestamps and dates the table holds as numbers
+        let cols = cols
+            .into_iter()
+            .zip(self.def.cols)
+            .map(|(c, &(_, k))| {
+                if c.kind() == k {
+                    c
+                } else {
+                    c.into_epoch_millis()
+                }
+            })
+            .collect();
+        Rows { cols }
     }
 }
 
@@ -294,7 +278,7 @@ fn attrs(table: &str) -> Vec<Explode> {
 
 impl Layout {
     pub fn new(o: LayoutOptions) -> Self {
-        let build = |raw: &[&'static TableDef]| -> Vec<OutTable> {
+        let build = |raw: &'static [TableDef]| -> Vec<OutTable> {
             let kind = |k: Kind| match k {
                 Kind::Ts | Kind::Date if o.epoch_millis => Kind::I64,
                 k => k,
@@ -405,9 +389,7 @@ pub struct LayoutRun<'a> {
 
 impl LayoutRun<'_> {
     fn rows(&self, i: u64) -> Vec<Rows> {
-        let mut raw = Ldbc::dynamic_rows();
-        self.g.chunk_rows(i, &mut raw);
-        Layout::apply(&self.layout.dynamic, &raw)
+        Layout::apply(&self.layout.dynamic, &self.g.chunk_rows(i))
     }
 
     /// The static tables in the layout.
@@ -426,7 +408,7 @@ impl MultiChunks for LayoutRun<'_> {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
-        for (k, (t, r)) in self.layout.dynamic.iter().zip(&self.rows(i)).enumerate() {
+        for (k, (t, r)) in self.layout.dynamic.iter().zip(self.rows(i)).enumerate() {
             if !r.is_empty() {
                 emit(k, to_batch(t.def, r));
             }

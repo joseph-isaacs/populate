@@ -29,7 +29,7 @@
 //! Parents must be made of scalar columns (up to 11 before the new one), so
 //! their rows can be read back from the columns.
 
-use populate_core::{Columnar, Columns, Distribution, Nullable, Sink, Spread, SpreadCols};
+use populate_core::{Columnar, Columns, Distribution, Nullable, Sink, Spread, SpreadCols, StrCol};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::array::from_fn;
@@ -57,6 +57,17 @@ impl<T: Copy> ReadRows for Vec<T> {
     }
     fn rows_from(&self, start: usize) -> impl Iterator<Item = T> + '_ {
         self[start..].iter().copied()
+    }
+}
+
+/// A string column's rows, as owned strings.
+impl ReadRows for StrCol {
+    type Row = String;
+    fn rows(&self) -> usize {
+        self.len()
+    }
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = String> + '_ {
+        (start..self.len()).map(|i| self.get(i).to_owned())
     }
 }
 
@@ -217,7 +228,7 @@ macro_rules! row_append_scalar {
 
 row_append_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
 
-macro_rules! tuple_rows {
+macro_rules! read_rows {
     ($($T:ident $v:ident),+) => {
         impl<$($T: ReadRows),+> ReadRows for ($($T,)+) {
             type Row = ($($T::Row,)+);
@@ -229,6 +240,12 @@ macro_rules! tuple_rows {
                 zip_rows!(start; $($v),+)
             }
         }
+    };
+}
+
+macro_rules! tuple_rows {
+    ($($T:ident $v:ident),+) => {
+        read_rows!($($T $v),+);
 
         impl<$($T: Columnar,)+ U: Columnar> RowAppend<U> for ($($T,)+) {
             type Out = ($($T,)+ U);
@@ -258,6 +275,8 @@ tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h);
 tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
 tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
 tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
+// twelve fields: as many as a row can have, so none can be appended
+read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l);
 
 // ============================================================================
 // WithColumn

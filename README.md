@@ -1,23 +1,52 @@
 # populate
 
+[![CI](https://github.com/joseph-isaacs/data-comb/actions/workflows/ci.yml/badge.svg)](https://github.com/joseph-isaacs/data-comb/actions/workflows/ci.yml)
+[![Rust 1.92+](https://img.shields.io/badge/rust-1.92%2B-blue)](https://www.rust-lang.org/tools/install)
+
 Composable distribution combinators for generating tabular test data,
 column by column, straight into Arrow (and optionally Parquet).
+
+## Install and use
+
+The minimum supported Rust version (MSRV) is **1.92**. Add the library to
+an application's `Cargo.toml`:
+
+```toml
+[dependencies]
+populate = { git = "https://github.com/joseph-isaacs/data-comb.git", features = ["parquet"] }
+rand = "0.9"
+```
+
+Arrow and table generation are enabled by default. The `parquet` feature
+also enables Parquet output. Generate a batch in `src/main.rs`:
 
 ```rust
 use populate::arrow::DistributionArrow;
 use populate::dist::{list, map, range};
 
-// id: i64, tags: list<i64> with lengths cycling 0..8
-let mut table = (
-    range(0i64, 1),
-    list(map(range(0usize, 1), |i| i % 8), range(0i64, 1)),
-);
-let batch = table.collect_record_batch(&mut rand::rng(), 1_000)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // id: i64, tags: list<i64> with lengths cycling 0..8
+    let mut table = (
+        range(0i64, 1),
+        list(map(range(0usize, 1), |i| i % 8), range(0i64, 1)),
+    );
+    let batch = table.collect_record_batch(&mut rand::rng(), 1_000)?;
+    assert_eq!(batch.num_rows(), 1_000);
+    Ok(())
+}
 ```
 
 Every numeric column, including list offsets and values, is generated into
 one exactly-sized buffer that becomes the Arrow array without a copy. The optional `parquet` feature writes those buffers to Parquet
 in place (`collect_parquet`).
+
+For dependent columns, see the [realistic orders example](populate/examples/realistic.rs):
+shipping and receipt dates, a late flag, and countries selected by region.
+Run it from a checkout:
+
+```sh
+cargo run -p populate --example realistic
+```
 
 ## Tables
 
@@ -68,6 +97,20 @@ its flags, how it was verified and its performance.
 | YCSB | [`populate-ycsb`](generator/ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
 | TPC-C | [`populate-tpcc`](generator/tpcc/README.md) | `tpcc-gen` | the spec's population rules |
 | synthetic shapes | [`populate-synth`](generator/synth/README.md) | `synth-gen` | (no reference) |
+
+Install the TPC-H command from Git:
+
+```sh
+cargo install --git https://github.com/joseph-isaacs/data-comb.git populate-tpch
+```
+
+The installed executable is `tpch-gen`:
+
+```sh
+tpch-gen --sf 1 --out tpch --format parquet
+```
+
+From a checkout, run the same generator with Cargo:
 
 ```sh
 cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet

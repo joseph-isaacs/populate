@@ -906,7 +906,11 @@ dependencies = [
  "divan",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
  "tpcdsgen",
  "tpcdsgen-arrow",
 ]

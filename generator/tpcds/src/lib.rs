@@ -31,6 +31,7 @@
 //! assert!(dat.starts_with(b"1|AAAAAAAABAAAAAAA|"));
 //! ```
 
+mod channels;
 pub mod dat;
 mod direct;
 mod fused;

@@ -361,7 +361,20 @@ where
 pub struct FanOut<D, F, Out> {
     pub source: D,
     pub f: F,
+    /// Children to reserve per source row, per table ([`FanOut::reserving`]).
+    pub reserve: Vec<f64>,
     _out: PhantomData<fn() -> Out>,
+}
+
+impl<D, F, Out> FanOut<D, F, Out> {
+    /// Reserve `per_source[k]` children per source row in table `k` before
+    /// collecting, so the columns are allocated once instead of grown (each
+    /// growth copies them). A table's mean children per source row, with a
+    /// little headroom, is enough; more are grown into as usual.
+    pub fn reserving(mut self, per_source: &[f64]) -> Self {
+        self.reserve = per_source.to_vec();
+        self
+    }
 }
 
 /// Several child tables from one pass over `source`: `Out` is a tuple of
@@ -388,6 +401,7 @@ where
     FanOut {
         source,
         f,
+        reserve: Vec::new(),
         _out: PhantomData,
     }
 }
@@ -410,6 +424,14 @@ where
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
+        if !self.reserve.is_empty() {
+            let per: Vec<usize> = self
+                .reserve
+                .iter()
+                .map(|r| (r * n as f64).ceil() as usize)
+                .collect();
+            cols.reserve_children(&per);
+        }
         for row in src.row_refs() {
             (self.f)(row, cols);
         }
@@ -430,12 +452,26 @@ pub trait ChildTables: Default {
     /// Count `n` more source rows in every table.
     fn add_sources(&mut self, n: usize);
 
+    /// Reserve `children[k]` more rows in table `k`, for as many tables as
+    /// `children` covers; returns the rest of `children`.
+    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize];
+
     /// Every table's children, as one row (for a collect of one source row).
     fn into_rows(self) -> Self::Rows;
 }
 
-impl<V: ReadRows + Default> ChildTables for ChildCols<V> {
+impl<V: ReadRows + Sink<V::Row> + Default> ChildTables for ChildCols<V> {
     type Rows = Children<V::Row>;
+
+    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
+        match children.split_first() {
+            Some((&n, rest)) => {
+                self.values.reserve(n);
+                rest
+            }
+            None => children,
+        }
+    }
 
     fn add_sources(&mut self, n: usize) {
         self.sources += n;
@@ -453,6 +489,11 @@ macro_rules! child_tables {
 
             fn add_sources(&mut self, n: usize) {
                 $(self.$i.add_sources(n);)+
+            }
+
+            fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
+                $(let children = self.$i.reserve_children(children);)+
+                children
             }
 
             fn into_rows(self) -> Self::Rows {

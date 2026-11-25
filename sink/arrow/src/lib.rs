@@ -459,11 +459,11 @@ where
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
-    schema_from(names, types)
+    schema_from(names, types, nullable)
 }
 
-/// Fields `names` typed `types`.
-fn schema_from(names: Vec<String>, types: Vec<DataType>) -> Schema {
+/// Fields `names` typed `types`, nullable where `nullable` says.
+fn schema_from(names: Vec<String>, types: Vec<DataType>, nullable: Vec<bool>) -> Schema {
     assert_eq!(
         names.len(),
         types.len(),
@@ -487,8 +487,9 @@ pub trait IntoArrowTables {
     /// The number of tables.
     const TABLES: usize;
 
-    /// Each table's column types, one `Vec` per table, in order.
-    fn table_types(out: &mut Vec<Vec<DataType>>);
+    /// Each table's column types and nullability, one entry per table, in
+    /// order.
+    fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>);
 
     /// Each table's arrays, one `Vec` per table, in order.
     fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>);
@@ -496,10 +497,11 @@ pub trait IntoArrowTables {
 
 impl<V: IntoArrowColumns> IntoArrowTables for ChildCols<V> {
     const TABLES: usize = 1;
-    fn table_types(out: &mut Vec<Vec<DataType>>) {
-        let mut t = Vec::with_capacity(V::LEN);
+    fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>) {
+        let (mut t, mut n) = (Vec::with_capacity(V::LEN), Vec::with_capacity(V::LEN));
         V::data_types(&mut t);
-        out.push(t);
+        V::nullables(&mut n);
+        out.push((t, n));
     }
     fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>) {
         let mut a = Vec::with_capacity(V::LEN);
@@ -512,7 +514,7 @@ macro_rules! tuple_tables {
     ($($C:ident $idx:tt),+) => {
         impl<$($C: IntoArrowTables),+> IntoArrowTables for ($($C,)+) {
             const TABLES: usize = 0 $(+ $C::TABLES)+;
-            fn table_types(out: &mut Vec<Vec<DataType>>) {
+            fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>) {
                 $($C::table_types(out);)+
             }
             fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>) {
@@ -551,7 +553,7 @@ where
     <Columns<D::Item>>::table_types(&mut types);
     let mut names = Vec::new();
     dist.column_names(&mut names);
-    let total: usize = types.iter().map(Vec::len).sum();
+    let total: usize = types.iter().map(|(t, _)| t.len()).sum();
     if !names.is_empty() {
         assert_eq!(
             names.len(),
@@ -563,13 +565,13 @@ where
     let mut names = names.into_iter();
     types
         .into_iter()
-        .map(|t| {
+        .map(|(t, null)| {
             let n = if names.len() == 0 {
                 (0..t.len()).map(|i| format!("c{i}")).collect()
             } else {
                 names.by_ref().take(t.len()).collect()
             };
-            schema_from(n, t)
+            schema_from(n, t, null)
         })
         .collect()
 }

@@ -1,54 +1,167 @@
 //! [`DsTable`]: one TPC-DS table, generated in parallel chunks of source
-//! rows by tpcdsgen's row generators.
+//! rows by its distribution.
 
-use crate::TableName;
-use crate::dat::{self, Encoding};
-use crate::direct;
-use crate::fused::{Channel, Want};
+use crate::dat::Encoding;
+use crate::{TableName, Tpcds, channels, dims, inventory};
 use arrow_array::RecordBatch;
-use arrow_schema::DataType;
-use arrow_schema::SchemaRef;
-use arrow_select::concat::concat_batches;
+use arrow_schema::{DataType, SchemaRef};
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
-use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, MultiChunks, chunks, par_sources};
+use populate_core::{Columns, Distribution};
+use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables};
+use populate_table::text::{TextChunks, TextColumns, TextTables, write_text_many};
+use populate_table::{Chunks, DistTable, DistTables, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
-use std::fmt::Write as _;
+use std::fmt;
 use std::io::{self, Write};
+use std::ops::Range;
+use std::sync::Arc;
 use tpcdsgen::config::{Session, Table as Ds};
-use tpcdsgen::row::*;
-use tpcdsgen_arrow::*;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
-/// Default Arrow batch size: tpcdsgen's own conversion size, so batches are
-/// passed on as made. Larger sizes are built by concatenating them.
-pub const DEFAULT_BATCH_SIZE: usize = GEN_BATCH;
-/// Rows tpcdsgen-arrow converts at a time. Its row-to-column conversion
-/// makes one pass over the buffered rows per column, so the rows must stay
-/// in cache: at 8Ki rows `catalog_sales` (~400 B/row) converts 5x slower.
-const GEN_BATCH: usize = 2048;
+/// Default Arrow batch size, in output rows: small enough that a batch's
+/// columns stay in cache while they are made and written out.
+pub const DEFAULT_BATCH_SIZE: usize = 2048;
 
 /// One table of a [`Tpcds`](crate::Tpcds) data set.
 ///
-/// The table is split into chunks of consecutive source rows. Each chunk is
-/// generated from scratch by a fresh tpcdsgen generator that skips straight
-/// to its first row, so chunks are independent and the concatenation of all
+/// The table is split into chunks of consecutive source rows. Each chunk
+/// is made by the table's distribution, cloned and skipped straight to its
+/// first row, so chunks are independent and the concatenation of all
 /// chunks is exactly the sequential (dsdgen) output.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DsTable {
     name: TableName,
-    session: Session,
+    /// The distribution that makes the table, and which of its outputs
+    /// the table is (a sales table and its returns are made together).
+    source: Arc<dyn Source>,
+    output: usize,
     source_rows: u64,
     chunk_source_rows: u64,
     batch_size: usize,
 }
 
+impl fmt::Debug for DsTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DsTable")
+            .field("name", &self.name)
+            .field("source_rows", &self.source_rows)
+            .field("chunk_source_rows", &self.chunk_source_rows)
+            .field("batch_size", &self.batch_size)
+            .finish()
+    }
+}
+
+/// What makes one or more tables: a [`DistTable`], or the [`DistTables`]
+/// of a sales channel (its sales, then its returns).
+trait Source: Send + Sync {
+    fn schemas(&self) -> &[SchemaRef];
+
+    /// Source rows `first..first + n` (0-based): a batch per output, to
+    /// `emit(output, batch)`.
+    fn batches(&self, first: u64, n: u64, emit: &mut dyn FnMut(usize, RecordBatch));
+
+    /// Source rows `first..first + n` as `.dat` lines, output `k`'s
+    /// appended to `bufs[k]`.
+    fn text(&self, first: u64, n: u64, encoding: Encoding, bufs: &mut [Vec<u8>]);
+}
+
+impl<D> Source for DistTable<D>
+where
+    D: Distribution + Clone + Send + Sync,
+    Columns<D::Item>: IntoArrowColumns + TextColumns,
+{
+    fn schemas(&self) -> &[SchemaRef] {
+        std::slice::from_ref(self.schema())
+    }
+
+    fn batches(&self, first: u64, n: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
+        emit(0, self.batch(first, n));
+    }
+
+    fn text(&self, first: u64, n: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        DistTable::text(self, first, n, encoding, &mut bufs[0]);
+    }
+}
+
+impl<D> Source for DistTables<D>
+where
+    D: Distribution + Clone + Send + Sync,
+    Columns<D::Item>: IntoArrowTables + TextTables,
+{
+    fn schemas(&self) -> &[SchemaRef] {
+        DistTables::schemas(self)
+    }
+
+    fn batches(&self, first: u64, n: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
+        for (k, b) in DistTables::batches(self, first, n).into_iter().enumerate() {
+            emit(k, b);
+        }
+    }
+
+    fn text(&self, first: u64, n: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        DistTables::text(self, first, n, encoding, bufs);
+    }
+}
+
+/// The source of table `t`, and which of its outputs `t` is.
+fn source(t: TableName, s: &Session) -> (Arc<dyn Source>, usize) {
+    use TableName::*;
+    let rows = |t: TableName| s.get_scaling().get_row_count(t.ds());
+    fn one<D>(t: TableName, rows: u64, dist: D) -> (Arc<dyn Source>, usize)
+    where
+        D: Distribution + Clone + Send + Sync + 'static,
+        Columns<D::Item>: IntoArrowColumns + TextColumns,
+    {
+        (Arc::new(DistTable::new(t.as_str(), rows, dist)), 0)
+    }
+    fn channel<D>(names: [TableName; 2], rows: u64, dist: D) -> Arc<dyn Source>
+    where
+        D: Distribution + Clone + Send + Sync + 'static,
+        Columns<D::Item>: IntoArrowTables + TextTables,
+    {
+        Arc::new(DistTables::new(&names.map(TableName::as_str), rows, dist))
+    }
+    let n = rows(t);
+    match t {
+        StoreSales | StoreReturns => (
+            channel([StoreSales, StoreReturns], n, channels::store(s)),
+            (t == StoreReturns) as usize,
+        ),
+        CatalogSales | CatalogReturns => (
+            channel([CatalogSales, CatalogReturns], n, channels::catalog(s)),
+            (t == CatalogReturns) as usize,
+        ),
+        WebSales | WebReturns => (
+            channel([WebSales, WebReturns], n, channels::web(s)),
+            (t == WebReturns) as usize,
+        ),
+        Inventory => one(t, n, inventory::inventory(s)),
+        CustomerDemographics => one(t, n, inventory::customer_demographics()),
+        CallCenter => one(t, n, dims::call_center(s)),
+        CatalogPage => one(t, n, dims::catalog_page(s)),
+        Customer => one(t, n, dims::customer(s)),
+        CustomerAddress => one(t, n, dims::customer_address(s)),
+        DateDim => one(t, n, dims::date_dim(s)),
+        HouseholdDemographics => one(t, n, dims::household_demographics(s)),
+        IncomeBand => one(t, n, dims::income_band(s)),
+        Item => one(t, n, dims::item(s)),
+        Promotion => one(t, n, dims::promotion(s)),
+        Reason => one(t, n, dims::reason(s)),
+        ShipMode => one(t, n, dims::ship_mode(s)),
+        Store => one(t, n, dims::store(s)),
+        TimeDim => one(t, n, dims::time_dim(s)),
+        Warehouse => one(t, n, dims::warehouse(s)),
+        WebPage => one(t, n, dims::web_page(s)),
+        WebSite => one(t, n, dims::web_site(s)),
+    }
+}
+
 macro_rules! tables {
-    ($($t:ident => $arrow:ident, $rows:ident, $per_source:expr;)*) => {
+    ($($t:ident, $per_source:expr;)*) => {
         impl TableName {
             /// The tpcdsgen table.
             pub(crate) fn ds(self) -> Ds {
@@ -61,117 +174,34 @@ macro_rules! tables {
                 match self { $(TableName::$t => $per_source,)* }
             }
         }
-
-        impl DsTable {
-            /// Arrow schema (tpcdsgen-arrow's: `Int32` keys, `Int64`
-            /// identifiers, `Decimal128(p, s)`, `Date32`, `Utf8View` text).
-            pub fn schema(&self) -> SchemaRef {
-                schema_of(self.name)
-            }
-        }
-
-        fn schema_of(t: TableName) -> SchemaRef {
-            match t { $(TableName::$t => $arrow::schema_ref(),)* }
-        }
-
-        impl DsTable {
-
-            /// Source rows `first..=last` (1-based) as Arrow batches of up
-            /// to `batch` rows.
-            fn arrow_range(
-                &self,
-                first: u64,
-                last: u64,
-                batch: usize,
-                emit: &mut dyn FnMut(RecordBatch),
-            ) {
-                if let Some((channel, sales)) = Channel::of(self.name) {
-                    let want = Want { sales, returns: !sales };
-                    return channel.run(&self.session, first, last, batch, want, &mut |_, b| emit(b));
-                }
-                match self.name {
-                    TableName::Inventory => {
-                        return direct::inventory(&self.session, first, last, batch, emit)
-                    }
-                    TableName::CustomerDemographics if direct::demographics_direct() => {
-                        return direct::customer_demographics(&self.session, first, last, batch, emit)
-                    }
-                    _ => {}
-                }
-                match self.name {
-                    $(TableName::$t => {
-                        $arrow::new(self.session.clone())
-                            .with_source_row_range(first, last)
-                            .with_batch_size(batch)
-                            .for_each(|b| emit(b.expect("tpcdsgen-arrow batch")));
-                    })*
-                }
-            }
-
-            /// The table as tpcdsgen-arrow generates it, sequentially: the
-            /// reference the parallel and fused paths are tested against.
-            #[doc(hidden)]
-            pub fn reference_arrow(&self) -> Vec<RecordBatch> {
-                match self.name {
-                    $(TableName::$t => $arrow::new(self.session.clone())
-                        .with_source_row_range(1, self.source_rows)
-                        .map(|b| b.expect("tpcdsgen-arrow batch"))
-                        .collect(),)*
-                }
-            }
-
-            /// The `.dat` file as tpcdsgen formats it (its rows' `Display`),
-            /// sequentially: the reference [`write_dat`](Self::write_dat) is
-            /// tested against. Slow.
-            #[doc(hidden)]
-            pub fn reference_dat(&self, encoding: Encoding) -> Vec<u8> {
-                let mut out = String::new();
-                match self.name {
-                    $(TableName::$t => {
-                        let mut g = $rows::new(self.session.clone(), self.source_rows);
-                        g.set_source_row_range(1, self.source_rows);
-                        for row in g {
-                            writeln!(out, "{row}").expect("write to String");
-                        }
-                    })*
-                }
-                match encoding {
-                    Encoding::Utf8 => out.into_bytes(),
-                    Encoding::Latin1 => out
-                        .chars()
-                        .map(|c| u8::try_from(c).expect("Latin-1 text"))
-                        .collect(),
-                }
-            }
-        }
     };
 }
 
 tables! {
-    CallCenter => CallCenterArrow, CallCenterRowGenerator, 1.0;
-    CatalogPage => CatalogPageArrow, CatalogPageRowGenerator, 1.0;
-    CatalogReturns => CatalogReturnsArrow, CatalogReturnsRowGenerator, 0.9;
-    CatalogSales => CatalogSalesArrow, CatalogSalesRowGenerator, 9.0;
-    Customer => CustomerArrow, CustomerRowGenerator, 1.0;
-    CustomerAddress => CustomerAddressArrow, CustomerAddressRowGenerator, 1.0;
-    CustomerDemographics => CustomerDemographicsArrow, CustomerDemographicsRowGenerator, 1.0;
-    DateDim => DateDimArrow, DateDimRowGenerator, 1.0;
-    HouseholdDemographics => HouseholdDemographicsArrow, HouseholdDemographicsRowGenerator, 1.0;
-    IncomeBand => IncomeBandArrow, IncomeBandRowGenerator, 1.0;
-    Inventory => InventoryArrow, InventoryRowGenerator, 1.0;
-    Item => ItemArrow, ItemRowGenerator, 1.0;
-    Promotion => PromotionArrow, PromotionRowGenerator, 1.0;
-    Reason => ReasonArrow, ReasonRowGenerator, 1.0;
-    ShipMode => ShipModeArrow, ShipModeRowGenerator, 1.0;
-    Store => StoreArrow, StoreRowGenerator, 1.0;
-    StoreReturns => StoreReturnsArrow, StoreReturnsRowGenerator, 1.2;
-    StoreSales => StoreSalesArrow, StoreSalesRowGenerator, 12.0;
-    TimeDim => TimeDimArrow, TimeDimRowGenerator, 1.0;
-    Warehouse => WarehouseArrow, WarehouseRowGenerator, 1.0;
-    WebPage => WebPageArrow, WebPageRowGenerator, 1.0;
-    WebReturns => WebReturnsArrow, WebReturnsRowGenerator, 1.2;
-    WebSales => WebSalesArrow, WebSalesRowGenerator, 12.0;
-    WebSite => WebSiteArrow, WebSiteRowGenerator, 1.0;
+    CallCenter, 1.0;
+    CatalogPage, 1.0;
+    CatalogReturns, 0.9;
+    CatalogSales, 9.0;
+    Customer, 1.0;
+    CustomerAddress, 1.0;
+    CustomerDemographics, 1.0;
+    DateDim, 1.0;
+    HouseholdDemographics, 1.0;
+    IncomeBand, 1.0;
+    Inventory, 1.0;
+    Item, 1.0;
+    Promotion, 1.0;
+    Reason, 1.0;
+    ShipMode, 1.0;
+    Store, 1.0;
+    StoreReturns, 1.2;
+    StoreSales, 12.0;
+    TimeDim, 1.0;
+    Warehouse, 1.0;
+    WebPage, 1.0;
+    WebReturns, 1.2;
+    WebSales, 12.0;
+    WebSite, 1.0;
 }
 
 /// Source rows whose generation costs about as much as producing a sales
@@ -186,11 +216,13 @@ fn cost_per_source_row(t: TableName) -> f64 {
 }
 
 impl DsTable {
-    pub(crate) fn new(name: TableName, session: Session) -> Self {
+    pub(crate) fn new(name: TableName, session: &Session) -> Self {
         let source_rows = session.get_scaling().get_row_count(name.ds());
+        let (source, output) = source(name, session);
         DsTable {
             name,
-            session,
+            source,
+            output,
             source_rows,
             chunk_source_rows: 1,
             batch_size: DEFAULT_BATCH_SIZE,
@@ -200,6 +232,13 @@ impl DsTable {
 
     pub fn name(&self) -> TableName {
         self.name
+    }
+
+    /// Arrow schema (tpcdsgen-arrow's: `Int32` keys, `Int64` identifiers,
+    /// `Decimal128(p, s)`, `Date32`, `Utf8View` text), read off the table's
+    /// distribution.
+    pub fn schema(&self) -> SchemaRef {
+        self.source.schemas()[self.output].clone()
     }
 
     /// Source rows (tickets, orders, ...; the row count for most tables).
@@ -235,7 +274,9 @@ impl DsTable {
         self
     }
 
-    /// Rows per Arrow batch (default 8Ki).
+    /// About `n` rows per Arrow batch (default [`DEFAULT_BATCH_SIZE`]): a
+    /// batch is made from whole source rows, so a sales table's batches
+    /// are whole tickets or orders.
     pub fn batch_size(mut self, n: usize) -> Self {
         assert!(n > 0, "batch_size must be > 0");
         self.batch_size = n;
@@ -247,11 +288,37 @@ impl DsTable {
         self.source_rows.div_ceil(self.chunk_source_rows)
     }
 
-    /// 1-based inclusive source-row range of chunk `i`.
-    fn range(&self, i: u64) -> (u64, u64) {
-        let first = i * self.chunk_source_rows + 1;
-        let last = first.saturating_add(self.chunk_source_rows - 1);
-        (first, last.min(self.source_rows))
+    /// 0-based source rows of chunk `i`.
+    fn range(&self, i: u64) -> Range<u64> {
+        let first = i * self.chunk_source_rows;
+        first
+            ..first
+                .saturating_add(self.chunk_source_rows)
+                .min(self.source_rows)
+    }
+
+    /// Source rows per batch: `batch_size` output rows of the channel's
+    /// sales for a channel table.
+    fn batch_source_rows(&self) -> u64 {
+        let per = match self.name {
+            TableName::StoreReturns => TableName::StoreSales,
+            TableName::CatalogReturns => TableName::CatalogSales,
+            TableName::WebReturns => TableName::WebSales,
+            t => t,
+        }
+        .rows_per_source_row();
+        ((self.batch_size as f64 / per).round() as u64).max(1)
+    }
+
+    /// Source rows `range` in batches: `f(first, n)` for each.
+    fn for_each_range(&self, range: Range<u64>, mut f: impl FnMut(u64, u64)) {
+        let step = self.batch_source_rows();
+        let mut at = range.start;
+        while at < range.end {
+            let n = step.min(range.end - at);
+            f(at, n);
+            at += n;
+        }
     }
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
@@ -302,8 +369,8 @@ impl DsTable {
 /// gets no properties; start from it to change other settings.
 pub fn parquet_props() -> WriterPropertiesBuilder {
     let mut p = WriterProperties::builder().set_compression(Compression::SNAPPY);
-    for t in TableName::ALL {
-        for f in schema_of(t).fields() {
+    for t in Tpcds::new(1.0).tables() {
+        for f in t.schema().fields() {
             let dict = !matches!(f.data_type(), DataType::Decimal128(..) | DataType::Int64);
             p = p.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), dict);
         }
@@ -324,7 +391,7 @@ pub fn write_parquet_many<W: Write + Send>(
 ) -> Result<Vec<W>, ParquetError> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
     let props = props.unwrap_or_else(|| parquet_props().build());
-    let units = plan(tables, true);
+    let units = plan(tables);
     let srcs: Vec<&dyn MultiChunks> = units.iter().map(|u| u as &dyn MultiChunks).collect();
     // writers in output order (units' tables, in order), and back
     let mut by_table: Vec<Option<W>> = writers.into_iter().map(Some).collect();
@@ -350,7 +417,7 @@ pub fn write_dat_many<W: Write + Send>(
     encoding: Encoding,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
-    let units = plan(tables, true);
+    let units = plan(tables);
     let srcs: Vec<DatUnit<'_>> = units.iter().map(|u| DatUnit(u, encoding)).collect();
     let dyns: Vec<&dyn TextChunks> = srcs.iter().map(|u| u as &dyn TextChunks).collect();
     // writers in output order (units' tables, in order), and back
@@ -378,8 +445,23 @@ impl TextChunks for DatUnit<'_> {
         MultiChunks::num_chunks(self.0)
     }
 
+    /// The `.dat` lines of chunk `i`, written straight from the columns.
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
-        self.0.chunk_dat(i, self.1, bufs)
+        let u = self.0;
+        let t = &u.tables[u.idx[0]];
+        let outputs = t.source.schemas().len();
+        if bufs.len() == outputs {
+            return t.for_each_range(t.range(i), |first, n| {
+                t.source.text(first, n, self.1, bufs);
+            });
+        }
+        // one table of a channel: the other's text is dropped
+        let mut all = vec![Vec::new(); outputs];
+        t.for_each_range(t.range(i), |first, n| {
+            t.source.text(first, n, self.1, &mut all);
+            bufs[0].append(&mut all[t.output]);
+            all.iter_mut().for_each(Vec::clear);
+        });
     }
 }
 
@@ -390,7 +472,7 @@ pub fn for_each_batch_many(
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let units = plan(tables, false);
+    let units = plan(tables);
     let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
     let r: Result<(), Infallible> = par_sources(
         &chunks,
@@ -412,26 +494,22 @@ pub fn for_each_batch_many(
 /// together.
 struct Unit<'a> {
     tables: &'a [DsTable],
-    /// Indexes into `tables` of this unit's outputs.
+    /// Indexes into `tables` of this unit's outputs: one table, or a
+    /// channel's sales and returns, in that order.
     idx: Vec<usize>,
-    /// Pass generation batches on as made (Parquet, `.dat`) instead of
-    /// building `batch_size`-row batches.
-    raw: bool,
 }
 
 /// Units for `tables`, in order; a sales table and its returns with the
 /// same chunks and batch size become one unit (sales first) at the first
 /// one's place.
-fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
+fn plan(tables: &[DsTable]) -> Vec<Unit<'_>> {
     // partner[i]: the table generated together with tables[i]
     let mut partner = vec![None; tables.len()];
     for (i, a) in tables.iter().enumerate() {
         for (j, b) in tables.iter().enumerate() {
-            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
-                (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
-                _ => false,
-            };
+            let same_channel = channel_of(a.name).is_some_and(|c| Some(c) == channel_of(b.name));
             if same_channel
+                && a.output != b.output
                 && a.chunk_source_rows == b.chunk_source_rows
                 && a.source_rows == b.source_rows
                 && a.batch_size == b.batch_size
@@ -448,48 +526,23 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
     for (i, t) in tables.iter().enumerate() {
         let idx = match partner[i] {
             Some(j) if j < i => continue,
-            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
+            Some(j) if t.output == 0 => vec![i, j],
             Some(j) => vec![j, i],
             None => vec![i],
         };
-        units.push(Unit { tables, idx, raw });
+        units.push(Unit { tables, idx });
     }
     units
 }
 
-impl Unit<'_> {
-    /// Chunk `i` as `.dat` text, appended to `bufs` (one per output). The
-    /// sales channels write their text directly, without Arrow columns.
-    fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
-        let t = &self.tables[self.idx[0]];
-        let Some((channel, sales)) = Channel::of(t.name) else {
-            return self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
-        };
-        let (first, last) = t.range(i);
-        match bufs {
-            // `idx` is sales, returns
-            [s, r] => {
-                let both = Want {
-                    sales: true,
-                    returns: true,
-                };
-                channel.run_dat(&t.session, first, last, both, s, r);
-            }
-            [one] => {
-                let want = Want {
-                    sales,
-                    returns: !sales,
-                };
-                let mut none = Vec::new();
-                let (s, r) = if sales {
-                    (one, &mut none)
-                } else {
-                    (&mut none, one)
-                };
-                channel.run_dat(&t.session, first, last, want, s, r);
-            }
-            _ => unreachable!("a unit has one or two outputs"),
-        }
+/// The sales channel a table belongs to, by its sales table.
+fn channel_of(t: TableName) -> Option<TableName> {
+    use TableName::*;
+    match t {
+        StoreSales | StoreReturns => Some(StoreSales),
+        CatalogSales | CatalogReturns => Some(CatalogSales),
+        WebSales | WebReturns => Some(WebSales),
+        _ => None,
     }
 }
 
@@ -504,21 +557,16 @@ impl MultiChunks for Unit<'_> {
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
-        let (first, last) = t.range(i);
-        if self.idx.len() == 2 {
-            // `idx` is sales, returns: the channel's outputs 0 and 1
-            let (channel, _) = Channel::of(t.name).expect("a channel");
-            let want = Want {
-                sales: true,
-                returns: true,
-            };
-            return channel.run(&t.session, first, last, t.batch_size, want, emit);
-        }
-        if self.raw {
-            t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
-        } else {
-            Chunks::chunk(t, i, &mut |b| emit(0, b));
-        }
+        let paired = self.idx.len() == 2;
+        t.for_each_range(t.range(i), |first, n| {
+            t.source.batches(first, n, &mut |k, b| {
+                if paired {
+                    emit(k, b)
+                } else if k == t.output {
+                    emit(0, b)
+                }
+            });
+        });
     }
 }
 
@@ -531,36 +579,14 @@ impl Chunks for DsTable {
         DsTable::num_chunks(self)
     }
 
-    /// Batches of `batch_size` rows (the last of each chunk may be shorter),
-    /// built from cache-sized generation batches.
+    /// Batches of about `batch_size` rows.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, last) = self.range(i);
-        let direct = Channel::of(self.name).is_some()
-            || matches!(
-                self.name,
-                TableName::Inventory | TableName::CustomerDemographics
-            );
-        if direct || self.batch_size <= GEN_BATCH {
-            return self.arrow_range(first, last, self.batch_size, emit);
-        }
-        let schema = self.schema();
-        let (mut pending, mut rows) = (Vec::new(), 0);
-        let mut flush = |pending: &mut Vec<RecordBatch>| {
-            if pending.len() == 1 {
-                emit(pending.pop().expect("one batch"));
-            } else if !pending.is_empty() {
-                emit(concat_batches(&schema, pending.iter()).expect("same schema"));
-                pending.clear();
-            }
-        };
-        self.arrow_range(first, last, GEN_BATCH, &mut |b| {
-            rows += b.num_rows();
-            pending.push(b);
-            if rows >= self.batch_size {
-                flush(&mut pending);
-                rows = 0;
-            }
+        self.for_each_range(self.range(i), |first, n| {
+            self.source.batches(first, n, &mut |k, b| {
+                if k == self.output {
+                    emit(b)
+                }
+            });
         });
-        flush(&mut pending);
     }
 }

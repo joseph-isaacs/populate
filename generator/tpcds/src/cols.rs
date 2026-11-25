@@ -42,6 +42,22 @@ impl StrViews {
         self.views.push(make_view(s, 0, offset));
     }
 
+    /// Append the text `f` writes (UTF-8).
+    #[inline]
+    pub fn push_with(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
+        let start = self.data.len();
+        f(&mut self.data);
+        let s = &self.data[start..];
+        if s.len() <= 12 {
+            let v = make_view(s, 0, 0);
+            self.data.truncate(start);
+            self.views.push(v);
+        } else {
+            let offset = u32::try_from(start).expect("string data exceeds 4GiB");
+            self.views.push(make_view(s, 0, offset));
+        }
+    }
+
     /// The string of row `i`.
     fn get(&self, i: usize) -> String {
         let v = self.views[i];
@@ -152,6 +168,9 @@ impl IntoArrowArray for StrViews {
 pub(crate) trait PushText {
     /// `s`, or NULL.
     fn push_text(&mut self, s: Option<&str>);
+
+    /// The text `f` writes (UTF-8), or NULL if not `valid`.
+    fn push_with(&mut self, valid: bool, f: impl FnOnce(&mut Vec<u8>));
 }
 
 impl PushText for Nullable<StrViews> {
@@ -161,6 +180,16 @@ impl PushText for Nullable<StrViews> {
         match s {
             Some(s) => self.values.push_str(s),
             None => self.values.views.push(0),
+        }
+    }
+
+    #[inline]
+    fn push_with(&mut self, valid: bool, f: impl FnOnce(&mut Vec<u8>)) {
+        self.valid.push(valid);
+        if valid {
+            self.values.push_with(f);
+        } else {
+            self.values.views.push(0);
         }
     }
 }

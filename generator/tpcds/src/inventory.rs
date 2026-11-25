@@ -6,7 +6,7 @@
 use crate::cols::Word;
 use crate::seeds::stream;
 use populate_builtins::{derive, draws, named_all, range};
-use populate_core::{Columns, Distribution, Sink};
+use populate_core::{Columns, Distribution};
 use rand::Rng;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::distribution::DemographicsDistributions as Demo;
@@ -77,7 +77,7 @@ impl Distribution for InventoryKeys {
 /// `inventory`: one row per item, warehouse and week.
 pub(crate) fn inventory(
     session: &Session,
-) -> impl Distribution<Item = ((i32, i32, i32), Option<i32>)> + Clone + Sync {
+) -> impl Distribution<Item = ((i32, i32, i32), Option<i32>)> + Clone + Sync + use<> {
     let scaling = session.get_scaling();
     let keys = InventoryKeys {
         session: session.clone(),
@@ -206,7 +206,8 @@ pub(crate) fn customer_demographics() -> impl Distribution<
 
 /// Whether `customer_demographics` has nulls: dsdgen's configuration has
 /// none, which [`customer_demographics`] relies on.
-pub(crate) fn demographics_have_nulls() -> bool {
+#[cfg(test)]
+fn demographics_have_nulls() -> bool {
     NullTable::CustomerDemographics.get_null_basis_points() != 0
 }
 

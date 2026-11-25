@@ -22,13 +22,15 @@ arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # dsdgen's logic, ported to Rust (Apache-2.0, tpcgen-rs project)
 tpcdsgen = "4.0"
-tpcdsgen-arrow = "4.0"
 
 [features]
 default = ["mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+# tpcdsgen's own Arrow conversion: the reference the tables are tested
+# against
+tpcdsgen-arrow = "4.0"
 divan = { workspace = true }
 arrow-cast = { workspace = true }
 bytes = "1"

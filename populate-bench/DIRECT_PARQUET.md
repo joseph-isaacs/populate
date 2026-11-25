@@ -199,3 +199,39 @@ The list files are about 0.1% smaller on the direct path because its list pages 
 ```
 cargo run --release -p populate-bench --bin direct_parquet -- --rows 1000000,4000000,16000000 --threads 1,2,4 --reps 3 [--plain] [--snappy]
 ```
+
+## Every generator column on the direct encoder
+
+Before this change, four kinds of column still went through arrow-rs:
+
+- `Utf8` strings, which is what `Table::col` makes from a string distribution.
+- Variable-length lists.
+- Booleans.
+- LDBC's static and factor tables, which used a single-threaded `ArrowWriter`.
+
+Now all of them use the direct encoder. TPC-H, TPC-DS, DSB, SSB, H2O, TPC-C, synth and LDBC's generated tables were already direct for every column.
+
+The Table path, before (main) and after, default settings, best of 3. Old and new binaries were run alternately twice, and the better run is shown:
+
+| Shape | Rows | Threads | Table before | Table after |
+|---|---|---|---|---|
+| strings | 1M | 1 | 0.176 s | 0.147 s |
+| strings | 16M | 1 | 2.926 s | 2.418 s |
+| strings | 16M | 4 | 0.790 s | 0.706 s |
+| lists | 4M | 1 | 0.596 s | 0.362 s |
+| lists | 16M | 1 | 2.569 s | 1.579 s |
+| lists | 16M | 4 | 0.767 s | 0.459 s |
+| mixed | 1M | 1 | 0.387 s | 0.285 s |
+| mixed | 16M | 1 | 6.515 s | 5.163 s |
+| mixed | 16M | 4 | 1.826 s | 1.466 s |
+
+LDBC (`ldbc-gen --format parquet --generate-factors`), best of 2. All 52 files read back with the same values as before:
+
+| SF | Threads | Before | After |
+|---|---|---|---|
+| 1 | 1 | 6.95 s | 7.13 s |
+| 1 | 4 | 3.14 s | 3.23 s |
+| 3 | 1 | 20.84 s | 20.14 s |
+| 3 | 4 | 7.58 s | 7.19 s |
+
+LDBC does not change beyond noise: its static and factor tables are a small part of its output, and generation dominates.

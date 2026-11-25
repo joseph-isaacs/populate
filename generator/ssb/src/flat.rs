@@ -2,137 +2,164 @@
 //! part (the denormalised SSB-flat table, as ClickHouse defines it).
 //!
 //! The three dimension tables are drawn once (on all cores) and kept as
-//! small per-row codes (about 8 bytes a part, 3 a customer), and the
-//! columns unique per row (names, addresses, phone numbers) as `Utf8View`
-//! columns with one buffer per 64Ki rows. Each `lineorder` batch is then joined by key:
-//! dictionary columns become views into the shared dictionary, and the
-//! unique columns are gathered as views into the dimension's buffers. So no
-//! text is copied, but those columns of every batch share (and keep alive)
-//! the dimension's whole buffer.
+//! their code columns ([`part_codes`], [`party_codes`]: about 11 bytes a
+//! part, 9 a customer), and the columns unique per row (names, addresses,
+//! phone numbers) as `Utf8View` text with one buffer per 64Ki rows. Then
+//! each block of `lineorder` rows is joined by key ([`Join`]), a column at
+//! a time: dictionary views from the codes, as
+//! [`part_words`](crate::tables::part_words) and
+//! [`party_words`](crate::tables::party_words) map them, and the unique
+//! columns as views into the dimension's buffers. So no text is copied,
+//! but those columns of every batch share (and keep alive) the
+//! dimension's whole buffer.
 
-use crate::dict::Dict;
+use crate::TableName;
+use crate::cols::{Shared, SharedCols, SharedText, Word, Words, children_of};
+use crate::dict::{Dict, Views};
 use crate::tables::{
-    CUSTOMER, PART, PartRows, Party, PartyRows, SUPPLIER, Scale, lineorder_fields,
+    LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, TableGen, at,
+    lines, orders, part_codes, party_codes, party_text, segment_codes, table,
 };
-use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, UInt32Array};
-use arrow_schema::{Field, Schema, SchemaRef};
-use arrow_select::concat::concat;
-use arrow_select::take::take;
+use populate_builtins::{ReadRows, named_all};
+use populate_core::{ChildCols, Children, Columns, Distribution, Sink};
 use populate_table::par_ordered;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use std::convert::Infallible;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
-/// `lineorder`'s key columns.
-const CUSTKEY: usize = 2;
-const PARTKEY: usize = 3;
-const SUPPKEY: usize = 4;
+/// A customer's columns after its key.
+type CustomerRow = (Shared, Shared, Word, Word, Word, Shared, Word);
+/// A supplier's columns after its key.
+type SupplierRow = (Shared, Shared, Word, Word, Word, Shared);
+/// One `lineorder_flat` row.
+type FlatRow = (Line, (CustomerRow, SupplierRow, PartWords));
 
-pub(crate) static FLAT: LazyLock<SchemaRef> = LazyLock::new(|| {
-    let mut fields = lineorder_fields();
-    for t in [&CUSTOMER, &SUPPLIER, &PART] {
-        // every column but the key
-        fields.extend(t.fields().iter().skip(1).map(|f| Field::clone(f)));
-    }
-    Arc::new(Schema::new(fields))
-});
-
-/// The dimension tables, whole.
-#[derive(Debug)]
-pub(crate) struct Dims {
-    customer: Dim,
-    supplier: Dim,
-    part: PartRows,
-}
-
-/// A supplier or customer table: its codes, and its whole name, address
-/// and phone columns.
-#[derive(Debug)]
+/// A whole supplier or customer table: its codes, its market segments
+/// (customers only), and its name, address and phone columns.
+#[derive(Debug, Default)]
 struct Dim {
-    rows: PartyRows,
-    unique: [ArrayRef; 3],
+    codes: Columns<PartyCode>,
+    segment: Vec<u8>,
+    text: [SharedText; 3],
 }
 
 impl Dim {
-    /// The columns after the key of rows `idx`.
-    fn columns(&self, d: &Dict, idx: Vec<u32>) -> Vec<ArrayRef> {
-        let at = UInt32Array::from(idx);
-        let gather = |a: &ArrayRef| take(a.as_ref(), &at, None).expect("keys in range");
-        let [names, addresses, phones] = &self.unique;
-        let mut cols = vec![gather(names), gather(addresses)];
-        let mut coded = self.rows.coded_columns(d, at.values());
-        // city, nation, region, then the phone, then the segment
-        cols.extend(coded.drain(..3));
-        cols.push(gather(phones));
-        cols.extend(coded);
-        cols
+    /// Name, address, city, nation, region and phone of the rows keyed
+    /// `rows` (1-based), a column at a time.
+    fn gather(
+        &self,
+        d: &Dict,
+        rows: &[i32],
+        (name, address, city, nation, region, phone): (
+            &mut SharedCols,
+            &mut SharedCols,
+            &mut Words,
+            &mut Words,
+            &mut Words,
+            &mut SharedCols,
+        ),
+    ) {
+        let [n, a, p] = &self.text;
+        n.gather(rows, name);
+        a.gather(rows, address);
+        let (nations, cities) = &self.codes;
+        // as `party_words` maps them (the tests check the join against it)
+        let nat = |r: usize| nations[r] as usize;
+        city.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.cities[nat(r) * 10 + cities[r] as usize])),
+        );
+        nation.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.nations[nat(r)])),
+        );
+        region.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.regions[nat(r)])),
+        );
+        p.gather(rows, phone);
     }
+}
+
+/// The dimension tables, whole.
+#[derive(Debug, Default)]
+pub(crate) struct Dims {
+    customer: Dim,
+    supplier: Dim,
+    part: Columns<PartCode>,
 }
 
 /// Rows per generation job when building the dimensions.
 const JOB: u64 = 64 * 1024;
 
-/// Rows `0..rows` made by `f(first, n)` in jobs on `threads` threads,
-/// appended in order.
-fn whole<T: Send>(
+/// Rows `0..rows` of `dist`, made in jobs on `threads` threads, each job's
+/// columns given to `append` in order.
+fn whole<D: Distribution + Clone + Sync>(
+    dist: &D,
     rows: u64,
     threads: usize,
-    f: impl Fn(u64, usize) -> T + Sync,
-    mut append: impl FnMut(T),
-) {
+    mut append: impl FnMut(Columns<D::Item>),
+) where
+    Columns<D::Item>: Send,
+{
     let r: Result<(), Infallible> = par_ordered(
         rows.div_ceil(JOB),
         threads,
         |j| {
             let first = j * JOB;
-            f(first, (rows - first).min(JOB) as usize)
+            // the streams don't use the caller's RNG
+            let mut rng = SmallRng::seed_from_u64(0);
+            at(dist.clone(), first).collect(&mut rng, (rows - first).min(JOB) as usize)
         },
-        |b| {
-            append(b);
+        |cols| {
+            append(cols);
             Ok(())
         },
     );
     r.unwrap_or_else(|e| match e {});
 }
 
+/// The rows of `from` pushed onto `to`.
+fn extend<T, C: Sink<T>>(to: &mut C, from: &impl ReadRows<Row = T>) {
+    for row in from.rows_from(0) {
+        to.push(row);
+    }
+}
+
 /// A whole supplier or customer table. Each job writes its rows' names,
-/// addresses and phones into its own buffers (so every buffer stays far
-/// below the 4 GiB a view's offset can reach) and keeps only the codes.
-fn party(d: &Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> Dim {
-    let mut all = PartyRows::new(d, s, p, 0, 0);
-    let mut parts: [Vec<ArrayRef>; 3] = Default::default();
-    whole(
-        rows,
-        threads,
-        |f, n| {
-            let mut r = PartyRows::new(d, s, p, f, n);
-            let unique = r.unique_columns(d, &(0..n as u32).collect::<Vec<_>>());
-            r.drop_unique();
-            (r, unique)
-        },
-        |(r, unique)| {
-            all.append(r);
-            for (v, a) in parts.iter_mut().zip(unique) {
-                v.push(a);
-            }
-        },
-    );
-    let unique = parts.map(|v| {
-        let refs: Vec<&dyn Array> = v.iter().map(|a| a.as_ref()).collect();
-        concat(&refs).expect("same type")
+/// addresses and phones into its own buffers, so every buffer stays far
+/// below the 4 GiB a view's offset can reach.
+fn party(d: &'static Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> Dim {
+    let mut dim = Dim::default();
+    let segments = match p {
+        Party::Customer => rows,
+        Party::Supplier => 0,
+    };
+    whole(&party_codes(p, s), rows, threads, |c| {
+        extend(&mut dim.codes, &c)
     });
-    Dim { rows: all, unique }
+    whole(&segment_codes(d), segments, threads, |c| {
+        dim.segment.extend(c)
+    });
+    let mut parts: [Vec<Views>; 3] = Default::default();
+    whole(&party_text(p, s), rows, threads, |(n, a, ph)| {
+        for (v, c) in parts.iter_mut().zip([n, a, ph]) {
+            v.push(c);
+        }
+    });
+    dim.text = parts.map(SharedText::new);
+    dim
 }
 
 impl Dims {
     pub(crate) fn build(s: &Scale, threads: usize) -> Dims {
         let d = Dict::get();
-        let mut part = PartRows::default();
-        whole(
-            s.parts,
-            threads,
-            |f, n| PartRows::new(d, f, n),
-            |r| part.append(r),
-        );
+        let mut part = Columns::<PartCode>::default();
+        whole(&part_codes(d), s.parts, threads, |c| extend(&mut part, &c));
         Dims {
             customer: party(d, s, Party::Customer, s.customers, threads),
             supplier: party(d, s, Party::Supplier, s.suppliers, threads),
@@ -140,20 +167,125 @@ impl Dims {
         }
     }
 
-    /// `lineorder` batch `lo` joined with the dimensions.
-    pub(crate) fn join(&self, d: &Dict, lo: RecordBatch) -> RecordBatch {
-        let rows = |col: usize| -> Vec<u32> {
-            let keys = lo
-                .column(col)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .expect("Int32 key");
-            keys.values().iter().map(|&k| k as u32 - 1).collect()
-        };
-        let mut cols: Vec<ArrayRef> = lo.columns().to_vec();
-        cols.extend(self.customer.columns(d, rows(CUSTKEY)));
-        cols.extend(self.supplier.columns(d, rows(SUPPKEY)));
-        cols.extend(self.part.columns(d, &rows(PARTKEY)));
-        RecordBatch::try_new(FLAT.clone(), cols).expect("columns match the schema")
+    /// The columns after `p_partkey` of the parts keyed `rows` (1-based), a
+    /// column at a time.
+    fn gather_part(&self, d: &Dict, rows: &[i32], out: &mut Columns<PartWords>) {
+        let ((name, color), category, brand, kind, container, size) = &self.part;
+        let (o_name, o_mfgr, o_cat, o_brand, o_color, o_type, o_size, o_container) = out;
+        // as `part_words` maps them (the tests check the join against it)
+        let cat = |r: usize| category[r] as usize;
+        o_name.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.names[name[r] as usize])),
+        );
+        o_mfgr.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.mfgrs[cat(r) / 5])),
+        );
+        o_cat.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.categories[cat(r)])),
+        );
+        o_brand.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.brands[cat(r) * 40 + brand[r] as usize])),
+        );
+        o_color.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.colors[color[r] as usize])),
+        );
+        o_type.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.types.views[kind[r] as usize])),
+        );
+        o_size.extend(rows.iter().map(|&k| k as usize - 1).map(|r| size[r]));
+        o_container.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.containers.views[container[r] as usize])),
+        );
     }
+}
+
+/// `lineorder`'s lines joined with `dims`. See [`generator`].
+#[derive(Debug, Clone)]
+struct Join<D> {
+    lines: D,
+    dims: Arc<Dims>,
+}
+
+impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
+    type Item = Children<FlatRow>;
+
+    fn sample(&mut self, rng: &mut impl Rng) -> Children<FlatRow> {
+        let cols = self.collect(rng, 1);
+        Children(cols.values.rows_from(0).collect())
+    }
+
+    /// The lines, then each dimension column gathered from them in a pass
+    /// of its own: the lookups of one column are independent, so their
+    /// cache misses overlap.
+    fn collect_into(
+        &mut self,
+        cols: &mut ChildCols<Columns<FlatRow>>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) {
+        let d = Dict::get();
+        let lines = self.lines.collect(rng, n).values;
+        let ((_, _, cust, part, supp, ..), _) = &lines;
+        let (lo, (c, s, p)) = &mut cols.values;
+        let dims = &self.dims;
+        dims.customer.gather(
+            d,
+            cust,
+            (&mut c.0, &mut c.1, &mut c.2, &mut c.3, &mut c.4, &mut c.5),
+        );
+        c.6.push_n(
+            cust.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.segments.views[dims.customer.segment[r] as usize])),
+        );
+        dims.supplier.gather(
+            d,
+            supp,
+            (&mut s.0, &mut s.1, &mut s.2, &mut s.3, &mut s.4, &mut s.5),
+        );
+        dims.gather_part(d, part, p);
+        if lo.rows() == 0 {
+            *lo = lines;
+        } else {
+            for l in lines.rows_from(0) {
+                lo.push(l);
+            }
+        }
+        cols.sources += n;
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.lines.skip(n);
+    }
+}
+
+/// `lineorder_flat` at scale `s`, joined with `dims` (which may be empty
+/// for its schema alone).
+pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> Arc<dyn TableGen> {
+    let d = Dict::get();
+    let names: Vec<&str> = LINEORDER
+        .into_iter()
+        .chain(Party::Customer.columns()[1..].iter().copied())
+        .chain(Party::Supplier.columns()[1..7].iter().copied())
+        .chain(PART_COLUMNS)
+        .collect();
+    let lines = Join {
+        lines: children_of::<_, Line, _>(orders(s), lines(d)),
+        dims,
+    };
+    table(TableName::LineOrderFlat, s.orders, named_all(&names, lines))
 }

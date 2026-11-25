@@ -48,6 +48,7 @@ minute.
 | `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; use a disk path when the output will not fit in memory |
 | `--tpcgen-cli`, `--tsbs-generate-data` | found on `PATH` | reference binaries |
 | `--no-reference` | | skip reference tools |
+| `--json` | | save a versioned JSON report to a path outside the temporary output directory |
 
 At `--scale 1`, DSB and the H2O join run at SF 1 and 1e7 rows (their
 smallest sizes), TPC-C at 10 warehouses, YCSB at 1M records and 10M
@@ -60,8 +61,77 @@ table above:
 cargo xtask bench --generators tpch --scale 1,10 --formats text,parquet --out /var/tmp
 ```
 
-The numbers are printed, not committed: a crate README keeps its current
-performance section, and run results go in the PR description.
+### JSON reports
+
+```bash
+cargo xtask bench --json /tmp/benchmark.json
+```
+
+The Markdown table is still printed. JSON follows
+[`xtask/benchmark-report.schema.json`](xtask/benchmark-report.schema.json)
+(JSON Schema draft 2020-12). The report is checkpointed atomically after
+each configuration; `complete: false` identifies an interrupted run.
+`complete: true` means the matrix finished, even if samples failed or
+unavailable tools were skipped. Failed samples still make the command exit
+with a nonzero status. Build time is excluded from measurements.
+
+Version 1 uses these conventions:
+
+- `engines` identifies implementations by an open string ID, version and
+  source revision. Unknown versions/revisions are `null`. Add an engine
+  here and append its `measurements`; the format has no fixed engine list.
+- Each measurement identifies the engine, workload, requested scale,
+  resolved size, output format and actual thread argument. `size` is a
+  display label; `command.args` records the exact resolved parameters,
+  including seeds when explicitly passed. Generator defaults are pinned
+  by the source revision. The single-threaded Go reference is recorded
+  once per unique command, even when compared to several populate thread
+  counts in the Markdown table.
+- `samples` retains every timed attempt in execution order for that
+  measurement. Successful samples store process wall time in **seconds**
+  and output-file size in **bytes**, without display rounding. This
+  includes process startup and writing, but excludes directory setup,
+  size collection and cleanup; writes are not explicitly synced to disk.
+  Failed samples carry an error string, never a fabricated zero timing.
+- `summary` selects the minimum wall time and the bytes from that same
+  sample. It is `null` if any attempt failed. There are no separate
+  warmups (`warmup_runs: 0`); filesystem caches are not flushed.
+- `arrow` means batches generated and dropped in memory, not Arrow IPC
+  files. Its `output_bytes: 0` is a file count, not a memory or throughput
+  measurement. No peak-memory or generated-row-count metric is inferred.
+- `source`, `environment`, `configuration` and `invocation` record
+  provenance, host details, compiler settings and the requested matrix.
+  Unavailable metadata is `null`. Timestamps are Unix seconds in UTC.
+  `skipped` distinguishes unavailable resources/tools and unsupported
+  formats from successful measurements.
+
+Compare engines only when workload parameters, output semantics, hardware
+and thread counts match; this runner does not verify output equivalence.
+Keep separate reports for different machines or invocations, rather than
+appending measurements under another run's environment. Consumers should
+reject unknown `schema_version` values and check that engine IDs are unique,
+every measurement references a declared engine, and each sample count
+matches `configuration.runs`. Additional engines can emit this format from
+their own harness; running them through `xtask` requires a command adapter.
+
+The [Apple M3 Max baseline](benchmarks/results/2026-11-25-m3-max.json)
+records the default matrix at the source revision named in the file.
+Validate reports with a draft 2020-12 validator, for example:
+
+```bash
+uv run --with jsonschema python - <<'PY'
+import json
+from pathlib import Path
+from jsonschema import Draft202012Validator
+
+schema = json.loads(Path("xtask/benchmark-report.schema.json").read_text())
+Draft202012Validator.check_schema(schema)
+validator = Draft202012Validator(schema)
+for path in Path("benchmarks/results").glob("*.json"):
+    validator.validate(json.loads(path.read_text()))
+    print(f"valid: {path}")
+PY
+```
 
 ## Not built
 

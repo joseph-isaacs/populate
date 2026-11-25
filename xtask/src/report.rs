@@ -108,6 +108,7 @@ impl Report {
         for (id, p) in [
             ("tpcgen-cli", &o.tpcgen_cli),
             ("tsbs_generate_data", &o.tsbs_ref),
+            ("ssb-dbgen", &o.ssb_dbgen),
         ] {
             if p.is_some() {
                 engines.push(json!({"id": id, "version": null, "revision": null}));
@@ -181,7 +182,7 @@ impl Report {
                 "size": case.size,
                 "format": if case.format == "none" { "arrow" } else { case.format },
                 "threads": threads,
-                "command": {"program": cmd.program, "args": cmd.args, "stdout_file": cmd.stdout},
+                "command": {"program": cmd.program, "args": cmd.args, "stdout_file": cmd.stdout, "env": cmd.env},
                 "samples": samples(times),
                 "summary": summary(times)
             }));

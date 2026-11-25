@@ -34,9 +34,11 @@ format at `--scale 1` on 1 thread and on every core, and prints a Markdown
 table of wall time and output size. Where a reference tool is on `PATH` it
 runs alternately with ours and the table gets a speedup column:
 `tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
-`tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
-takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
-minute.
+`tsbs_generate_data` for TSBS. SSB's single-threaded C `dbgen` can be supplied
+with `--ssb-dbgen` (or named `ssb-dbgen` on `PATH`); its text output is
+compared with populate at each requested thread count. Missing tools are
+skipped. The default run takes about 10 minutes on 4 cores;
+`--scale 0.1 --runs 1` takes under a minute.
 
 | flag | default | |
 |---|---|---|
@@ -47,6 +49,8 @@ minute.
 | `--runs` | `3` | runs per configuration; the best wall time is kept |
 | `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; use a disk path when the output will not fit in memory |
 | `--tpcgen-cli`, `--tsbs-generate-data` | found on `PATH` | reference binaries |
+| `--ssb-dbgen` | `ssb-dbgen` on `PATH` | SSB reference binary; text output only, single-threaded |
+| `--ssb-dists` | beside the SSB binary or one directory above it | SSB reference's `dists.dss` file |
 | `--no-reference` | | skip reference tools |
 | `--json` | | save a versioned JSON report to a path outside the temporary output directory |
 
@@ -83,8 +87,10 @@ Version 1 uses these conventions:
 - Each measurement identifies the engine, workload, requested scale,
   resolved size, output format and actual thread argument. `size` is a
   display label; `command.args` records the exact resolved parameters,
-  including seeds when explicitly passed. Generator defaults are pinned
-  by the source revision. The single-threaded Go reference is recorded
+  including seeds when explicitly passed. Optional `command.env` records
+  environment overrides (such as SSB's `DSS_PATH` output directory); an
+  absent object means no overrides. Generator defaults are pinned
+  by the source revision. Single-threaded Go and C references are recorded
   once per unique command, even when compared to several populate thread
   counts in the Markdown table.
 - `samples` retains every timed attempt in execution order for that
@@ -116,6 +122,15 @@ their own harness; running them through `xtask` requires a command adapter.
 
 The [Apple M3 Max baseline](benchmarks/results/2026-11-25-m3-max.json)
 records the default matrix at the source revision named in the file.
+The [reference comparison](benchmarks/results/2026-11-25-m3-max-references.json)
+runs populate interleaved with tpcgen-rs 4.0.0 (TPC-H and TPC-DS), Go TSBS,
+and C SSB. Reference versions/revisions are annotated from installation
+and build metadata. Both TPC Parquet writers use Snappy with their own
+default layouts; this measures the complete tools, including their
+writer settings, rather than isolating generator kernels.
+The TPC-DS reference also writes a small, timestamped `dbgen_version` file;
+populate writes the 24 data tables. That metadata file is included in the
+reference's measured time and bytes, and excluded from data-equivalence checks.
 Validate reports with a draft 2020-12 validator, for example:
 
 ```bash

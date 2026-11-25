@@ -319,6 +319,13 @@
                 "string",
                 "null"
               ]
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Explicit environment overrides for this command; absent means no overrides."
             }
           },
           "required": [

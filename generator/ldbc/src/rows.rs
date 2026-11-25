@@ -573,10 +573,12 @@ macro_rules! tuple_cols {
     };
 }
 
+tuple_cols!(A 0, B 1);
 tuple_cols!(A 0, B 1, C 2);
 tuple_cols!(A 0, B 1, C 2, D 3);
 tuple_cols!(A 0, B 1, C 2, D 3, E 4);
 tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
 tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
@@ -614,6 +616,8 @@ tuple_rows!(A 0, B 1, C 2);
 tuple_rows!(A 0, B 1, C 2, D 3);
 tuple_rows!(A 0, B 1, C 2, D 3, E 4);
 tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
 /// Tables' columns as one [`Rows`] per table.
 pub fn rows_of(cols: impl IntoRows) -> Vec<Rows> {
@@ -660,7 +664,7 @@ impl TableDef {
     }
 
     /// The table of `name` whose columns are `cols`, named `names`.
-    fn of(name: &'static str, names: &[&'static str], cols: &[Col]) -> TableDef {
+    pub(crate) fn of(name: &'static str, names: &[&'static str], cols: &[Col]) -> TableDef {
         assert_eq!(names.len(), cols.len(), "{name}: a name per column");
         let cols: Vec<(&'static str, Kind)> = names
             .iter()

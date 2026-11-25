@@ -7,12 +7,15 @@
 //! (`populate_sink_arrow::schemas_of`), and [`DYNAMIC`] (the same tables
 //! as [`TableDef`]s) is derived from them too.
 
+use crate::java::MS_PER_DAY;
 use arrow_array::ArrayRef;
 use arrow_schema::{Field, Schema, SchemaRef};
 use populate_core::{
-    ChildCols, Children, Columns, Date32, Nullable, Sink, StrCol, Timestamp, Validity, time_unit,
+    ChildCols, Children, Columns, Date32, Nullable, Sink, StrBuf, StrCol, Timestamp, Validity,
+    time_unit,
 };
 use populate_sink_arrow::IntoArrowArray;
+use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 
 /// A timestamp: epoch milliseconds, UTC.
@@ -278,24 +281,6 @@ pub const STATIC_TABLES: [(&str, &[&str]); 4] = [
     ("TagClass", &["id", "name", "url", "SubclassOfTagClassId"]),
 ];
 
-/// Indices into [`DYNAMIC`].
-pub mod t {
-    pub const PERSON: usize = 0;
-    pub const HAS_INTEREST: usize = 1;
-    pub const STUDY_AT: usize = 2;
-    pub const WORK_AT: usize = 3;
-    pub const KNOWS: usize = 4;
-    pub const FORUM: usize = 5;
-    pub const FORUM_TAG: usize = 6;
-    pub const FORUM_MEMBER: usize = 7;
-    pub const POST: usize = 8;
-    pub const POST_TAG: usize = 9;
-    pub const COMMENT: usize = 10;
-    pub const COMMENT_TAG: usize = 11;
-    pub const LIKES_POST: usize = 12;
-    pub const LIKES_COMMENT: usize = 13;
-}
-
 // ============================================================================
 // Columns by kind
 // ============================================================================
@@ -396,6 +381,15 @@ impl Col {
         self.len() == 0
     }
 
+    /// Bytes of string data (0 for other columns).
+    pub fn str_bytes(&self) -> usize {
+        match self {
+            Col::Str(v) => v.data().len(),
+            Col::OptStr(v) => v.values.data().len(),
+            _ => 0,
+        }
+    }
+
     /// The Arrow array: the buffers move into it.
     pub fn into_array(self) -> ArrayRef {
         match self {
@@ -413,59 +407,21 @@ impl Col {
 
     /// The same values as epoch milliseconds, for the `--epoch-millis`
     /// layout: timestamps as they are, dates at their midnight.
-    pub fn to_epoch_millis(&self) -> Col {
+    pub fn into_epoch_millis(self) -> Col {
         match self {
             Col::Ts(v) => Col::I64(v.iter().map(|t| t.0).collect()),
-            Col::Date(v) => Col::I64(v.iter().map(|d| d.0 as i64 * 86_400_000).collect()),
-            c => c.clone(),
-        }
-    }
-
-    pub fn i64(&mut self, x: i64) {
-        match self {
-            Col::I64(v) => v.push(x),
-            Col::Ts(v) => v.push(Timestamp(x)),
-            _ => unreachable!("not an i64 column"),
-        }
-    }
-
-    pub fn i32(&mut self, x: i32) {
-        match self {
-            Col::I32(v) => v.push(x),
-            _ => unreachable!("not an i32 column"),
-        }
-    }
-
-    pub fn opt_i64(&mut self, x: Option<i64>) {
-        match self {
-            Col::OptI64(v) => v.push(x),
-            _ => unreachable!("not an optional i64 column"),
-        }
-    }
-
-    pub fn str(&mut self, s: &str) {
-        match self {
-            Col::Str(v) => v.push_str(s),
-            Col::OptStr(v) => v.push(Some(s)),
-            _ => unreachable!("not a string column"),
+            Col::Date(v) => Col::I64(v.iter().map(|d| d.0 as i64 * MS_PER_DAY).collect()),
+            c => c,
         }
     }
 
     /// Epoch milliseconds of a timestamp column (held as timestamps, or as
     /// numbers by the `--epoch-millis` layout).
-    pub fn epoch_ms(&self) -> impl ExactSizeIterator<Item = i64> + '_ {
-        (0..self.len()).map(move |r| match self {
-            Col::Ts(v) => v[r].0,
-            Col::I64(v) => v[r],
-            _ => unreachable!("not a timestamp column"),
-        })
-    }
-
-    /// The values of an `i64` column.
-    pub fn i64s(&self) -> &[i64] {
+    pub fn epoch_ms(&self) -> Cow<'_, [i64]> {
         match self {
-            Col::I64(v) => v,
-            _ => unreachable!("not an i64 column"),
+            Col::Ts(v) => Cow::Owned(v.iter().map(|t| t.0).collect()),
+            Col::I64(v) => Cow::Borrowed(v),
+            _ => unreachable!("not a timestamp column"),
         }
     }
 
@@ -564,6 +520,13 @@ impl Col {
             }),
         }
     }
+}
+
+/// Append a present string value that `f` writes in place.
+#[inline]
+pub fn push_some_with(col: &mut Nullable<StrCol>, f: impl FnOnce(&mut StrBuf<'_>)) {
+    col.values.push_with(f);
+    col.valid.push(true);
 }
 
 /// Columns that are one or more [`Col`]s: every typed column buffer, and
@@ -685,22 +648,18 @@ impl TableDef {
     }
 
     /// The table of `name` whose columns are `cols`, named `names`.
-    fn of(name: &str, names: &[&str], cols: &[Col]) -> TableDef {
+    fn of(name: &'static str, names: &[&'static str], cols: &[Col]) -> TableDef {
         assert_eq!(names.len(), cols.len(), "{name}: a name per column");
         let cols: Vec<(&'static str, Kind)> = names
             .iter()
             .zip(cols)
-            .map(|(&n, c)| (leak(n), c.kind()))
+            .map(|(&n, c)| (n, c.kind()))
             .collect();
         TableDef {
-            name: leak(name),
+            name,
             cols: Box::leak(cols.into_boxed_slice()),
         }
     }
-}
-
-fn leak(s: &str) -> &'static str {
-    Box::leak(s.to_owned().into_boxed_str())
 }
 
 /// The dynamic tables, in [`Raw`] order: their columns are the kinds of

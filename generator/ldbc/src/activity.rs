@@ -11,14 +11,13 @@
 //! the same points.
 
 use crate::dates::{self, Dates, SEVEN_DAYS};
-use crate::dict::{Dictionaries, FlashMobTag, Ip, PowerDistribution, push_u64};
-use crate::java::MS_PER_DAY;
-use crate::java::{clamp, push_utf16};
+use crate::dict::{Dictionaries, FlashMobTag, Ip, PowerDistribution};
+use crate::java::{MS_PER_DAY, clamp, push_utf16};
 use crate::jrand::{Aspect, Farm};
 use crate::knows::Knows;
 use crate::params::{POST_MAPPING, Params};
 use crate::person::{Hot, Person};
-use crate::rows::{EdgeRow, RawCols, Ts, raw};
+use crate::rows::{EdgeRow, RawCols, Ts, push_some_with, raw};
 use populate_core::{Columns, Date32, Sink, Timestamp};
 use std::mem::{replace, take};
 use std::ops::Range;
@@ -276,27 +275,27 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             last.push_str(&d.names.pool[p.last_name as usize]);
             gender.push_str(if p.gender == 0 { "female" } else { "male" });
             birthday.push(Date32(p.birthday.div_euclid(MS_PER_DAY) as i32));
-            ip.push_utf8_with(|s| p.ip.write(s));
+            ip.push_with(|s| p.ip.write(s));
             browser.push_str(&d.browsers.names[p.browser as usize]);
             city.push(p.city);
-            lang.push_utf8_with(|s| {
+            lang.push_with(|s| {
                 for (k, &l) in p.languages.iter().enumerate() {
                     if k > 0 {
-                        s.push(b';');
+                        s.push_ascii(b';');
                     }
-                    s.extend_from_slice(d.languages.name(l).as_bytes());
+                    s.push_str(d.languages.name(l));
                 }
             });
-            email.push_utf8_with(|s| {
-                let base = d.names.email_base[p.first_name as usize].as_bytes();
+            email.push_with(|s| {
+                let base = &d.names.email_base[p.first_name as usize];
                 for (k, &e) in p.emails.iter().enumerate() {
                     if k > 0 {
-                        s.push(b';');
+                        s.push_ascii(b';');
                     }
-                    s.extend_from_slice(base);
-                    push_u64(s, p.account_id as u64);
-                    s.push(b'@');
-                    s.extend_from_slice(d.emails.domains[e as usize].as_bytes());
+                    s.push_str(base);
+                    s.push_u64(p.account_id as u64);
+                    s.push_ascii(b'@');
+                    s.push_str(&d.emails.domains[e as usize]);
                 }
             });
         }
@@ -963,11 +962,10 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             deleted.push(core.deleted);
             pid.push(id);
             image.push(None::<&str>);
-            ips.push_utf8_with(|s| ip.write(s));
+            ips.push_with(|s| ip.write(s));
             browsers.push_str(&w.d.browsers.names[browser as usize]);
             lang.push(Some(w.d.languages.name(f.language)));
-            content.values.push_utf8_with(|s| push_utf16(s, &self.text));
-            content.valid.push(true);
+            push_some_with(content, |s| push_utf16(s, &self.text));
             len.push(self.text.len() as i32);
             creator.push(author.account_id);
             forum.push(f.id);
@@ -1205,11 +1203,11 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 deletions.push(ts(deletion));
                 deleteds.push(deleted);
                 ids.push(id);
-                ips.push_utf8_with(|s| ip.write(s));
+                ips.push_with(|s| ip.write(s));
                 browsers.push_str(&w.d.browsers.names[browser as usize]);
                 match short {
                     Some(s) => content.push_str(s),
-                    None => content.push_utf8_with(|s| push_utf16(s, &self.text)),
+                    None => content.push_with(|s| push_utf16(s, &self.text)),
                 }
                 lens.push(len as i32);
                 creator.push(author.account_id);
@@ -1306,13 +1304,12 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 deletions.push(ts(deletion));
                 deleteds.push(deleted);
                 ids.push(id);
-                image.values.push_utf8_with(|s| {
-                    s.extend_from_slice(b"photo");
-                    push_u64(s, id as u64);
-                    s.extend_from_slice(b".jpg");
+                push_some_with(image, |s| {
+                    s.push_str("photo");
+                    s.push_u64(id as u64);
+                    s.push_str(".jpg");
                 });
-                image.valid.push(true);
-                ips.push_utf8_with(|s| ip.write(s));
+                ips.push_with(|s| ip.write(s));
                 browsers.push_str(&w.d.browsers.names[moderator.browser as usize]);
                 lang.push(None::<&str>);
                 content.push(None::<&str>);

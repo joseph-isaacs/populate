@@ -20,7 +20,7 @@
 use crate::csv::spark_micros;
 use crate::par_map;
 use crate::rows::{Col, Kind, OrgEdgeRow, RawCols, Rows, TableDef};
-use populate_core::Columns;
+use populate_core::{Columns, Sink, Timestamp};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -461,11 +461,12 @@ fn freq_order(a: &[V], b: &[V]) -> Ordering {
 fn push_row(out: &mut Rows, r: &[V]) {
     for (c, v) in out.cols.iter_mut().zip(r) {
         match (c, v) {
-            (c @ (Col::I64(_) | Col::Ts(_)), V::Int(x)) => c.i64(*x),
-            (c @ Col::I32(_), V::Int(x)) => c.i32(*x as i32),
-            (c @ Col::OptI64(..), V::Int(x)) => c.opt_i64(Some(*x)),
-            (c @ Col::OptI64(..), V::Null) => c.opt_i64(None),
-            (c @ Col::Str(..), V::Str(s)) => c.str(s),
+            (Col::I64(c), V::Int(x)) => c.push(*x),
+            (Col::Ts(c), V::Int(x)) => c.push(Timestamp(*x)),
+            (Col::I32(c), V::Int(x)) => c.push(*x as i32),
+            (Col::OptI64(c), V::Int(x)) => c.push(Some(*x)),
+            (Col::OptI64(c), V::Null) => c.push(None),
+            (Col::Str(c), V::Str(s)) => c.push_str(s),
             (c, v) => unreachable!("{v:?} in a {c:?} column"),
         }
     }

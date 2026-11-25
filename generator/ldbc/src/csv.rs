@@ -95,12 +95,6 @@ fn timestamp_text<const Z: bool>(out: &mut Vec<u8>, ms: i64, days: &mut DayCache
     }
 }
 
-/// A date column value.
-#[inline]
-pub fn date(out: &mut Vec<u8>, ms: i64) {
-    out.extend_from_slice(&ymd(spark_micros(ms).div_euclid(86_400_000_000)));
-}
-
 #[inline]
 fn int(out: &mut Vec<u8>, v: i64) {
     if v < 0 {
@@ -223,7 +217,7 @@ fn write_styled<const FACTOR: bool>(def: &TableDef, rows: &Rows, out: &mut Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::java::ms_of_ymd;
+    use crate::java::{MS_PER_DAY, ms_of_ymd};
 
     #[test]
     fn spark_dates() {
@@ -233,9 +227,8 @@ mod tests {
             String::from_utf8(v).unwrap(),
             "2010-01-03T15:10:31.499+00:00"
         );
-        let mut v = Vec::new();
-        date(&mut v, ms_of_ymd(1984, 3, 11));
-        assert_eq!(String::from_utf8(v).unwrap(), "1984-03-11");
+        let day = ms_of_ymd(1984, 3, 11) / MS_PER_DAY;
+        assert_eq!(&ymd(day), b"1984-03-11");
     }
 
     #[test]

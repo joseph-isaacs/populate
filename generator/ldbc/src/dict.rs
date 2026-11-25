@@ -6,6 +6,7 @@ use crate::fdlibm::{floor_div, log1p};
 use crate::java::{binary_search_f32, lines, parse_f32, parse_f64, parse_i32, split, trim};
 use crate::jrand::{Aspect, Farm, JavaRandom};
 use crate::params::Params;
+use populate_core::StrBuf;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -313,13 +314,14 @@ pub struct Ip {
 }
 
 impl Ip {
-    pub fn write(self, out: &mut Vec<u8>) {
+    /// `a.b.c.d`, as a string value.
+    pub fn write(self, out: &mut StrBuf<'_>) {
         let ip = self.ip as u32;
         for (k, shift) in [24, 16, 8, 0].into_iter().enumerate() {
             if k > 0 {
-                out.push(b'.');
+                out.push_ascii(b'.');
             }
-            push_u64(out, ((ip >> shift) & 0xFF) as u64);
+            out.push_u64(((ip >> shift) & 0xFF) as u64);
         }
     }
 }

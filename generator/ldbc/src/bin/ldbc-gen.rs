@@ -237,10 +237,13 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             let (inserts, deletes) = run.finish(a.threads);
             for (kind, tables) in [("inserts", inserts), ("deletes", deletes)] {
                 for t in tables {
-                    for (id, r) in t.batches {
-                        rows += r.len();
+                    for (id, parts) in t.batches {
                         let dir = a.out.join(kind).join("dynamic").join(t.def.name);
-                        write_table(a, t.def, r, &dir.join(format!("batch_id={id}")), "part-0")?;
+                        let dir = dir.join(format!("batch_id={id}"));
+                        for (k, r) in parts.into_iter().enumerate() {
+                            rows += r.len();
+                            write_table(a, t.def, r, &dir, &format!("part-{k}"))?;
+                        }
                     }
                 }
             }

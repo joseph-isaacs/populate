@@ -27,6 +27,7 @@ use arrow_schema::SchemaRef;
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 use std::collections::BTreeMap;
+use std::mem::replace;
 use std::sync::Mutex;
 
 /// How inserts and deletes are grouped (`--batch-period`).
@@ -183,10 +184,15 @@ pub struct BiRun<'a> {
 }
 
 /// One table's batches: `(batch id, rows sorted by date)`, by batch id.
+/// A batch is one or more parts (files), each holding at most about
+/// [`PART_BYTES`] of any string column.
 pub struct Batches {
     pub def: &'static TableDef,
-    pub batches: Vec<(String, Rows)>,
+    pub batches: Vec<(String, Vec<Rows>)>,
 }
+
+/// String bytes per column after which a batch starts a new part.
+pub const PART_BYTES: usize = 1 << 30;
 
 /// One table's rows to sort and cut into batches, in chunk order.
 type BatchJob = (&'static TableDef, Vec<Rows>);
@@ -217,7 +223,7 @@ impl<'a> BiRun<'a> {
         let mut snap = Vec::with_capacity(rows.len());
         let mut ins = Vec::with_capacity(rows.len());
         for (p, r) in t.snapshot.iter().zip(&rows) {
-            let created: Vec<i64> = r.cols[0].epoch_ms().collect();
+            let created = r.cols[0].epoch_ms();
             let before: Vec<u32> = (0..created.len() as u32)
                 .filter(|&j| created[j as usize] < thr)
                 .collect();
@@ -233,7 +239,7 @@ impl<'a> BiRun<'a> {
             .map(|p| {
                 let (r, def) = (&rows[p.src], self.layout.dynamic[p.src].def);
                 let col = |n: &str| def.cols.iter().position(|c| c.0 == n).expect("column");
-                let deleted: Vec<i64> = r.cols[col("deletionDate")].epoch_ms().collect();
+                let deleted = r.cols[col("deletionDate")].epoch_ms();
                 let explicit = r.cols[col("explicitlyDeleted")].bools();
                 let idx: Vec<u32> = (0..deleted.len() as u32)
                     .filter(|&j| explicit[j as usize] && (thr..end).contains(&deleted[j as usize]))
@@ -256,8 +262,10 @@ impl<'a> BiRun<'a> {
             .flat_map(|(k, p)| {
                 p.cols[0]
                     .epoch_ms()
+                    .iter()
                     .enumerate()
-                    .map(move |(j, d)| (k as u32, j as u32, d))
+                    .map(move |(j, &d)| (k as u32, j as u32, d))
+                    .collect::<Vec<_>>()
             })
             .collect();
         order.sort_by_key(|&(_, _, d)| d);
@@ -268,13 +276,20 @@ impl<'a> BiRun<'a> {
         let batches = by
             .into_iter()
             .map(|(id, idx)| {
+                let mut out = Vec::new();
                 let mut r = Rows::new(def);
-                for (k, j) in idx {
+                for (n, (k, j)) in idx.into_iter().enumerate() {
+                    // a part's strings stay well within a column's 2 GiB
+                    // (checked every 1,024 rows, a few MB of text at most)
+                    if n % 1024 == 0 && r.cols.iter().any(|c| c.str_bytes() > PART_BYTES) {
+                        out.push(replace(&mut r, Rows::new(def)));
+                    }
                     for (c, src) in r.cols.iter_mut().zip(&parts[k as usize].cols) {
                         c.push_from(src, j as usize);
                     }
                 }
-                (id, r)
+                out.push(r);
+                (id, out)
             })
             .collect();
         Batches { def, batches }

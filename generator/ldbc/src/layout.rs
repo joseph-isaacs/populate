@@ -105,7 +105,7 @@ impl OutTable {
                 if c.kind() == k {
                     c
                 } else {
-                    c.to_epoch_millis()
+                    c.into_epoch_millis()
                 }
             })
             .collect();
@@ -278,7 +278,7 @@ fn attrs(table: &str) -> Vec<Explode> {
 
 impl Layout {
     pub fn new(o: LayoutOptions) -> Self {
-        let build = |raw: &[&'static TableDef]| -> Vec<OutTable> {
+        let build = |raw: &'static [TableDef]| -> Vec<OutTable> {
             let kind = |k: Kind| match k {
                 Kind::Ts | Kind::Date if o.epoch_millis => Kind::I64,
                 k => k,
@@ -355,10 +355,9 @@ impl Layout {
             nodes.extend(derived);
             nodes
         };
-        let refs = |defs: &'static [TableDef]| defs.iter().collect::<Vec<_>>();
         Layout {
-            dynamic: build(&refs(&DYNAMIC)),
-            statics: build(&refs(&STATIC)),
+            dynamic: build(&DYNAMIC),
+            statics: build(&STATIC),
             explode_edges: o.explode_edges,
             explode_attrs: o.explode_attrs,
         }

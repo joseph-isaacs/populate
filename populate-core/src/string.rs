@@ -194,32 +194,6 @@ impl StrCol {
         self.end_value();
     }
 
-    /// Append one value whose bytes `f` writes into the column's byte
-    /// buffer, for writers that produce UTF-8 bytes themselves (a decimal
-    /// formatter, a UTF-16 decoder). The bytes written are checked: ASCII
-    /// in one vectorised pass, anything else as UTF-8.
-    ///
-    /// # Panics
-    ///
-    /// If the bytes `f` writes are not valid UTF-8, or `f` changes bytes of
-    /// earlier values (the buffer is cut back to before `f` first).
-    #[inline]
-    pub fn push_utf8_with(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
-        self.start();
-        let start = self.data.len();
-        f(&mut self.data);
-        assert!(
-            self.data.len() >= start,
-            "push_utf8_with: earlier values cut"
-        );
-        let new = &self.data[start..];
-        if !new.is_ascii() && std::str::from_utf8(new).is_err() {
-            self.data.truncate(start);
-            panic!("push_utf8_with: bytes are not UTF-8");
-        }
-        self.end_value();
-    }
-
     /// Append `n` values, each written by `f` straight into the buffer.
     /// The same as `n` calls of [`Self::push_with`], but the buffers are
     /// held in locals for the loop, so the compiler can keep their lengths

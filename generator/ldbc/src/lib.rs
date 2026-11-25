@@ -19,11 +19,10 @@
 //!    one seed per block.
 //!
 //! Steps 1 and 2 are a global pre-pass ([`Ldbc::new`], blocks in
-//! parallel). Step 3 is [`Ldbc::raw`], one distribution of all 14
-//! tables (a `fan_out` over chunks, its schemas read off its row types):
-//! a chunk is
-//! [`SEGMENT`] persons of an activity block, generated from the state the
-//! block reaches at its first person, so it is a pure function of its
+//! parallel). Step 3 is [`Ldbc::raw`], one distribution of all 14 tables
+//! (a `fan_out` over chunks, its schemas read off its row types). A chunk
+//! is [`SEGMENT`] persons of an activity block, generated from the state
+//! the block reaches at its first person, so it is a pure function of its
 //! index and the pre-pass, and any number of threads gives the same
 //! output.
 //!
@@ -56,11 +55,9 @@ use populate_builtins::{fan_out, named_all, range};
 use populate_core::{Distribution, Sink};
 use populate_table::DistTables;
 use populate_table::text::TextChunks;
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 use rows::{
     DYNAMIC, DYNAMIC_COLUMNS, DYNAMIC_NAMES, Raw, RawCols, Rows, STATIC_TABLES, StaticCols,
-    TableDef, rows_of,
+    Statics, TableDef, rows_of,
 };
 use std::collections::HashSet;
 use std::env::var_os;
@@ -327,8 +324,16 @@ impl Ldbc {
     }
 
     /// Append chunk `i`'s rows of every dynamic table to `out`.
+    ///
+    /// With [`Self::collect_factors`] on, `out` must hold no other chunk:
+    /// the factor tables take in every row of it.
     pub fn chunk_into(&self, i: u64, out: &mut RawCols) {
-        let fresh = out.0.0.values.1.is_empty();
+        if self.factor_input.is_some() {
+            assert!(
+                out.0.0.values.1.is_empty(),
+                "the factor tables take one chunk at a time"
+            );
+        }
         let (b, start, end) = self.segments[i as usize];
         let k = start / SEGMENT;
         let members = &self.blocks[b][..];
@@ -343,13 +348,12 @@ impl Ldbc {
         }
         drop(states);
         if let Some(f) = &self.factor_input {
-            assert!(fresh, "the factor tables take one chunk at a time");
             f.add(i, out);
         }
     }
 
     /// Chunk `i`'s rows of every dynamic table.
-    pub fn chunk(&self, i: u64) -> RawCols {
+    fn chunk(&self, i: u64) -> RawCols {
         let mut out = RawCols::default();
         self.chunk_into(i, &mut out);
         out
@@ -361,7 +365,9 @@ impl Ldbc {
     }
 
     /// The 14 dynamic tables as one distribution: a source row is a chunk,
-    /// and its children are the chunk's rows of each table.
+    /// and its children are the chunk's rows of each table. With
+    /// [`Self::collect_factors`] on, collect one source row at a time (as
+    /// [`Self::raw`] does).
     pub fn raw_dist(&self) -> impl Distribution<Item = Raw> + Clone + Sync + '_ {
         let names: Vec<&str> = DYNAMIC_COLUMNS.concat();
         named_all(
@@ -409,14 +415,14 @@ impl Ldbc {
 
     /// The four static tables as one distribution of a single source row,
     /// its children the tables' rows.
-    pub fn static_dist(&self) -> impl Distribution<Item = rows::Statics> + Clone + Sync + '_ {
+    pub fn static_dist(&self) -> impl Distribution<Item = Statics> + Clone + Sync + '_ {
         let names: Vec<&str> = STATIC_TABLES
             .iter()
             .flat_map(|t| t.1.iter().copied())
             .collect();
         named_all(
             &names,
-            fan_out::<_, rows::Statics, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
+            fan_out::<_, Statics, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
                 self.static_into(out)
             }),
         )
@@ -424,8 +430,9 @@ impl Ldbc {
 
     /// The four static tables ([`rows::STATIC`]).
     pub fn static_rows(&self) -> Vec<Rows> {
-        let mut rng = SmallRng::seed_from_u64(0);
-        rows_of(self.static_dist().collect(&mut rng, 1))
+        let mut cols = StaticCols::default();
+        self.static_into(&mut cols);
+        rows_of(cols)
     }
 
     fn static_into(&self, out: &mut StaticCols) {

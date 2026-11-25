@@ -5,7 +5,7 @@
 //!
 //! Inputs are gathered while the graph is generated ([`FactorInput::add`],
 //! one call per chunk): the person-sized tables in raw order, and the
-//! message-sized ones folded into counts. [`FactorInput::finish`] then
+//! message-sized ones folded into counts. [`FactorInput::finish_into`] then
 //! computes every table, in parallel.
 //!
 //! Spark's semantics are reproduced: `frequency` tables are ordered by
@@ -23,9 +23,10 @@ use crate::rows::{OrgEdgeRow, RawCols, Rows, StaticCols, TableDef, Ts, rows_of};
 use populate_core::{Children, Columns, Sink, Timestamp};
 use populate_table::resolve_threads;
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::mem::{swap, take};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{LazyLock, Mutex};
 use std::thread;
 
@@ -170,6 +171,8 @@ impl Counts {
 pub struct FactorInput {
     parts: Mutex<Vec<Option<Part>>>,
     counts: Mutex<Counts>,
+    /// The inputs are taken by the one [`FactorInput::finish_into`].
+    finished: AtomicBool,
 }
 
 /// Chunk `i` was taken in twice, or not at all.
@@ -189,6 +192,7 @@ impl FactorInput {
         FactorInput {
             parts: Mutex::new((0..num_chunks).map(|_| None).collect()),
             counts: Mutex::new(Counts::default()),
+            finished: AtomicBool::new(false),
         }
     }
 
@@ -269,8 +273,13 @@ impl FactorInput {
     }
 
     /// Write every factor table to `out`, on `threads` threads (0 = all
-    /// cores), from the chunks added and the static tables.
+    /// cores), from the chunks added and the static tables. Takes the
+    /// inputs, so it runs once.
     pub fn finish_into(&self, statics: &StaticCols, threads: usize, out: &mut FactorCols) {
+        assert!(
+            !self.finished.swap(true, AtomicOrdering::Relaxed),
+            "the factor tables are made once"
+        );
         let parts = take(&mut *self.parts.lock().expect("parts"));
         let counts = take(&mut *self.counts.lock().expect("counts"));
         let mut all = Part::default();
@@ -722,6 +731,9 @@ fn tables_into(c: &Ctx, out: &mut FactorCols, threads: usize) {
         (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9),
     ) = out;
     let jobs: Vec<Box<dyn FnOnce() + Send + '_>> = vec![
+        // the n-hop tables, the slowest, start first
+        Box::new(|| hops(c, &mut b0.values, 2)),
+        Box::new(|| hops(c, &mut b1.values, 4)),
         Box::new(|| city_num_persons(c, &mut a0.values)),
         Box::new(|| city_pairs(c, &mut a1.values)),
         Box::new(|| company_employees(c, &mut a2.values)),
@@ -734,8 +746,6 @@ fn tables_into(c: &Ctx, out: &mut FactorCols, threads: usize) {
         Box::new(|| day_messages(c, &mut a9.values)),
         Box::new(|| language_posts(c, &mut a10.values)),
         Box::new(|| len_messages(c, &mut a11.values)),
-        Box::new(|| hops(c, &mut b0.values, 2)),
-        Box::new(|| hops(c, &mut b1.values, 4)),
         Box::new(|| person_days(c, &mut b2.values)),
         Box::new(|| disjoint_employers(c, &mut b3.values)),
         Box::new(|| first_names(c, &mut b4.values)),
@@ -763,8 +773,9 @@ fn tables_into(c: &Ctx, out: &mut FactorCols, threads: usize) {
 /// Run every job, on up to `threads` threads (0 = all cores).
 fn run_all(jobs: Vec<Box<dyn FnOnce() + Send + '_>>, threads: usize) {
     let threads = resolve_threads(threads).min(jobs.len()).max(1);
-    let queue = Mutex::new(jobs);
-    let next = || queue.lock().expect("jobs").pop();
+    // in the order given
+    let queue = Mutex::new(VecDeque::from(jobs));
+    let next = || queue.lock().expect("jobs").pop_front();
     thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {

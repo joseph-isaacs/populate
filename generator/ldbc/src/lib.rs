@@ -419,9 +419,8 @@ impl Ldbc {
             &names,
             fan_out::<_, Factors, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
                 let f = self.factor_input.as_ref().expect("collect_factors first");
-                let statics = self
-                    .static_dist()
-                    .collect(&mut SmallRng::seed_from_u64(0), 1);
+                let mut statics = StaticCols::default();
+                self.static_into(&mut statics);
                 f.finish_into(&statics, threads, out);
             }),
         )

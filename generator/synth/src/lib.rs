@@ -1,4 +1,5 @@
-//! Synthetic dataset shapes on `populate-table`'s [`Chunks`] engine.
+//! Synthetic dataset shapes, each one populate [`Distribution`] run by
+//! `populate-table`'s [`DistTable`].
 //!
 //! Four tables that look like data people benchmark on, with no reference
 //! generator to match:
@@ -22,9 +23,9 @@
 //! sequential run, and the same seed always gives the same data.
 //!
 //! ```
-//! use populate_synth::{Synth, Taxi};
+//! use populate_synth::{Shape, Taxi};
 //!
-//! let trips = Synth::new(Taxi::new(42), 10_000);
+//! let trips = Taxi::new(42).table(10_000);
 //! let mut rows = 0;
 //! trips.for_each_batch(0, |b| rows += b.num_rows());
 //! assert_eq!(rows, 10_000);
@@ -51,8 +52,10 @@ use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
-use populate_table::Chunks;
+use populate_core::{Columnar, Columns, Distribution};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_table::chunks::{for_each_batch, try_for_each_batch};
+use populate_table::{Chunks, DistTable};
 use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 
@@ -61,17 +64,17 @@ pub const DEFAULT_BATCH_SIZE: usize = 8192;
 /// Default rows per chunk (one Parquet row group, one job on the pool).
 pub const DEFAULT_CHUNK_ROWS: u64 = 128 * 1024;
 
-/// A table whose rows are each a pure function of the row number.
+/// A table whose rows are each a pure function of the row number: one
+/// [`Distribution`] of named columns, its schema read off it.
 pub trait Shape: Sync {
     /// Table name, e.g. `taxi`.
     fn name(&self) -> &'static str;
 
-    /// Schema of every batch.
-    fn schema(&self) -> SchemaRef;
-
-    /// Rows `start..start + len`, which must equal those rows of any other
-    /// batch that covers them.
-    fn batch(&self, start: u64, len: usize) -> RecordBatch;
+    /// The table's rows. Row `r` depends only on `r`, so any range of rows
+    /// is the same however the table is cut.
+    fn dist(
+        &self,
+    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<Self>;
 
     /// Whether a column is written PLAIN by default: nearly every value distinct within
     /// a chunk (ids, times, continuous floats), where a dictionary costs
@@ -88,33 +91,65 @@ pub trait Shape: Sync {
         let _ = column;
         false
     }
+
+    /// `rows` rows of this shape.
+    fn table(
+        &self,
+        rows: u64,
+    ) -> Synth<
+        impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<Self>,
+    >
+    where
+        Self: Sized,
+    {
+        Synth::from_dist(self, self.dist(), rows)
+    }
 }
 
-/// A [`Shape`] of `rows` rows, cut into chunks of batches: a [`Chunks`]
+/// `rows` rows of a [`Shape`], cut into chunks of batches: a [`Chunks`]
 /// source for `populate-table`'s parallel drivers and Parquet writer.
 #[derive(Debug, Clone)]
-pub struct Synth<S> {
-    shape: S,
-    rows: u64,
+pub struct Synth<D> {
+    table: DistTable<D>,
+    plain: Vec<String>,
+    random: Vec<String>,
     batch_size: usize,
     chunk_rows: u64,
 }
 
-impl<S: Shape> Synth<S> {
-    pub fn new(shape: S, rows: u64) -> Self {
+impl<D> Synth<D>
+where
+    D: Distribution + Clone + Sync,
+    Columns<D::Item>: IntoArrowColumns,
+{
+    fn from_dist(shape: &impl Shape, dist: D, rows: u64) -> Self {
+        let table = DistTable::new(shape.name(), rows, dist);
+        let cols = || table.schema().fields().iter().map(|f| f.name());
+        let plain = cols().filter(|c| shape.is_plain(c)).cloned().collect();
+        let random = cols().filter(|c| shape.is_random(c)).cloned().collect();
         Synth {
-            shape,
-            rows,
+            table,
+            plain,
+            random,
             batch_size: DEFAULT_BATCH_SIZE,
             chunk_rows: DEFAULT_CHUNK_ROWS,
         }
+        .cut()
+    }
+
+    /// The table's batch and chunk sizes from ours: chunks of whole batches.
+    fn cut(mut self) -> Self {
+        let bs = self.batch_size as u64;
+        let chunk = self.chunk_rows.div_ceil(bs) * bs;
+        self.table = self.table.batch_rows(bs).chunk_rows(chunk);
+        self
     }
 
     /// Rows per batch (the data does not depend on it).
     pub fn batch_size(mut self, n: usize) -> Self {
         assert!(n > 0, "batch_size must be > 0");
         self.batch_size = n;
-        self
+        self.cut()
     }
 
     /// Rows per chunk, rounded up to whole batches (the data does not
@@ -122,19 +157,15 @@ impl<S: Shape> Synth<S> {
     pub fn chunk_rows(mut self, n: u64) -> Self {
         assert!(n > 0, "chunk_rows must be > 0");
         self.chunk_rows = n;
-        self
+        self.cut()
     }
 
-    pub fn shape(&self) -> &S {
-        &self.shape
+    pub fn name(&self) -> &str {
+        self.table.name()
     }
 
     pub fn rows(&self) -> u64 {
-        self.rows
-    }
-
-    fn chunk_len(&self) -> u64 {
-        self.chunk_rows.div_ceil(self.batch_size as u64) * self.batch_size as u64
+        self.table.rows()
     }
 
     /// Rows `start..start + len` as one batch.
@@ -142,25 +173,27 @@ impl<S: Shape> Synth<S> {
         assert!(
             start
                 .checked_add(len as u64)
-                .is_some_and(|end| end <= self.rows),
+                .is_some_and(|end| end <= self.rows()),
             "slice past the end"
         );
-        self.shape.batch(start, len)
+        self.table.batch(start, len as u64)
     }
 
     /// The whole table as one batch (`Hits` holds at most 4 GiB of URL
     /// bytes in one batch, about 90 million rows).
     pub fn collect(&self) -> RecordBatch {
-        self.slice(0, usize::try_from(self.rows).expect("table fits in memory"))
+        self.slice(
+            0,
+            usize::try_from(self.rows()).expect("table fits in memory"),
+        )
     }
 
     /// All batches, in order, on this thread.
     pub fn batches(&self) -> impl Iterator<Item = RecordBatch> + '_ {
         let bs = self.batch_size as u64;
-        (0..self.rows.div_ceil(bs)).map(move |i| {
+        (0..self.rows().div_ceil(bs)).map(move |i| {
             let start = i * bs;
-            self.shape
-                .batch(start, (self.rows - start).min(bs) as usize)
+            self.table.batch(start, (self.rows() - start).min(bs))
         })
     }
 
@@ -199,14 +232,14 @@ impl<S: Shape> Synth<S> {
     pub fn parquet_props(&self) -> WriterProperties {
         let mut b = WriterProperties::builder().set_compression(Compression::SNAPPY);
         let descr = ArrowSchemaConverter::new()
-            .convert(&self.shape.schema())
+            .convert(self.table.schema())
             .expect("shape schemas convert to Parquet");
         for c in descr.columns() {
             let root = &c.path().parts()[0];
-            if self.shape.is_plain(root) {
+            if self.plain.contains(root) {
                 b = b.set_column_dictionary_enabled(c.path().clone(), false);
             }
-            if self.shape.is_random(root) {
+            if self.random.contains(root) {
                 b = b.set_column_compression(c.path().clone(), Compression::UNCOMPRESSED);
             }
         }
@@ -222,25 +255,21 @@ pub fn parquet_props() -> WriterProperties {
         .build()
 }
 
-impl<S: Shape> Chunks for Synth<S> {
+impl<D> Chunks for Synth<D>
+where
+    D: Distribution + Clone + Sync,
+    Columns<D::Item>: IntoArrowColumns,
+{
     fn schema(&self) -> SchemaRef {
-        self.shape.schema()
+        self.table.schema().clone()
     }
 
     fn num_chunks(&self) -> u64 {
-        self.rows.div_ceil(self.chunk_len())
+        self.table.num_chunks()
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let lo = i * self.chunk_len();
-        let hi = (lo + self.chunk_len()).min(self.rows);
-        let bs = self.batch_size as u64;
-        let mut s = lo;
-        while s < hi {
-            let n = (hi - s).min(bs);
-            emit(self.shape.batch(s, n as usize));
-            s += n;
-        }
+        self.table.chunk(i, emit)
     }
 }
 

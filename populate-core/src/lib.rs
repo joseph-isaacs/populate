@@ -13,8 +13,10 @@
 //! | `i32`, `f64`, `bool`, ...   | `Vec<T>`                                      |
 //! | `String`, `&'static str`    | [`StrCol`]: offsets and bytes, as Arrow `Utf8` |
 //! | `Vec<T>`                    | [`ListCol`]: offsets and `T`'s columns        |
-//! | [`Date32`], [`Decimal`]     | `Vec` of them: the storage values             |
+//! | [`Date32`], [`Decimal`], [`Timestamp`] | `Vec` of them: the storage values |
+//! | `Option<T>`                 | [`Nullable`]: `T`'s columns and validity      |
 //! | `[T; N]`                    | `Vec<[T; N]>`: `N` values per row, end to end |
+//! | [`Spread<T, N>`](Spread)    | [`SpreadCols`]: `N` sets of `T`'s columns     |
 //! | [`Children<T>`](Children)   | [`ChildCols`]: `T`'s columns, children end to end |
 //! | `(A, B, ...)`               | `(A`'s columns`, B`'s columns`, ...)`         |
 //!
@@ -59,8 +61,10 @@ mod columnar;
 mod list;
 mod local;
 mod logical;
+mod nullable;
 mod seek;
 mod sink;
+mod spread;
 pub mod string;
 pub mod tuple;
 
@@ -68,11 +72,13 @@ pub use children::{ChildCols, Children};
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
-pub use logical::{Date32, Decimal};
+pub use logical::{Date32, Decimal, Timestamp, time_unit};
+pub use nullable::{Nullable, Validity};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 pub use seek::SeekRng;
 pub use sink::Sink;
+pub use spread::{Spread, SpreadCols};
 pub use string::{StrBuf, StrCol};
 
 /// A stream of rows of type [`Item`](Self::Item).

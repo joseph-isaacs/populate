@@ -31,11 +31,14 @@ multi-threaded output equals one sequential run.
   dsdgen byte for byte at SF 1, 2 and 5, chunked on all cores.
   - Next: build the sales columns directly (no row structs), as
     populate-tpcds' fused channels do.
-- [ ] **TSBS devops / IoT** (`populate-tsbs`)
-  - Reproduce Go `math/rand` and the per-host simulation for `--seed`
-    determinism.
-  - Output Arrow / Parquet. Test against `tsbs_generate_data` with a fixed
-    seed.
+- [x] **TSBS devops / IoT** (`populate-tsbs`)
+  - All five use cases, byte-identical to `tsbs_generate_data` for any seed
+    and flags in the eight text and three binary formats (Go `math/rand`, amd64
+    `math.Exp`/`math.Log`, the per-host and batch simulation, ported);
+    Arrow / Parquet per measurement. 6x Go on one thread, about 20x on 4
+    cores (see [`populate-tsbs/README.md`](populate-tsbs/README.md)).
+  - [x] The binary formats: `siridb` (qpack), `prometheus` (protobuf),
+    `mongo` (flatbuffers).
 - [x] **TPC-C and YCSB initial load** (`populate-tpcc`, `populate-ycsb`)
   - All 9 TPC-C tables with NURand and random strings, tested against the
     spec (no loader has reproducible output: all seed from the clock).

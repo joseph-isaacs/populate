@@ -91,6 +91,22 @@ cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --forma
 
 See [`populate-tpch/README.md`](populate-tpch/README.md).
 
+## TSBS
+
+`populate-tsbs` generates TSBS's devops and IoT data byte-identical to
+`tsbs_generate_data` for any seed and flags (Go's `math/rand`, its amd64
+`math.Exp`/`math.Log` and the per-host simulation, ported), as influx,
+timescaledb, cratedb, cassandra and the other text formats, prometheus,
+siridb and mongo's binary formats, or as Arrow and
+Parquet, one table per measurement, on all cores.
+
+```sh
+cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case devops --scale 100 --seed 123 --format influx > devops.influx
+cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case iot --scale 1000 --seed 123 --format parquet --out tsbs
+```
+
+See [`populate-tsbs/README.md`](populate-tsbs/README.md).
+
 ## SSB
 
 `populate-ssb` generates the five Star Schema Benchmark tables
@@ -117,6 +133,7 @@ See [`populate-ssb/README.md`](populate-ssb/README.md).
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
 | `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
+| `populate-tsbs`         | TSBS devops/IoT byte-identical to `tsbs_generate_data`, on all cores; the `tsbs-gen` CLI |
 | `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
 | `populate-h2o`          | H2O db-benchmark groupby and join data, byte-identical to its R datagen; the `h2o-gen` CLI |
 | `populate-tpcc`         | the TPC-C initial database, to the spec's population rules; the `tpcc-gen` CLI |

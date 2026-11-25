@@ -930,6 +930,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-tsbs"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "itoa",
+ "parquet",
+ "populate-table",
+ "ryu",
+]
+
+[[package]]
 name = "populate-ycsb"
 version = "0.1.0"
 dependencies = [

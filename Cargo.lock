@@ -924,7 +924,11 @@ dependencies = [
  "libc",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
  "tpchgen",
  "tpchgen-arrow",
 ]

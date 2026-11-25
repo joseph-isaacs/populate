@@ -44,6 +44,12 @@ sales.for_each_batch(64 * 1024, 0, |batch| { /* RecordBatch, in order */ });
 sales.write_parquet(std::fs::File::create("sales.parquet")?, 64 * 1024, 0, None)?;
 ```
 
+A table can also be a single distribution: `populate::table::DistTable`
+runs one over any range of rows (clone, `skip` to the range, collect), and
+reads its schema off it, the names from `named(...)` and the types from the
+columns its rows are collected into. `populate-tpch` builds all eight
+tables this way.
+
 Any generator that can produce its rows in independent chunks can use the
 same engine: implement `populate::table::Chunks` (schema, chunk count,
 "generate chunk `i`") and `chunks::for_each_batch` / `write_parquet` run it

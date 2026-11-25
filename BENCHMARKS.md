@@ -23,6 +23,46 @@ on a 4-core x86-64 cloud VM; see each README for the settings.
 All of them write Arrow, Parquet or the reference tool's own text format,
 on all cores, with output that does not depend on the thread count.
 
+## Running them
+
+```bash
+cargo xtask bench
+```
+
+builds every generator in release mode, runs each one in each output
+format at `--scale 1` on 1 thread and on every core, and prints a Markdown
+table of wall time and output size. Where a reference tool is on `PATH` it
+runs alternately with ours and the table gets a speedup column:
+`tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
+`tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
+takes about 8 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
+minute.
+
+| flag | default | |
+|---|---|---|
+| `--scale` | `1` | comma-separated; each generator maps it to its own size (`--list`) |
+| `--threads` | `1,N` (N = cores) | comma-separated thread counts |
+| `--generators` | all | names from `--list`, or a family: `h2o`, `ycsb`, `synth` |
+| `--formats` | `text,parquet,arrow` | `text` is the reference tool's own format (`.tbl`, `.dat`, CSV, influx line protocol); `arrow` generates batches and drops them |
+| `--runs` | `3` | runs per configuration; the best wall time is kept |
+| `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; use a disk path when the output will not fit in memory |
+| `--tpcgen-cli`, `--tsbs-generate-data` | found on `PATH` | reference binaries |
+| `--no-reference` | | skip reference tools |
+
+At `--scale 1`, DSB and the H2O join run at SF 1 and 1e7 rows (their
+smallest sizes), TPC-C at 10 warehouses, YCSB at 1M records and 10M
+operations, synth at 10M rows (1M for embeddings) and TSBS devops at 100
+hosts for one day. LDBC runs when its datagen resources are present
+(`scripts/fetch-ldbc-resources.sh`). For example, the TPC-H rows of the
+table above:
+
+```bash
+cargo xtask bench --generators tpch --scale 1,10 --formats text,parquet --out /var/tmp
+```
+
+The numbers are printed, not committed: a crate README keeps its current
+performance section, and run results go in the PR description.
+
 ## Not built
 
 - **TPC-E:** EGen is behind a TPC request form and the TPC EULA, so there

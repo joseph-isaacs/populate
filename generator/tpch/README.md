@@ -119,7 +119,8 @@ generator whose partitioned output differs from its sequential output.
 
 ## Performance
 
-On a 4-core cloud VM, `scripts/e2e-bench.sh --suite tpch` against
+On a 4-core cloud VM, `cargo xtask bench --generators tpch --scale 1,10`
+(see [BENCHMARKS.md](../../BENCHMARKS.md)) against
 `tpcgen-cli tpch` (the CLI of tpcgen-rs). The VM is noisy, so the
 two tools run interleaved and each keeps its best time: best of 3 at SF 1
 (output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does

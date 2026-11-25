@@ -209,8 +209,7 @@ impl<'a> BiRun<'a> {
     /// Chunk `i`'s snapshot rows, per dynamic table; its inserts and
     /// deletes are kept for later.
     pub fn chunk_snapshot(&self, i: u64) -> Vec<Rows> {
-        let mut raw = Ldbc::dynamic_rows();
-        self.g.chunk_rows(i, &mut raw);
+        let raw = self.g.chunk_rows(i);
         let rows = Layout::apply(&self.layout.dynamic, &raw);
         drop(raw);
         let t = &self.tables;
@@ -218,7 +217,7 @@ impl<'a> BiRun<'a> {
         let mut snap = Vec::with_capacity(rows.len());
         let mut ins = Vec::with_capacity(rows.len());
         for (p, r) in t.snapshot.iter().zip(&rows) {
-            let created = r.cols[0].i64s();
+            let created: Vec<i64> = r.cols[0].epoch_ms().collect();
             let before: Vec<u32> = (0..created.len() as u32)
                 .filter(|&j| created[j as usize] < thr)
                 .collect();
@@ -234,7 +233,7 @@ impl<'a> BiRun<'a> {
             .map(|p| {
                 let (r, def) = (&rows[p.src], self.layout.dynamic[p.src].def);
                 let col = |n: &str| def.cols.iter().position(|c| c.0 == n).expect("column");
-                let deleted = r.cols[col("deletionDate")].i64s();
+                let deleted: Vec<i64> = r.cols[col("deletionDate")].epoch_ms().collect();
                 let explicit = r.cols[col("explicitlyDeleted")].bools();
                 let idx: Vec<u32> = (0..deleted.len() as u32)
                     .filter(|&j| explicit[j as usize] && (thr..end).contains(&deleted[j as usize]))
@@ -256,10 +255,9 @@ impl<'a> BiRun<'a> {
             .enumerate()
             .flat_map(|(k, p)| {
                 p.cols[0]
-                    .i64s()
-                    .iter()
+                    .epoch_ms()
                     .enumerate()
-                    .map(move |(j, &d)| (k as u32, j as u32, d))
+                    .map(move |(j, d)| (k as u32, j as u32, d))
             })
             .collect();
         order.sort_by_key(|&(_, _, d)| d);
@@ -340,7 +338,7 @@ impl MultiChunks for BiRun<'_> {
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let snap = self.chunk_snapshot(i);
-        for (k, (p, r)) in self.tables.snapshot.iter().zip(&snap).enumerate() {
+        for (k, (p, r)) in self.tables.snapshot.iter().zip(snap).enumerate() {
             if !r.is_empty() {
                 emit(k, to_batch(p.def, r));
             }

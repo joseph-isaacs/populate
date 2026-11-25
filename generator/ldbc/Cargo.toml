@@ -6,11 +6,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
+rand = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
 # Java's Normalizer (NFD) for the datagen's e-mail addresses
 unicode-normalization = "0.1"
 

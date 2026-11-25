@@ -12,12 +12,14 @@
 
 use crate::dates::{self, Dates, SEVEN_DAYS};
 use crate::dict::{Dictionaries, FlashMobTag, Ip, PowerDistribution, push_u64};
+use crate::java::MS_PER_DAY;
 use crate::java::{clamp, push_utf16};
 use crate::jrand::{Aspect, Farm};
 use crate::knows::Knows;
 use crate::params::{POST_MAPPING, Params};
 use crate::person::{Hot, Person};
-use crate::rows::{Rows, t};
+use crate::rows::{EdgeRow, RawCols, Ts, raw};
+use populate_core::{Columns, Date32, Sink, Timestamp};
 use std::mem::{replace, take};
 use std::ops::Range;
 
@@ -25,6 +27,12 @@ const SHORT_COMMENTS: [&str; 16] = [
     "ok", "good", "great", "cool", "thx", "fine", "LOL", "roflol", "no way!", "I see", "right",
     "yes", "no", "duh", "thanks", "maybe",
 ];
+
+/// A timestamp of epoch milliseconds.
+#[inline]
+fn ts(ms: i64) -> Ts {
+    Timestamp(ms)
+}
 
 const FLASHMOB_SPAN: i64 = 72 * 60 * 60 * 1000;
 
@@ -149,7 +157,7 @@ pub struct BlockGen<'w, 'a> {
     cached: Vec<Option<(u32, usize)>>,
     tag_pool: Vec<Vec<i32>>,
     like_power: PowerDistribution,
-    pub out: Vec<Rows>,
+    pub out: RawCols,
 }
 
 #[inline]
@@ -160,7 +168,7 @@ fn add_sorted(set: &mut Vec<i32>, x: i32) {
 }
 
 impl<'w, 'a> BlockGen<'w, 'a> {
-    pub fn new(w: &'w World<'a>, out: Vec<Rows>) -> Self {
+    pub fn new(w: &'w World<'a>, out: RawCols) -> Self {
         BlockGen {
             w,
             farm: Farm::default(),
@@ -247,31 +255,39 @@ impl<'w, 'a> BlockGen<'w, 'a> {
         let w = self.w;
         let (d, p) = (w.d, self.person(i));
         {
-            let r = &mut self.out[t::PERSON];
-            r.cols[0].i64(p.creation);
-            r.cols[1].i64(p.deletion);
-            r.cols[2].bool(p.explicitly_deleted);
-            r.cols[3].i64(p.account_id);
-            r.cols[4].str(d.names.pool[p.first_name as usize].as_bytes());
-            r.cols[5].str(d.names.pool[p.last_name as usize].as_bytes());
-            r.cols[6].str(if p.gender == 0 { b"female" } else { b"male" });
-            r.cols[7].i64(p.birthday);
-            p.ip.write(r.cols[8].str_buf());
-            r.cols[8].end_str();
-            r.cols[9].str(d.browsers.names[p.browser as usize].as_bytes());
-            r.cols[10].i32(p.city);
-            {
-                let s = r.cols[11].str_buf();
+            let (
+                (creation, deletion, deleted),
+                id,
+                first,
+                last,
+                gender,
+                birthday,
+                ip,
+                browser,
+                city,
+                lang,
+                email,
+            ) = raw::person(&mut self.out);
+            creation.push(ts(p.creation));
+            deletion.push(ts(p.deletion));
+            deleted.push(p.explicitly_deleted);
+            id.push(p.account_id);
+            first.push_str(&d.names.pool[p.first_name as usize]);
+            last.push_str(&d.names.pool[p.last_name as usize]);
+            gender.push_str(if p.gender == 0 { "female" } else { "male" });
+            birthday.push(Date32(p.birthday.div_euclid(MS_PER_DAY) as i32));
+            ip.push_utf8_with(|s| p.ip.write(s));
+            browser.push_str(&d.browsers.names[p.browser as usize]);
+            city.push(p.city);
+            lang.push_utf8_with(|s| {
                 for (k, &l) in p.languages.iter().enumerate() {
                     if k > 0 {
                         s.push(b';');
                     }
                     s.extend_from_slice(d.languages.name(l).as_bytes());
                 }
-            }
-            r.cols[11].end_str();
-            {
-                let s = r.cols[12].str_buf();
+            });
+            email.push_utf8_with(|s| {
                 let base = d.names.email_base[p.first_name as usize].as_bytes();
                 for (k, &e) in p.emails.iter().enumerate() {
                     if k > 0 {
@@ -282,48 +298,26 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     s.push(b'@');
                     s.extend_from_slice(d.emails.domains[e as usize].as_bytes());
                 }
-            }
-            r.cols[12].end_str();
+            });
         }
-        {
-            let r = &mut self.out[t::HAS_INTEREST];
-            for &tag in &p.interests {
-                r.cols[0].i64(p.creation);
-                r.cols[1].i64(p.deletion);
-                r.cols[2].i64(p.account_id);
-                r.cols[3].i32(tag);
-            }
+        let (c, del) = (ts(p.creation), ts(p.deletion));
+        for &tag in &p.interests {
+            raw::has_interest(&mut self.out).push((c, del, p.account_id, tag));
         }
         let uni = d.universities.at_location(&d.places, p.university_location);
         if uni != -1 && p.class_year != -1 {
-            let r = &mut self.out[t::STUDY_AT];
-            r.cols[0].i64(p.creation);
-            r.cols[1].i64(p.deletion);
-            r.cols[2].i64(p.account_id);
-            r.cols[3].i64(uni);
-            r.cols[4].i32(dates::year(p.class_year) as i32);
+            let year = dates::year(p.class_year) as i32;
+            raw::study_at(&mut self.out).push((c, del, p.account_id, uni, year));
         }
-        {
-            let r = &mut self.out[t::WORK_AT];
-            for &(c, from) in &p.companies {
-                r.cols[0].i64(p.creation);
-                r.cols[1].i64(p.deletion);
-                r.cols[2].i64(p.account_id);
-                r.cols[3].i64(c);
-                r.cols[4].i32(dates::year(from) as i32);
-            }
+        for &(company, from) in &p.companies {
+            let year = dates::year(from) as i32;
+            raw::work_at(&mut self.out).push((c, del, p.account_id, company, year));
         }
-        {
-            let r = &mut self.out[t::KNOWS];
-            for k in &w.knows[i as usize] {
-                let to = w.persons[k.to as usize].account_id;
-                if p.account_id < to {
-                    r.cols[0].i64(k.creation);
-                    r.cols[1].i64(k.deletion);
-                    r.cols[2].bool(k.deleted);
-                    r.cols[3].i64(p.account_id);
-                    r.cols[4].i64(to);
-                }
+        let knows = raw::knows(&mut self.out);
+        for k in &w.knows[i as usize] {
+            let to = w.persons[k.to as usize].account_id;
+            if p.account_id < to {
+                knows.push((ts(k.creation), ts(k.deletion), k.deleted, p.account_id, to));
             }
         }
     }
@@ -690,31 +684,17 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             return;
         }
         let w = self.w;
-        {
-            let r = &mut self.out[t::FORUM];
-            r.cols[0].i64(f.creation);
-            r.cols[1].i64(f.deletion);
-            r.cols[2].bool(f.deleted);
-            r.cols[3].i64(f.id);
-            r.cols[4].str(f.title.as_bytes());
-            r.cols[5].i64(w.persons[f.moderator as usize].account_id);
+        let moderator = w.persons[f.moderator as usize].account_id;
+        let (c, del) = (ts(f.creation), ts(f.deletion));
+        raw::forum(&mut self.out).push((c, del, f.deleted, f.id, f.title.as_str(), moderator));
+        let tags = raw::forum_tag(&mut self.out);
+        for &tag in &f.tags {
+            tags.push((c, del, f.id, tag));
         }
-        {
-            let r = &mut self.out[t::FORUM_TAG];
-            for &tag in &f.tags {
-                r.cols[0].i64(f.creation);
-                r.cols[1].i64(f.deletion);
-                r.cols[2].i64(f.id);
-                r.cols[3].i32(tag);
-            }
-        }
-        let r = &mut self.out[t::FORUM_MEMBER];
+        let members = raw::forum_member(&mut self.out);
         for m in &f.memberships {
-            r.cols[0].i64(m.creation);
-            r.cols[1].i64(m.deletion);
-            r.cols[2].bool(m.deleted);
-            r.cols[3].i64(f.id);
-            r.cols[4].i64(w.persons[m.person as usize].account_id);
+            let person = w.persons[m.person as usize].account_id;
+            members.push((ts(m.creation), ts(m.deletion), m.deleted, f.id, person));
         }
     }
 
@@ -965,30 +945,39 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             let author = &w.persons[m.person as usize];
             let (country, ip) = loc.unwrap_or((author.country, author.ip));
             let browser = browser.unwrap_or(author.browser);
-            let r = &mut self.out[t::POST];
-            r.cols[0].i64(core.creation);
-            r.cols[1].i64(core.deletion);
-            r.cols[2].bool(core.deleted);
-            r.cols[3].i64(id);
-            r.cols[4].null_str();
-            ip.write(r.cols[5].str_buf());
-            r.cols[5].end_str();
-            r.cols[6].str(w.d.browsers.names[browser as usize].as_bytes());
-            r.cols[7].str(w.d.languages.name(f.language).as_bytes());
-            push_utf16(r.cols[8].str_buf(), &self.text);
-            r.cols[8].end_str();
-            r.cols[9].i32(self.text.len() as i32);
-            r.cols[10].i64(author.account_id);
-            r.cols[11].i64(f.id);
-            r.cols[12].i64(country as i64);
+            let (
+                (creation, deletion, deleted),
+                pid,
+                image,
+                ips,
+                browsers,
+                lang,
+                content,
+                len,
+                creator,
+                forum,
+                loc,
+            ) = raw::post(&mut self.out);
+            creation.push(ts(core.creation));
+            deletion.push(ts(core.deletion));
+            deleted.push(core.deleted);
+            pid.push(id);
+            image.push(None::<&str>);
+            ips.push_utf8_with(|s| ip.write(s));
+            browsers.push_str(&w.d.browsers.names[browser as usize]);
+            lang.push(Some(w.d.languages.name(f.language)));
+            content.values.push_utf8_with(|s| push_utf16(s, &self.text));
+            content.valid.push(true);
+            len.push(self.text.len() as i32);
+            creator.push(author.account_id);
+            forum.push(f.id);
+            loc.push(country as i64);
         }
         if !self.dry {
-            let r = &mut self.out[t::POST_TAG];
+            let tags = raw::post_tag(&mut self.out);
+            let (c, del) = (ts(core.creation), ts(core.deletion));
             for &tag in &core.tags {
-                r.cols[0].i64(core.creation);
-                r.cols[1].i64(core.deletion);
-                r.cols[2].i64(id);
-                r.cols[3].i32(tag);
+                tags.push((c, del, id, tag));
             }
         }
         let msg = Parent {
@@ -998,7 +987,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             tags: core.tags,
         };
         if let Some(l) = likes {
-            self.likes(f, &msg, l, t::LIKES_POST);
+            self.likes(f, &msg, l, raw::likes_post);
         }
         self.comments(f, msg, num_comments);
     }
@@ -1017,7 +1006,13 @@ impl<'w, 'a> BlockGen<'w, 'a> {
     }
 
     /// `generateLikes`' stream, consumed.
-    fn likes(&mut self, f: &Forum, msg: &Parent, (num, start): (i32, i32), table: usize) {
+    fn likes(
+        &mut self,
+        f: &Forum,
+        msg: &Parent,
+        (num, start): (i32, i32),
+        table: fn(&mut RawCols) -> &mut Columns<EdgeRow>,
+    ) {
         let w = self.w;
         for i in 0..num {
             let m = f.memberships[(start + i) as usize];
@@ -1053,12 +1048,8 @@ impl<'w, 'a> BlockGen<'w, 'a> {
             if self.dry {
                 continue;
             }
-            let r = &mut self.out[table];
-            r.cols[0].i64(c);
-            r.cols[1].i64(deletion);
-            r.cols[2].bool(deleted);
-            r.cols[3].i64(person.account_id);
-            r.cols[4].i64(msg.id);
+            let row = (ts(c), ts(deletion), deleted, person.account_id, msg.id);
+            table(&mut self.out).push(row);
         }
     }
 
@@ -1196,39 +1187,41 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 let author = &w.persons[m.person as usize];
                 let (country, ip) = loc.unwrap_or((author.country, author.ip));
                 let browser = browser.unwrap_or(author.browser);
-                let r = &mut self.out[t::COMMENT];
-                r.cols[0].i64(creation);
-                r.cols[1].i64(deletion);
-                r.cols[2].bool(deleted);
-                r.cols[3].i64(id);
-                ip.write(r.cols[4].str_buf());
-                r.cols[4].end_str();
-                r.cols[5].str(w.d.browsers.names[browser as usize].as_bytes());
+                let (
+                    creations,
+                    deletions,
+                    deleteds,
+                    ids,
+                    ips,
+                    browsers,
+                    content,
+                    lens,
+                    creator,
+                    loc,
+                    parent_post,
+                    parent_comment,
+                ) = raw::comment(&mut self.out);
+                creations.push(ts(creation));
+                deletions.push(ts(deletion));
+                deleteds.push(deleted);
+                ids.push(id);
+                ips.push_utf8_with(|s| ip.write(s));
+                browsers.push_str(&w.d.browsers.names[browser as usize]);
                 match short {
-                    Some(s) => r.cols[6].str(s.as_bytes()),
-                    None => {
-                        push_utf16(r.cols[6].str_buf(), &self.text);
-                        r.cols[6].end_str();
-                    }
+                    Some(s) => content.push_str(s),
+                    None => content.push_utf8_with(|s| push_utf16(s, &self.text)),
                 }
-                r.cols[7].i32(len as i32);
-                r.cols[8].i64(author.account_id);
-                r.cols[9].i32(country);
-                if par_id == post_id {
-                    r.cols[10].opt_i64(Some(par_id));
-                    r.cols[11].opt_i64(None);
-                } else {
-                    r.cols[10].opt_i64(None);
-                    r.cols[11].opt_i64(Some(par_id));
-                }
+                lens.push(len as i32);
+                creator.push(author.account_id);
+                loc.push(country);
+                let on_post = par_id == post_id;
+                parent_post.push(on_post.then_some(par_id));
+                parent_comment.push((!on_post).then_some(par_id));
             }
             if !self.dry {
-                let r = &mut self.out[t::COMMENT_TAG];
+                let out = raw::comment_tag(&mut self.out);
                 for &tag in &tags {
-                    r.cols[0].i64(creation);
-                    r.cols[1].i64(deletion);
-                    r.cols[2].i64(id);
-                    r.cols[3].i32(tag);
+                    out.push((ts(creation), ts(deletion), id, tag));
                 }
             }
             let mut msg = Parent {
@@ -1243,7 +1236,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 None
             };
             if let Some(l) = likes {
-                self.likes(f, &msg, l, t::LIKES_COMMENT);
+                self.likes(f, &msg, l, raw::likes_comment);
             }
             if short.is_none() {
                 let mut fresh = self.tag_pool.pop().unwrap_or_default();
@@ -1296,27 +1289,37 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                 None
             };
             if !self.dry {
-                let r = &mut self.out[t::POST];
-                r.cols[0].i64(creation);
-                r.cols[1].i64(deletion);
-                r.cols[2].bool(deleted);
-                r.cols[3].i64(id);
-                {
-                    let s = r.cols[4].str_buf();
+                let (
+                    (creations, deletions, deleteds),
+                    ids,
+                    image,
+                    ips,
+                    browsers,
+                    lang,
+                    content,
+                    len,
+                    creator,
+                    forum,
+                    loc,
+                ) = raw::post(&mut self.out);
+                creations.push(ts(creation));
+                deletions.push(ts(deletion));
+                deleteds.push(deleted);
+                ids.push(id);
+                image.values.push_utf8_with(|s| {
                     s.extend_from_slice(b"photo");
                     push_u64(s, id as u64);
                     s.extend_from_slice(b".jpg");
-                }
-                r.cols[4].end_str();
-                ip.write(r.cols[5].str_buf());
-                r.cols[5].end_str();
-                r.cols[6].str(w.d.browsers.names[moderator.browser as usize].as_bytes());
-                r.cols[7].null_str();
-                r.cols[8].null_str();
-                r.cols[9].i32(0);
-                r.cols[10].i64(moderator.account_id);
-                r.cols[11].i64(album.id);
-                r.cols[12].i64(country as i64);
+                });
+                image.valid.push(true);
+                ips.push_utf8_with(|s| ip.write(s));
+                browsers.push_str(&w.d.browsers.names[moderator.browser as usize]);
+                lang.push(None::<&str>);
+                content.push(None::<&str>);
+                len.push(0);
+                creator.push(moderator.account_id);
+                forum.push(album.id);
+                loc.push(country as i64);
             }
             if let Some(l) = likes {
                 let msg = Parent {
@@ -1325,7 +1328,7 @@ impl<'w, 'a> BlockGen<'w, 'a> {
                     deletion,
                     tags: Vec::new(),
                 };
-                self.likes(album, &msg, l, t::LIKES_POST);
+                self.likes(album, &msg, l, raw::likes_post);
             }
         }
     }

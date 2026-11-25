@@ -210,7 +210,8 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
                 Format::Csv if raw => finish(write_text_many(&[&g.csv()], ws, a.threads)?)?,
                 Format::Csv => finish(write_text_many(&[&lr], ws, a.threads)?)?,
                 Format::Parquet => {
-                    let src: &dyn MultiChunks = if raw { &g } else { &lr };
+                    let tables = g.raw();
+                    let src: &dyn MultiChunks = if raw { &tables } else { &lr };
                     finish(
                         write_parquet_many(&[src], ws, a.threads, None)
                             .map_err(io::Error::other)?,
@@ -236,7 +237,7 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             let (inserts, deletes) = run.finish(a.threads);
             for (kind, tables) in [("inserts", inserts), ("deletes", deletes)] {
                 for t in tables {
-                    for (id, r) in &t.batches {
+                    for (id, r) in t.batches {
                         rows += r.len();
                         let dir = a.out.join(kind).join("dynamic").join(t.def.name);
                         write_table(a, t.def, r, &dir.join(format!("batch_id={id}")), "part-0")?;
@@ -255,7 +256,7 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             .join("raw")
             .join("composite-merged-fk");
         for x in g.factors(a.threads) {
-            write_factor(f, x.def, &x.rows, &dir.join(x.def.name), a.threads)?;
+            write_factor(f, x.def, x.rows, &dir.join(x.def.name), a.threads)?;
         }
         eprintln!("factors {:.2?}", t.elapsed());
     }
@@ -321,14 +322,14 @@ fn write_static(a: &Args, layout: &Layout, lr: &LayoutRun, dir: &Path) -> io::Re
     if a.format == Format::None {
         return Ok(());
     }
-    for (t, r) in layout.statics.iter().zip(&lr.static_rows()) {
+    for (t, r) in layout.statics.iter().zip(lr.static_rows()) {
         write_table(a, t.def, r, dir, t.def.name)?;
     }
     Ok(())
 }
 
 /// One table as `dir/name.csv` (with a header) or `dir/name.parquet`.
-fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io::Result<()> {
+fn write_table(a: &Args, def: &TableDef, r: Rows, dir: &Path, name: &str) -> io::Result<()> {
     if a.format == Format::None {
         return Ok(());
     }
@@ -338,7 +339,7 @@ fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io
         Format::Csv => {
             let mut buf = Vec::new();
             csv::header(def, &mut buf);
-            csv::write(def, r, &mut buf);
+            csv::write(def, &r, &mut buf);
             fs::write(path, buf)
         }
         Format::Parquet => write_parquet(def, r, &path, a.threads),
@@ -348,13 +349,13 @@ fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io
 
 /// A factor table as `dir/part-0.csv` (Spark's default CSV options, no
 /// header) or `dir/part-0.parquet`.
-fn write_factor(f: Format, def: &TableDef, r: &Rows, dir: &Path, threads: usize) -> io::Result<()> {
+fn write_factor(f: Format, def: &TableDef, r: Rows, dir: &Path, threads: usize) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("part-0.{}", f.ext()));
     match f {
         Format::Csv => {
             let mut buf = Vec::new();
-            csv::write_factor(def, r, &mut buf);
+            csv::write_factor(def, &r, &mut buf);
             fs::write(path, buf)
         }
         Format::Parquet => write_parquet(def, r, &path, threads),
@@ -388,7 +389,7 @@ impl Chunks for Built {
 }
 
 /// A built table through the same parallel encoder as the generated ones.
-fn write_parquet(def: &TableDef, r: &Rows, path: &Path, threads: usize) -> io::Result<()> {
+fn write_parquet(def: &TableDef, r: Rows, path: &Path, threads: usize) -> io::Result<()> {
     let w = BufWriter::with_capacity(1 << 20, File::create(path)?);
     let w = populate_table::write_parquet(&Built(to_batch(def, r)), w, threads, None)
         .map_err(io::Error::other)?;

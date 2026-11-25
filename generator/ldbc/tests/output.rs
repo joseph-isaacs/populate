@@ -8,6 +8,7 @@
 
 use populate_ldbc::rows::{DYNAMIC, Rows, STATIC};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
+use populate_sink_arrow::schemas_of;
 use populate_table::text::write_text_many;
 use populate_table::write_parquet_many;
 use std::collections::hash_map::DefaultHasher;
@@ -74,7 +75,7 @@ fn any_thread_count_same_output() {
 
     let pq = |threads| {
         let ws = (0..DYNAMIC.len()).map(|_| Digest::default()).collect();
-        digests(write_parquet_many(&[&many], ws, threads, None).expect("parquet"))
+        digests(write_parquet_many(&[&many.raw()], ws, threads, None).expect("parquet"))
     };
     assert_eq!(pq(1), pq(4), "parquet differs by thread count");
 }
@@ -88,19 +89,15 @@ fn chunks_in_any_order() {
     let seq = Ldbc::new(&res, persons, 1).expect("generate");
     let rev = Ldbc::new(&res, persons, 1).expect("generate");
     let n = seq.num_chunks();
-    let mut a = Ldbc::dynamic_rows();
-    let mut b = Ldbc::dynamic_rows();
-    let mut want = Vec::new();
-    for i in 0..n {
-        seq.chunk_rows(i, &mut a);
-        want.push(csv_of(&a));
-    }
+    let want: Vec<_> = (0..n).map(|i| csv_of(&seq.chunk_rows(i))).collect();
     // last first, then the middle of the first block, then the rest
     let mut order: Vec<u64> = (0..n).rev().collect();
     order.swap(1, 6);
     for i in order {
-        rev.chunk_rows(i, &mut b);
-        assert!(csv_of(&b) == want[i as usize], "chunk {i} differs");
+        assert!(
+            csv_of(&rev.chunk_rows(i)) == want[i as usize],
+            "chunk {i} differs"
+        );
     }
 }
 
@@ -159,5 +156,20 @@ fn matches_spark_reference() {
         let mut f = Vec::new();
         csv::write(def, &r, &mut f);
         assert!(f == reference("static", def.name), "{} differs", def.name);
+    }
+}
+
+/// The schemas read off the distributions are those of the tables the
+/// transforms and writers use.
+#[test]
+fn schemas_from_the_distributions() {
+    let Some(res) = resources() else { return };
+    let g = Ldbc::new(&res, 1000, 1).expect("generate");
+    let raw = g.raw();
+    for (def, s) in DYNAMIC.iter().zip(raw.schemas()) {
+        assert_eq!(def.schema(), *s, "{}", def.name);
+    }
+    for (def, s) in STATIC.iter().zip(schemas_of(&g.static_dist())) {
+        assert_eq!(*def.schema(), s, "{}", def.name);
     }
 }

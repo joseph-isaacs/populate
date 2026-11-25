@@ -49,17 +49,24 @@ use populate_ldbc::{Ldbc, default_resources, persons_for_scale_factor};
 
 let g = Ldbc::new(&default_resources().unwrap(), persons_for_scale_factor("1").unwrap(), 0)?;
 // every dynamic table as Parquet, one shared pool
-populate_table::write_parquet_many(&[&g], files, 0, None)?;
+populate_table::write_parquet_many(&[&g.raw()], files, 0, None)?;
 // or the datagen's CSV text
 populate_table::text::write_text_many(&[&g.csv()], files, 0)?;
 ```
 
-`Ldbc` is a `populate_table::MultiChunks` source (one output per table in
-`rows::DYNAMIC`) and `g.csv()` a `TextChunks` one, so they share a pool with
-other generators' tables. The other layouts are `layout::LayoutRun`, and BI
-is `bi::BiRun`: its snapshot is a chunked source, then `finish` gives the
-insert and delete batches. For factor tables, call `g.collect_factors()`
-before generating, then `g.factors(threads)`.
+The 14 dynamic tables are one populate `Distribution`, `g.raw_dist()`: a
+`fan_out` whose source rows are the chunks and whose children are each
+table's rows of a chunk. Each table's row type is a tuple in `rows.rs`
+(`Timestamp`, `Date32`, `Option<String>`, ...), so its Arrow schema is
+read off the distribution (`schemas_of`), and `g.raw()` runs it as a
+`populate_table::DistTables`. The 4 static tables are `g.static_dist()`,
+one source row. `g.csv()` is a `TextChunks` source, so they share a pool
+with other generators' tables. The other layouts are `layout::LayoutRun`,
+and BI is `bi::BiRun`: its snapshot is a chunked source, then `finish`
+gives the insert and delete batches. They work on the same columns held
+by kind (`rows::Col`), with the types the row types give them. For factor
+tables, call `g.collect_factors()` before generating, then
+`g.factors(threads)`.
 
 ## How it matches the datagen
 

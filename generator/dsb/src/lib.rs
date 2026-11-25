@@ -34,9 +34,8 @@
 //! ```
 
 pub mod dat;
-mod direct;
+mod dist;
 mod gen_tables;
-mod pairs;
 mod seeds;
 
 pub use dat::Encoding;

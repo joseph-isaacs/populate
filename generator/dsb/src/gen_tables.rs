@@ -2,9 +2,8 @@
 //! rows by dsbgen's row generators.
 
 use crate::TableName;
-use crate::dat::{self, Encoding};
-use crate::direct;
-use crate::pairs::Channel;
+use crate::dat::Encoding;
+use crate::dist::{self, Gen, PairGen};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
@@ -19,6 +18,8 @@ use parquet::schema::types::ColumnPath;
 use populate_table::text::{TextChunks, write_text_many};
 use populate_table::{Chunks, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
+use std::fmt;
+use std::sync::Arc;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 
@@ -45,6 +46,25 @@ pub struct DsTable {
     source_rows: u64,
     chunk_source_rows: u64,
     batch_size: usize,
+    /// The table as one distribution.
+    dist: Shared<dyn Gen>,
+    /// A sales or returns table: the channel's two tables as one.
+    pair: Option<Shared<dyn PairGen>>,
+}
+
+/// A distribution shared by a table's clones.
+struct Shared<T: ?Sized>(Arc<T>);
+
+impl<T: ?Sized> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(self.0.clone())
+    }
+}
+
+impl<T: ?Sized> fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Distribution")
+    }
 }
 
 macro_rules! tables {
@@ -63,46 +83,6 @@ macro_rules! tables {
         }
 
         impl DsTable {
-            /// Arrow schema (dsbgen-arrow's: `Int32` keys, `Int64`
-            /// identifiers, `Decimal128(p, s)`, `Date32`, `Utf8View` text).
-            pub fn schema(&self) -> SchemaRef {
-                schema_of(self.name)
-            }
-        }
-
-        fn schema_of(t: TableName) -> SchemaRef {
-            match t { $(TableName::$t => $arrow::schema_ref(),)* }
-        }
-
-        impl DsTable {
-
-            /// Source rows `first..=last` (1-based) as Arrow batches of up
-            /// to `batch` rows.
-            fn arrow_range(
-                &self,
-                first: u64,
-                last: u64,
-                batch: usize,
-                emit: &mut dyn FnMut(RecordBatch),
-            ) {
-                match self.name {
-                    TableName::Inventory => {
-                        return direct::inventory(&self.session, first, last, batch, emit)
-                    }
-                    TableName::CustomerDemographics if direct::demographics_direct() => {
-                        return direct::customer_demographics(&self.session, first, last, batch, emit)
-                    }
-                    _ => {}
-                }
-                match self.name {
-                    $(TableName::$t => {
-                        $arrow::new(self.session.clone())
-                            .with_source_row_range(first, last)
-                            .with_batch_size(batch)
-                            .for_each(|b| emit(b.expect("dsbgen-arrow batch")));
-                    })*
-                }
-            }
 
             /// The table as dsbgen-arrow generates it, sequentially: the
             /// reference the parallel paths are tested against.
@@ -186,16 +166,36 @@ impl DsTable {
         let source_rows = session.get_scaling().get_row_count(name.ds());
         DsTable {
             name,
-            session,
             source_rows,
             chunk_source_rows: 1,
             batch_size: DEFAULT_BATCH_SIZE,
+            dist: Shared(Arc::from(
+                dist::dimension(name, &session)
+                    .or_else(|| dist::fact(name, &session))
+                    .expect("every table is a dimension or a fact"),
+            )),
+            pair: dist::pair(name, &session).map(|p| Shared(Arc::from(p))),
+            session,
         }
         .chunk_rows(DEFAULT_CHUNK_ROWS)
     }
 
     pub fn name(&self) -> TableName {
         self.name
+    }
+
+    /// Arrow schema, read off the table's distribution: `Int32` keys,
+    /// `Int64` ticket and order numbers, `Decimal128(p, s)`, `Date32` and
+    /// `Utf8View` text, nullable where DSB has NULLs.
+    pub fn schema(&self) -> SchemaRef {
+        self.dist.0.schema()
+    }
+
+    /// Source rows per batch: about `batch_size` rows of work. A returns
+    /// table batches like its sales table, which it is made with, so its
+    /// batches are the same alone or paired (and about a tenth the rows).
+    fn batch_source_rows(&self) -> u64 {
+        ((self.batch_size as f64 / cost_per_source_row(self.name)).round() as u64).max(1)
     }
 
     /// Source rows (tickets, orders, ...; the row count for most tables).
@@ -298,8 +298,10 @@ impl DsTable {
 /// gets no properties; start from it to change other settings.
 pub fn parquet_props() -> WriterPropertiesBuilder {
     let mut p = WriterProperties::builder().set_compression(Compression::SNAPPY);
+    // the schemas are the same at every scale
+    let ds = crate::Dsb::new(1.0);
     for t in TableName::ALL {
-        for f in schema_of(t).fields() {
+        for f in ds.table(t).schema().fields() {
             let dict = !matches!(f.data_type(), DataType::Decimal128(..) | DataType::Int64);
             p = p.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), dict);
         }
@@ -320,7 +322,7 @@ pub fn write_parquet_many<W: Write + Send>(
 ) -> Result<Vec<W>, ParquetError> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
     let props = props.unwrap_or_else(|| parquet_props().build());
-    let units = plan(tables, true);
+    let units = plan(tables, Some(PARQUET_BATCH));
     let srcs: Vec<&dyn MultiChunks> = units.iter().map(|u| u as &dyn MultiChunks).collect();
     // writers in output order (units' tables, in order), and back
     let mut by_table: Vec<Option<W>> = writers.into_iter().map(Some).collect();
@@ -346,7 +348,7 @@ pub fn write_dat_many<W: Write + Send>(
     encoding: Encoding,
 ) -> io::Result<Vec<W>> {
     assert_eq!(tables.len(), writers.len(), "one writer per table");
-    let units = plan(tables, true);
+    let units = plan(tables, None);
     let srcs: Vec<DatUnit<'_>> = units.iter().map(|u| DatUnit(u, encoding)).collect();
     let dyns: Vec<&dyn TextChunks> = srcs.iter().map(|u| u as &dyn TextChunks).collect();
     // writers in output order (units' tables, in order), and back
@@ -386,7 +388,7 @@ pub fn for_each_batch_many(
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let units = plan(tables, false);
+    let units = plan(tables, None);
     let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
     let r: Result<(), Infallible> = par_sources(
         &chunks,
@@ -410,20 +412,83 @@ struct Unit<'a> {
     tables: &'a [DsTable],
     /// Indexes into `tables` of this unit's outputs.
     idx: Vec<usize>,
-    /// Pass generation batches on as made (Parquet, `.dat`) instead of
-    /// building `batch_size`-row batches.
-    raw: bool,
+    /// Batches of exactly this many rows (the last of a chunk shorter), for
+    /// Parquet: its page boundaries depend on the batches written.
+    exact: Option<usize>,
+}
+
+/// Rows per batch written to Parquet.
+const PARQUET_BATCH: usize = 2048;
+
+/// Batches of one table cut and joined into batches of exactly `rows`
+/// rows. Only the batches that cross a boundary are copied.
+struct Rebatch {
+    rows: usize,
+    /// The start of the next batch, shorter than `rows`.
+    head: Vec<RecordBatch>,
+    held: usize,
+}
+
+impl Rebatch {
+    fn new(rows: usize) -> Self {
+        Rebatch {
+            rows,
+            head: Vec::new(),
+            held: 0,
+        }
+    }
+
+    fn push(&mut self, mut b: RecordBatch, emit: &mut dyn FnMut(RecordBatch)) {
+        while b.num_rows() > 0 {
+            let take = (self.rows - self.held).min(b.num_rows());
+            let (part, rest) = (b.slice(0, take), b.slice(take, b.num_rows() - take));
+            if self.held == 0 && take == self.rows {
+                emit(part);
+            } else {
+                self.head.push(part);
+                self.held += take;
+                if self.held == self.rows {
+                    self.flush(emit);
+                }
+            }
+            b = rest;
+        }
+    }
+
+    fn flush(&mut self, emit: &mut dyn FnMut(RecordBatch)) {
+        if !self.head.is_empty() {
+            let schema = self.head[0].schema();
+            emit(concat_batches(&schema, &self.head).expect("one table's batches"));
+            self.head.clear();
+            self.held = 0;
+        }
+    }
+}
+
+/// The channel (store 0, catalog 1, web 2) of a sales or returns table, and
+/// whether it is the sales table.
+fn channel(t: TableName) -> Option<(u8, bool)> {
+    use TableName::*;
+    Some(match t {
+        StoreSales => (0, true),
+        StoreReturns => (0, false),
+        CatalogSales => (1, true),
+        CatalogReturns => (1, false),
+        WebSales => (2, true),
+        WebReturns => (2, false),
+        _ => return None,
+    })
 }
 
 /// Units for `tables`, in order; a sales table and its returns with the
 /// same chunks and batch size become one unit (sales first) at the first
 /// one's place.
-fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
+fn plan(tables: &[DsTable], exact: Option<usize>) -> Vec<Unit<'_>> {
     // partner[i]: the table generated together with tables[i]
     let mut partner = vec![None; tables.len()];
     for (i, a) in tables.iter().enumerate() {
         for (j, b) in tables.iter().enumerate() {
-            let same_channel = match (Channel::of(a.name), Channel::of(b.name)) {
+            let same_channel = match (channel(a.name), channel(b.name)) {
                 (Some((ca, sa)), Some((cb, sb))) => ca == cb && sa != sb,
                 _ => false,
             };
@@ -445,11 +510,11 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
     for (i, t) in tables.iter().enumerate() {
         let idx = match partner[i] {
             Some(j) if j < i => continue,
-            Some(j) if Channel::of(t.name).is_some_and(|c| c.1) => vec![i, j],
+            Some(j) if channel(t.name).is_some_and(|c| c.1) => vec![i, j],
             Some(j) => vec![j, i],
             None => vec![i],
         };
-        units.push(Unit { tables, idx, raw });
+        units.push(Unit { tables, idx, exact });
     }
     units
 }
@@ -457,18 +522,16 @@ fn plan(tables: &[DsTable], raw: bool) -> Vec<Unit<'_>> {
 impl Unit<'_> {
     /// Chunk `i` as `.dat` text, appended to `bufs` (one per output).
     fn chunk_dat(&self, i: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
-        if let [s, r] = self.idx[..] {
-            // sales and returns hold only numbers: text straight from the rows
-            let t = &self.tables[s];
-            let (first, last) = t.range(i);
-            let (channel, _) = Channel::of(t.name).expect("a channel");
-            let [sales, returns] = bufs else {
-                unreachable!("a pair has two outputs")
-            };
-            debug_assert_eq!(self.tables[r].range(i), (first, last));
-            return channel.run_dat(&t.session, t.source_rows, first, last, sales, returns);
+        let t = &self.tables[self.idx[0]];
+        let (first, last) = t.range(i);
+        match (self.idx.len(), bufs) {
+            (2, [sales, returns]) => {
+                let pair = t.pair.as_ref().expect("a sales table pairs");
+                pair.0.range_dat(first, last, sales, returns);
+            }
+            (_, [out]) => t.dist.0.range_dat(first, last, t.batch_source_rows() as usize, encoding, out),
+            _ => unreachable!("a buffer per table"),
         }
-        self.chunk(i, &mut |k, b| dat::write_batch(&b, encoding, &mut bufs[k]));
     }
 }
 
@@ -484,53 +547,31 @@ impl MultiChunks for Unit<'_> {
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let t = &self.tables[self.idx[0]];
         let (first, last) = t.range(i);
-        if self.idx.len() == 2 {
-            // `idx` is sales, returns: the channel's outputs 0 and 1
-            let (channel, _) = Channel::of(t.name).expect("a channel");
-            if self.raw || t.batch_size <= GEN_BATCH {
-                let batch = if self.raw { GEN_BATCH } else { t.batch_size };
-                return channel.run(&t.session, t.source_rows, first, last, batch, emit);
+        let Some(rows) = self.exact else {
+            if self.idx.len() == 2 {
+                // `idx` is sales, returns: the pair's tables 0 and 1
+                let pair = t.pair.as_ref().expect("a sales table pairs");
+                return pair.0.range(first, last, t.batch_source_rows(), emit);
             }
-            // as `Chunks::chunk`: generation batches joined into at least
-            // `batch_size` rows, per output
-            let schemas = self.schemas();
-            let mut pending: [(Vec<RecordBatch>, usize); 2] = Default::default();
-            let mut flush = |k: usize, pending: &mut Vec<RecordBatch>| {
-                if pending.len() == 1 {
-                    emit(k, pending.pop().expect("one batch"));
-                } else if !pending.is_empty() {
-                    emit(
-                        k,
-                        concat_batches(&schemas[k], pending.iter()).expect("same schema"),
-                    );
-                    pending.clear();
-                }
-            };
-            channel.run(
-                &t.session,
-                t.source_rows,
-                first,
-                last,
-                GEN_BATCH,
-                &mut |k, b| {
-                    let (p, rows) = &mut pending[k];
-                    *rows += b.num_rows();
-                    p.push(b);
-                    if *rows >= t.batch_size {
-                        flush(k, p);
-                        *rows = 0;
-                    }
-                },
-            );
-            for (k, (p, _)) in pending.iter_mut().enumerate() {
-                flush(k, p);
-            }
-            return;
+            return Chunks::chunk(t, i, &mut |b| emit(0, b));
+        };
+        if t.name.rows_per_source_row() == 1.0 {
+            // a row per source row: batches of `rows` as made
+            return t.dist.0.range(first, last, rows, &mut |b| emit(0, b));
         }
-        if self.raw {
-            t.arrow_range(first, last, GEN_BATCH, &mut |b| emit(0, b));
+        // lines: blocks of about 8 batches, cut into batches of `rows`
+        let block = ((8 * rows) as f64 / cost_per_source_row(t.name)).ceil() as u64;
+        let mut cut = [Rebatch::new(rows), Rebatch::new(rows)];
+        if self.idx.len() == 2 {
+            let pair = t.pair.as_ref().expect("a sales table pairs");
+            pair.0.range(first, last, block, &mut |k, b| cut[k].push(b, &mut |b| emit(k, b)));
         } else {
-            Chunks::chunk(t, i, &mut |b| emit(0, b));
+            t.dist.0.range(first, last, block as usize, &mut |b| {
+                cut[0].push(b, &mut |b| emit(0, b))
+            });
+        }
+        for (k, c) in cut.iter_mut().enumerate() {
+            c.flush(&mut |b| emit(k, b));
         }
     }
 }
@@ -544,35 +585,9 @@ impl Chunks for DsTable {
         DsTable::num_chunks(self)
     }
 
-    /// Batches of `batch_size` rows (the last of each chunk may be shorter),
-    /// built from cache-sized generation batches.
+    /// Batches of about `batch_size` rows.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        let direct = matches!(
-            self.name,
-            TableName::Inventory | TableName::CustomerDemographics
-        );
-        if direct || self.batch_size <= GEN_BATCH {
-            return self.arrow_range(first, last, self.batch_size, emit);
-        }
-        let schema = self.schema();
-        let (mut pending, mut rows) = (Vec::new(), 0);
-        let mut flush = |pending: &mut Vec<RecordBatch>| {
-            if pending.len() == 1 {
-                emit(pending.pop().expect("one batch"));
-            } else if !pending.is_empty() {
-                emit(concat_batches(&schema, pending.iter()).expect("same schema"));
-                pending.clear();
-            }
-        };
-        self.arrow_range(first, last, GEN_BATCH, &mut |b| {
-            rows += b.num_rows();
-            pending.push(b);
-            if rows >= self.batch_size {
-                flush(&mut pending);
-                rows = 0;
-            }
-        });
-        flush(&mut pending);
+        self.dist.0.range(first, last, self.batch_source_rows() as usize, emit)
     }
 }

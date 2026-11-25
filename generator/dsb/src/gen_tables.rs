@@ -440,9 +440,16 @@ impl Rebatch {
 
     fn push(&mut self, mut b: RecordBatch, emit: &mut dyn FnMut(RecordBatch)) {
         while b.num_rows() > 0 {
-            let take = (self.rows - self.held).min(b.num_rows());
+            let take = if self.held == 0 && b.num_rows() >= self.rows {
+                // whole batches of `rows` as one: arrow-rs writes a batch in
+                // mini-batches of `write_batch_size`, which divides `rows`,
+                // so its pages are those of the batches one at a time
+                b.num_rows() / self.rows * self.rows
+            } else {
+                (self.rows - self.held).min(b.num_rows())
+            };
             let (part, rest) = (b.slice(0, take), b.slice(take, b.num_rows() - take));
-            if self.held == 0 && take == self.rows {
+            if self.held == 0 && take % self.rows == 0 {
                 emit(part);
             } else {
                 self.head.push(part);
@@ -559,8 +566,9 @@ impl MultiChunks for Unit<'_> {
             // a row per source row: batches of `rows` as made
             return t.dist.0.range(first, last, rows, &mut |b| emit(0, b));
         }
-        // lines: blocks of about 8 batches, cut into batches of `rows`
-        let block = ((8 * rows) as f64 / cost_per_source_row(t.name)).ceil() as u64;
+        // lines: blocks of about 4 batches (still in cache), cut into batches
+        // of `rows`
+        let block = ((4 * rows) as f64 / cost_per_source_row(t.name)).ceil() as u64;
         let mut cut = [Rebatch::new(rows), Rebatch::new(rows)];
         if self.idx.len() == 2 {
             let pair = t.pair.as_ref().expect("a sales table pairs");
@@ -591,3 +599,4 @@ impl Chunks for DsTable {
         self.dist.0.range(first, last, self.batch_source_rows() as usize, emit)
     }
 }
+

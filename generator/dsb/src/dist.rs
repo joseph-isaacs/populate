@@ -1692,28 +1692,3 @@ mod tests {
         }
     }
 }
-#[cfg(test)]
-mod scratch_timing {
-    use super::*;
-    use std::time::Instant;
-    use dsbgen::config::SessionBuilder;
-    #[test]
-    #[ignore]
-    fn timing() {
-        let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
-        let rows = s.get_scaling().get_row_count(Ds::StoreSales);
-        let t = Instant::now();
-        let mut g = StoreReturnsRowGenerator::open(&s, 1, rows);
-        let mut k = 0u64;
-        while let Some(p) = g.next_with_sale() { k += 1; std::hint::black_box(p); }
-        eprintln!("raw {k} {:?}", t.elapsed());
-        let g = pair(crate::TableName::StoreSales, &s).unwrap();
-        let t = Instant::now();
-        g.range(1, rows, 214, &mut |_, b| { std::hint::black_box(b); });
-        eprintln!("pairs {:?}", t.elapsed());
-        let g = fact(crate::TableName::StoreSales, &s).unwrap();
-        let t = Instant::now();
-        g.range(1, rows, 214, &mut |b| { std::hint::black_box(b); });
-        eprintln!("lines {:?}", t.elapsed());
-    }
-}

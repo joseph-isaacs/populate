@@ -1,3 +1,6 @@
+// Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 pub mod abstract_row_generator;
 pub mod table_row;
 mod tables;

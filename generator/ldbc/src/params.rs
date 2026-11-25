@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! Generator parameters: `params_default.ini`, the scale factors of
 //! `scale_factors.xml`, and `DatagenParams.readConf` (bugs included: several
 //! settings read the `maxEmails` key).

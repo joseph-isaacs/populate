@@ -3,7 +3,7 @@ name = "populate-tsbs"
 description = "TSBS devops and IoT data byte-identical to tsbs_generate_data, on all cores: text formats, Arrow and Parquet"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT AND BSD-3-Clause AND Apache-2.0"
 
 [dependencies]
 populate-core = { workspace = true }

@@ -56,8 +56,12 @@ the history of how it was built.
   reference tool's quirk being reproduced (with where it comes from).
 - **Keep licence files.** The vendored `dsbgen` and `dsbgen-arrow` crates
   keep their `LICENSE` and upstream README, and the DSB crate's `NOTICE.md`
-  records what was vendored and under which licence; record new vendored or
-  ported code the same way.
+  records what was vendored and under which licence. Each crate containing
+  vendored or ported code keeps a `NOTICE.md` identifying the upstream
+  sources, versions, adaptations and licences, plus required licence texts
+  and upstream notices. Preserve source-file copyright and permission
+  notices, mark modified Apache-2.0 files, and make the crate's SPDX
+  `license` expression reflect all included code.
 - **Scripts must be referenced.** A script in `scripts/` or a crate is
   documented in a README or used by a test or CI; delete it when that stops
   being true. Test fixtures (such as YCSB's `tests/data/*.tsv`) are fine.

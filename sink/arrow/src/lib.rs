@@ -542,11 +542,11 @@ where
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
-    schema_from(names, types, nullable)
+    schema_from(names, types)
 }
 
-/// Fields `names` typed `types`, nullable where `nullable` says.
-fn schema_from(names: Vec<String>, types: Vec<DataType>, nullable: Vec<bool>) -> Schema {
+/// Fields `names` of `types`' types and nullability.
+fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
     assert_eq!(
         names.len(),
         types.len(),
@@ -653,7 +653,7 @@ where
             } else {
                 names.by_ref().take(t.len()).collect()
             };
-            schema_from(n, t, null)
+            schema_from(n, t.into_iter().zip(null).collect())
         })
         .collect()
 }

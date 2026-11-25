@@ -15,14 +15,12 @@
 
 use crate::TableName;
 use crate::cols::{Shared, SharedCols, Word, Words, children_of};
-use crate::dict::{Dict, Views};
+use crate::dict::{DATA, Dict, Views};
 use crate::tables::{
     LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, TableGen, at,
     lines, orders, part_codes, party_codes, party_text, segment_codes, table,
 };
-use arrow_array::{Array, StringViewArray};
 use arrow_buffer::Buffer;
-use arrow_select::concat::concat;
 use populate_builtins::{ReadRows, named_all};
 use populate_core::{ChildCols, Children, Columns, Distribution, Sink};
 use populate_table::par_ordered;
@@ -57,19 +55,31 @@ impl Text {
         cols.push_n(rows.iter().map(|&r| Shared(self.views[r])));
     }
 
-    /// The per-job columns, end to end.
+    /// The per-job columns, end to end: job `k`'s bytes become buffer
+    /// `k`, and its views (which name buffer `DATA`) are pointed at it.
     fn concat(parts: Vec<Views>) -> Text {
-        let d = Dict::get();
-        let arrays: Vec<StringViewArray> = parts.into_iter().map(|v| v.finish(d)).collect();
-        let refs: Vec<&dyn Array> = arrays.iter().map(|a| a as &dyn Array).collect();
-        let all = concat(&refs).expect("same type");
-        let all = all
-            .as_any()
-            .downcast_ref::<StringViewArray>()
-            .expect("Utf8View");
+        let mut views = Vec::with_capacity(parts.iter().map(|p| p.views.len()).sum());
+        let mut buffers = Vec::with_capacity(parts.len());
+        for (k, p) in parts.into_iter().enumerate() {
+            debug_assert!(
+                p.views
+                    .iter()
+                    .all(|&v| v as u32 <= 12 || (v >> 64) as u32 == DATA)
+            );
+            let k = u128::from(u32::try_from(k).expect("buffers fit in u32"));
+            views.extend(p.views.into_iter().map(|v| {
+                if v as u32 <= 12 {
+                    v
+                } else {
+                    // the buffer index is bits 64..96 of a long view
+                    v & !(u128::from(u32::MAX) << 64) | k << 64
+                }
+            }));
+            buffers.push(Buffer::from_vec(p.data));
+        }
         Text {
-            views: all.views().to_vec(),
-            buffers: all.data_buffers().clone(),
+            views,
+            buffers: Arc::from(buffers),
         }
     }
 }

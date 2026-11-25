@@ -16,12 +16,12 @@ populate-tpch = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
-arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # dbgen's distributions (SSB's dists.dss values are TPC-H's), Apache-2.0
 tpchgen = "4.0"
 
 [dev-dependencies]
+arrow-select = "60"
 bytes = "1"
 
 [[bin]]

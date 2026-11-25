@@ -1,5 +1,5 @@
 // Ported from Microsoft DSB's dsdgen (MIT; Copyright (c) Microsoft
-// Corporation), address.c. See populate-dsb/NOTICE.md.
+// Corporation), address.c. See generator/dsb/NOTICE.md.
 
 //! DSB's `mk_address`: exponentially skewed, permuted street numbers,
 //! street names and types, cities and counties.

@@ -61,7 +61,7 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds     
 cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --format dat # dsdgen text
 ```
 
-See [`populate-tpcds/README.md`](populate-tpcds/README.md).
+See [`generator/tpcds/README.md`](generator/tpcds/README.md).
 
 ## DSB
 
@@ -75,7 +75,7 @@ tpcdsgen with DSB's changes to dsdgen ported in, run through the same
 cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat # DSB dsdgen text
 ```
 
-See [`populate-dsb/README.md`](populate-dsb/README.md).
+See [`generator/dsb/README.md`](generator/dsb/README.md).
 
 ## TPC-H
 
@@ -89,7 +89,7 @@ cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch        
 cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl # dbgen text
 ```
 
-See [`populate-tpch/README.md`](populate-tpch/README.md).
+See [`generator/tpch/README.md`](generator/tpch/README.md).
 
 ## TSBS
 
@@ -105,7 +105,7 @@ cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case devops --scale
 cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case iot --scale 1000 --seed 123 --format parquet --out tsbs
 ```
 
-See [`populate-tsbs/README.md`](populate-tsbs/README.md).
+See [`generator/tsbs/README.md`](generator/tsbs/README.md).
 
 ## SSB
 
@@ -118,9 +118,12 @@ cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb           
 cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl # ssb-dbgen text
 ```
 
-See [`populate-ssb/README.md`](populate-ssb/README.md).
+See [`generator/ssb/README.md`](generator/ssb/README.md).
 
 ## Crates
+
+The core crates live at the top level; the output sinks are under `sink/`
+and the data-set generators under `generator/`.
 
 | crate                   | contents                                            |
 |-------------------------|-----------------------------------------------------|
@@ -155,4 +158,4 @@ cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --n
 cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
 ```
 
-See [`populate-h2o/README.md`](populate-h2o/README.md).
+See [`generator/h2o/README.md`](generator/h2o/README.md).

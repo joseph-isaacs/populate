@@ -1,5 +1,5 @@
 // Ported from Microsoft DSB's dsdgen (MIT; Copyright (c) Microsoft
-// Corporation), join.c and scd.c. See populate-dsb/NOTICE.md.
+// Corporation), join.c and scd.c. See generator/dsb/NOTICE.md.
 
 //! DSB's `mk_join` for plain and history-keeping dimensions: the key is
 //! drawn with exponential skew instead of uniformly, and optionally mapped

@@ -27,7 +27,10 @@
 //! | [`table`]   | `populate-table`        | named, typed tables; parallel batches       |
 
 pub use populate_builtins as dist;
-pub use populate_core::{Columnar, Columns, Distribution, ListCol, Sink, StrBuf, StrCol, in_local};
+pub use populate_core::{
+    ChildCols, Children, Columnar, Columns, Date32, Decimal, Distribution, ListCol, SeekRng, Sink,
+    StrBuf, StrCol, in_local,
+};
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as arrow;
 #[cfg(feature = "parquet")]

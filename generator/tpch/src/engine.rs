@@ -2,7 +2,7 @@
 //! rows, and the drivers that run several tables on one pool.
 
 use crate::TableName;
-use crate::tables::{self, SUPPLIERS_PER_PART, Scale};
+use crate::tables::{self, SUPPLIERS_PER_PART, Scale, TableGen};
 use crate::text::Text;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
@@ -13,7 +13,9 @@ use parquet::schema::types::ColumnPath;
 use populate_table::text::{Encoding, TextChunks, write_batch_with, write_text_many};
 use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
 use std::convert::Infallible;
+use std::fmt;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
@@ -27,13 +29,27 @@ pub const DEFAULT_BATCH_SIZE: usize = 8 * 1024;
 /// generated from scratch with every stream positioned at its first row,
 /// so chunks are independent and their concatenation is exactly the
 /// sequential (dbgen) output.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TpchTable {
     name: TableName,
     scale: Scale,
     source_rows: u64,
     chunk_source_rows: u64,
     batch_size: usize,
+    /// The table's distribution, run over any range of source rows.
+    generator: Arc<dyn TableGen>,
+}
+
+impl fmt::Debug for TpchTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TpchTable")
+            .field("name", &self.name)
+            .field("scale", &self.scale)
+            .field("source_rows", &self.source_rows)
+            .field("chunk_source_rows", &self.chunk_source_rows)
+            .field("batch_size", &self.batch_size)
+            .finish()
+    }
 }
 
 impl TableName {
@@ -48,19 +64,14 @@ impl TableName {
     }
 
     /// Arrow schema (tpchgen-arrow's: `Int64` keys, `Int32` counts,
-    /// `Decimal128(15, 2)`, `Date32`, `Utf8View` text).
+    /// `Decimal128(15, 2)`, `Date32`, `Utf8View` text), read off the
+    /// table's distribution: nothing is generated.
     pub fn schema(self) -> SchemaRef {
-        use TableName::*;
-        match self {
-            Nation => tables::NATION.clone(),
-            Region => tables::REGION.clone(),
-            Part => tables::PART.clone(),
-            Supplier => tables::SUPPLIER.clone(),
-            PartSupp => tables::PARTSUPP.clone(),
-            Customer => tables::CUSTOMER.clone(),
-            Orders => tables::ORDERS.clone(),
-            LineItem => tables::LINEITEM.clone(),
-        }
+        let i = TableName::ALL
+            .iter()
+            .position(|&t| t == self)
+            .expect("every table");
+        tables::SCHEMAS[i].clone()
     }
 }
 
@@ -72,6 +83,7 @@ impl TpchTable {
             source_rows,
             chunk_source_rows: 1,
             batch_size: DEFAULT_BATCH_SIZE,
+            generator: tables::generator(name, &scale, source_rows),
         }
         .chunk_rows(DEFAULT_CHUNK_ROWS)
     }
@@ -140,22 +152,12 @@ impl TpchTable {
 
     /// Source rows `first..end` as batches of about `batch_size` rows.
     fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let t = Text::get();
-        let s = &self.scale;
+        Text::get();
         let per = (self.batch_size as f64 / self.name.rows_per_source_row()).ceil() as u64;
         let mut at = first;
         while at < end {
             let n = per.max(1).min(end - at);
-            emit(match self.name {
-                TableName::Nation => tables::nation(t, at, n),
-                TableName::Region => tables::region(t, at, n),
-                TableName::Part => tables::part(t, at, n),
-                TableName::Supplier => tables::supplier(t, at, n),
-                TableName::PartSupp => tables::partsupp(t, s, at, n),
-                TableName::Customer => tables::customer(t, at, n),
-                TableName::Orders => tables::orders(t, s, at, n),
-                TableName::LineItem => tables::lineitem(t, s, at, n),
-            });
+            emit(self.generator.batch(at, n));
             at += n;
         }
     }

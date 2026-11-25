@@ -36,6 +36,7 @@
 //! assert_eq!(rows, 60_175);
 //! ```
 
+mod cols;
 mod engine;
 /// dbgen's random streams, shared with `populate-ssb` (not a stable API).
 #[doc(hidden)]

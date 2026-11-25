@@ -9,11 +9,13 @@
 //! into the pool and a distribution pick is a precomputed view, so neither
 //! copies a byte.
 
-use crate::rng::{Rng, draws, scale};
+#[cfg(test)]
+use crate::rng::Rng;
+use crate::rng::{draws, scale};
 use arrow_array::StringViewArray;
 use arrow_buffer::{Buffer, ScalarBuffer};
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use tpchgen::distribution::{Distribution, Distributions};
 
 /// Buffer index of a batch's own string bytes.
@@ -89,22 +91,18 @@ impl Dist {
     }
 
     /// The value index the next draw of `r` picks.
-    #[inline(always)]
+    #[cfg(test)]
     pub(crate) fn pick(&self, r: &mut Rng) -> usize {
         let x = r.next_rand();
         self.pick_draw(x)
     }
 }
 
-/// Everything shared by all batches: the pool, the distributions and the
-/// buffers their views point into.
+/// The distributions and the bytes of their values ([`DICT`]). Cheap to
+/// build, so the generators hold a reference from the start.
 #[derive(Debug)]
-pub(crate) struct Text {
-    pub(crate) pool: &'static [u8],
-    pool_buf: Buffer,
-    dict_buf: Buffer,
-    /// `[empty, pool, dict]`, for columns with no bytes of their own.
-    shared: Arc<[Buffer]>,
+pub(crate) struct Dicts {
+    bytes: &'static [u8],
     pub(crate) colors: Dist,
     pub(crate) types: Dist,
     pub(crate) containers: Dist,
@@ -117,6 +115,56 @@ pub(crate) struct Text {
     /// `n_regionkey` of each nation.
     pub(crate) nation_regions: Vec<i64>,
     pub(crate) regions: Dist,
+}
+
+static DICTS: LazyLock<Dicts> = LazyLock::new(|| {
+    let d = Distributions::static_default();
+    let mut dict = Vec::new();
+    let mut dist = |x: &Distribution| Dist::new(x, &mut dict);
+    let colors = dist(d.part_colors());
+    let types = dist(d.part_types());
+    let containers = dist(d.part_containers());
+    let segments = dist(d.market_segments());
+    let priorities = dist(d.order_priority());
+    let return_flags = dist(d.return_flags());
+    let instructions = dist(d.ship_instructions());
+    let modes = dist(d.ship_modes());
+    let nations = dist(d.nations());
+    let regions = dist(d.regions());
+    let nation_regions = (0..d.nations().size())
+        .map(|i| d.nations().get_weight(i) as i64)
+        .collect();
+    Dicts {
+        bytes: Box::leak(dict.into_boxed_slice()),
+        colors,
+        types,
+        containers,
+        segments,
+        priorities,
+        return_flags,
+        instructions,
+        modes,
+        nations,
+        nation_regions,
+        regions,
+    }
+});
+
+impl Dicts {
+    pub(crate) fn get() -> &'static Dicts {
+        &DICTS
+    }
+}
+
+/// Everything string columns share: the pool and the buffers views point
+/// into.
+#[derive(Debug)]
+pub(crate) struct Text {
+    pub(crate) pool: &'static [u8],
+    pool_buf: Buffer,
+    dict_buf: Buffer,
+    /// `[empty, pool, dict]`, for columns with no bytes of their own.
+    shared: Arc<[Buffer]>,
 }
 
 static TEXT: OnceLock<Text> = OnceLock::new();
@@ -141,23 +189,7 @@ impl Text {
         TEXT.get_or_init(|| {
             let d = Distributions::static_default();
             let pool: &'static [u8] = Box::leak(build_pool(d, threads).into_boxed_slice());
-            let mut dict = Vec::new();
-            let mut dist = |x: &Distribution| Dist::new(x, &mut dict);
-            let colors = dist(d.part_colors());
-            let types = dist(d.part_types());
-            let containers = dist(d.part_containers());
-            let segments = dist(d.market_segments());
-            let priorities = dist(d.order_priority());
-            let return_flags = dist(d.return_flags());
-            let instructions = dist(d.ship_instructions());
-            let modes = dist(d.ship_modes());
-            let nations = dist(d.nations());
-            let regions = dist(d.regions());
-            let nation_regions = (0..d.nations().size())
-                .map(|i| d.nations().get_weight(i) as i64)
-                .collect();
-            let dict: &'static [u8] = Box::leak(dict.into_boxed_slice());
-            let (pool_buf, dict_buf) = (static_buffer(pool), static_buffer(dict));
+            let (pool_buf, dict_buf) = (static_buffer(pool), static_buffer(Dicts::get().bytes));
             Text {
                 pool,
                 shared: Arc::from(vec![
@@ -167,17 +199,6 @@ impl Text {
                 ]),
                 pool_buf,
                 dict_buf,
-                colors,
-                types,
-                containers,
-                segments,
-                priorities,
-                return_flags,
-                instructions,
-                modes,
-                nations,
-                nation_regions,
-                regions,
             }
         })
     }
@@ -221,13 +242,6 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    pub(crate) fn with_capacity(n: usize, bytes: usize) -> Self {
-        Views {
-            views: Vec::with_capacity(n),
-            data: Vec::with_capacity(bytes),
-        }
-    }
-
     /// Append the bytes `data[start..]` (just written) as the next string.
     #[inline(always)]
     pub(crate) fn end_string(&mut self, start: usize) {
@@ -730,7 +744,7 @@ mod tests {
     fn picks_match_tpchgen() {
         use tpchgen::random::RowRandomInt;
         let d = Distributions::static_default();
-        let t = Text::get();
+        let t = Dicts::get();
         for (ours, theirs) in [
             (&t.types, d.part_types()),
             (&t.priorities, d.order_priority()),

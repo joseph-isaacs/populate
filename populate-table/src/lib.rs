@@ -3,6 +3,8 @@
 //! as Arrow `RecordBatch`es, sequentially or on all cores, deterministically.
 //!
 //! - [`Table`]: the builder and generator (see [`table`] for an example).
+//! - [`DistTable`]: a table that is one distribution, its schema read
+//!   off the distribution (names and column types), not declared.
 //! - [`Stream`]: stateless per-row randomness, for values that several
 //!   tables must agree on (a return and the sale it refers to).
 //! - [`Chunks`]: any generator split into independent chunks gets the same
@@ -17,6 +19,7 @@
 //!   distribution's collected buffers, with no Arrow in between.
 
 pub mod chunks;
+pub mod dist;
 pub mod sched;
 pub mod stream;
 pub mod table;
@@ -32,6 +35,7 @@ mod parquet_direct;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use direct::{DirectColumns, ParquetOptions, write_dist_parquet};
+pub use dist::DistTable;
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
 pub use sched::{Schedule, par_ordered, par_sources, resolve_threads};

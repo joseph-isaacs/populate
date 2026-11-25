@@ -48,11 +48,19 @@ The values are dbgen's, as ported by
 uses its distributions, word lists and text grammar, and is tested equal to
 it. The generators are this crate's own:
 
+- **Each table is one populate distribution.** A table is a tuple of
+  named columns built from `populate-builtins` combinators (`draws`,
+  `derive`, `children`, `flat_map`, `named`) over dbgen's streams, run by
+  `populate_table::DistTable`. Its Arrow schema is read off that
+  distribution: the names it carries and the types of the columns it
+  collects into (`Date32`, `Decimal<15, 2>`, `Utf8View` text). Nothing is
+  declared twice, and no rows are generated to get it.
 - **Chunks of source rows.** Each table is split into chunks of
   consecutive source rows (orders for `lineitem`, parts for `partsupp`,
   rows elsewhere). dbgen's streams are Lehmer generators
   (`x' = 16807 x mod 2^31 - 1`) that reserve a fixed number of draws per
-  row, so a stream jumps to row `k` with one multiply by `16807^k`, each
+  row, so a stream jumps to row `k` with one multiply by `16807^k` (the
+  stream is a `SeekRng`, and `Distribution::skip` is that jump), each
   chunk is generated from scratch, and the chunks concatenate to the
   sequential output for any chunk size and thread count (tested for every
   table). `tpchgen-cli` splits a table into at most `--num-threads` parts.
@@ -83,10 +91,12 @@ it. The generators are this crate's own:
 
   The pool is built once per process (`Tpch::prepare`), and is tested
   equal to tpchgen's byte for byte.
-- **Line items by order.** `lineitem` streams reserve 7 slots per order;
-  the return flag of the k-th line past its receipt date uses the k-th
-  slot, as in dbgen. Comment views are made in their own pass after the
-  other columns, so their (random) pool reads overlap.
+- **Line items by order.** `lineitem` is a `flat_map` over orders: its
+  streams reserve 7 slots per order and an order with `k` lines writes its
+  first `k`; the return flag of the k-th line past its receipt date uses
+  the k-th slot, as in dbgen. `partsupp` is `children` of parts, 4 per
+  part. Comment views are made in their own pass when the column becomes
+  an array, so their (random) pool reads overlap.
 - **Shared engine.** Chunks run on `populate-table`'s pool: Parquet row
   groups are encoded on the workers (directly for integer, date, decimal
   and string columns), and `.tbl` text is formatted from the Arrow

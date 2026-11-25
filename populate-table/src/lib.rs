@@ -12,6 +12,8 @@
 //!   and a parallel writer for them.
 //! - `write_parquet` / `Table::write_parquet` (feature `parquet`): parallel
 //!   generation *and* encoding streamed into one Parquet file.
+//! - [`write_dist_parquet`] (feature `parquet`): the same, straight from a
+//!   distribution's collected buffers, with no Arrow in between.
 
 pub mod chunks;
 pub mod sched;
@@ -20,13 +22,17 @@ pub mod table;
 pub mod text;
 
 #[cfg(feature = "parquet")]
+pub mod direct;
+#[cfg(feature = "parquet")]
 mod parquet;
 #[cfg(feature = "parquet")]
 mod parquet_direct;
 
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
+pub use direct::{DirectColumns, ParquetOptions, write_dist_parquet};
+#[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
-pub use sched::{Schedule, par_sources};
+pub use sched::{Schedule, par_ordered, par_sources};
 pub use stream::{Stream, hash_str, mix64};
-pub use table::{BatchCtx, DecimalRepr, Table, par_ordered};
+pub use table::{BatchCtx, DecimalRepr, Table};

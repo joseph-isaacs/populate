@@ -26,11 +26,11 @@ multi-threaded output equals one sequential run.
     [`populate-h2o/README.md`](populate-h2o/README.md)).
   - [ ] Parallelise the join key shuffles themselves (draws are
     sequential; only the swaps overlap).
-- [ ] **DSB** (skewed TPC-DS, on `populate-tpcds`)
-  - Find out whether DSB's code forks tpcds-kit's dsdgen.
-  - Port its skew and correlation changes into the `tpcdsgen` path, and
-    generate tables in dependency order.
-  - Test against DSB's own generator output.
+- [x] **DSB** (`populate-dsb`): DSB's dsdgen is a fork of TPC-DS dsdgen;
+  its changes are ported into a copy of tpcdsgen. All 24 tables match DSB
+  dsdgen byte for byte at SF 1, 2 and 5, chunked on all cores.
+  - Next: build the sales columns directly (no row structs), as
+    populate-tpcds' fused channels do.
 - [x] **TSBS devops / IoT** (`populate-tsbs`)
   - All five use cases, byte-identical to `tsbs_generate_data` for any seed
     and flags in the eight text and three binary formats (Go `math/rand`, amd64
@@ -39,15 +39,31 @@ multi-threaded output equals one sequential run.
     cores (see [`populate-tsbs/README.md`](populate-tsbs/README.md)).
   - [x] The binary formats: `siridb` (qpack), `prometheus` (protobuf),
     `mongo` (flatbuffers).
-- [x] **TPC-C and YCSB initial load** (`populate-oltp`)
+- [x] **TPC-C and YCSB initial load** (`populate-tpcc`, `populate-ycsb`)
   - All 9 TPC-C tables with NURand and random strings, tested against the
     spec (no loader has reproducible output: all seed from the clock).
   - YCSB `usertable`, byte-identical to YCSB 0.17.0's own `ycsb load`
     (keys, `dataintegrity` values, and random values given the client
-    thread's seed). See [`populate-oltp/README.md`](populate-oltp/README.md).
-- [ ] **LDBC SNB** (spike only)
-  - Prototype `Person` and `knows` to see whether the multi-pass, sorted
-    generation fits `Chunks` at all, before committing to the full schema.
+    thread's seed). See [`populate-tpcc/README.md`](populate-tpcc/README.md) and
+    [`populate-ycsb/README.md`](populate-ycsb/README.md).
+- [x] **LDBC SNB, identical to the LDBC Spark datagen** (`populate-ldbc`)
+  - All 14 dynamic and 4 static tables of `--mode raw`. Byte-identical CSV
+    at SF 0.1 and 1; value-identical to the datagen's raw Parquet, row by
+    row, at SF 3 and 10 (its CSV row order past one block is a Spark
+    file-scan artefact). 13–39x faster than the Spark datagen on 4 cores
+    (see [`populate-ldbc/README.md`](populate-ldbc/README.md)).
+  - `--mode bi` (initial snapshot, insert and delete batches) is
+    byte-identical at SF 0.1 and 1. So are the exploded-edge,
+    exploded-attribute and epoch-millis layouts at SF 0.1. The datagen has
+    no separate interactive mode.
+  - The 34 factor tables (`--generate-factors`) are identical at SF 0.1.
+    At SF 1, 33 match; `people2Hops` samples over Spark's shuffle
+    partitions.
+  - Persons and friendships are a pre-pass; a chunk is 1,000 persons of an
+    activity block, resumed from the block's RNG state. The state-skipping
+    pass is ~40% of generation, down from ~60%.
+  - [ ] Reproduce Spark's partitioning of large sampled factor tables
+    (`people2Hops` from SF 1).
 - [x] **Synthetic shapes** (examples, not benchmarks) (`populate-synth`)
   - NYC-taxi-like trips, ClickBench-like web hits, ML feature tables, and
     vector embeddings as `FixedSizeList<f32>`. Every value is a function of

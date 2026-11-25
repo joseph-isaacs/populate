@@ -1,0 +1,15 @@
+[package]
+name = "dsbgen-arrow"
+description = "dsbgen rows into Apache Arrow (tpcdsgen-arrow 4.0, vendored)"
+version.workspace = true
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["arrow_60"]
+arrow_60 = []
+
+[dependencies]
+arrow_60 = { package = "arrow", version = "60", default-features = false }
+dsbgen = { path = "../dsbgen" }

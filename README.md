@@ -4,7 +4,7 @@ Composable distribution combinators for generating tabular test data,
 column by column, straight into Arrow (and optionally Parquet).
 
 ```rust
-use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::arrow::DistributionArrow;
 use populate::dist::{constant, list, map, range};
 
 // id: i64, tags: list<i64> with lengths cycling 0..8
@@ -12,12 +12,11 @@ let mut table = (
     range(0i64, 1),
     list(map(range(0usize, 1), |i| i % 8), range(0i64, 1)),
 );
-let batch = DistributionArrow::<ArrowBackend>::collect_record_batch(&mut table, &mut rand::rng(), 1_000)?;
+let batch = table.collect_record_batch(&mut rand::rng(), 1_000)?;
 ```
 
-With `ArrowBackend` every numeric column, including list offsets and values,
-is generated into one exactly-sized buffer that becomes the Arrow array
-without a copy. The optional `parquet` feature writes those buffers to Parquet
+Every numeric column, including list offsets and values, is generated into
+one exactly-sized buffer that becomes the Arrow array without a copy. The optional `parquet` feature writes those buffers to Parquet
 in place (`collect_parquet`).
 
 ## Tables
@@ -63,6 +62,20 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --fo
 ```
 
 See [`populate-tpcds/README.md`](populate-tpcds/README.md).
+
+## DSB
+
+`populate-dsb` generates all 24 tables of Microsoft's
+[DSB](https://github.com/microsoft/dsb) (TPC-DS with skewed, correlated
+data) byte-identical to DSB's `dsdgen`, on all cores. Its generator is
+tpcdsgen with DSB's changes to dsdgen ported in, run through the same
+`Chunks` engine as populate-tpcds.
+
+```sh
+cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat # DSB dsdgen text
+```
+
+See [`populate-dsb/README.md`](populate-dsb/README.md).
 
 ## TPC-H
 
@@ -112,15 +125,21 @@ See [`populate-ssb/README.md`](populate-ssb/README.md).
 | crate                   | contents                                            |
 |-------------------------|-----------------------------------------------------|
 | `populate`              | facade: re-exports everything below                 |
-| `populate-core`         | `Distribution`, `SampleIter`, `Sink`, `Backend`, HLists, tuples |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `flatten`, `uniform`, `choose`, `weighted`, `text`, `chars` |
-| `populate-sink-arrow`   | `ArrowBackend`, `RecordBatch` output                |
+| `populate-core`         | `Distribution`, `Columnar`, `Sink`, `StrCol`, `ListCol`, tuples |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `uniform`, `choose`, `weighted`, `text`, `chars` |
+| `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
+| `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
 | `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
 | `populate-tsbs`         | TSBS devops/IoT byte-identical to `tsbs_generate_data`, on all cores; the `tsbs-gen` CLI |
 | `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
+| `populate-h2o`          | H2O db-benchmark groupby and join data, byte-identical to its R datagen; the `h2o-gen` CLI |
+| `populate-tpcc`         | the TPC-C initial database, to the spec's population rules; the `tpcc-gen` CLI |
+| `populate-ycsb`         | YCSB load and run operations, byte-identical to YCSB 0.17.0; the `ycsb-gen` CLI |
+| `populate-ldbc`         | LDBC SNB, identical to the LDBC Spark datagen; the `ldbc-gen` CLI |
+| `populate-synth`        | synthetic data sets (ClickBench-style hits, taxi trips, embeddings, features); the `synth-gen` CLI |
 
 See `populate/DESIGN.md` for the design.
 

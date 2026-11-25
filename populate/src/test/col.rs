@@ -1,22 +1,22 @@
 // ========================================================================
-// Col-by-col collection tests (via collect_flat — no HCons visible!)
+// Col-by-col collection tests
 // ========================================================================
 
+use crate::Distribution;
 use crate::test::Log;
 use crate::test::dist::{
     collect, gen_col4, make_3tuple, make_4tuple, make_flatten_order, make_map_in_tuple,
     make_nested_tuple, make_row_order, make_tracked_2tuple, make_tracked_3tuple,
     make_tracked_4tuple, make_tuple,
 };
-use crate::traits::{DistributionExt, VecBackend};
 use rand::rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[test]
 fn test_col_by_col_basic() {
-    let mut dist = make_tuple::<VecBackend>();
-    let (col1, col2) = dist.collect_flat((Vec::<i32>::new(), Vec::<i64>::new()), &mut rng(), 4);
+    let mut dist = make_tuple();
+    let (col1, col2) = dist.collect(&mut rng(), 4);
     assert_eq!(col1, vec![1, 1, 1, 1]);
     assert_eq!(col2, vec![0, 10, 20, 30]);
 }
@@ -25,7 +25,7 @@ fn test_col_by_col_basic() {
 fn test_col_by_col_order() {
     let log: Log = Log::default();
     let mut dist = make_tracked_2tuple(&log);
-    let (col1, col2) = dist.collect_flat((Vec::<i64>::new(), Vec::<i64>::new()), &mut rng(), 3);
+    let (col1, col2) = dist.collect(&mut rng(), 3);
 
     assert_eq!(col1, vec![0, 1, 2]);
     assert_eq!(col2, vec![100, 101, 102]);
@@ -43,11 +43,7 @@ fn test_col_by_col_order() {
 #[test]
 fn test_3tuple_col_by_col() {
     let mut dist = make_3tuple();
-    let (col1, col2, col3) = dist.collect_flat(
-        (Vec::<i32>::new(), Vec::<i64>::new(), Vec::<bool>::new()),
-        &mut rng(),
-        3,
-    );
+    let (col1, col2, col3) = dist.collect(&mut rng(), 3);
     assert_eq!(col1, vec![1, 1, 1]);
     assert_eq!(col2, vec![0, 10, 20]);
     assert_eq!(col3, vec![true, true, true]);
@@ -57,11 +53,7 @@ fn test_3tuple_col_by_col() {
 fn test_3tuple_col_by_col_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_3tuple(&log);
-    let (col1, col2, col3) = dist.collect_flat(
-        (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i32>::new()),
-        &mut rng(),
-        2,
-    );
+    let (col1, col2, col3) = dist.collect(&mut rng(), 2);
     assert_eq!(col1, vec![0, 1]);
     assert_eq!(col2, vec![100, 101]);
     assert_eq!(col3, vec![1000, 1001]);
@@ -78,16 +70,7 @@ fn test_3tuple_col_by_col_order() {
 #[test]
 fn test_4tuple_col_by_col() {
     let mut dist = make_4tuple();
-    let (c1, c2, c3, c4) = dist.collect_flat(
-        (
-            Vec::<i32>::new(),
-            Vec::<i64>::new(),
-            Vec::<bool>::new(),
-            Vec::<f64>::new(),
-        ),
-        &mut rng(),
-        3,
-    );
+    let (c1, c2, c3, c4) = dist.collect(&mut rng(), 3);
     assert_eq!(c1, vec![1, 1, 1]);
     assert_eq!(c2, vec![0, 10, 20]);
     assert_eq!(c3, vec![true, true, true]);
@@ -98,16 +81,7 @@ fn test_4tuple_col_by_col() {
 fn test_4tuple_col_by_col_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_4tuple(&log);
-    let (c1, c2, c3, c4) = dist.collect_flat(
-        (
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-        ),
-        &mut rng(),
-        2,
-    );
+    let (c1, c2, c3, c4) = dist.collect(&mut rng(), 2);
     assert_eq!(c1, vec![0, 1]);
     assert_eq!(c2, vec![100, 101]);
     assert_eq!(c3, vec![1000, 1001]);
@@ -128,11 +102,7 @@ fn test_4tuple_col_by_col_order() {
 fn test_map_in_tuple_values() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_map_in_tuple(&log);
-    let (c1, c2, c3) = dist.collect_flat(
-        (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
-        &mut rng(),
-        3,
-    );
+    let (c1, c2, c3) = dist.collect(&mut rng(), 3);
 
     assert_eq!(c1, vec![0, 1, 2]);
     assert_eq!(c2, vec![200, 202, 204]);
@@ -143,11 +113,7 @@ fn test_map_in_tuple_values() {
 fn test_map_in_tuple_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_map_in_tuple(&log);
-    let (c1, c2, c3) = dist.collect_flat(
-        (Vec::<i64>::new(), Vec::<i64>::new(), Vec::<i64>::new()),
-        &mut rng(),
-        3,
-    );
+    let (c1, c2, c3) = dist.collect(&mut rng(), 3);
 
     assert_eq!(c1, vec![0, 1, 2]);
     assert_eq!(c2, vec![200, 202, 204]);
@@ -164,24 +130,15 @@ fn test_map_in_tuple_order() {
 }
 
 // ========================================================================
-// AUTO-FLATTENING: Map producing tuple → flat columns, no Unnest needed!
+// Nested tuples: the columns nest the way the rows do
 // ========================================================================
 
 #[test]
-fn test_map_tuple_auto_flatten() {
+fn test_map_tuple_in_tuple() {
     let log = Log::default();
-    let mut dist = gen_col4::<VecBackend>(&log);
+    let mut dist = gen_col4(&log);
 
-    let (c1, c2, c3, c4) = dist.collect_flat(
-        (
-            Vec::<i16>::new(),
-            Vec::<i64>::new(),
-            Vec::<i64>::new(),
-            Vec::<i32>::new(),
-        ),
-        &mut rng(),
-        3,
-    );
+    let (c1, (c2, c3), c4) = dist.collect(&mut rng(), 3);
 
     assert_eq!(c1, vec![0, 1, 2]); // COL1
     assert_eq!(c2, vec![1100, 1102, 1104]); // sum
@@ -190,20 +147,15 @@ fn test_map_tuple_auto_flatten() {
 }
 
 #[test]
-fn test_map_tuple_auto_flatten_order() {
+fn test_map_tuple_in_tuple_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let mut dist = make_flatten_order::<VecBackend>(&log);
+    let mut dist = make_flatten_order(&log);
 
-    let (_, _, _, _) = dist.collect_flat(
-        (
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-        ),
-        &mut rng(),
-        3,
-    );
+    let (c1, (sum, product), c4) = dist.collect(&mut rng(), 3);
+    assert_eq!(c1, vec![0, 1, 2]);
+    assert_eq!(sum, vec![1100, 1102, 1104]);
+    assert_eq!(product, vec![100000, 101101, 102204]);
+    assert_eq!(c4, vec![0, 5, 10]);
 
     // COL1 col-by-col, then Map row-by-row (MAP_A, MAP_B per row), then COL4 col-by-col
     assert_eq!(
@@ -215,25 +167,12 @@ fn test_map_tuple_auto_flatten_order() {
     );
 }
 
-// ========================================================================
-// Independent tuple auto-flatten (previously needed Unnest)
-// ========================================================================
-
 #[test]
-fn test_independent_tuple_auto_flatten() {
+fn test_nested_tuple_is_col_by_col() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_nested_tuple(&log);
 
-    let (c1, c2, c3, c4) = dist.collect_flat(
-        (
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-            Vec::<i32>::new(),
-        ),
-        &mut rng(),
-        3,
-    );
+    let (c1, (c2, c3), c4) = dist.collect(&mut rng(), 3);
 
     assert_eq!(c1, vec![0, 1, 2]);
     assert_eq!(c2, vec![100, 101, 102]);

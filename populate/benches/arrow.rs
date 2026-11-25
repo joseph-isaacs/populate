@@ -1,7 +1,7 @@
 //! Arrow list output: columnar collection vs row-by-row into Arrow builders.
 //!
 //! Every variant produces the same Arrow array. Row variants pull
-//! `Vec<i64>` rows from `row_iter` (what a row-based generator hands you) and
+//! `Vec<i64>` rows from `sample` (what a row-based generator hands you) and
 //! append them to a builder. Same hygiene as `collect.rs`: black-boxed
 //! params, setup in `with_inputs`, outputs kept alive and dropped after timing.
 
@@ -10,9 +10,9 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field};
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
+use populate::Distribution;
 use populate::arrow::DistributionArrow;
 use populate::dist::{constant, list, map, range};
-use populate::traits::{Distribution, SampleIter, VecBackend};
 use std::sync::Arc;
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
 const NS: &[usize] = &[1 << 10, 1 << 16];
 
 /// lengths cycle 0..16 (mean 7.5)
-fn d_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
+fn d_list() -> impl Distribution<Item = Vec<i64>> {
     list(
         map(range(black_box(0usize), 1), |i: usize| i & 15),
         range(black_box(0i64), black_box(3)),
@@ -30,7 +30,7 @@ fn d_list() -> impl Distribution<VecBackend, Item = Vec<i64>> {
 }
 
 /// list<{ id: i32, tags: list<i64> }>: 4 structs per row, tag lens cycle 0..8
-fn d_list_struct_list() -> impl Distribution<VecBackend, Item = Vec<(i32, Vec<i64>)>> {
+fn d_list_struct_list() -> impl Distribution<Item = Vec<(i32, Vec<i64>)>> {
     list(
         constant(black_box(4usize)),
         (
@@ -71,10 +71,9 @@ mod list_i64 {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_list(), rand::rng()))
             .bench_local_refs(|(d, rng)| -> ArrayRef {
-                let mut it = d.row_iter();
                 let mut lb = ListBuilder::new(Int64Builder::new());
                 for _ in 0..black_box(n) {
-                    lb.values().append_slice(&it.next(rng));
+                    lb.values().append_slice(&d.sample(rng));
                     lb.append(true);
                 }
                 Arc::new(lb.finish())
@@ -87,10 +86,9 @@ mod list_i64 {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_list(), rand::rng()))
             .bench_local_refs(|(d, rng)| -> ArrayRef {
-                let mut it = d.row_iter();
                 let mut lb = ListBuilder::new(Box::new(Int64Builder::new()) as Dyn);
                 for _ in 0..black_box(n) {
-                    dyn_vals(&mut lb).append_slice(&it.next(rng));
+                    dyn_vals(&mut lb).append_slice(&d.sample(rng));
                     lb.append(true);
                 }
                 Arc::new(lb.finish())
@@ -104,10 +102,9 @@ mod list_i64 {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_list(), rand::rng()))
             .bench_local_refs(|(d, rng)| -> ArrayRef {
-                let mut it = d.row_iter();
                 let mut lb = ListBuilder::new(Box::new(Int64Builder::new()) as Dyn);
                 for _ in 0..black_box(n) {
-                    for v in it.next(rng) {
+                    for v in d.sample(rng) {
                         dyn_vals(&mut lb).append_value(v);
                     }
                     lb.append(true);
@@ -150,9 +147,8 @@ mod list_struct_list {
                     ],
                 );
                 let mut lb = ListBuilder::new(sb);
-                let mut it = d.row_iter();
                 for _ in 0..black_box(n) {
-                    for (id, tags) in it.next(rng) {
+                    for (id, tags) in d.sample(rng) {
                         let s = lb.values();
                         s.field_builder::<Int32Builder>(0).unwrap().append_value(id);
                         let t = s.field_builder::<ListBuilder<Int64Builder>>(1).unwrap();

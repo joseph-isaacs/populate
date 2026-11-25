@@ -1,6 +1,7 @@
-//! Parquet column chunks for flat integer, timestamp, float and string
-//! columns, and required `FixedSizeList`s of numbers (PLAIN, in pages of
-//! whole records), encoded here instead of by arrow-rs's column writer.
+//! Parquet column chunks for flat integer, timestamp, float, boolean and
+//! string (`Utf8` and `Utf8View`) columns, required `List`s of numbers,
+//! and required `FixedSizeList`s of numbers (PLAIN, in pages of whole
+//! records), encoded here instead of by arrow-rs's column writer.
 //!
 //! arrow-rs is general: it builds definition levels and a list of non-null
 //! indexes per batch, gathers values through it, and dictionary-encodes
@@ -26,31 +27,50 @@ use arrow_array::types::{
     Int64Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
     TimestampSecondType,
 };
-use arrow_array::{Array, ArrayRef};
+use arrow_array::{Array, ArrayRef, ArrowPrimitiveType};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::{DataType, TimeUnit};
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use parquet::basic::{BoundaryOrder, Compression, Encoding, Type as PhysicalType};
-use parquet::column::page::{CompressedPage, Page, PageWriter};
+use parquet::column::page::{CompressedPage, Page, PageWriteSpec, PageWriter};
 use parquet::column::writer::ColumnCloseResult;
 use parquet::errors::{ParquetError, Result};
 use parquet::file::metadata::{
     ColumnChunkMetaData, ColumnIndexBuilder, LevelHistogram, OffsetIndexBuilder,
 };
 use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
+use parquet::file::reader::{ChunkReader, Length};
 use parquet::file::statistics::{Statistics, ValueStatistics};
 use parquet::file::writer::{SerializedPageWriter, TrackedWrite};
 use parquet::schema::types::{ColumnDescPtr, ColumnDescriptor, ColumnPath};
+use std::borrow::Cow;
+use std::collections::VecDeque;
+use std::io::{self, Read, Write};
 use std::mem::take;
 use std::ops::Range;
 use std::ptr::{copy_nonoverlapping, null};
 use std::slice::from_raw_parts;
+use std::sync::{Arc, Mutex};
 
-/// Whether a flat column, or a required `FixedSizeList` of required
-/// numbers with its dictionary off, of type `dt`, stored as `descr`, can be
-/// encoded here under `props` (anything else goes to arrow-rs).
+/// Whether a flat column, a required `List` of required numbers, or a
+/// required `FixedSizeList` of required numbers with its dictionary off, of
+/// type `dt`, stored as `descr`, can be encoded here under `props` (anything else goes to arrow-rs).
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
+    if let DataType::List(item) = dt {
+        // a required list of required numbers
+        let item_ok = matches!(
+            (item.data_type(), descr.physical_type()),
+            (DataType::Float32, PhysicalType::FLOAT)
+                | (DataType::Float64, PhysicalType::DOUBLE)
+                | (DataType::Int32, PhysicalType::INT32)
+                | (DataType::Int64, PhysicalType::INT64)
+        );
+        return item_ok
+            && descr.max_rep_level() == 1
+            && descr.max_def_level() == 1
+            && common_ok(path, props);
+    }
     if let DataType::FixedSizeList(item, n) = dt {
         // a required list of required values, PLAIN
         let item_ok = matches!(
@@ -77,7 +97,8 @@ pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterPr
         (DataType::Float64, PhysicalType::DOUBLE) => true,
         (DataType::Decimal128(p, _), PhysicalType::INT32) => *p <= 9,
         (DataType::Decimal128(p, _), PhysicalType::INT64) => *p <= 18,
-        (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
+        (DataType::Utf8 | DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
+        (DataType::Boolean, PhysicalType::BOOLEAN) => true,
         _ => false,
     };
     type_ok && descr.max_rep_level() == 0 && descr.max_def_level() <= 1 && common_ok(path, props)
@@ -113,7 +134,16 @@ impl DirectColumn {
     }
 
     /// The encoded chunk (offsets relative to its start) and its metadata.
-    pub(crate) fn close(self, props: &WriterProperties) -> Result<(Bytes, ColumnCloseResult)> {
+    pub(crate) fn close(self, props: &WriterProperties) -> Result<(Rope, ColumnCloseResult)> {
+        if let Some(DataType::List(_)) = self.arrays.first().map(|a| a.data_type()) {
+            let d = &self.descr;
+            return match d.physical_type() {
+                PhysicalType::FLOAT => list_parts::<Float32Type>(&self.arrays, d, props),
+                PhysicalType::DOUBLE => list_parts::<Float64Type>(&self.arrays, d, props),
+                PhysicalType::INT32 => list_parts::<Int32Type>(&self.arrays, d, props),
+                _ => list_parts::<Int64Type>(&self.arrays, d, props),
+            };
+        }
         if let Some(DataType::FixedSizeList(_, n)) = self.arrays.first().map(|a| a.data_type()) {
             let n = *n as usize;
             return match self.descr.physical_type() {
@@ -140,6 +170,16 @@ impl DirectColumn {
             };
         }
         match self.descr.physical_type() {
+            PhysicalType::BOOLEAN => {
+                let v = Values::<bool>::gather(&self.arrays, |a, out| {
+                    let b = a.as_boolean();
+                    match a.logical_nulls().filter(|n| n.null_count() > 0) {
+                        None => out.extend(b.values().iter()),
+                        Some(n) => out.extend(n.valid_indices().map(|i| b.value(i))),
+                    }
+                });
+                encode_bools(&self.descr, props, &v)
+            }
             PhysicalType::INT32 => {
                 let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int32 => extend(out, a.as_primitive::<Int32Type>().values(), a),
@@ -163,6 +203,16 @@ impl DirectColumn {
                 let keyed = props.dictionary_enabled(self.descr.path());
                 let mut keys = Vec::new();
                 let v = Values::<&[u8]>::gather(&self.arrays, |a, out| {
+                    if let Some(sa) = a.as_string_opt::<i32>() {
+                        // `Utf8`: offsets into one buffer (no views, so
+                        // the dictionary looks up the bytes)
+                        let get = |i: usize| sa.value(i).as_bytes();
+                        match a.logical_nulls().filter(|n| n.null_count() > 0) {
+                            None => out.extend((0..sa.len()).map(get)),
+                            Some(n) => out.extend(n.valid_indices().map(get)),
+                        }
+                        return;
+                    }
                     let sv = a.as_string_view();
                     let views = sv.views();
                     // the bytes of value `i` without a branch on its length
@@ -251,7 +301,7 @@ impl DirectColumn {
 }
 
 /// The physical value types handled here.
-trait Native: Copy + Ord + Default + Send + 'static {
+pub(crate) trait Native: Copy + Ord + Default + Send + 'static {
     const SIZE: usize;
     const MIN: Self;
     const MAX: Self;
@@ -314,12 +364,12 @@ impl Native for i64 {
 /// statistics are).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
-struct F32(u32);
+pub(crate) struct F32(u32);
 
 /// An `f64` by its bits, as [`F32`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
-struct F64(u64);
+pub(crate) struct F64(u64);
 
 macro_rules! float_native {
     ($t:ident, $bits:ty, $f:ty, $size:expr, $variant:ident) => {
@@ -421,14 +471,24 @@ float_native!(F64, u64, f64, 8, Double);
 
 /// A chunk's non-null values, its validity bitmap (the definition levels,
 /// bit-packed at width 1) if any row is null, and its arrays' lengths.
-struct Values<T> {
-    vals: Vec<T>,
+pub(crate) struct Values<'v, T: Clone> {
+    vals: Cow<'v, [T]>,
     valid: Option<BooleanBuffer>,
     rows: usize,
     lens: Vec<usize>,
 }
 
-impl<T> Values<T> {
+impl<'v, T: Clone> Values<'v, T> {
+    /// A chunk of `vals.len()` rows, none null, encoded where they are.
+    pub(crate) fn borrowed(vals: &'v [T]) -> Self {
+        Self {
+            rows: vals.len(),
+            lens: vec![vals.len()],
+            vals: Cow::Borrowed(vals),
+            valid: None,
+        }
+    }
+
     fn gather<'a>(arrays: &'a [ArrayRef], mut push: impl FnMut(&'a ArrayRef, &mut Vec<T>)) -> Self {
         let rows: usize = arrays.iter().map(|a| a.len()).sum();
         let mut vals = Vec::with_capacity(rows);
@@ -454,7 +514,7 @@ impl<T> Values<T> {
             done += a.len();
         }
         Self {
-            vals,
+            vals: Cow::Owned(vals),
             valid: valid.map(|mut b| b.finish()),
             rows,
             lens: arrays.iter().map(|a| a.len()).collect(),
@@ -542,6 +602,117 @@ unsafe fn avx2<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// An encoded column chunk, its pages kept in the buffers they were
+/// encoded into: a page body is not copied into one chunk-sized buffer,
+/// only page headers and small pages are.
+///
+/// [`ChunkWriter`] names each page body in `next` before writing it; when
+/// the page writer then hands over exactly those bytes, they are kept as
+/// they are.
+#[derive(Default)]
+pub(crate) struct Rope {
+    parts: Vec<Bytes>,
+    tail: Vec<u8>,
+    len: usize,
+    next: Arc<Mutex<Option<Bytes>>>,
+}
+
+impl Rope {
+    fn seal(&mut self) {
+        if !self.tail.is_empty() {
+            self.parts.push(Bytes::from(take(&mut self.tail)));
+        }
+    }
+
+    /// The chunk, sealed.
+    pub(crate) fn finish(mut self) -> Self {
+        self.seal();
+        self
+    }
+}
+
+impl Write for Rope {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut next = self.next.lock().expect("unpoisoned");
+        if let Some(b) = next.as_ref()
+            && b.as_ptr() == buf.as_ptr()
+            && b.len() == buf.len()
+        {
+            let b = next.take().expect("named");
+            drop(next);
+            self.seal();
+            self.parts.push(b);
+        } else {
+            drop(next);
+            self.tail.extend_from_slice(buf);
+        }
+        self.len += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Length for Rope {
+    fn len(&self) -> u64 {
+        self.len as u64
+    }
+}
+
+/// Reads a sealed [`Rope`] from an offset.
+pub(crate) struct RopeRead {
+    parts: VecDeque<Bytes>,
+}
+
+impl Read for RopeRead {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        while let Some(p) = self.parts.front_mut() {
+            if p.is_empty() {
+                self.parts.pop_front();
+                continue;
+            }
+            let n = p.len().min(out.len());
+            out[..n].copy_from_slice(&p[..n]);
+            p.advance(n);
+            return Ok(n);
+        }
+        Ok(0)
+    }
+}
+
+impl ChunkReader for Rope {
+    type T = RopeRead;
+
+    fn get_read(&self, start: u64) -> Result<RopeRead> {
+        let mut skip = start as usize;
+        let mut parts = VecDeque::with_capacity(self.parts.len());
+        for p in &self.parts {
+            if skip >= p.len() {
+                skip -= p.len();
+            } else {
+                parts.push_back(p.slice(skip..));
+                skip = 0;
+            }
+        }
+        Ok(RopeRead { parts })
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> Result<Bytes> {
+        let mut out = Vec::with_capacity(length);
+        self.get_read(start)?
+            .take(length as u64)
+            .read_to_end(&mut out)?;
+        Ok(Bytes::from(out))
+    }
+}
+
+/// A chunk's page sink.
+pub(crate) fn rope_sink() -> TrackedWrite<Rope> {
+    TrackedWrite::new(Rope::default())
+}
+
 /// Writes one column chunk's pages and gathers its metadata: the parts
 /// that don't depend on the value type.
 struct ChunkWriter<'a> {
@@ -549,7 +720,9 @@ struct ChunkWriter<'a> {
     props: &'a WriterProperties,
     compression: Compression,
     snappy: snap::raw::Encoder,
-    pages: SerializedPageWriter<'a, Vec<u8>>,
+    pages: SerializedPageWriter<'a, Rope>,
+    /// The sink's slot for the next page body.
+    next: Arc<Mutex<Option<Bytes>>>,
     has_levels: bool,
     histograms: bool,
     encodings: Vec<Encoding>,
@@ -560,6 +733,8 @@ struct ChunkWriter<'a> {
     unencoded: Option<i64>,
     /// Values per record of a fixed-size list column (levels are values).
     list: Option<usize>,
+    /// Records of a variable-length list column (levels are not rows).
+    records: Option<usize>,
     dictionary_offset: Option<i64>,
     data_offset: Option<i64>,
     column_index: ColumnIndexBuilder,
@@ -570,8 +745,9 @@ impl<'a> ChunkWriter<'a> {
     fn new(
         descr: &'a ColumnDescPtr,
         props: &'a WriterProperties,
-        sink: &'a mut TrackedWrite<Vec<u8>>,
+        sink: &'a mut TrackedWrite<Rope>,
     ) -> Self {
+        let next = sink.inner().next.clone();
         let has_levels = descr.max_def_level() > 0;
         let stats = props.statistics_enabled(descr.path());
         ChunkWriter {
@@ -580,6 +756,7 @@ impl<'a> ChunkWriter<'a> {
             compression: props.compression(descr.path()),
             snappy: snap::raw::Encoder::new(),
             pages: SerializedPageWriter::new(sink),
+            next,
             has_levels,
             // as arrow-rs: level histograms whenever statistics are on
             histograms: has_levels && stats != EnabledStatistics::None,
@@ -594,10 +771,19 @@ impl<'a> ChunkWriter<'a> {
             unencoded: None,
             dictionary_offset: None,
             list: None,
+            records: None,
             data_offset: None,
             column_index: ColumnIndexBuilder::new(descr.physical_type()),
             offset_index: OffsetIndexBuilder::new(),
         }
+    }
+
+    /// Write `page` (`n` bytes before compression); its body is kept as is.
+    fn write_page(&mut self, page: Page, n: usize) -> Result<PageWriteSpec> {
+        *self.next.lock().expect("unpoisoned") = Some(page.buffer().clone());
+        let spec = self.pages.write_page(CompressedPage::new(page, n));
+        self.next.lock().expect("unpoisoned").take();
+        spec
     }
 
     fn compress(&mut self, body: Vec<u8>) -> Result<(Bytes, usize)> {
@@ -624,7 +810,7 @@ impl<'a> ChunkWriter<'a> {
             encoding: Encoding::PLAIN,
             is_sorted: false,
         };
-        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        let spec = self.write_page(page, n)?;
         self.dictionary_offset = Some(spec.offset as i64);
         self.written += spec.bytes_written;
         self.compressed += spec.compressed_size as i64;
@@ -671,7 +857,7 @@ impl<'a> ChunkWriter<'a> {
             rep_level_encoding: Encoding::RLE,
             statistics: None,
         };
-        let spec = self.pages.write_page(CompressedPage::new(page, n))?;
+        let spec = self.write_page(page, n)?;
         self.data_offset.get_or_insert(spec.offset as i64);
         self.written += spec.bytes_written;
         self.compressed += spec.compressed_size as i64;
@@ -717,8 +903,12 @@ impl<'a> ChunkWriter<'a> {
             if self.histograms {
                 let h = vec![nulls, vals as i64];
                 meta = meta.set_definition_level_histogram(Some(LevelHistogram::from(h)));
-                if let Some(n) = self.list {
-                    let records = (rows / n) as i64;
+                let records = match (self.list, self.records) {
+                    (Some(n), _) => Some(rows / n),
+                    (None, r) => r,
+                };
+                if let Some(records) = records {
+                    let records = records as i64;
                     let h = vec![records, rows as i64 - records];
                     meta = meta.set_repetition_level_histogram(Some(LevelHistogram::from(h)));
                 }
@@ -726,7 +916,7 @@ impl<'a> ChunkWriter<'a> {
         }
         Ok(ColumnCloseResult {
             bytes_written: self.written,
-            rows_written: (rows / self.list.unwrap_or(1)) as u64,
+            rows_written: self.records.unwrap_or(rows / self.list.unwrap_or(1)) as u64,
             metadata: meta.build()?,
             bloom_filter: None,
             column_index: match stats_level {
@@ -789,7 +979,7 @@ impl ChunkWriter<'_> {
             rep_level_encoding: Encoding::RLE,
             statistics: None,
         };
-        let spec = self.pages.write_page(CompressedPage::new(page, size))?;
+        let spec = self.write_page(page, size)?;
         self.data_offset.get_or_insert(spec.offset as i64);
         self.written += spec.bytes_written;
         self.compressed += spec.compressed_size as i64;
@@ -813,6 +1003,80 @@ impl ChunkWriter<'_> {
         self.offset_index
             .append_unencoded_byte_array_data_bytes(Some(n));
     }
+}
+
+/// A boolean column: PLAIN (bit-packed, as arrow-rs writes v1 pages; there
+/// is no boolean dictionary), pages ending after the mini-batch that
+/// reaches the row or page size limit.
+fn encode_bools(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &Values<bool>,
+) -> Result<(Rope, ColumnCloseResult)> {
+    let row_limit = props.data_page_row_count_limit().max(1);
+    let size_limit = props.data_page_size_limit();
+    let batch = props.write_batch_size().max(1);
+    let mut pages: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    let (mut r0, mut v0, mut row, mut val) = (0, 0, 0, 0);
+    for &len in &v.lens {
+        let mut left = len;
+        while left > 0 {
+            let step = left.min(batch);
+            let n = v
+                .valid
+                .as_ref()
+                .map_or(step, |b| b.slice(row, step).count_set_bits());
+            (row, val, left) = (row + step, val + n, left - step);
+            if row - r0 >= row_limit || (val - v0) / 8 >= size_limit {
+                pages.push((r0..row, v0..val));
+                (r0, v0) = (row, val);
+            }
+        }
+    }
+    if row > r0 {
+        pages.push((r0..row, v0..val));
+    }
+    let mut sink = rope_sink();
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    let mut page_ranges = Vec::with_capacity(pages.len());
+    for (rows, vals) in pages {
+        let vals = &v.vals[vals];
+        let mm = vals
+            .iter()
+            .fold(None, |acc: Option<(bool, bool)>, &x| match acc {
+                None => Some((x, x)),
+                Some((lo, hi)) => Some((lo & x, hi | x)),
+            });
+        page_ranges.push(mm);
+        w.data_page(
+            rows,
+            vals.len(),
+            v.valid.as_ref(),
+            Encoding::PLAIN,
+            None,
+            |body| {
+                let start = body.len();
+                body.resize(start + vals.len().div_ceil(8), 0);
+                for (i, &x) in vals.iter().enumerate() {
+                    body[start + i / 8] |= (x as u8) << (i % 8);
+                }
+                mm.map(|(lo, hi)| (vec![lo as u8], vec![hi as u8]))
+            },
+        )?;
+    }
+    let chunk = page_ranges
+        .iter()
+        .flatten()
+        .fold(None, |acc: Option<(bool, bool)>, &(a, b)| match acc {
+            None => Some((a, b)),
+            Some((lo, hi)) => Some((lo & a, hi | b)),
+        });
+    let order = boundary_order(page_ranges.into_iter());
+    let nulls = (v.rows - v.vals.len()) as u64;
+    let (lo, hi) = chunk.unzip();
+    let stats = Statistics::boolean(lo, hi, None, Some(nulls), false);
+    let close = w.finish(v.rows, v.vals.len(), stats, order)?;
+    Ok((sink.into_inner()?.finish(), close))
 }
 
 /// Pages' boundary order, from each page's `(min, max)` in order (`None`
@@ -839,25 +1103,25 @@ fn encode<T: Native>(
     descr: &ColumnDescPtr,
     props: &WriterProperties,
     v: &Values<T>,
-) -> Result<(Bytes, ColumnCloseResult)> {
+) -> Result<(Rope, ColumnCloseResult)> {
     let path = descr.path();
-    let (lo, hi) = match min_max(&v.vals) {
-        Some((lo, hi)) => (Some(lo), Some(hi)),
-        None => (None, None),
-    };
+    // the chunk's min and max up front only for a dictionary, which needs
+    // the span; else they are folded from the pages' (one pass fewer)
+    let dict_on = props.dictionary_enabled(path) && !v.vals.is_empty();
+    let chunk_mm = if dict_on { min_max(&v.vals) } else { None };
     // the dictionary's direct table spans every value, NaNs included
     // (statistics leave them out)
-    let span = if T::FLOAT {
-        (!v.vals.is_empty()).then(|| {
-            let lo = v.vals.iter().copied().fold(T::MAX, Ord::min);
-            let hi = v.vals.iter().copied().fold(T::MIN, Ord::max);
-            (lo, hi)
-        })
+    let span = if !dict_on {
+        None
+    } else if T::FLOAT {
+        let lo = v.vals.iter().copied().fold(T::MAX, Ord::min);
+        let hi = v.vals.iter().copied().fold(T::MIN, Ord::max);
+        Some((lo, hi))
     } else {
-        lo.zip(hi)
+        chunk_mm
     };
     let plan = plan(v, props, path, span);
-    let mut sink = TrackedWrite::new(Vec::new());
+    let mut sink = rope_sink();
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(entries) = &plan.entries {
         let mut body = Vec::with_capacity(entries.len() * T::SIZE);
@@ -870,6 +1134,7 @@ fn encode<T: Native>(
         b
     };
     let mut page_ranges = Vec::with_capacity(plan.pages.len());
+    let mut chunk_nans = 0u64;
     for p in &plan.pages {
         let (v0, v1) = (p.vals.start, p.vals.end);
         let vals = &v.vals[v0..v1];
@@ -880,6 +1145,7 @@ fn encode<T: Native>(
             None => (Encoding::PLAIN, None),
         };
         let nans = nan_count(vals).map(|c| c as i64);
+        chunk_nans += nans.unwrap_or(0) as u64;
         w.data_page(
             p.rows.clone(),
             vals.len(),
@@ -904,11 +1170,23 @@ fn encode<T: Native>(
             },
         )?;
     }
+    let (lo, hi) = match chunk_mm {
+        Some((lo, hi)) => (Some(lo), Some(hi)),
+        None => page_ranges
+            .iter()
+            .flatten()
+            .fold((None, None), |(lo, hi), &(a, b)| {
+                (
+                    fold_stat(lo, a, |x, y| x < y),
+                    fold_stat(hi, b, |x, y| x > y),
+                )
+            }),
+    };
     let order = boundary_order(page_ranges.into_iter());
     let nulls = (v.rows - v.vals.len()) as u64;
-    let nans = (T::FLOAT && !v.vals.is_empty()).then(|| nan_count(&v.vals).unwrap_or(0) as u64);
+    let nans = (T::FLOAT && !v.vals.is_empty()).then_some(chunk_nans);
     let close = w.finish(v.rows, v.vals.len(), T::stats(lo, hi, nulls, nans), order)?;
-    Ok((Bytes::from(sink.into_inner()?), close))
+    Ok((sink.into_inner()?.finish(), close))
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1213,39 @@ fn list_slices<'a, T: 'a>(
             Ok(&values(child)[start..start + l.len() * l.value_length() as usize])
         })
         .collect()
+}
+
+/// A chunk's `List` arrays as one list column: offsets rebased and values
+/// copied end to end (an error if any list or value is null: the column is
+/// declared required), then [`encode_var_list`].
+fn list_parts<A>(
+    arrays: &[ArrayRef],
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+) -> Result<(Rope, ColumnCloseResult)>
+where
+    A: ArrowPrimitiveType,
+    A::Native: Plain,
+{
+    let rows: usize = arrays.iter().map(|a| a.len()).sum();
+    let mut offsets = Vec::with_capacity(rows + 1);
+    offsets.push(0i32);
+    let mut values: Vec<A::Native> = Vec::new();
+    for a in arrays {
+        let l = a.as_list::<i32>();
+        let child = l.values();
+        if l.null_count() > 0 || child.null_count() > 0 {
+            return Err(ParquetError::General(
+                "null in a required list column".into(),
+            ));
+        }
+        let o = l.value_offsets();
+        let (first, last) = (o[0] as usize, o[o.len() - 1] as usize);
+        let base = values.len() as i32 - o[0];
+        offsets.extend(o[1..].iter().map(|&x| x + base));
+        values.extend_from_slice(&child.as_primitive::<A>().values()[first..last]);
+    }
+    encode_var_list(descr, props, &offsets, &values)
 }
 
 /// `f32`s as [`F32`]s, in place.
@@ -970,31 +1281,12 @@ fn encode_list<T: Native>(
     props: &WriterProperties,
     n: usize,
     parts: &[&[T]],
-) -> Result<(Bytes, ColumnCloseResult)> {
+) -> Result<(Rope, ColumnCloseResult)> {
     let per_page = props
         .data_page_row_count_limit()
         .min(props.data_page_size_limit() / (n * T::SIZE))
         .max(1);
-    // presized: the values, the repetition levels and a bound on each
-    // page's header and other levels, so a chunk of hundreds of MB is not
-    // grown (copied) by doubling
-    let total: usize = parts.iter().map(|p| p.len()).sum();
-    let pages: usize = parts.iter().map(|p| p.len().div_ceil(per_page * n)).sum();
-    let rep_bytes = match n {
-        1 => 0,
-        2..16 => total.div_ceil(8),
-        // per record: a run of one 0, then a run of `n - 1` ones
-        _ => total / n * (2 + varint_len(((n - 1) as u64) << 1) + 1),
-    };
-    // only uncompressed: a compressed chunk's size isn't known (smaller
-    // for most data, a little larger for incompressible data)
-    let plain = props.compression(descr.path()) == Compression::UNCOMPRESSED;
-    let cap = if plain {
-        total * T::SIZE + rep_bytes + pages * PAGE_OVERHEAD
-    } else {
-        0
-    };
-    let mut sink = TrackedWrite::new(Vec::with_capacity(cap));
+    let mut sink = rope_sink();
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     w.list = Some(n);
     let bytes = |x: T| {
@@ -1026,23 +1318,292 @@ fn encode_list<T: Native>(
     let order = boundary_order(page_ranges.into_iter());
     let nans = (T::FLOAT && levels > 0).then_some(nans);
     let close = w.finish(levels, levels, T::stats(lo, hi, 0, nans), order)?;
-    let out = sink.into_inner()?;
-    debug_assert!(
-        !plain || out.len() <= cap,
-        "list chunk {} > estimate {cap}",
-        out.len()
-    );
-    Ok((Bytes::from(out), close))
+    Ok((sink.into_inner()?.finish(), close))
 }
 
-/// A bound on a list page's bytes besides its values and repetition
-/// levels: the page header (no statistics), two level length prefixes, a
-/// short-list page's bit-packed run header, the run of definition levels.
-const PAGE_OVERHEAD: usize = 128;
+// ---------------------------------------------------------------------------
+// Plain slices (the direct distribution writer, no Arrow)
 
-/// Bytes of `x` as a ULEB128 varint.
-fn varint_len(x: u64) -> usize {
-    (64 - (x | 1).leading_zeros() as usize).div_ceil(7)
+/// A Rust number encoded here, and the physical value it is stored as.
+pub(crate) trait Plain: Copy {
+    type N: Native;
+    /// `v` as physical values, in place.
+    fn native(v: &[Self]) -> &[Self::N];
+}
+
+impl Plain for i32 {
+    type N = i32;
+    fn native(v: &[i32]) -> &[i32] {
+        v
+    }
+}
+
+impl Plain for i64 {
+    type N = i64;
+    fn native(v: &[i64]) -> &[i64] {
+        v
+    }
+}
+
+impl Plain for f32 {
+    type N = F32;
+    fn native(v: &[f32]) -> &[F32] {
+        f32_bits(v)
+    }
+}
+
+impl Plain for f64 {
+    type N = F64;
+    fn native(v: &[f64]) -> &[F64] {
+        f64_bits(v)
+    }
+}
+
+/// Whether a column of `descr` can be encoded here under `props`.
+pub(crate) fn slices_ok(descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
+    common_ok(descr.path(), props)
+}
+
+/// A required column of numbers, read in place.
+pub(crate) fn encode_values<T: Plain>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &[T],
+) -> Result<(Rope, ColumnCloseResult)> {
+    encode(descr, props, &Values::borrowed(T::native(v)))
+}
+
+/// A required string column in Arrow `Utf8` layout (`offsets` has one more
+/// entry than there are rows).
+pub(crate) fn encode_strings(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    offsets: &[i32],
+    data: &[u8],
+) -> Result<(Rope, ColumnCloseResult)> {
+    let strs: Vec<&[u8]> = offsets
+        .windows(2)
+        .map(|w| &data[w[0] as usize..w[1] as usize])
+        .collect();
+    encode_bytes(descr, props, &Values::borrowed(&strs), &[])
+}
+
+/// A required `list<required number>` column (standard 3-level layout, so
+/// `max_def = 1`, `max_rep = 1`) from Arrow `List` offsets (a leading 0)
+/// and the values, in pages of whole records: a dictionary as for flat
+/// columns (falling back to PLAIN at its page size limit), else PLAIN. An
+/// empty list is one level with definition 0, counted as a null as arrow-rs
+/// counts it.
+pub(crate) fn encode_var_list<P: Plain>(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    offsets: &[i32],
+    values: &[P],
+) -> Result<(Rope, ColumnCloseResult)> {
+    let values = P::native(values);
+    let records = offsets.len().saturating_sub(1);
+    let base = offsets.first().map_or(0, |&o| o as usize);
+    // value range of records `r0..r1`, relative to `values`' start
+    let span_of = |r0: usize, r1: usize| offsets[r0] as usize - base..offsets[r1] as usize - base;
+    let size = <P::N as Native>::SIZE;
+    let path = descr.path();
+    let row_limit = props.data_page_row_count_limit().max(1);
+    let size_limit = props.data_page_size_limit();
+    let batch = props.write_batch_size().max(1);
+    let dict_limit = props.dictionary_page_size_limit();
+    let n_vals = if records > 0 {
+        span_of(0, records).len()
+    } else {
+        0
+    };
+    let values = &values[..n_vals];
+
+    let stats = min_max(values);
+    let mut dict = if props.dictionary_enabled(path) && n_vals > 0 {
+        // the direct table spans every value, NaNs included
+        let span = if <P::N as Native>::FLOAT {
+            let lo = values.iter().copied().fold(<P::N as Native>::MAX, Ord::min);
+            let hi = values.iter().copied().fold(<P::N as Native>::MIN, Ord::max);
+            Some((lo, hi))
+        } else {
+            stats
+        };
+        span.map(|(lo, hi)| Dict::new(lo, hi, n_vals, dict_limit / size + batch))
+    } else {
+        None
+    };
+    let mut idx = Vec::with_capacity(if dict.is_some() { n_vals } else { 0 });
+    // pages: whole mini-batches of records until a limit is reached, the
+    // dictionary's entry count when each was flushed (`None`: PLAIN)
+    let mut pages: Vec<(Range<usize>, Option<usize>)> = Vec::new();
+    let mut fell_back = dict.is_none();
+    let (mut r0, mut r1) = (0, 0);
+    while r1 < records {
+        let next = (r1 + batch).min(records);
+        if let Some(d) = dict.as_mut().filter(|_| !fell_back) {
+            d.encode(&values[span_of(r1, next)], &mut idx);
+        }
+        r1 = next;
+        let entries = dict
+            .as_ref()
+            .filter(|_| !fell_back)
+            .map(|d| d.entries.len());
+        let n = span_of(r0, r1).len();
+        let bytes = match entries {
+            Some(e) => 1 + n * (64 - (e.max(1) as u64 - 1).leading_zeros() as usize) / 8,
+            None => n * size,
+        };
+        let fall_back = entries.is_some_and(|e| e * size >= dict_limit);
+        if r1 == records || r1 - r0 >= row_limit || bytes >= size_limit || fall_back {
+            pages.push((r0..r1, entries));
+            r0 = r1;
+        }
+        fell_back |= fall_back;
+    }
+
+    let mut sink = rope_sink();
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    w.records = Some(records);
+    if let Some(d) = &dict {
+        let mut body = Vec::with_capacity(d.entries.len() * size);
+        <P::N as Native>::put_all(&d.entries, &mut body);
+        w.dictionary(body, d.entries.len())?;
+    }
+    let bytes = |x: P::N| {
+        let mut b = Vec::new();
+        x.put(&mut b);
+        b
+    };
+    let (mut nans, mut empties, mut levels) = (0u64, 0usize, 0usize);
+    let mut page_ranges = Vec::with_capacity(pages.len());
+    let (mut rep, mut def) = (Vec::new(), Vec::new());
+    let (mut rep_bits, mut def_bits) = (Vec::new(), Vec::new());
+    for (recs, entries) in pages {
+        let vr = span_of(recs.start, recs.end);
+        let vals = &values[vr.clone()];
+        // levels straight from the offsets: bitmaps of every level, all 1
+        // but 0 at each record's first level (repetition) and at each
+        // empty list (definition)
+        let most = vals.len() + recs.len();
+        rep_bits.clear();
+        rep_bits.resize(most.div_ceil(8) + 1, 0xFF);
+        def_bits.clear();
+        def_bits.resize(most.div_ceil(8) + 1, 0xFF);
+        let mut page_empties = 0;
+        let mut at = 0;
+        for r in recs.clone() {
+            let len = (offsets[r + 1] - offsets[r]) as usize;
+            let (byte, bit) = (at / 8, !(1u8 << (at % 8)));
+            rep_bits[byte] &= bit;
+            if len == 0 {
+                def_bits[byte] &= bit;
+                page_empties += 1;
+            }
+            at += len.max(1);
+        }
+        let page_levels = at;
+        rep.clear();
+        bit_levels(&rep_bits, page_levels, &mut rep);
+        def.clear();
+        if page_empties == 0 {
+            rle(1, page_levels, 1, &mut def);
+        } else {
+            bit_levels(&def_bits, page_levels, &mut def);
+        }
+        let mm = min_max(vals);
+        page_ranges.push(mm);
+        let page_nans = nan_count(vals);
+        nans += page_nans.unwrap_or(0) as u64;
+        let encoding = match entries {
+            Some(_) => Encoding::RLE_DICTIONARY,
+            None => Encoding::PLAIN,
+        };
+        w.levels_page(
+            recs.len(),
+            page_levels,
+            vals.len(),
+            &rep,
+            &def,
+            encoding,
+            page_nans.map(|c| c as i64),
+            |body| {
+                match entries {
+                    Some(n) => {
+                        // as arrow-rs: the width of the dictionary when the
+                        // page was flushed
+                        let bits = 64 - (n.saturating_sub(1) as u64).leading_zeros();
+                        body.push(bits as u8);
+                        hybrid(&idx[vr], bits, body);
+                    }
+                    None => <P::N as Native>::put_all(vals, body),
+                }
+                mm.map(|(lo, hi)| (bytes(lo), bytes(hi)))
+            },
+        )?;
+        empties += page_empties;
+        levels += page_levels;
+    }
+    let order = boundary_order(page_ranges.into_iter());
+    let nans = (<P::N as Native>::FLOAT && n_vals > 0).then_some(nans);
+    let (lo, hi) = stats.unzip();
+    let stats = <P::N as Native>::stats(lo, hi, empties as u64, nans);
+    let close = w.finish(levels, n_vals, stats, order)?;
+    Ok((sink.into_inner()?.finish(), close))
+}
+
+impl ChunkWriter<'_> {
+    /// A v1 data page of `records` records over `levels` levels (`vals` of
+    /// them values), with the levels already encoded (no length prefix),
+    /// then the values `put` writes in `encoding`. `put` returns the page's min
+    /// and max (column index bytes).
+    #[allow(clippy::too_many_arguments)]
+    fn levels_page(
+        &mut self,
+        records: usize,
+        levels: usize,
+        vals: usize,
+        rep: &[u8],
+        def: &[u8],
+        encoding: Encoding,
+        nans: Option<i64>,
+        put: impl FnOnce(&mut Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        let mut body = Vec::with_capacity(8 + rep.len() + def.len() + vals * 8);
+        for l in [rep, def] {
+            body.extend_from_slice(&(l.len() as u32).to_le_bytes());
+            body.extend_from_slice(l);
+        }
+        let min_max = put(&mut body);
+        if encoding == Encoding::PLAIN && !self.encodings.contains(&Encoding::PLAIN) {
+            self.encodings.push(Encoding::PLAIN);
+        }
+        let (buf, size) = self.compress(body)?;
+        let page = Page::DataPage {
+            buf,
+            num_values: levels as u32,
+            encoding,
+            def_level_encoding: Encoding::RLE,
+            rep_level_encoding: Encoding::RLE,
+            statistics: None,
+        };
+        let spec = self.write_page(page, size)?;
+        self.data_offset.get_or_insert(spec.offset as i64);
+        self.written += spec.bytes_written;
+        self.compressed += spec.compressed_size as i64;
+        self.uncompressed += spec.uncompressed_size as i64;
+        self.offset_index.append_row_count(records as i64);
+        self.offset_index
+            .append_offset_and_size(spec.offset as i64, spec.compressed_size as i32);
+        let nulls = (levels - vals) as i64;
+        let (lo, hi) = min_max.unwrap_or_default();
+        self.column_index.append(vals == 0, lo, hi, nulls, nans);
+        if self.histograms {
+            let rep = LevelHistogram::from(vec![records as i64, (levels - records) as i64]);
+            let def = LevelHistogram::from(vec![nulls, vals as i64]);
+            self.column_index.append_histograms(&Some(rep), &Some(def));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,10 +1964,10 @@ fn encode_bytes(
     props: &WriterProperties,
     v: &Values<&[u8]>,
     keys: &[u128],
-) -> Result<(Bytes, ColumnCloseResult)> {
+) -> Result<(Rope, ColumnCloseResult)> {
     let path = descr.path();
     let (pages, dict, idx) = plan_bytes(v, keys, props, path);
-    let mut sink = TrackedWrite::new(Vec::new());
+    let mut sink = rope_sink();
     let mut w = ChunkWriter::new(descr, props, &mut sink);
     if let Some(d) = &dict {
         let mut body = Vec::with_capacity(d.bytes);
@@ -1517,7 +2078,7 @@ fn encode_bytes(
         None => Statistics::ByteArray(ValueStatistics::new(None, None, None, Some(nulls), false)),
     };
     let close = w.finish(v.rows, v.vals.len(), stats, order)?;
-    Ok((Bytes::from(sink.into_inner()?), close))
+    Ok((sink.into_inner()?.finish(), close))
 }
 
 /// A data page: its rows and values, and the number of dictionary entries
@@ -1846,7 +2407,35 @@ fn varint(mut x: u64, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{bitpack, hybrid, rle, varint};
+    use super::{bitpack, encode_values, hybrid, rle, varint};
+    use parquet::basic::{Repetition, Type as PhysicalType};
+    use parquet::file::properties::WriterProperties;
+    use parquet::schema::types::{ColumnDescriptor, ColumnPath, Type};
+    use std::sync::Arc;
+
+    /// Page bodies stay in their own buffers: the chunk is not one copy.
+    #[test]
+    fn rope_keeps_page_bodies() {
+        let t = Type::primitive_type_builder("x", PhysicalType::INT64)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .unwrap();
+        let d = Arc::new(ColumnDescriptor::new(
+            Arc::new(t),
+            0,
+            0,
+            ColumnPath::from("x"),
+        ));
+        let props = WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .build();
+        let v: Vec<i64> = (0..1 << 18).collect();
+        let (rope, close) = encode_values(&d, &props, &v).unwrap();
+        let pages = 2 * 1024 * 1024 / props.data_page_size_limit();
+        assert!(rope.parts.len() >= 2 * pages, "{} parts", rope.parts.len());
+        let len: usize = rope.parts.iter().map(|p| p.len()).sum();
+        assert_eq!(len as i64, close.metadata.compressed_size());
+    }
 
     /// The straightforward RLE / bit-packing hybrid: scan each run, emit it
     /// as RLE when it covers a whole group, pack one bit at a time.

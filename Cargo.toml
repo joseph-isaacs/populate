@@ -11,8 +11,13 @@ members = [
     "populate-tsbs",
     "populate-ssb",
     "populate-h2o",
-    "populate-oltp",
+    "populate-tpcc",
+    "populate-ycsb",
     "populate-synth",
+    "populate-dsb",
+    "populate-dsb/dsbgen",
+    "populate-dsb/dsbgen-arrow",
+    "populate-ldbc",
     "populate-bench",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate
@@ -30,8 +35,13 @@ default-members = [
     "populate-tsbs",
     "populate-ssb",
     "populate-h2o",
-    "populate-oltp",
+    "populate-tpcc",
+    "populate-ycsb",
     "populate-synth",
+    "populate-dsb",
+    "populate-dsb/dsbgen",
+    "populate-dsb/dsbgen-arrow",
+    "populate-ldbc",
 ]
 resolver = "2"
 
@@ -60,12 +70,25 @@ populate-tpch = { path = "populate-tpch" }
 populate-tsbs = { path = "populate-tsbs" }
 populate-ssb = { path = "populate-ssb" }
 populate-h2o = { path = "populate-h2o" }
-populate-oltp = { path = "populate-oltp" }
+populate-tpcc = { path = "populate-tpcc" }
+populate-ycsb = { path = "populate-ycsb" }
 populate-synth = { path = "populate-synth" }
+populate-ldbc = { path = "populate-ldbc" }
+
+# populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
+# in test builds too (its dependencies stay as they are)
+[profile.dev.package.populate-ldbc]
+opt-level = 3
 
 # Benchmarks: one codegen unit so inlining/layout is deterministic run to run
 # (populate is generic, so everything is monomorphised into the bench crate
 # anyway). Debug info is for `perf`/flamegraphs and doesn't change codegen.
+# Thin LTO: lets small hot functions of dependencies (tpcdsgen's random
+# streams and decimals) inline into the generators; ~7% off a TPC-DS .dat
+# run, for a little more link time.
+[profile.release]
+lto = "thin"
+
 [profile.bench]
 codegen-units = 1
 debug = true

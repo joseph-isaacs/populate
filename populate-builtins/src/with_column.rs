@@ -4,13 +4,13 @@
 //! column, `f(parent_row, rng)`. It collects column by column: `parent` fills
 //! its own columns first (at full columnar speed, whatever it is), then the
 //! new column is computed in one pass over those just-written buffers. Rows
-//! are never materialised as tuples and nothing goes through `collect_rows`.
+//! are never materialised and the parent is never sampled row by row.
 //!
 //! The output is flat, so `with_column`s chain:
 //!
 //! ```
 //! use populate_builtins::{uniform, with_column};
-//! use populate_core::traits::{DistributionExt, VecBackend};
+//! use populate_core::Distribution;
 //! use rand::Rng;
 //!
 //! let receipt = with_column(uniform(8035i32, 10_591), |ship, rng| {
@@ -18,13 +18,7 @@
 //! });
 //! let mut d = with_column(receipt, |(ship, receipt), _| receipt - ship > 14);
 //!
-//! let (ship, receipt, late): (Vec<i32>, Vec<i32>, Vec<bool>) =
-//!     DistributionExt::<VecBackend>::collect_flat(
-//!         &mut d,
-//!         Default::default(),
-//!         &mut rand::rng(),
-//!         100,
-//!     );
+//! let (ship, receipt, late): (Vec<i32>, Vec<i32>, Vec<bool>) = d.collect(&mut rand::rng(), 100);
 //! assert!(ship.iter().zip(&receipt).all(|(s, r)| (s + 1..=s + 30).contains(r)));
 //! assert!(ship.iter().zip(&receipt).zip(&late).all(|((s, r), l)| *l == (r - s > 14)));
 //! ```
@@ -33,178 +27,144 @@
 //! RNG, so draws inline instead of going through `dyn RngCore`.
 //!
 //! Parents must be made of scalar columns (up to 11 before the new one), so
-//! their rows can be read back from the sink.
+//! their rows can be read back from the columns.
 
-use populate_core::traits::{
-    Backend, DefaultSink, Distribution, HAppend, HCons, HNil, SampleIter, Sink,
-};
+use populate_core::{Columnar, Columns, Distribution, Sink};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use std::collections::VecDeque;
+use std::mem::take;
 
 // ============================================================================
-// Reading back what a sink wrote
+// Reading back what was collected
 // ============================================================================
 
-/// A scalar column sink whose values can be read back.
-pub trait Column {
-    type Elem: Copy;
-    /// Number of values written so far.
-    fn count(&self) -> usize;
-    /// Values from index `start` on.
-    fn iter_from(&self, start: usize) -> impl Iterator<Item = Self::Elem> + '_;
-}
-
-impl<T: Copy> Column for Vec<T> {
-    type Elem = T;
-    fn count(&self) -> usize {
-        Vec::len(self)
-    }
-    fn iter_from(&self, start: usize) -> impl Iterator<Item = T> + '_ {
-        self[start..].iter().copied()
-    }
-}
-
-impl<T: Copy> Column for VecDeque<T> {
-    type Elem = T;
-    fn count(&self) -> usize {
-        VecDeque::len(self)
-    }
-    fn iter_from(&self, start: usize) -> impl Iterator<Item = T> + '_ {
-        self.range(start..).copied()
-    }
-}
-
-/// An HList of scalar column sinks, read back as rows. `Row` is the same flat
-/// value the distribution's `Item` is.
+/// Columns whose rows can be read back: a `Vec` of `Copy` values, or a tuple
+/// of them. `Row` is the row type the columns were collected from.
 pub trait ReadRows {
     type Row;
+    /// Number of rows written so far.
     fn rows(&self) -> usize;
     /// Rows from index `start` on (zipped column iterators, no per-row
     /// bounds checks).
     fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_;
 }
 
-impl<A: Column> ReadRows for HCons<A, HNil> {
-    type Row = A::Elem;
+impl<T: Copy> ReadRows for Vec<T> {
+    type Row = T;
     fn rows(&self) -> usize {
-        self.0.count()
+        self.len()
     }
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-        self.0.iter_from(start)
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = T> + '_ {
+        self[start..].iter().copied()
     }
 }
 
-macro_rules! hlist_ty {
-    () => { HNil };
-    ($h:ident $(, $t:ident)*) => { HCons<$h, hlist_ty!($($t),*)> };
-}
-
-macro_rules! hlist_pat {
-    () => { HNil };
-    ($h:ident $(, $t:ident)*) => { HCons($h, hlist_pat!($($t),*)) };
-}
-
-// `a.iter_from(s).zip(b.iter_from(s)).zip(..).map(|((a, b), ..)| (a, b, ..))`:
+// `a.rows_from(s).zip(b.rows_from(s)).zip(..).map(|((a, b), ..)| (a, b, ..))`:
 // nested zips stay `TrustedLen`, so `Vec::extend` still knows the length.
 macro_rules! zip_rows {
     (@acc $start:ident, $iter:expr, $pat:pat, [$($done:ident),*];) => {
         $iter.map(|$pat| ($($done,)*))
     };
     (@acc $start:ident, $iter:expr, $pat:pat, [$($done:ident),*]; $next:ident $(, $rest:ident)*) => {
-        zip_rows!(@acc $start, $iter.zip($next.iter_from($start)), ($pat, $next),
+        zip_rows!(@acc $start, $iter.zip($next.rows_from($start)), ($pat, $next),
             [$($done,)* $next]; $($rest),*)
     };
     ($start:ident; $first:ident $(, $rest:ident)*) => {
-        zip_rows!(@acc $start, $first.iter_from($start), $first, [$first]; $($rest),*)
+        zip_rows!(@acc $start, $first.rows_from($start), $first, [$first]; $($rest),*)
     };
 }
-
-macro_rules! read_rows {
-    ($($T:ident $v:ident),+) => {
-        impl<$($T: Column),+> ReadRows for hlist_ty!($($T),+) {
-            type Row = ($($T::Elem,)+);
-            fn rows(&self) -> usize {
-                self.0.count()
-            }
-            fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-                let hlist_pat!($($v),+) = self;
-                zip_rows!(start; $($v),+)
-            }
-        }
-    };
-}
-
-read_rows!(A a, B b);
-read_rows!(A a, B b, C c);
-read_rows!(A a, B b, C c, D d);
-read_rows!(A a, B b, C c, D d, E e);
-read_rows!(A a, B b, C c, D d, E e, F f);
-read_rows!(A a, B b, C c, D d, E e, F f, G g);
-read_rows!(A a, B b, C c, D d, E e, F f, G g, H h);
-read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
-read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
-read_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
 
 // ============================================================================
 // Flat row + one more value
 // ============================================================================
 
-/// `T` with a value `U` appended, kept flat: `i32 + U = (i32, U)`,
-/// `(A, B) + U = (A, B, U)`.
-pub trait RowAppend<U> {
-    type Out;
+/// A row with a value `U` appended, kept flat: `i32 + U = (i32, U)`,
+/// `(A, B) + U = (A, B, U)`. The columns follow: [`split`](Self::split) and
+/// [`join`](Self::join) move the buffers between the columns of `Out` and
+/// those of the two parts (nothing is copied).
+pub trait RowAppend<U: Columnar>: Columnar {
+    type Out: Columnar;
     fn with(self, u: U) -> Self::Out;
+    fn split(cols: Columns<Self::Out>) -> (Columns<Self>, Columns<U>);
+    fn join(cols: Columns<Self>, col: Columns<U>) -> Columns<Self::Out>;
 }
 
-macro_rules! impl_row_append_scalar {
+macro_rules! row_append_scalar {
     ($($t:ty),*) => {
-        $(impl<U> RowAppend<U> for $t {
+        $(impl<U: Columnar> RowAppend<U> for $t {
             type Out = ($t, U);
             fn with(self, u: U) -> Self::Out {
                 (self, u)
+            }
+            fn split(cols: Columns<Self::Out>) -> (Vec<$t>, Columns<U>) {
+                cols
+            }
+            fn join(cols: Vec<$t>, col: Columns<U>) -> Columns<Self::Out> {
+                (cols, col)
             }
         })*
     };
 }
 
-impl_row_append_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
+row_append_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize);
 
-macro_rules! row_append_tuple {
+macro_rules! tuple_rows {
     ($($T:ident $v:ident),+) => {
-        impl<$($T,)+ U> RowAppend<U> for ($($T,)+) {
+        impl<$($T: ReadRows),+> ReadRows for ($($T,)+) {
+            type Row = ($($T::Row,)+);
+            fn rows(&self) -> usize {
+                self.0.rows()
+            }
+            fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+                let ($($v,)+) = self;
+                zip_rows!(start; $($v),+)
+            }
+        }
+
+        impl<$($T: Columnar,)+ U: Columnar> RowAppend<U> for ($($T,)+) {
             type Out = ($($T,)+ U);
             fn with(self, u: U) -> Self::Out {
                 let ($($v,)+) = self;
                 ($($v,)+ u)
             }
+            fn split(cols: Columns<Self::Out>) -> (Columns<Self>, Columns<U>) {
+                let ($($v,)+ u) = cols;
+                (($($v,)+), u)
+            }
+            fn join(cols: Columns<Self>, col: Columns<U>) -> Columns<Self::Out> {
+                let ($($v,)+) = cols;
+                ($($v,)+ col)
+            }
         }
     };
 }
 
-row_append_tuple!(A a, B b);
-row_append_tuple!(A a, B b, C c);
-row_append_tuple!(A a, B b, C c, D d);
-row_append_tuple!(A a, B b, C c, D d, E e);
-row_append_tuple!(A a, B b, C c, D d, E e, F f);
-row_append_tuple!(A a, B b, C c, D d, E e, F f, G g);
-row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h);
-row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
-row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
-row_append_tuple!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
+tuple_rows!(A a, B b);
+tuple_rows!(A a, B b, C c);
+tuple_rows!(A a, B b, C c, D d);
+tuple_rows!(A a, B b, C c, D d, E e);
+tuple_rows!(A a, B b, C c, D d, E e, F f);
+tuple_rows!(A a, B b, C c, D d, E e, F f, G g);
+tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h);
+tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
+tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
+tuple_rows!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
 
 // ============================================================================
 // WithColumn
 // ============================================================================
 
+#[derive(Clone)]
 pub struct WithColumn<P, F> {
     pub parent: P,
     pub f: F,
+    /// The closure's RNG when sampling row by row, seeded at the first row.
+    row_rng: Option<ColumnRng>,
 }
 
 /// The RNG a [`with_column`] closure gets: a concrete, small, fast generator, so
 /// the closure's draws inline (no `dyn` call per value). It's seeded from the
-/// caller's RNG once per `collect_into` (or once per row iterator), so output
+/// caller's RNG once per `collect_into` (or at the first `sample`), so output
 /// stays deterministic for a seeded caller RNG, but the new column draws
 /// from this child stream rather than the caller's RNG directly.
 pub type ColumnRng = SmallRng;
@@ -218,71 +178,44 @@ pub fn with_column<P, R, U, F>(parent: P, f: F) -> WithColumn<P, F>
 where
     F: Fn(R, &mut ColumnRng) -> U,
 {
-    WithColumn { parent, f }
+    WithColumn {
+        parent,
+        f,
+        row_rng: None,
+    }
 }
 
-pub struct WithColumnIter<I, F> {
-    parent: I,
-    f: F,
-    rng: Option<ColumnRng>,
-}
-
-impl<I, F, U> SampleIter for WithColumnIter<I, F>
+impl<P, F, U> Distribution for WithColumn<P, F>
 where
-    I: SampleIter,
-    I::Item: RowAppend<U> + Copy,
-    F: Fn(I::Item, &mut ColumnRng) -> U,
+    P: Distribution,
+    P::Item: RowAppend<U> + Copy,
+    Columns<P::Item>: ReadRows<Row = P::Item>,
+    U: Columnar,
+    F: Fn(P::Item, &mut ColumnRng) -> U,
 {
-    type Item = <I::Item as RowAppend<U>>::Out;
+    type Item = <P::Item as RowAppend<U>>::Out;
 
-    fn next(&mut self, rng: &mut impl Rng) -> Self::Item {
-        let row = self.parent.next(rng);
-        let child = self.rng.get_or_insert_with(|| ColumnRng::from_rng(rng));
+    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
+        let row = self.parent.sample(rng);
+        let child = self.row_rng.get_or_insert_with(|| ColumnRng::from_rng(rng));
         let u = (self.f)(row, child);
         row.with(u)
     }
-}
 
-type SinkOf<B, T> = <T as DefaultSink<B>>::Sink;
-
-impl<B, P, F, U> Distribution<B> for WithColumn<P, F>
-where
-    B: Backend,
-    P: Distribution<B>,
-    P::Item: RowAppend<U> + Copy,
-    U: DefaultSink<B>,
-    SinkOf<B, U>: Sink<U>,
-    SinkOf<B, P::Item>: ReadRows<Row = P::Item> + HAppend<SinkOf<B, U>>,
-    <P::Item as RowAppend<U>>::Out:
-        DefaultSink<B, Sink = <SinkOf<B, P::Item> as HAppend<SinkOf<B, U>>>::Output>,
-    F: Fn(P::Item, &mut ColumnRng) -> U + Clone,
-{
-    type Item = <P::Item as RowAppend<U>>::Out;
-    type RowIter = WithColumnIter<P::RowIter, F>;
-
-    fn row_iter(&mut self) -> Self::RowIter {
-        WithColumnIter {
-            parent: self.parent.row_iter(),
-            f: self.f.clone(),
-            rng: None,
-        }
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: SinkOf<B, Self::Item>,
-        rng: &mut impl Rng,
-        n: usize,
-    ) -> SinkOf<B, Self::Item> {
-        let (parent, mut col) = <SinkOf<B, P::Item> as HAppend<SinkOf<B, U>>>::unappend(sink);
+    fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl Rng, n: usize) {
+        let (mut parent, mut col) = P::Item::split(take(cols));
         let start = parent.rows();
         // 1. the parent's columns, however it collects them
-        let parent = self.parent.collect_into(parent, rng, n);
+        self.parent.collect_into(&mut parent, rng, n);
         // 2. one pass over what it just wrote
         col.reserve(n);
         let f = &self.f;
         let mut child = ColumnRng::from_rng(rng);
         col.push_n(parent.rows_from(start).map(|row| f(row, &mut child)));
-        parent.append(col)
+        *cols = P::Item::join(parent, col);
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.parent.skip(n);
     }
 }

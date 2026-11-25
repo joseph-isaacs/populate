@@ -1,65 +1,40 @@
-use crate::traits::{Backend, DefaultSink, Distribution, SampleIter, Sink, collect_rows};
+use crate::Distribution;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(feature = "arrow")]
 mod arrow;
 mod col;
-mod deque;
 mod dist;
+mod list;
+mod list_ticks;
+mod nested;
 mod random;
 mod row;
 mod scalar;
+mod skip;
 mod with_column;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 
 // ========================================================================
-// Tracked distribution for verifying iteration order
+// Tracked distribution for verifying sampling order
 // ========================================================================
 
+/// Logs its name at every `sample`. It keeps the default `collect_into`, so
+/// it collects by sampling: one tick per row.
 struct Tracked<D> {
     name: &'static str,
     inner: D,
     log: Log,
 }
 
-struct TrackedIter<I> {
-    name: &'static str,
-    inner: I,
-    log: Log,
-}
-
-impl<I: SampleIter> SampleIter for TrackedIter<I> {
-    type Item = I::Item;
-    fn next(&mut self, rng: &mut impl rand::Rng) -> Self::Item {
-        self.log.borrow_mut().push(self.name);
-        self.inner.next(rng)
-    }
-}
-
-impl<B: Backend, D: Distribution<B>> Distribution<B> for Tracked<D>
-where
-    <D::Item as DefaultSink<B>>::Sink: Sink<D::Item>,
-{
+impl<D: Distribution> Distribution for Tracked<D> {
     type Item = D::Item;
-    type RowIter = TrackedIter<D::RowIter>;
 
-    fn row_iter(&mut self) -> Self::RowIter {
-        TrackedIter {
-            name: self.name,
-            inner: self.inner.row_iter(),
-            log: Rc::clone(&self.log),
-        }
-    }
-
-    fn collect_into(
-        &mut self,
-        sink: <D::Item as DefaultSink<B>>::Sink,
-        rng: &mut impl rand::Rng,
-        n: usize,
-    ) -> <D::Item as DefaultSink<B>>::Sink {
-        collect_rows(self.row_iter(), sink, rng, n)
+    fn sample(&mut self, rng: &mut impl rand::Rng) -> Self::Item {
+        self.log.borrow_mut().push(self.name);
+        self.inner.sample(rng)
     }
 }
 
@@ -70,6 +45,3 @@ fn tracked<D>(name: &'static str, inner: D, log: &Log) -> Tracked<D> {
         log: Rc::clone(log),
     }
 }
-mod list;
-mod list_ticks;
-mod nested;

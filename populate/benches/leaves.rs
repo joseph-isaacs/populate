@@ -1,13 +1,12 @@
 //! Per-leaf cost of columnar collection: each random leaf (and `range`,
-//! `constant`, `map`, `list`) into its default `VecBackend` sink, `N` rows,
-//! one seeded `SmallRng`. The sink is moved out and written back, so the
-//! result stays observable; it is cleared (not freed) between runs, so
-//! allocation is not timed.
+//! `constant`, `map`, `list`) into its columns, `N` rows,
+//! one seeded `SmallRng`. The columns are passed to `black_box`, so the
+//! result stays observable.
 
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
+use populate::Distribution;
 use populate::dist::{chars, choose, constant, list, map, range, text, uniform, weighted};
-use populate::traits::{DefaultSink, Distribution, VecBackend};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
@@ -21,14 +20,10 @@ static WORDS: &[&str] = &["alpha", "beta", "gamma", "delta", "epsilon", "zeta", 
 static MODES: &[&str] = &["AIR", "FOB", "MAIL", "RAIL", "REG AIR", "SHIP", "TRUCK"];
 static WEIGHTS: &[(i32, u32)] = &[(1, 10), (2, 30), (3, 5), (4, 25), (5, 20), (6, 9), (7, 1)];
 
-fn run<D>(b: Bencher, mut d: D)
-where
-    D: Distribution<VecBackend>,
-    <D::Item as DefaultSink<VecBackend>>::Sink: Default,
-{
+fn run<D: Distribution>(b: Bencher, mut d: D) {
     let mut rng = SmallRng::seed_from_u64(7);
     b.counter(ItemsCount::new(N)).bench_local(|| {
-        let sink = d.collect_into(Default::default(), &mut rng, black_box(N));
+        let sink = d.collect(&mut rng, black_box(N));
         black_box(sink);
     });
 }

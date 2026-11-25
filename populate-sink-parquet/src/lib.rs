@@ -3,7 +3,7 @@
 //! Two writers:
 //!
 //! - [`write_columns`] / [`DistributionParquet::collect_parquet`]: zero-copy
-//!   path for the `ArrowBackend` sink of top-level numeric columns and
+//!   path for collected columns: top-level numeric columns and
 //!   `list<numeric>` columns. Value buffers are handed to Parquet's column
 //!   writer as slices of the buffer they were generated into, and the
 //!   definition/repetition levels a list needs are derived from the offsets
@@ -23,9 +23,7 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
 use parquet::schema::types::{Type, TypePtr};
-use populate_core::hlist::{HCons, HNil};
-use populate_core::traits::{DefaultSink, Distribution, ListCol};
-use populate_sink_arrow::{ArrowBackend, ArrowOffsets};
+use populate_core::{Columns, Distribution, ListCol};
 use rand::Rng;
 use std::io::Write;
 use std::iter::repeat_n;
@@ -78,7 +76,7 @@ impl_parquet_native!(
     f64 => DoubleType, DOUBLE;
 );
 
-/// One sink column that can be written to Parquet without copying its data.
+/// One column that can be written to Parquet without copying its data.
 pub trait ParquetColumn {
     fn parquet_type(name: &str) -> Result<TypePtr>;
     fn write_column<W: Write + Send>(&self, rg: &mut SerializedRowGroupWriter<'_, W>)
@@ -124,7 +122,7 @@ impl<T: ParquetNative> ParquetColumn for Vec<T> {
 /// Required `list<required numeric>`, standard 3-level LIST layout
 /// (`max_def = 1`, `max_rep = 1`). Values are sliced from the generated
 /// buffer; levels come from the offsets, `LEVEL_CHUNK` at a time.
-impl<T: ParquetNative> ParquetColumn for ListCol<ArrowOffsets, HCons<Vec<T>, HNil>> {
+impl<T: ParquetNative> ParquetColumn for ListCol<Vec<T>> {
     fn parquet_type(name: &str) -> Result<TypePtr> {
         let list = Type::group_type_builder("list")
             .with_repetition(Repetition::REPEATED)
@@ -145,8 +143,8 @@ impl<T: ParquetNative> ParquetColumn for ListCol<ArrowOffsets, HCons<Vec<T>, HNi
     ) -> Result<()> {
         let mut col = next_column(rg)?;
         let writer = col.typed::<T::Parquet>();
-        let values = &self.values.0;
-        let offsets = self.offsets.as_slice();
+        let values = &self.values;
+        let offsets = self.offsets();
         let mut def = Vec::with_capacity(LEVEL_CHUNK);
         let mut rep = Vec::with_capacity(LEVEL_CHUNK);
         let mut v_start = 0usize;
@@ -179,14 +177,16 @@ impl<T: ParquetNative> ParquetColumn for ListCol<ArrowOffsets, HCons<Vec<T>, HNi
     }
 
     fn num_rows(&self) -> usize {
-        self.offsets.as_slice().len().saturating_sub(1)
+        self.len()
     }
 }
 
-/// HList of columns, named `c0, c1, ...` like the Arrow output.
+/// Columns named `c0, c1, ...` like the Arrow output: one column, or a
+/// tuple of them (nested tuples are flattened).
 pub trait ParquetColumns {
-    /// Number of columns in the HList.
+    /// Number of Parquet columns.
     const COLUMNS: usize;
+    /// Append the type of each column, the first named `c{idx}`.
     fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()>;
     fn write_columns<W: Write + Send>(
         &self,
@@ -197,7 +197,27 @@ pub trait ParquetColumns {
     fn num_rows(&self) -> Option<usize>;
 }
 
-impl ParquetColumns for HNil {
+impl<C: ParquetColumn> ParquetColumns for C {
+    const COLUMNS: usize = 1;
+
+    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
+        out.push(C::parquet_type(&format!("c{idx}"))?);
+        Ok(())
+    }
+
+    fn write_columns<W: Write + Send>(
+        &self,
+        rg: &mut SerializedRowGroupWriter<'_, W>,
+    ) -> Result<()> {
+        self.write_column(rg)
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        Some(ParquetColumn::num_rows(self))
+    }
+}
+
+impl ParquetColumns for () {
     const COLUMNS: usize = 0;
 
     fn parquet_types(_idx: usize, _out: &mut Vec<TypePtr>) -> Result<()> {
@@ -216,31 +236,48 @@ impl ParquetColumns for HNil {
     }
 }
 
-impl<H: ParquetColumn, T: ParquetColumns> ParquetColumns for HCons<H, T> {
-    const COLUMNS: usize = 1 + T::COLUMNS;
+macro_rules! tuple_columns {
+    ($($C:ident $idx:tt),+) => {
+        impl<$($C: ParquetColumns),+> ParquetColumns for ($($C,)+) {
+            const COLUMNS: usize = 0 $(+ $C::COLUMNS)+;
 
-    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
-        out.push(H::parquet_type(&format!("c{idx}"))?);
-        T::parquet_types(idx + 1, out)
-    }
+            fn parquet_types(mut idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
+                $(
+                    $C::parquet_types(idx, out)?;
+                    idx += $C::COLUMNS;
+                )+
+                let _ = idx;
+                Ok(())
+            }
 
-    fn write_columns<W: Write + Send>(
-        &self,
-        rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()> {
-        self.0.write_column(rg)?;
-        self.1.write_columns(rg)
-    }
+            fn write_columns<W: Write + Send>(
+                &self,
+                rg: &mut SerializedRowGroupWriter<'_, W>,
+            ) -> Result<()> {
+                $(self.$idx.write_columns(rg)?;)+
+                Ok(())
+            }
 
-    fn num_rows(&self) -> Option<usize> {
-        let n = self.0.num_rows();
-        if T::COLUMNS == 0 {
-            return Some(n);
+            fn num_rows(&self) -> Option<usize> {
+                // every field must agree: a mismatch anywhere is `None`
+                let rows = [$(self.$idx.num_rows()),+];
+                rows[0].filter(|_| rows.iter().all(|r| *r == rows[0]))
+            }
         }
-        // A mismatch further down the list must not be masked here.
-        self.1.num_rows().filter(|&m| m == n)
-    }
+    };
 }
+
+tuple_columns!(A 0, B 1);
+tuple_columns!(A 0, B 1, C 2);
+tuple_columns!(A 0, B 1, C 2, D 3);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
 /// Default properties for the zero-copy path: dictionary encoding off (it
 /// would build a hash table over the values; generated data is mostly unique).
@@ -250,7 +287,7 @@ pub fn default_props() -> WriterProperties {
         .build()
 }
 
-/// Write an `ArrowBackend` sink as a single-row-group Parquet file, reading
+/// Write collected columns as a single-row-group Parquet file, reading
 /// every value buffer in place. Returns the writer.
 pub fn write_columns<S: ParquetColumns, W: Write + Send>(
     sink: &S,
@@ -284,9 +321,9 @@ pub fn write_columns<S: ParquetColumns, W: Write + Send>(
 // DistributionParquet — generate and write
 // ============================================================================
 
-pub trait DistributionParquet: Distribution<ArrowBackend> {
-    /// Generate `n` rows column by column into `ArrowBackend` buffers and
-    /// write them as Parquet without copying the values.
+pub trait DistributionParquet: Distribution {
+    /// Generate `n` rows column by column and write them as Parquet without
+    /// copying the values.
     fn collect_parquet<W: Write + Send>(
         &mut self,
         rng: &mut impl Rng,
@@ -295,33 +332,31 @@ pub trait DistributionParquet: Distribution<ArrowBackend> {
         props: Option<WriterProperties>,
     ) -> Result<W>
     where
-        <Self::Item as DefaultSink<ArrowBackend>>::Sink: Default + ParquetColumns,
+        Columns<Self::Item>: ParquetColumns,
     {
-        let sink = self.collect_into(Default::default(), rng, n);
-        write_columns(&sink, writer, props)
+        write_columns(&self.collect(rng, n), writer, props)
     }
 }
 
-impl<D: Distribution<ArrowBackend>> DistributionParquet for D {}
+impl<D: Distribution> DistributionParquet for D {}
 
 #[cfg(test)]
 mod tests {
     use super::{ParquetColumns, write_columns};
-    use populate_core::hlist::{HCons, HNil};
 
     #[test]
     fn num_rows_matching() {
-        let sink = HCons(vec![1i64; 3], HCons(vec![2i32; 3], HNil));
+        let sink = (vec![1i64; 3], vec![2i32; 3]);
         assert_eq!(sink.num_rows(), Some(3));
     }
 
     #[test]
     fn num_rows_detects_mismatch_past_the_first_pair() {
         // The 5-row middle column used to be masked by the 10-row first one.
-        let sink = HCons(
-            vec![1i64; 10],
-            HCons(vec![1i64; 5], HCons(vec![1i64; 10], HNil)),
-        );
+        let sink = (vec![1i64; 10], vec![1i64; 5], vec![1i64; 10]);
+        assert_eq!(sink.num_rows(), None);
+        // nor by nesting
+        let sink = (vec![1i64; 10], (vec![1i64; 10], vec![1i64; 5]));
         assert_eq!(sink.num_rows(), None);
         let err = write_columns(&sink, Vec::new(), None).unwrap_err();
         assert!(err.to_string().contains("different row counts"), "{err}");
@@ -329,7 +364,7 @@ mod tests {
 
     #[test]
     fn empty_sink_is_rejected() {
-        let err = write_columns(&HNil, Vec::new(), None).unwrap_err();
+        let err = write_columns(&(), Vec::new(), None).unwrap_err();
         assert!(err.to_string().contains("no columns"), "{err}");
     }
 }

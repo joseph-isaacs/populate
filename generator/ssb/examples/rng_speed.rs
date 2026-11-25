@@ -1,5 +1,5 @@
 //! Time dbgen stream draws and bounding (the core of every SSB column).
-use populate_tpch::rng::{bound_all, draws};
+use populate_combinators::lehmer::{bound_all, draws};
 use std::time::Instant;
 
 fn main() {

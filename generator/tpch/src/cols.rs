@@ -101,7 +101,7 @@ impl CommentLen {
     /// The comment draws `x0`, `x1` make.
     #[inline(always)]
     pub(crate) fn make(&self, x0: u32, x1: u32) -> Comment {
-        use crate::rng::bounded;
+        use populate_combinators::lehmer::bounded;
         Comment {
             off: bounded(x0, 0, POOL_SIZE as i32 - self.max) as u32,
             len: bounded(x1, self.min, self.max) as u32,

@@ -7,8 +7,8 @@ license.workspace = true
 
 [dependencies]
 populate-table = { workspace = true, features = ["parquet"] }
-# dbgen's skip-ahead random streams, shared with TPC-H
-populate-tpch = { workspace = true }
+# dbgen's skip-ahead Lehmer streams
+populate-combinators = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }

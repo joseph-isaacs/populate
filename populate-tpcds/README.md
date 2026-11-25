@@ -63,7 +63,7 @@ adds the engine around it:
   pays: that cuts encoding time by ~40% and the files come out slightly
   smaller (`parquet_props`).
 - **Columns encoded directly.** Keys, dates, quantities, decimals and
-  (since the TPC-H work) `Utf8View` text are encoded by `populate-table` instead of
+  `Utf8View` text are encoded by `populate-table` instead of
   arrow-rs's column writer: definition levels come straight from the null
   bitmap, values are copied 64 rows at a time, and the dictionary is a
   table indexed by value where the values span a small range. The chunks

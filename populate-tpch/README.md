@@ -123,7 +123,7 @@ On a 4-core cloud VM, `scripts/e2e-bench.sh --suite tpch` against
 `tpcgen-cli tpch` (the CLI of tpchgen-rs). The VM is noisy, so the
 two tools run interleaved and each keeps its best time: best of 3 at SF 1
 (output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
-not fit in this VM's tmpfs).
+not fit in the VM's tmpfs).
 
 | SF | output           | threads | tpcgen-cli | populate-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|
@@ -136,8 +136,7 @@ not fit in this VM's tmpfs).
 | 10 | Parquet (snappy) | 1       | 64.3 s     | 45.6 s        | 1.4x    |
 | 10 | Parquet (snappy) | 4       | 19.7 s     | 11.4 s        | 1.7x    |
 
-The SF 1 rows are after the faster text pool; the SF 10 rows are from
-before it (about 0.4 s more per run on one thread). The `.tbl` files are
+The `.tbl` files are
 identical (1,100 MB at SF 1). Parquet files: 358 MB
 vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
 

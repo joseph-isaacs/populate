@@ -30,13 +30,13 @@ the history of how it was built.
   in READMEs, doc comments or code comments. That history belongs in the
   commit message and PR description.
 - **No benchmark write-ups or result files in the tree.** Before/after
-  tables, run logs, `*.csv`/`*.json` results and graphs (`*.png`, `*.svg`)
+  tables, run logs, benchmark result files and graphs (`*.png`, `*.svg`)
   go in the PR description, not the repository. A crate README may keep one
   short, current performance section with the command that reproduces it
   and the machine it ran on.
 - **No planning docs.** Surveys, TODO lists, design proposals and
   "future work" notes go in GitHub issues or the PR. Design docs in the tree
-  (`populate/DESIGN.md`) describe the code as it is; update them in the
+  (`DESIGN.md` in the `populate` crate) describe the code as it is; update them in the
   same change that alters the design, and delete what no longer applies.
 - **Don't commit prompts, scratch notes or tool output** (pasted chat
   messages, `.cargo-ok`, `mutants.out`, local logs).
@@ -46,11 +46,13 @@ the history of how it was built.
 - **Comments say why, not what.** Skip comments that restate the code.
   Keep the ones that explain a non-obvious choice, an invariant, or a
   reference tool's quirk being reproduced (with where it comes from).
-- **Keep licence files.** Vendored code (`populate-dsb/dsbgen`,
-  `populate-dsb/dsbgen-arrow`) keeps its `LICENSE`, upstream README and
-  `populate-dsb/NOTICE.md`; record new vendored code there.
-- `scripts/check-tree.sh` (run in CI) enforces the file and wording rules
-  above; run it before pushing.
+- **Keep licence files.** The vendored `dsbgen` and `dsbgen-arrow` crates
+  keep their `LICENSE` and upstream README, and the DSB crate's `NOTICE.md`
+  records what was vendored and under which licence; record new vendored or
+  ported code the same way.
 - **Scripts must be referenced.** A script in `scripts/` or a crate is
   documented in a README or used by a test or CI; delete it when that stops
-  being true.
+  being true. Test fixtures (such as YCSB's `tests/data/*.tsv`) are fine.
+- **Run `scripts/check-tree.sh` before pushing.** CI runs it too. It
+  catches the common cases of the file and wording rules above (images,
+  `TODO.md`, `.cargo-ok`, "PR #N", "before this PR", ...), not every one.

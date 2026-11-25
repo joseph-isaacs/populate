@@ -26,7 +26,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: scripts/check-tree.sh
+      - name: Tree hygiene (no graphs, planning docs or PR-history wording)
+        run: scripts/check-tree.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -49,7 +49,7 @@ for: 100,000 default records with random values; 20,000 with
 `dataintegrity=true`; 20 fields of 37 bytes with another prefix;
 `insertstart` with and without `insertcount`, with `insertorder=ordered` and
 `zeropadding=12`; and short deterministic fields; each on 1 and 4 threads
-with odd chunk and batch sizes. Before merging, a wider matrix (default and
+with odd chunk and batch sizes. A wider matrix run by hand (default and
 `dataintegrity` loads of 20,000; 1, 3, 20 and 50 fields; field lengths 1, 5,
 6, 7, 10, 13 and 1,000; prefixes, padding, ordered keys, slices) was compared
 whole with `cmp`: all identical.
@@ -94,7 +94,7 @@ runs (workloads A to F; uniform, zipfian, latest and hotspot keys, with and
 without inserts; uniform and zipfian scan lengths; one field read, all
 fields written; `dataintegrity`; other field counts, lengths and prefixes;
 ordered keys with padding; `insertstart` / `insertcount`), each on 1 and 4
-threads with odd chunk and batch sizes; before merging, 1M-operation runs of
+threads with odd chunk and batch sizes; 1M-operation runs of
 workload A, latest with 50% inserts, workload E and zipfian scans of up to
 100,000 records were also compared whole with `cmp`.
 

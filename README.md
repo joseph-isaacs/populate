@@ -87,18 +87,10 @@ publication.
 | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
-| `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
-| `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
-| `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
-| `populate-tsbs`         | TSBS devops/IoT byte-identical to `tsbs_generate_data`, on all cores; the `tsbs-gen` CLI |
-| `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
-| `populate-h2o`          | H2O db-benchmark groupby and join data, byte-identical to its R datagen; the `h2o-gen` CLI |
-| `populate-tpcc`         | the TPC-C initial database, to the spec's population rules; the `tpcc-gen` CLI |
-| `populate-ycsb`         | YCSB load and run operations, byte-identical to YCSB 0.17.0; the `ycsb-gen` CLI |
-| `populate-ldbc`         | LDBC SNB, identical to the LDBC Spark datagen; the `ldbc-gen` CLI |
-| `populate-synth`        | synthetic data sets (ClickBench-style hits, taxi trips, embeddings, features); the `synth-gen` CLI |
+| `populate-bench`        | [benchmarks](populate-bench/README.md) against tpchgen and arrow-rs |
 
-See [`populate/DESIGN.md`](populate/DESIGN.md) for the design.
+The generator crates are listed [above](#benchmark-generators). See
+[`populate/DESIGN.md`](populate/DESIGN.md) for the design.
 
 ## Licence
 

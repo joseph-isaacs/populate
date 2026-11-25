@@ -10,6 +10,7 @@
 //! to read the current seed, one multiply, and a fresh stream starting at
 //! the result. The streams' values are unchanged.
 
+use populate_combinators::lehmer::{A, Lcg, M, mulmod, pow};
 use populate_core::Distribution;
 use rand::Rng;
 use std::array::from_fn;
@@ -18,19 +19,10 @@ use tpcdsgen::generator::GeneratorColumn;
 use tpcdsgen::random::RandomNumberStream;
 use tpcdsgen::row::AbstractRowGenerator;
 
-const M: u64 = (1 << 31) - 1;
-const A: u64 = 16807;
 /// tpcdsgen's per-column seed spacing: `initial = base + column * STRIDE`.
 const STRIDE: i64 = i32::MAX as i64 / 799;
 /// Largest per-row seed budget of any TPC-DS column.
 const MAX_SEEDS: usize = 256;
-
-#[inline]
-fn mulmod(a: u64, b: u64) -> u64 {
-    let p = a * b;
-    let x = (p & M) + (p >> 31);
-    if x >= M { x - M } else { x }
-}
 
 /// One Lehmer step: the stream's next draw after `seed`.
 #[inline]
@@ -86,17 +78,10 @@ pub(crate) fn finish_row<C: GeneratorColumn>(g: &mut AbstractRowGenerator<C>) {
 /// `SEED_BASE + c * STRIDE` (not reduced mod `M`).
 const SEED_BASE: i64 = 19_620_718;
 
-/// `A^n mod M`.
-fn pow(mut n: u64) -> u64 {
-    let (mut r, mut a) = (1, A);
-    while n > 0 {
-        if n & 1 == 1 {
-            r = r * a % M;
-        }
-        a = a * a % M;
-        n >>= 1;
-    }
-    r
+/// dsdgen's random stream of generator column `c` at source row 1: the
+/// stream of its initial seed.
+pub(crate) fn stream(c: &impl GeneratorColumn) -> Lcg {
+    Lcg::new(SEED_BASE + c.get_global_column_number() as i64 * STRIDE)
 }
 
 /// Where every stream of a table's generator columns `C` (`N` of them, in

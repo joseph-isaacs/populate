@@ -91,6 +91,11 @@ impl Validity {
         self.words[i / 64] >> (i % 64) & 1 == 1
     }
 
+    /// The packed flags: row `i` is bit `i % 64` of word `i / 64`.
+    pub fn words(&self) -> &[u64] {
+        &self.words
+    }
+
     /// Every row's flag, in order.
     pub fn iter(&self) -> impl Iterator<Item = bool> + '_ {
         (0..self.len).map(|i| self.words[i / 64] >> (i % 64) & 1 == 1)

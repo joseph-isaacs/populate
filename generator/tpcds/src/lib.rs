@@ -32,10 +32,12 @@
 //! ```
 
 mod channels;
+mod cols;
 pub mod dat;
 mod direct;
 mod fused;
 mod gen_tables;
+mod inventory;
 mod seeds;
 
 pub use dat::Encoding;

@@ -1179,3 +1179,122 @@ mod tests {
         check(web(&s), rows, want, &ranges);
     }
 }
+
+#[cfg(test)]
+mod perf_dat {
+    use super::*;
+    use crate::fused::Channel;
+    use crate::fused::Want;
+    use populate_table::{DistTables, MultiChunks};
+    use std::time::Instant;
+    use tpcdsgen::config::SessionBuilder;
+
+    #[test]
+    #[ignore]
+    fn perf_dat() {
+        let s = SessionBuilder::new()
+            .with_scale_factor(1.0)
+            .build()
+            .unwrap();
+        let n = 100_000u64;
+        for _ in 0..3 {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let t0 = Instant::now();
+            Channel::Catalog.run_dat(
+                &s,
+                1,
+                n,
+                Want {
+                    sales: true,
+                    returns: true,
+                },
+                &mut a,
+                &mut b,
+            );
+            let fused = t0.elapsed();
+            let t = DistTables::new(&["s", "r"], n, catalog(&s))
+                .chunk_rows(n)
+                .batch_rows(2048);
+            let (mut c, mut d) = (Vec::new(), Vec::new());
+            let t0 = Instant::now();
+            let mut bufs = [Vec::new(), Vec::new()];
+            let mut at = 0;
+            while at < n {
+                let k = 2048.min(n - at);
+                t.text(at, k, crate::Encoding::Latin1, &mut bufs);
+                at += k;
+            }
+            let dist = t0.elapsed();
+            [c, d] = bufs;
+            assert!(a == c && b == d, "dat differs");
+            let t0 = Instant::now();
+            t.chunk(0, &mut |_, _| ());
+            let gen_only = t0.elapsed();
+            let t0 = Instant::now();
+            Channel::Catalog.run(
+                &s,
+                1,
+                n,
+                2048,
+                Want {
+                    sales: true,
+                    returns: true,
+                },
+                &mut |_, _| (),
+            );
+            let fused_arrow = t0.elapsed();
+            println!(
+                "catalog dat fused {fused:?} dist {dist:?} dist-gen {gen_only:?} fused-arrow {fused_arrow:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod perf_dat2 {
+    use super::*;
+    use crate::fused::{Channel, Want};
+    use populate_table::DistTables;
+    use tpcdsgen::config::SessionBuilder;
+
+    #[test]
+    #[ignore]
+    fn text_dist() {
+        let s = SessionBuilder::new()
+            .with_scale_factor(1.0)
+            .build()
+            .unwrap();
+        let n = 20_000u64;
+        let t = DistTables::new(&["s", "r"], n, catalog(&s));
+        let mut bufs = [Vec::new(), Vec::new()];
+        let mut at = 0;
+        while at < n {
+            let k = 2048.min(n - at);
+            t.text(at, k, crate::Encoding::Latin1, &mut bufs);
+            at += k;
+        }
+        println!("{}", bufs[0].len());
+    }
+
+    #[test]
+    #[ignore]
+    fn text_fused() {
+        let s = SessionBuilder::new()
+            .with_scale_factor(1.0)
+            .build()
+            .unwrap();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        Channel::Catalog.run_dat(
+            &s,
+            1,
+            20_000,
+            Want {
+                sales: true,
+                returns: true,
+            },
+            &mut a,
+            &mut b,
+        );
+        println!("{}", a.len());
+    }
+}

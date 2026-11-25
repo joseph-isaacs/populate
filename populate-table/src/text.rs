@@ -24,6 +24,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::sched::{Schedule, resolve_threads};
+use populate_core::{ChildCols, Date32, Decimal, Nullable, SpreadCols, StrCol};
 
 /// Text encoding of `.dat` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -111,7 +112,6 @@ pub fn write_batch_with(
         })
         .collect();
     const AHEAD: usize = 8;
-    let dates = &*DATES;
     for r in 0..rows {
         if r + AHEAD < rows {
             for a in &views {
@@ -130,13 +130,7 @@ pub fn write_batch_with(
                         Col::I32(v) => w.int(*v.get_unchecked(r) as i64),
                         Col::I64(v) => w.int(*v.get_unchecked(r)),
                         Col::Dec(v, s, p) => w.decimal128(*v.get_unchecked(r), *s, *p),
-                        Col::Date(v) => {
-                            let d = *v.get_unchecked(r);
-                            match dates.get(d.wrapping_sub(DATES_FROM) as u32 as usize) {
-                                Some(text) => w.bytes(text),
-                                None => w.date(d),
-                            }
-                        }
+                        Col::Date(v) => w.day(*v.get_unchecked(r)),
                         Col::Str(a) => w.view(a, r, encoding),
                     }
                 }
@@ -271,12 +265,12 @@ fn eight(x: u32) -> u64 {
 const ZEROS: u64 = 0x3030_3030_3030_3030;
 
 /// Write cursor into reserved capacity. Every method is `unsafe`: the
-/// caller guarantees room for what it writes.
-struct Cursor(*mut u8);
+/// caller guarantees room for what it writes ([`TextField::text_bytes`]).
+pub struct Cursor(*mut u8);
 
 impl Cursor {
     #[inline(always)]
-    unsafe fn byte(&mut self, b: u8) {
+    pub unsafe fn byte(&mut self, b: u8) {
         unsafe {
             self.0.write(b);
             self.0 = self.0.add(1);
@@ -284,7 +278,7 @@ impl Cursor {
     }
 
     #[inline(always)]
-    unsafe fn bytes(&mut self, b: &[u8]) {
+    pub unsafe fn bytes(&mut self, b: &[u8]) {
         unsafe {
             std::ptr::copy_nonoverlapping(b.as_ptr(), self.0, b.len());
             self.0 = self.0.add(b.len());
@@ -332,7 +326,7 @@ impl Cursor {
     }
 
     #[inline]
-    unsafe fn int(&mut self, v: i64) {
+    pub unsafe fn int(&mut self, v: i64) {
         unsafe {
             if v < 0 {
                 self.byte(b'-');
@@ -343,7 +337,7 @@ impl Cursor {
 
     /// `%.{scale}f` of `v / 10^scale` (what dsdgen's `print_decimal`
     /// prints; `-0.05` keeps its sign).
-    unsafe fn decimal(&mut self, v: i64, scale: u32) {
+    pub unsafe fn decimal(&mut self, v: i64, scale: u32) {
         unsafe {
             if scale == 0 {
                 return self.int(v);
@@ -402,7 +396,7 @@ impl Cursor {
 
     /// [`Self::decimal`] at scale 2, with constant divisors.
     #[inline]
-    unsafe fn decimal2(&mut self, v: i64) {
+    pub unsafe fn decimal2(&mut self, v: i64) {
         unsafe {
             if v < 0 {
                 self.byte(b'-');
@@ -411,6 +405,18 @@ impl Cursor {
             self.uint(a / 100);
             self.byte(b'.');
             self.pair((a % 100) as usize);
+        }
+    }
+
+    /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in [`DATES`] for
+    /// the years 1900 to 2099.
+    #[inline]
+    pub unsafe fn day(&mut self, days: i32) {
+        unsafe {
+            match DATES.get(days.wrapping_sub(DATES_FROM) as u32 as usize) {
+                Some(text) => self.bytes(text),
+                None => self.date(days),
+            }
         }
     }
 
@@ -464,8 +470,19 @@ impl Cursor {
         }
     }
 
+    /// The first `len <= 12` of 12 bytes: one 12-byte store (the
+    /// reservation has 12 bytes of slack per string for this).
+    #[inline(always)]
+    pub unsafe fn short(&mut self, b: &[u8; 12], len: usize) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), self.0, 12);
+            self.0 = self.0.add(len);
+        }
+    }
+
+    /// `s` in `encoding` (Latin-1 is never longer than UTF-8).
     #[inline]
-    unsafe fn text(&mut self, s: &str, encoding: Encoding) {
+    pub unsafe fn text(&mut self, s: &str, encoding: Encoding) {
         unsafe {
             if encoding == Encoding::Utf8 || s.is_ascii() {
                 self.bytes(s.as_bytes());
@@ -642,6 +659,269 @@ impl<W: Write> TextFile<W> {
         }
     }
 }
+
+/// A column that prints its values as text fields, for [`write_columns`]:
+/// the text sink for populate's columns, which writes a row's fields
+/// straight from the columns, without making Arrow arrays.
+pub trait TextField {
+    /// Rows in the column.
+    fn text_rows(&self) -> usize;
+
+    /// Most bytes all its fields take: for every row the widest number,
+    /// or a string's bytes and 12 bytes of slack ([`Cursor::short`]).
+    fn text_bytes(&self) -> usize;
+
+    /// Write row `r`'s field, without its separator.
+    ///
+    /// # Safety
+    /// `r < self.text_rows()`, and `w` has room for the field (as
+    /// [`text_bytes`](Self::text_bytes) counts it).
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, encoding: Encoding);
+}
+
+/// Columns that print a row as fields, each followed by `|`: a
+/// [`TextField`], or a tuple or [`SpreadCols`] of them.
+pub trait TextColumns {
+    fn text_rows(&self) -> usize;
+
+    /// Most bytes all its rows take, separators included.
+    fn text_bytes(&self) -> usize;
+
+    /// Write row `r`'s fields, each followed by `|`.
+    ///
+    /// # Safety
+    /// As [`TextField::write_field`].
+    unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding);
+}
+
+impl<T: TextField> TextColumns for T {
+    #[inline]
+    fn text_rows(&self) -> usize {
+        TextField::text_rows(self)
+    }
+
+    fn text_bytes(&self) -> usize {
+        TextField::text_bytes(self) + TextField::text_rows(self)
+    }
+
+    #[inline(always)]
+    unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        unsafe {
+            self.write_field(r, w, encoding);
+            w.byte(b'|');
+        }
+    }
+}
+
+/// Append every row of `cols` to `out` as text lines: the fields, each
+/// followed by `|`, then a newline. NULL is an empty field, decimals have
+/// exactly their scale's digits, dates are `YYYY-MM-DD`.
+pub fn write_columns<C: TextColumns>(cols: &C, encoding: Encoding, out: &mut Vec<u8>) {
+    let rows = cols.text_rows();
+    let bound = cols.text_bytes() + rows;
+    out.reserve(bound);
+    let start = out.len();
+    let mut w = Cursor(out.spare_capacity_mut().as_mut_ptr().cast::<u8>());
+    let base = w.0;
+    for r in 0..rows {
+        // SAFETY: `r` is a row, and `bound` has room for every field,
+        // separator and newline.
+        unsafe {
+            cols.write_row(r, &mut w, encoding);
+            w.byte(b'\n');
+        }
+    }
+    // SAFETY: every byte in `start..start + written` was initialised above.
+    unsafe {
+        let written = w.0.offset_from(base) as usize;
+        debug_assert!(written <= bound);
+        out.set_len(start + written);
+    }
+}
+
+macro_rules! int_fields {
+    ($($t:ty),*) => {$(
+        impl TextField for Vec<$t> {
+            fn text_rows(&self) -> usize {
+                self.len()
+            }
+
+            fn text_bytes(&self) -> usize {
+                self.len() * MAX_NUMBER
+            }
+
+            #[inline(always)]
+            unsafe fn write_field(&self, r: usize, w: &mut Cursor, _: Encoding) {
+                unsafe { w.int(*self.get_unchecked(r) as i64) }
+            }
+        }
+    )*};
+}
+
+int_fields!(i8, i16, i32, i64, u8, u16, u32);
+
+impl<const P: u8, const S: i8> TextField for Vec<Decimal<P, S>> {
+    fn text_rows(&self) -> usize {
+        self.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.len() * MAX_DECIMAL
+    }
+
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, _: Encoding) {
+        let v = unsafe { self.get_unchecked(r).0 };
+        // precision 18 fits an i64; both branches are constant
+        unsafe {
+            match (P <= 18, S) {
+                (true, 2) => w.decimal2(v as i64),
+                (true, s) => w.decimal(v as i64, s.max(0) as u32),
+                (false, s) => w.decimal128(v, s.max(0) as u32, s.max(0) as u32),
+            }
+        }
+    }
+}
+
+impl TextField for Vec<Date32> {
+    fn text_rows(&self) -> usize {
+        self.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.len() * MAX_NUMBER
+    }
+
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, _: Encoding) {
+        unsafe { w.day(self.get_unchecked(r).0) }
+    }
+}
+
+impl TextField for StrCol {
+    fn text_rows(&self) -> usize {
+        self.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.data().len()
+    }
+
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: `r` is a row, so `r + 1` is an offset; offsets are in
+        // bounds and on character boundaries.
+        unsafe {
+            let o = self.offsets();
+            let (a, b) = (*o.get_unchecked(r) as usize, *o.get_unchecked(r + 1) as usize);
+            w.text(std::str::from_utf8_unchecked(self.data().get_unchecked(a..b)), encoding)
+        }
+    }
+}
+
+impl<C: TextField> TextField for Nullable<C> {
+    fn text_rows(&self) -> usize {
+        self.values.text_rows()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.values.text_bytes()
+    }
+
+    /// Nothing for a NULL.
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: `r` is a row, so its bit is in the words.
+        let valid = unsafe { *self.valid.words().get_unchecked(r / 64) >> (r % 64) & 1 != 0 };
+        if valid {
+            unsafe { self.values.write_field(r, w, encoding) }
+        }
+    }
+}
+
+impl<C: TextField, const N: usize> TextColumns for SpreadCols<C, N> {
+    fn text_rows(&self) -> usize {
+        self.0.first().map_or(0, |c| c.text_rows())
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.0.iter().map(TextColumns::text_bytes).sum()
+    }
+
+    #[inline(always)]
+    unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        for c in &self.0 {
+            unsafe { c.write_row(r, w, encoding) }
+        }
+    }
+}
+
+macro_rules! tuple_text {
+    ($($t:ident $i:tt),+) => {
+        impl<$($t: TextColumns),+> TextColumns for ($($t,)+) {
+            fn text_rows(&self) -> usize {
+                self.0.text_rows()
+            }
+
+            fn text_bytes(&self) -> usize {
+                0 $(+ self.$i.text_bytes())+
+            }
+
+            #[inline(always)]
+            unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+                unsafe { $(self.$i.write_row(r, w, encoding);)+ }
+            }
+        }
+    };
+}
+
+tuple_text!(A 0);
+tuple_text!(A 0, B 1);
+tuple_text!(A 0, B 1, C 2);
+tuple_text!(A 0, B 1, C 2, D 3);
+tuple_text!(A 0, B 1, C 2, D 3, E 4);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+/// The columns of several tables, as [`fan_out`] makes them (a tuple of
+/// [`ChildCols`]), each table printed to its own buffer.
+///
+/// [`fan_out`]: https://docs.rs/populate-builtins
+pub trait TextTables {
+    /// Append table `k`'s rows to `bufs[k]`, as [`write_columns`].
+    fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]);
+}
+
+impl<V: TextColumns> TextTables for ChildCols<V> {
+    fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        write_columns(&self.values, encoding, &mut bufs[0]);
+    }
+}
+
+macro_rules! tuple_tables {
+    ($($t:ident $i:tt),+) => {
+        impl<$($t: TextTables),+> TextTables for ($($t,)+) {
+            fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+                let mut at = 0;
+                $(
+                    self.$i.write_tables(encoding, &mut bufs[at..]);
+                    at += 1;
+                )+
+                let _ = at;
+            }
+        }
+    };
+}
+
+tuple_tables!(A 0);
+tuple_tables!(A 0, B 1);
+tuple_tables!(A 0, B 1, C 2);
+tuple_tables!(A 0, B 1, C 2, D 3);
 
 #[cfg(test)]
 mod tests {

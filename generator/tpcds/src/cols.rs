@@ -11,6 +11,7 @@ use arrow_schema::DataType;
 use populate_builtins::ReadRows;
 use populate_core::{Columnar, Nullable, Sink};
 use populate_sink_arrow::IntoArrowArray;
+use populate_table::text::{Cursor, Encoding, TextField};
 use std::sync::Arc;
 
 /// A string row value. Most text is written in place
@@ -60,6 +61,56 @@ impl Columnar for Str {
     type Columns = StrViews;
 }
 
+/// A string from a fixed list (a distribution's values), collected into
+/// the same columns as [`Str`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Word(pub &'static str);
+
+impl Columnar for Word {
+    type Columns = StrViews;
+}
+
+impl Sink<Word> for StrViews {
+    #[inline]
+    fn push(&mut self, s: Word) {
+        self.push_str(s.0);
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.views.reserve(n);
+    }
+}
+
+impl TextField for StrViews {
+    fn text_rows(&self) -> usize {
+        self.views.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.data.len() + 12 * self.views.len()
+    }
+
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: `r` is a row; a view's bytes are UTF-8, inline or at its
+        // offset in `data`.
+        unsafe {
+            let v = *self.views.get_unchecked(r);
+            let len = v as u32 as usize;
+            if len <= 12 {
+                let inline: [u8; 12] = (v >> 32).to_le_bytes()[..12].try_into().expect("12");
+                if encoding == Encoding::Utf8 || inline.is_ascii() {
+                    return w.short(&inline, len);
+                }
+                return w.text(std::str::from_utf8_unchecked(&inline[..len]), encoding);
+            }
+            let offset = (v >> 96) as u32 as usize;
+            let s = self.data.get_unchecked(offset..offset + len);
+            w.text(std::str::from_utf8_unchecked(s), encoding)
+        }
+    }
+}
+
 impl Sink<Str> for StrViews {
     #[inline]
     fn push(&mut self, s: Str) {
@@ -90,7 +141,7 @@ impl IntoArrowArray for StrViews {
 
     fn into_array(self) -> ArrayRef {
         let views = ScalarBuffer::from(self.views);
-        let buffers = vec![Buffer::from_vec(self.data)];
+        let buffers: Arc<[Buffer]> = Arc::new([Buffer::from_vec(self.data)]);
         // SAFETY: every view was made by `make_view` over UTF-8 bytes of
         // `data` at its offset (or inline), so the views are valid
         Arc::new(unsafe { StringViewArray::new_unchecked(views, buffers, None) })

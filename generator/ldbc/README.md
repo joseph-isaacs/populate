@@ -65,9 +65,10 @@ one source row. `g.csv()` is a `TextChunks` source, so they share a pool
 with other generators' tables. The other layouts are `layout::LayoutRun`,
 and BI is `bi::BiRun`: its snapshot is a chunked source, then `finish`
 gives the insert and delete batches. They work on the same columns held
-by kind (`rows::Col`), with the types the row types give them. For factor
-tables, call `g.collect_factors()` before generating, then
-`g.factors(threads)`.
+by kind (`rows::Col`), with the types the row types give them. The 34
+factor tables are `g.factor_dist(threads)`, one source row whose
+children are the tables' typed rows: call `g.collect_factors()` before
+generating, then collect it once (`g.factors(threads)` does).
 
 ## How it matches the datagen
 

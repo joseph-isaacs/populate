@@ -47,7 +47,7 @@ use activity::{BlockGen, Resume, World};
 use arrow_array::RecordBatch;
 use dates::Dates;
 use dict::{Dictionaries, PlaceType};
-use factors::{Factor, FactorInput};
+use factors::{FACTOR, FACTOR_TABLES, Factor, FactorCols, FactorInput, Factors};
 use knows::Knows;
 use params::Params;
 use person::{Hot, Person, PersonGenerator};
@@ -396,8 +396,34 @@ impl Ldbc {
     /// threads (0 = all cores), once every chunk has been generated after
     /// [`Self::collect_factors`].
     pub fn factors(&self, threads: usize) -> Vec<Factor> {
-        let f = self.factor_input.as_ref().expect("collect_factors first");
-        f.finish(&self.static_rows(), threads)
+        let cols = self
+            .factor_dist(threads)
+            .collect(&mut SmallRng::seed_from_u64(0), 1);
+        FACTOR
+            .iter()
+            .zip(rows_of(cols))
+            .map(|(def, rows)| Factor { def, rows })
+            .collect()
+    }
+
+    /// The 34 factor tables as one distribution of a single source row,
+    /// its children the tables' rows, computed on `threads` threads (0 =
+    /// all cores). Collect it once every chunk has been generated after
+    /// [`Self::collect_factors`].
+    pub fn factor_dist(&self, threads: usize) -> impl Distribution<Item = Factors> + Clone + '_ {
+        let names: Vec<&str> = FACTOR_TABLES
+            .iter()
+            .flat_map(|t| t.1.iter().copied())
+            .collect();
+        named_all(
+            &names,
+            fan_out::<_, Factors, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
+                let f = self.factor_input.as_ref().expect("collect_factors first");
+                let mut statics = StaticCols::default();
+                self.static_into(&mut statics);
+                f.finish_into(&statics, threads, out);
+            }),
+        )
     }
 
     /// Generate every chunk on `threads` threads (0 = all cores)

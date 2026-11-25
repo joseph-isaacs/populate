@@ -29,12 +29,10 @@ pub mod text;
 pub mod direct;
 #[cfg(feature = "parquet")]
 mod parquet;
-#[cfg(feature = "parquet")]
-mod parquet_direct;
 
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
-pub use direct::{DirectColumns, ParquetOptions, write_dist_parquet};
+pub use direct::{ParquetOptions, write_dist_parquet};
 pub use dist::DistTable;
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};

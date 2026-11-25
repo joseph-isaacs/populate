@@ -23,7 +23,7 @@
 //! |             |                         | and the columns [`StrCol`] and [`ListCol`]  |
 //! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `map`, `list`, ...     |
 //! | [`arrow`]   | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output       |
-//! | [`parquet`] | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)|
+//! | [`parquet`] | `populate-sink-parquet` | Parquet encoder (`parquet` feature)         |
 //! | [`table`]   | `populate-table`        | named, typed tables; parallel batches       |
 
 pub use populate_builtins as dist;

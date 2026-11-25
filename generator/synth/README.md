@@ -61,10 +61,10 @@ thread, 4-core cloud VM):
 
 | Shape | Arrow | Parquet |
 |---|---|---|
-| taxi | 13.2 M rows/s | 3.5 M rows/s |
-| hits | 4.7 M rows/s | 1.19 M rows/s |
-| features | 3.8 M rows/s | 1.49 M rows/s |
-| embeddings (384-d) | 0.86 M rows/s | 0.30 M rows/s |
+| taxi | 12.0 M rows/s | 3.4 M rows/s |
+| hits | 6.0 M rows/s | 1.33 M rows/s |
+| features | 3.7 M rows/s | 1.84 M rows/s |
+| embeddings (384-d) | 0.87 M rows/s | 0.29 M rows/s |
 
 The benches use the system allocator; `synth-gen` uses mimalloc (feature
 `mimalloc`, on by default), which makes generation 20-65% faster here

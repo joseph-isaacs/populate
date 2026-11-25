@@ -29,9 +29,10 @@
 //! Parents must be made of scalar columns (up to 11 before the new one), so
 //! their rows can be read back from the columns.
 
-use populate_core::{Columnar, Columns, Distribution, Sink};
+use populate_core::{Columnar, Columns, Distribution, Nullable, Sink, Spread, SpreadCols};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use std::array::from_fn;
 use std::mem::take;
 
 // ============================================================================
@@ -95,6 +96,51 @@ impl<T> RowRefs for Vec<T> {
 
     fn row_refs(&self) -> impl Iterator<Item = &T> + '_ {
         self.iter()
+    }
+}
+
+/// A row of `Option` columns is an `Option` of the row of its values.
+impl<C: RowRefs> RowRefs for Nullable<C> {
+    type Ref<'a>
+        = Option<C::Ref<'a>>
+    where
+        C: 'a;
+
+    fn row_refs(&self) -> impl Iterator<Item = Self::Ref<'_>> + '_ {
+        self.values
+            .row_refs()
+            .zip(self.valid.iter())
+            .map(|(v, ok)| ok.then_some(v))
+    }
+}
+
+/// A row of spread columns is a [`Spread`] of one row of each.
+impl<C: ReadRows, const N: usize> ReadRows for SpreadCols<C, N> {
+    type Row = Spread<C::Row, N>;
+    fn rows(&self) -> usize {
+        self.0.first().map_or(0, ReadRows::rows)
+    }
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+        let mut cols: [_; N] = from_fn(|k| self.0[k].rows_from(start));
+        (start..self.rows()).map(move |_| {
+            Spread(
+                cols.each_mut()
+                    .map(|c| c.next().expect("columns of one length")),
+            )
+        })
+    }
+}
+
+impl<C: ReadRows> ReadRows for Nullable<C> {
+    type Row = Option<C::Row>;
+    fn rows(&self) -> usize {
+        self.valid.len()
+    }
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+        self.values
+            .rows_from(start)
+            .zip(self.valid.iter().skip(start))
+            .map(|(v, ok)| ok.then_some(v))
     }
 }
 

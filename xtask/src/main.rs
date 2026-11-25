@@ -18,19 +18,24 @@ use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
 mod report;
+mod stats;
 
 use report::Report;
+use stats::{Sample, needs_more, summarize};
 
 const USAGE: &str = "\
 usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--formats text,parquet,arrow]
-                         [--runs 3] [--out DIR] [--tpcgen-cli PATH] [--tsbs-generate-data PATH]
+                         [--runs 3] [--max-runs 5] [--noise-threshold 0.10] [--sync-output] [--out DIR] [--tpcgen-cli PATH] [--tsbs-generate-data PATH]
                          [--ssb-dbgen PATH] [--ssb-dists PATH] [--no-reference] [--json PATH] [--list]
 
   --scale       comma-separated scale factors; each generator maps one to its own size (see --list)
   --threads     comma-separated thread counts (default: 1 and every core)
   --generators  comma-separated names from --list, or a family (h2o, ycsb, synth); default all
   --formats     text (the reference tool's own format), parquet, arrow (generated in memory, dropped)
-  --runs        runs per configuration; the best wall time is kept
+  --runs        minimum runs per configuration (default 3); report median and range
+  --max-runs    cap for noisy configurations (default at least 5, or --runs if larger)
+  --noise-threshold  repeat while (max - min) / median exceeds this fraction (default 0.10)
+  --sync-output  fsync generated files after timing; record flush and total times separately
   --out         where output goes while a run lasts (default /dev/shm, else the temp dir);
                 it is written to DIR/populate-bench and deleted after every run
   --json        save a versioned JSON report, checkpointed after each configuration
@@ -121,6 +126,9 @@ struct Opts {
     generators: Vec<&'static str>,
     formats: Vec<Format>,
     runs: usize,
+    max_runs: usize,
+    noise_threshold: f64,
+    sync_output: bool,
     out: PathBuf,
     tpcgen_cli: Option<PathBuf>,
     tsbs_ref: Option<PathBuf>,
@@ -147,6 +155,9 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         generators: GENERATORS.iter().map(|g| g.0).collect(),
         formats: vec![Format::Text, Format::Parquet, Format::Arrow],
         runs: 3,
+        max_runs: 5,
+        noise_threshold: 0.10,
+        sync_output: false,
         out: if shm.is_dir() {
             shm.to_path_buf()
         } else {
@@ -159,6 +170,7 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         list: false,
         json: None,
     };
+    let mut explicit_max = false;
     let mut it = a.iter();
     while let Some(flag) = it.next() {
         let mut val = || {
@@ -194,6 +206,12 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             }
             "--formats" => o.formats = list(val()?).map(Format::parse).collect::<Result<_, _>>()?,
             "--runs" => o.runs = num(flag, val()?)?,
+            "--max-runs" => {
+                o.max_runs = num(flag, val()?)?;
+                explicit_max = true;
+            }
+            "--noise-threshold" => o.noise_threshold = num(flag, val()?)?,
+            "--sync-output" => o.sync_output = true,
             "--out" => o.out = PathBuf::from(val()?),
             "--json" => o.json = Some(PathBuf::from(val()?)),
             "--tpcgen-cli" => o.tpcgen_cli = Some(PathBuf::from(val()?)),
@@ -209,6 +227,14 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             "--help" | "-h" => return Err(USAGE.to_string()),
             _ => return Err(format!("unknown flag {flag}\n{USAGE}")),
         }
+    }
+    if !explicit_max {
+        o.max_runs = o.max_runs.max(o.runs);
+    }
+    if o.max_runs < o.runs || !o.noise_threshold.is_finite() || o.noise_threshold < 0.0 {
+        return Err(
+            "--max-runs must be >= --runs; --noise-threshold must be finite and >= 0".into(),
+        );
     }
     if o.scales.is_empty()
         || o.threads.is_empty()
@@ -528,7 +554,7 @@ fn dir_size(p: &Path) -> u64 {
 }
 
 /// Wall time and output bytes of one run, output wiped before and after.
-fn run(c: &Cmd, out: &Path) -> Result<(Duration, u64), String> {
+fn run(c: &Cmd, out: &Path, sync_output: bool) -> Result<Sample, String> {
     let _ = remove_dir_all(out);
     create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let stdout = match c.stdout {
@@ -550,9 +576,18 @@ fn run(c: &Cmd, out: &Path) -> Result<(Duration, u64), String> {
     let status = child.wait().map_err(|e| e.to_string())?;
     let elapsed = t0.elapsed();
     let bytes = dir_size(out);
-    let _ = remove_dir_all(out);
-    if status.success() {
-        Ok((elapsed, bytes))
+    let result = if status.success() {
+        let flush = if sync_output && bytes > 0 {
+            let start = Instant::now();
+            sync_files(out).map(|()| Some(start.elapsed()))
+        } else {
+            Ok(None)
+        };
+        flush.map(|flush| Sample {
+            wall: elapsed,
+            bytes,
+            flush,
+        })
     } else {
         let tail: Vec<&str> = err.lines().rev().take(3).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
@@ -561,23 +596,29 @@ fn run(c: &Cmd, out: &Path) -> Result<(Duration, u64), String> {
             c.key(),
             tail.join(" / ")
         ))
-    }
+    };
+    let _ = remove_dir_all(out);
+    result
 }
 
-/// Best of `runs`, or the first error.
-fn best(times: &[Result<(Duration, u64), String>]) -> Result<(Duration, u64), String> {
-    let mut b: Option<(Duration, u64)> = None;
-    for t in times {
-        let t = t.clone()?;
-        if b.is_none_or(|b| t.0 < b.0) {
-            b = Some(t);
+/// Flush regular output files without following links outside the scratch directory.
+fn sync_files(path: &Path) -> Result<(), String> {
+    for entry in read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_dir() {
+            sync_files(&entry.path())?;
+        } else if kind.is_file() {
+            File::open(entry.path())
+                .and_then(|f| f.sync_all())
+                .map_err(|e| format!("flush {}: {e}", entry.path().display()))?;
         }
     }
-    Ok(b.expect("at least one run"))
+    Ok(())
 }
 
 fn secs(d: Duration) -> String {
-    format!("{:.2}", d.as_secs_f64())
+    format!("{:.3}", d.as_secs_f64())
 }
 
 fn mb(bytes: u64) -> String {
@@ -677,14 +718,33 @@ fn bench(o: Opts) -> Result<(), String> {
                         .and_then(|(_, r)| ref_cache.get(&r.key()).cloned());
                     let mut ours = Vec::new();
                     let mut theirs = Vec::new();
-                    for _ in 0..o.runs {
-                        if let (Some((_, r)), None) = (&c.reference, &cached) {
-                            theirs.push(run(r, &o.out));
+                    for trial in 0..o.max_runs {
+                        let run_ours = needs_more(&ours, o.runs, o.max_runs, o.noise_threshold);
+                        let run_ref = cached.is_none()
+                            && c.reference.is_some()
+                            && needs_more(&theirs, o.runs, o.max_runs, o.noise_threshold);
+                        if !run_ours && !run_ref {
+                            break;
                         }
-                        ours.push(run(&c.ours, &o.out));
+                        // Reverse each pair so neither engine always follows the other.
+                        for reference_first in if trial % 2 == 0 {
+                            [true, false]
+                        } else {
+                            [false, true]
+                        } {
+                            if reference_first && run_ref {
+                                theirs.push(run(
+                                    &c.reference.as_ref().unwrap().1,
+                                    &o.out,
+                                    o.sync_output,
+                                ));
+                            } else if !reference_first && run_ours {
+                                ours.push(run(&c.ours, &o.out, o.sync_output));
+                            }
+                        }
                     }
                     report.measurement("populate", (g.0, scale, t), &c, &c.ours, &ours);
-                    let ours = best(&ours);
+                    let ours = summarize(&ours);
                     let theirs = match (&c.reference, cached) {
                         (Some(_), Some(r)) => Some(r),
                         (Some((name, r)), None) => {
@@ -696,7 +756,7 @@ fn bench(o: Opts) -> Result<(), String> {
                                 t
                             };
                             report.measurement(name, (g.0, scale, threads), &c, r, &theirs);
-                            let b = best(&theirs);
+                            let b = summarize(&theirs);
                             ref_cache.insert(r.key(), b.clone());
                             Some(b)
                         }
@@ -714,17 +774,28 @@ fn bench(o: Opts) -> Result<(), String> {
                         t.to_string(),
                     ];
                     match &ours {
-                        Ok((d, b)) => row.extend([secs(*d), mb(*b)]),
+                        Ok(s) => row.extend([
+                            s.display(),
+                            mb(s.bytes),
+                            s.flush.map_or_else(|| "-".into(), secs),
+                        ]),
                         Err(e) => {
                             errors.push(e.clone());
-                            row.extend(["error".into(), String::new()]);
+                            row.extend(["error".into(), String::new(), String::new()]);
                         }
                     }
                     match (&c.reference, theirs) {
-                        (Some((name, _)), Some(Ok((d, b)))) => {
-                            row.extend([name.to_string(), secs(d), mb(b)]);
+                        (Some((name, _)), Some(Ok(s))) => {
+                            row.extend([
+                                name.to_string(),
+                                s.display(),
+                                mb(s.bytes),
+                                s.flush.map_or_else(|| "-".into(), secs),
+                            ]);
                             row.push(match &ours {
-                                Ok((o, _)) => format!("{:.1}x", d.as_secs_f64() / o.as_secs_f64()),
+                                Ok(o) => {
+                                    format!("{:.2}x", s.wall.as_secs_f64() / o.wall.as_secs_f64())
+                                }
                                 Err(_) => String::new(),
                             });
                         }
@@ -735,11 +806,16 @@ fn bench(o: Opts) -> Result<(), String> {
                                 "error".into(),
                                 String::new(),
                                 String::new(),
+                                String::new(),
                             ]);
                         }
-                        _ => {
-                            row.extend([String::new(), String::new(), String::new(), String::new()])
-                        }
+                        _ => row.extend([
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                        ]),
                     }
                     rows.push(row);
                     report.save(false)?;
@@ -752,15 +828,16 @@ fn bench(o: Opts) -> Result<(), String> {
 
     println!();
     println!(
-        "Best of {} run(s), output to {}. Speedup is reference time / populate time.",
+        "Median [min, max] of {}–{} run(s), output to {}. Speedup excludes final flush. Flush columns are separate medians.",
         o.runs,
+        o.max_runs,
         o.out.parent().unwrap_or(&o.out).display()
     );
     println!();
     println!(
-        "| generator | size | format | threads | populate (s) | MB | reference | reference (s) | reference MB | speedup |"
+        "| generator | size | format | threads | populate (s) | MB | flush (s) | reference | reference (s) | reference MB | ref flush (s) | speedup |"
     );
-    println!("|---|---|---|---:|---:|---:|---|---:|---:|---:|");
+    println!("|---|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|");
     for r in rows {
         println!("| {} |", r.join(" | "));
     }
@@ -823,6 +900,9 @@ mod tests {
             ("--formats", ""),
             ("--threads", "0"),
             ("--runs", "0"),
+            ("--max-runs", "2"),
+            ("--noise-threshold", "NaN"),
+            ("--noise-threshold", "-0.1"),
         ] {
             assert!(
                 parse(&[flag.into(), value.into()]).is_err(),

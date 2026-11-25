@@ -1,4 +1,4 @@
-//! What TPC-C and YCSB tables share: splitting source rows into chunks and
+//! What TPC-C tables share: splitting source rows into chunks and
 //! batches, and the drivers that run several tables on one pool.
 
 use arrow_array::RecordBatch;
@@ -92,7 +92,7 @@ pub fn write_parquet_many<T: Chunks, W: Write + Send>(
     populate_table::write_parquet_many(&srcs, writers, threads, props)
 }
 
-/// Write several tables as text (TPC-C: CSV; YCSB: TSV) on one shared pool,
+/// Write several tables as text (CSV) on one shared pool,
 /// like [`write_parquet_many`]. The workers write the files themselves.
 pub fn write_text_many<T: TextChunks, W: Write + Send>(
     tables: &[T],

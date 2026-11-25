@@ -1,0 +1,33 @@
+[package]
+name = "populate-tpcc"
+description = "The TPC-C initial database (TPC-C 5.11 clause 4.3.3.1), on all cores: Arrow, Parquet or CSV"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# the CLI's allocator (feature `mimalloc`, on by default; the library
+# itself doesn't use it)
+mimalloc = { version = "0.1", default-features = false, optional = true }
+populate-table = { workspace = true, features = ["parquet"] }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-buffer = { workspace = true }
+parquet = { workspace = true, features = ["arrow", "snap"] }
+itoa = "1"
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
+
+[dev-dependencies]
+divan = { workspace = true }
+arrow-select = "60"
+
+[[bin]]
+name = "tpcc-gen"
+path = "src/bin/tpcc-gen.rs"
+
+[[bench]]
+name = "tpcc"
+harness = false

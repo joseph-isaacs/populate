@@ -1,15 +1,15 @@
 #!/bin/sh
 # Run the real YCSB 0.17.0 load phase (one client thread) and write every
-# record as TSV, the format of `oltp-gen ycsb --format text`; or, with
+# record as TSV, the format of `ycsb-gen load --format text`; or, with
 # YCSB_MODE=-t and `-p refdb.run=true`, the run phase, one line per binding
-# call, the format of `oltp-gen ycsb-run --format text`.
+# call, the format of `ycsb-gen run --format text`.
 #
 #   ycsb-ref/run.sh OUT.tsv [-p key=value ...]
 #   YCSB_MODE=-t ycsb-ref/run.sh OUT.tsv -p refdb.run=true -p operationcount=N ...
 #
 # `-p refdb.seed=S` sets the client thread's ThreadLocalRandom seed before
 # the first operation, so random values are reproducible; the thread id it
-# prints goes to `oltp-gen ycsb --java-thread`. Needs a JDK (17+) and curl;
+# prints goes to `ycsb-gen load --java-thread`. Needs a JDK (17+) and curl;
 # YCSB's core sources and its dependencies are fetched from Maven Central
 # into $YCSB_REF_DIR (default: /tmp/ycsb-ref) once.
 set -e

@@ -4,7 +4,7 @@
 //! `ThreadLocalRandom` seed, set by `RefDB`; YCSB's client thread was
 //! thread 21 on OpenJDK 21.
 
-use populate_oltp::{JavaTlr, Ycsb};
+use populate_ycsb::{JavaTlr, Ycsb};
 
 const THREAD: u64 = 21;
 

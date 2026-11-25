@@ -762,8 +762,12 @@ dependencies = [
 name = "populate-combinators"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
  "populate-builtins",
  "populate-core",
+ "populate-sink-arrow",
  "rand",
  "tpchgen",
 ]

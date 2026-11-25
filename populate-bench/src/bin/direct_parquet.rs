@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! direct_parquet [--rows 1000000,4000000,16000000] [--threads 1,2,4]
-//!                [--shapes numbers,strings,lists,mixed] [--reps 3] [--plain]
+//!                [--shapes numbers,strings,lists,mixed] [--reps 3] [--plain] [--snappy]
 //! ```
 
 use arrow_array::RecordBatch;
@@ -21,6 +21,7 @@ use arrow_schema::SchemaRef;
 use mimalloc::MiMalloc;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_writer::compute_leaves;
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use populate::Distribution;
 use populate::arrow::{DistributionArrow, IntoArrowColumns};
@@ -260,13 +261,15 @@ fn main() {
     let shapes = list_arg("--shapes", "numbers,strings,lists,mixed");
     let reps: usize = list_arg("--reps", "3")[0].parse().unwrap();
     let plain = args().any(|a| a == "--plain");
-    let props = if plain {
-        WriterProperties::builder()
-            .set_dictionary_enabled(false)
-            .build()
+    let compression = if args().any(|a| a == "--snappy") {
+        Compression::SNAPPY
     } else {
-        WriterProperties::default()
+        Compression::UNCOMPRESSED
     };
+    let props = WriterProperties::builder()
+        .set_dictionary_enabled(!plain)
+        .set_compression(compression)
+        .build();
     println!(
         "| shape | rows | threads | direct | table | arrow-rs | table / direct | arrow-rs / direct | MB direct / table / arrow-rs |"
     );

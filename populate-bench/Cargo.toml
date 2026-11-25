@@ -12,7 +12,7 @@ populate = { workspace = true, features = ["parquet"] }
 rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-parquet = { workspace = true, features = ["arrow"] }
+parquet = { workspace = true, features = ["arrow", "snap"] }
 # tpchgen 4 targets arrow 60, the same arrow and parquet as populate.
 tpchgen = "4.0"
 tpchgen-arrow = "4.0"

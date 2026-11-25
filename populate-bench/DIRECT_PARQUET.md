@@ -112,6 +112,77 @@ The Table column already includes the shared-encoder speedups from this work (fe
 | 16M | 2 | 1.715 s | 2.719 s | 2.933 s | 1.59x | 1.71x |
 | 16M | 4 | 0.955 s | 1.438 s | 1.592 s | 1.51x | 1.67x |
 
+## Snappy (dictionaries on)
+
+All three paths compress each page with Snappy after encoding it. The direct path and the Table encoder use the `snap` crate, and arrow-rs uses its own Snappy codec. The files come out the same size, so they are compressed the same way.
+
+**numbers**
+
+| Rows | Threads | Direct | Table | arrow-rs | Table / direct | arrow-rs / direct | MB direct / Table / arrow-rs |
+|---|---|---|---|---|---|---|---|
+| 1M | 1 | 0.055 s | 0.052 s | 0.057 s | 0.95x | 1.04x | 22.1 / 22.1 / 22.1 |
+| 1M | 2 | 0.039 s | 0.053 s | 0.059 s | 1.36x | 1.51x | 22.1 / 22.1 / 22.1 |
+| 1M | 4 | 0.027 s | 0.052 s | 0.063 s | 1.94x | 2.34x | 22.1 / 22.1 / 22.1 |
+| 4M | 1 | 0.214 s | 0.199 s | 0.268 s | 0.93x | 1.25x | 88.3 / 88.3 / 88.3 |
+| 4M | 2 | 0.103 s | 0.107 s | 0.125 s | 1.04x | 1.21x | 88.3 / 88.3 / 88.3 |
+| 4M | 4 | 0.071 s | 0.061 s | 0.073 s | 0.85x | 1.02x | 88.3 / 88.3 / 88.3 |
+| 16M | 1 | 0.809 s | 0.865 s | 1.015 s | 1.07x | 1.25x | 353.2 / 353.2 / 353.2 |
+| 16M | 2 | 0.444 s | 0.482 s | 0.525 s | 1.09x | 1.18x | 353.2 / 353.2 / 353.2 |
+| 16M | 4 | 0.247 s | 0.269 s | 0.290 s | 1.09x | 1.17x | 353.2 / 353.2 / 353.2 |
+
+**strings**
+
+| Rows | Threads | Direct | Table | arrow-rs | Table / direct | arrow-rs / direct | MB direct / Table / arrow-rs |
+|---|---|---|---|---|---|---|---|
+| 1M | 1 | 0.257 s | 0.293 s | 0.287 s | 1.14x | 1.12x | 28.4 / 28.4 / 28.4 |
+| 1M | 2 | 0.178 s | 0.276 s | 0.300 s | 1.55x | 1.68x | 28.4 / 28.4 / 28.4 |
+| 1M | 4 | 0.190 s | 0.281 s | 0.293 s | 1.48x | 1.54x | 28.4 / 28.4 / 28.4 |
+| 4M | 1 | 0.991 s | 1.149 s | 1.140 s | 1.16x | 1.15x | 113.6 / 113.6 / 113.6 |
+| 4M | 2 | 0.532 s | 0.604 s | 0.645 s | 1.13x | 1.21x | 113.6 / 113.6 / 113.6 |
+| 4M | 4 | 0.308 s | 0.312 s | 0.322 s | 1.01x | 1.05x | 113.6 / 113.6 / 113.6 |
+| 16M | 1 | 3.908 s | 4.483 s | 4.675 s | 1.15x | 1.20x | 454.4 / 454.4 / 454.4 |
+| 16M | 2 | 2.076 s | 2.483 s | 2.557 s | 1.20x | 1.23x | 454.4 / 454.4 / 454.4 |
+| 16M | 4 | 1.080 s | 1.310 s | 1.267 s | 1.21x | 1.17x | 454.4 / 454.4 / 454.4 |
+
+**lists**
+
+| Rows | Threads | Direct | Table | arrow-rs | Table / direct | arrow-rs / direct | MB direct / Table / arrow-rs |
+|---|---|---|---|---|---|---|---|
+| 1M | 1 | 0.150 s | 0.236 s | 0.249 s | 1.57x | 1.66x | 34.6 / 34.7 / 34.7 |
+| 1M | 2 | 0.137 s | 0.227 s | 0.237 s | 1.65x | 1.73x | 34.6 / 34.7 / 34.7 |
+| 1M | 4 | 0.118 s | 0.231 s | 0.260 s | 1.96x | 2.20x | 34.6 / 34.7 / 34.7 |
+| 4M | 1 | 0.617 s | 0.932 s | 1.036 s | 1.51x | 1.68x | 138.6 / 138.7 / 138.8 |
+| 4M | 2 | 0.307 s | 0.497 s | 0.524 s | 1.62x | 1.71x | 138.6 / 138.7 / 138.8 |
+| 4M | 4 | 0.206 s | 0.334 s | 0.279 s | 1.62x | 1.35x | 138.6 / 138.7 / 138.8 |
+| 16M | 1 | 2.587 s | 3.866 s | 4.396 s | 1.49x | 1.70x | 554.1 / 554.8 / 554.9 |
+| 16M | 2 | 1.278 s | 2.084 s | 2.257 s | 1.63x | 1.77x | 554.1 / 554.8 / 554.9 |
+| 16M | 4 | 0.767 s | 1.149 s | 1.234 s | 1.50x | 1.61x | 554.1 / 554.8 / 554.9 |
+
+**mixed**
+
+| Rows | Threads | Direct | Table | arrow-rs | Table / direct | arrow-rs / direct | MB direct / Table / arrow-rs |
+|---|---|---|---|---|---|---|---|
+| 1M | 1 | 0.458 s | 0.608 s | 0.597 s | 1.33x | 1.30x | 85.1 / 85.2 / 85.1 |
+| 1M | 2 | 0.309 s | 0.589 s | 0.599 s | 1.91x | 1.94x | 85.1 / 85.2 / 85.1 |
+| 1M | 4 | 0.245 s | 0.583 s | 0.634 s | 2.38x | 2.59x | 85.1 / 85.2 / 85.1 |
+| 4M | 1 | 1.933 s | 2.476 s | 2.552 s | 1.28x | 1.32x | 340.4 / 340.6 / 340.6 |
+| 4M | 2 | 0.942 s | 1.315 s | 1.317 s | 1.40x | 1.40x | 340.4 / 340.6 / 340.6 |
+| 4M | 4 | 0.527 s | 0.774 s | 0.685 s | 1.47x | 1.30x | 340.4 / 340.6 / 340.6 |
+| 16M | 1 | 7.540 s | 9.879 s | 10.494 s | 1.31x | 1.39x | 1361.6 / 1362.5 / 1362.5 |
+| 16M | 2 | 3.973 s | 5.112 s | 5.631 s | 1.29x | 1.42x | 1361.6 / 1362.5 / 1362.5 |
+| 16M | 4 | 2.029 s | 2.714 s | 3.103 s | 1.34x | 1.53x | 1361.6 / 1362.5 / 1362.5 |
+
+## TPC-DS (Table encoder, before and after this PR)
+
+TPC-DS is built from Arrow batches, not from one `Distribution`, so it keeps the Table path and does not use `write_dist_parquet`. It does share the encoder changes, which are no copy of finished pages and one pass fewer when dictionaries are off. This table is `tpcds-gen` with its defaults (Snappy, all tables) on PR 49's head and on this PR, run alternately to tmpfs. SF 1 is the best of 3 runs and SF 10 the best of 2. The output files are byte-identical.
+
+| SF | Threads | Before | After | Speedup | Files identical | Output MB |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 3.29 s | 3.28 s | 1.00x | yes | 376 |
+| 1 | 4 | 0.93 s | 0.90 s | 1.04x | yes | 376 |
+| 10 | 1 | 34.81 s | 33.39 s | 1.04x | yes | 3899 |
+| 10 | 4 | 9.49 s | 9.19 s | 1.03x | yes | 3899 |
+
 ## File sizes, default settings (direct / Table / arrow-rs)
 
 | Shape | 1M | 4M | 16M |
@@ -126,5 +197,5 @@ The list files are about 0.1% smaller on the direct path because its list pages 
 ## Run it
 
 ```
-cargo run --release -p populate-bench --bin direct_parquet -- --rows 1000000,4000000,16000000 --threads 1,2,4 --reps 3 [--plain]
+cargo run --release -p populate-bench --bin direct_parquet -- --rows 1000000,4000000,16000000 --threads 1,2,4 --reps 3 [--plain] [--snappy]
 ```

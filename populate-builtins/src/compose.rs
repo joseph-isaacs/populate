@@ -37,7 +37,9 @@
 //! ```
 
 use crate::with_column::{ReadRows, RowRefs};
-use populate_core::{ChildCols, Children, Columnar, Columns, Distribution, SeekRng, Sink};
+use populate_core::{
+    ChildCols, Children, Columnar, Columns, Distribution, SeekRng, Sink, StrBuf, StrSink,
+};
 use rand::Rng;
 use std::marker::PhantomData;
 
@@ -356,6 +358,71 @@ where
             "flat_map: children written differ from their counts"
         );
         cols.sources += n;
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.source.skip(n);
+    }
+}
+
+// ============================================================================
+// Format
+// ============================================================================
+
+/// A string per row, written by `f`. See [`format()`].
+#[derive(Debug, Clone)]
+pub struct Format<D, F, T> {
+    pub source: D,
+    pub f: F,
+    _item: PhantomData<fn() -> T>,
+}
+
+/// A string column: `f(row, out)` writes each row's string from a row of
+/// `source`, straight into the column's bytes (no `String` per row).
+///
+/// `T` is the row type, whose columns take strings written in place
+/// ([`StrSink`]): `String` for [`StrCol`](populate_core::StrCol), or a
+/// generator's own string column. Rows are read in place ([`RowRefs`]).
+pub fn format<D, T, F>(source: D, f: F) -> Format<D, F, T>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut StrBuf<'_>),
+{
+    Format {
+        source,
+        f,
+        _item: PhantomData,
+    }
+}
+
+impl<D, F, T> Distribution for Format<D, F, T>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut StrBuf<'_>),
+    T: Columnar + From<String>,
+    Columns<T>: StrSink,
+{
+    type Item = T;
+
+    /// One source row, collected (so read the way `collect` reads it).
+    fn sample(&mut self, rng: &mut impl Rng) -> T {
+        let src = self.source.collect(rng, 1);
+        let mut out = Vec::new();
+        (self.f)(
+            src.row_refs().next().expect("one row"),
+            &mut StrBuf::appending(&mut out),
+        );
+        T::from(String::from_utf8(out).expect("StrBuf writes UTF-8"))
+    }
+
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
+        let src = self.source.collect(rng, n);
+        cols.reserve(n);
+        for row in src.row_refs() {
+            cols.push_with(|out| (self.f)(row, out));
+        }
     }
 
     fn skip(&mut self, n: u64) {

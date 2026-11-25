@@ -76,7 +76,7 @@ fn every_table_tbl_matches_tpchgen_display() {
     let h = Tpch::new(0.01);
     for t in h.tables() {
         let got = t.write_tbl(Vec::new(), 0).unwrap();
-        let want = t.reference_tbl();
+        let (_, want) = tpchgen_part(t.name(), 0.01, 1, 1, t.source_rows() as usize);
         assert!(got == want, "{}: .tbl differs", t.name());
     }
 }
@@ -93,14 +93,29 @@ fn any_chunking_and_thread_count() {
     }
 }
 
-/// tpchgen's `.tbl` lines for `n` source rows of part `part` of `parts`
-/// (tpchgen positions its streams at the part's first row), and that row.
+/// tpchgen's `.tbl` lines (its rows' `Display`) for `n` source rows of
+/// part `part` of `parts` (tpchgen positions its streams at the part's
+/// first row), and that row.
 fn tpchgen_part(t: TableName, sf: f64, part: i32, parts: i32, n: usize) -> (u64, Vec<u8>) {
     use std::io::Write;
     let mut out = Vec::new();
     let mut put = |r: &dyn std::fmt::Display| writeln!(out, "{r}").unwrap();
     let start = |base: f64| ((base * sf) as i64 / parts as i64 * (part as i64 - 1)) as u64;
     let first = match t {
+        TableName::Nation => {
+            NationGenerator::default()
+                .iter()
+                .take(n)
+                .for_each(|r| put(&r));
+            0
+        }
+        TableName::Region => {
+            RegionGenerator::default()
+                .iter()
+                .take(n)
+                .for_each(|r| put(&r));
+            0
+        }
         TableName::Part => {
             PartGenerator::new(sf, part, parts)
                 .iter()
@@ -145,7 +160,6 @@ fn tpchgen_part(t: TableName, sf: f64, part: i32, parts: i32, n: usize) -> (u64,
                 .for_each(|r| put(&r));
             first
         }
-        _ => unreachable!(),
     };
     (first, out)
 }

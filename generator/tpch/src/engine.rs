@@ -2,7 +2,7 @@
 //! rows, and the drivers that run several tables on one pool.
 
 use crate::TableName;
-use crate::tables::{self, SUPPLIERS_PER_PART, Scale, TableGen};
+use crate::tables::{self, SUPPLIERS_PER_PART, Scale};
 use crate::text::Text;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
@@ -11,11 +11,8 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{Encoding, TextChunks, write_batch_with, write_text_many};
-use populate_table::{Chunks, Jobs, MultiChunks, chunks, par_ordered};
-use std::convert::Infallible;
-use std::fmt;
+use populate_table::{Chunks, DynTable, MultiChunks, chunks};
 use std::io::{self, Write};
-use std::sync::Arc;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
@@ -29,27 +26,11 @@ pub const DEFAULT_BATCH_SIZE: usize = 8 * 1024;
 /// generated from scratch with every stream positioned at its first row,
 /// so chunks are independent and their concatenation is exactly the
 /// sequential (dbgen) output.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TpchTable {
     name: TableName,
-    scale: Scale,
-    source_rows: u64,
-    chunk_source_rows: u64,
-    batch_size: usize,
-    /// The table's distribution, run over any range of source rows.
-    generator: Arc<dyn TableGen>,
-}
-
-impl fmt::Debug for TpchTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TpchTable")
-            .field("name", &self.name)
-            .field("scale", &self.scale)
-            .field("source_rows", &self.source_rows)
-            .field("chunk_source_rows", &self.chunk_source_rows)
-            .field("batch_size", &self.batch_size)
-            .finish()
-    }
+    /// The table's distribution, over its source rows.
+    table: DynTable,
 }
 
 impl TableName {
@@ -79,13 +60,10 @@ impl TpchTable {
     pub(crate) fn new(name: TableName, scale: Scale, source_rows: u64) -> Self {
         TpchTable {
             name,
-            scale,
-            source_rows,
-            chunk_source_rows: 1,
-            batch_size: DEFAULT_BATCH_SIZE,
-            generator: tables::generator(name, &scale, source_rows),
+            table: tables::generator(name, &scale, source_rows),
         }
         .chunk_rows(DEFAULT_CHUNK_ROWS)
+        .batch_size(DEFAULT_BATCH_SIZE)
     }
 
     pub fn name(&self) -> TableName {
@@ -98,68 +76,48 @@ impl TpchTable {
 
     /// Source rows (orders, parts, ...; the row count for most tables).
     pub fn source_rows(&self) -> u64 {
-        self.source_rows
+        self.table.rows()
     }
 
     /// Expected output rows (exact for all tables but `lineitem`).
     pub fn approx_rows(&self) -> u64 {
-        (self.source_rows as f64 * self.name.rows_per_source_row()).round() as u64
+        (self.source_rows() as f64 * self.name.rows_per_source_row()).round() as u64
     }
 
     /// Only the first `n` source rows: a prefix of the full table (the same
     /// rows, not a smaller scale factor).
     pub fn limit_source_rows(mut self, n: u64) -> Self {
-        self.source_rows = self.source_rows.min(n);
+        self.table = self.table.limit_rows(n);
         self
     }
 
     /// Aim for about `rows` output rows per chunk (= per Parquet row
     /// group). Smaller chunks spread a table over more cores; the output
     /// values are the same for any chunk size.
-    pub fn chunk_rows(mut self, rows: u64) -> Self {
+    pub fn chunk_rows(self, rows: u64) -> Self {
         let per = (rows as f64 / self.name.rows_per_source_row()).round() as u64;
-        self.chunk_source_rows = per.max(1);
-        self
+        self.chunk_source_rows(per.max(1))
     }
 
     /// Chunks of exactly `n` source rows (the last may be shorter).
     pub fn chunk_source_rows(mut self, n: u64) -> Self {
         assert!(n > 0, "chunk_source_rows must be > 0");
-        self.chunk_source_rows = n;
+        self.table = self.table.chunk_rows(n);
         self
     }
 
-    /// Rows per Arrow batch (default 8Ki).
+    /// About `n` rows per Arrow batch (default 8Ki; `lineitem` batches end
+    /// on an order).
     pub fn batch_size(mut self, n: usize) -> Self {
         assert!(n > 0, "batch_size must be > 0");
-        self.batch_size = n;
+        let per = (n as f64 / self.name.rows_per_source_row()).ceil() as u64;
+        self.table = self.table.batch_rows(per.max(1));
         self
     }
 
     /// Number of chunks.
     pub fn num_chunks(&self) -> u64 {
-        self.source_rows.div_ceil(self.chunk_source_rows)
-    }
-
-    /// 0-based source-row range `first..end` of chunk `i`.
-    fn range(&self, i: u64) -> (u64, u64) {
-        let first = i * self.chunk_source_rows;
-        (
-            first,
-            (first + self.chunk_source_rows).min(self.source_rows),
-        )
-    }
-
-    /// Source rows `first..end` as batches of about `batch_size` rows.
-    fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        Text::get();
-        let per = (self.batch_size as f64 / self.name.rows_per_source_row()).ceil() as u64;
-        let mut at = first;
-        while at < end {
-            let n = per.max(1).min(end - at);
-            emit(self.generator.batch(at, n));
-            at += n;
-        }
+        Chunks::num_chunks(&self.table)
     }
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
@@ -200,8 +158,7 @@ impl TpchTable {
 
     /// Chunk `i` as `.tbl` text, appended to `out`.
     fn chunk_tbl(&self, i: u64, out: &mut Vec<u8>) {
-        let (first, end) = self.range(i);
-        self.generate(first, end, &mut |b| tbl_batch(&b, out));
+        Chunks::chunk(&self.table, i, &mut |b| tbl_batch(&b, out));
     }
 
     /// Source rows `first..end` (0-based) as `.tbl` text, generated on the
@@ -209,17 +166,9 @@ impl TpchTable {
     #[doc(hidden)]
     pub fn tbl_range(&self, first: u64, end: u64) -> Vec<u8> {
         let mut out = Vec::new();
-        self.generate(first, end.min(self.source_rows), &mut |b| {
-            tbl_batch(&b, &mut out)
-        });
+        self.table
+            .range(first, end, &mut |b| tbl_batch(&b, &mut out));
         out
-    }
-
-    /// The `.tbl` file as tpchgen formats it (its rows' `Display`),
-    /// sequentially. Slow.
-    #[doc(hidden)]
-    pub fn reference_tbl(&self) -> Vec<u8> {
-        reference::tbl(self.name, self.scale.sf, self.source_rows)
     }
 }
 
@@ -244,8 +193,7 @@ impl Chunks for TpchTable {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, end) = self.range(i);
-        self.generate(first, end, emit)
+        Chunks::chunk(&self.table, i, emit)
     }
 }
 
@@ -329,81 +277,9 @@ pub fn write_tbl_many<W: Write + Send>(
 pub fn for_each_batch_many(
     tables: &[TpchTable],
     threads: usize,
-    mut f: impl FnMut(usize, RecordBatch),
+    f: impl FnMut(usize, RecordBatch),
 ) {
     Text::init(threads);
-    let jobs = Jobs::new(tables.iter().map(TpchTable::num_chunks));
-    let r: Result<(), Infallible> = par_ordered(
-        jobs.total(),
-        threads,
-        |j| {
-            let (t, i) = jobs.locate(j);
-            let mut v = Vec::new();
-            Chunks::chunk(&tables[t], i, &mut |b| v.push(b));
-            (t, v)
-        },
-        |(t, v)| {
-            v.into_iter().for_each(|b| f(t, b));
-            Ok(())
-        },
-    );
-    r.unwrap_or_else(|e| match e {});
-}
-
-/// tpchgen's own generators, for the tests.
-mod reference {
-    use super::TableName;
-    use std::fmt::Display;
-    use std::io::Write;
-    use tpchgen::generators::*;
-
-    pub(super) fn tbl(t: TableName, sf: f64, source_rows: u64) -> Vec<u8> {
-        let mut out = Vec::new();
-        rows(t, sf, source_rows, &mut |r| {
-            writeln!(out, "{r}").expect("in memory");
-        });
-        out
-    }
-
-    /// The first `source_rows` source rows of `t`, as tpchgen's rows.
-    fn rows(t: TableName, sf: f64, source_rows: u64, f: &mut dyn FnMut(&dyn Display)) {
-        let n = source_rows as usize;
-        match t {
-            TableName::Nation => NationGenerator::default()
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::Region => RegionGenerator::default()
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::Part => PartGenerator::new(sf, 1, 1)
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::Supplier => SupplierGenerator::new(sf, 1, 1)
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::PartSupp => PartSuppGenerator::new(sf, 1, 1)
-                .iter()
-                .take(n * 4)
-                .for_each(|r| f(&r)),
-            TableName::Customer => CustomerGenerator::new(sf, 1, 1)
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::Orders => OrderGenerator::new(sf, 1, 1)
-                .iter()
-                .take(n)
-                .for_each(|r| f(&r)),
-            TableName::LineItem => {
-                let last = crate::tables::order_key(n as i64);
-                LineItemGenerator::new(sf, 1, 1)
-                    .iter()
-                    .take_while(|r| r.l_orderkey <= last)
-                    .for_each(|r| f(&r))
-            }
-        }
-    }
+    let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
+    chunks::for_each_batch_many(&srcs, threads, f)
 }

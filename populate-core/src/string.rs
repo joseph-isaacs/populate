@@ -23,8 +23,10 @@ pub struct StrCol {
 }
 
 /// `v.extend_from_slice(s)`, with strings up to 16 bytes copied by two
-/// overlapping fixed-size loads into a 16-byte block (no `memcpy` call,
-/// which dominates for short values like category names).
+/// overlapping fixed-size loads (no `memcpy` call, which dominates for
+/// short values like category names). The loads are combined in registers,
+/// not through a stack buffer: a 16-byte read of bytes just written as
+/// smaller pieces stalls on store forwarding.
 #[inline(always)]
 fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     let n = s.len();
@@ -32,25 +34,51 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
         v.extend_from_slice(s);
         return;
     }
-    let mut b = [0u8; 16];
-    if n >= 8 {
-        b[..8].copy_from_slice(&s[..8]);
-        b[n - 8..n].copy_from_slice(&s[n - 8..]);
+    let block: u128 = if n >= 8 {
+        let lo = u64::from_le_bytes(s[..8].try_into().expect("8 bytes"));
+        let hi = u64::from_le_bytes(s[n - 8..].try_into().expect("8 bytes"));
+        // the two loads overlap on equal bytes, so OR keeps them
+        lo as u128 | (hi as u128) << (8 * (n - 8))
     } else if n >= 4 {
-        b[..4].copy_from_slice(&s[..4]);
-        b[n - 4..n].copy_from_slice(&s[n - 4..]);
+        let lo = u32::from_le_bytes(s[..4].try_into().expect("4 bytes"));
+        let hi = u32::from_le_bytes(s[n - 4..].try_into().expect("4 bytes"));
+        (lo as u64 | (hi as u64) << (8 * (n - 4))) as u128
     } else if n > 0 {
-        b[0] = s[0];
-        b[n / 2] = s[n / 2];
-        b[n - 1] = s[n - 1];
-    }
+        s[0] as u128 | (s[n / 2] as u128) << (8 * (n / 2)) | (s[n - 1] as u128) << (8 * (n - 1))
+    } else {
+        0
+    };
     let start = v.len();
-    v.extend_from_slice(&b);
+    v.extend_from_slice(&block.to_le_bytes());
     v.truncate(start + n);
 }
 
 /// Write access to the value being appended by [`StrCol::push_with`].
 pub struct StrBuf<'a>(&'a mut Vec<u8>, usize);
+
+/// A string column a value can be written into in place: [`StrCol`], or a
+/// generator's own string column.
+pub trait StrSink {
+    /// Append one value whose bytes `f` writes.
+    fn push_with(&mut self, f: impl FnOnce(&mut StrBuf<'_>));
+}
+
+impl StrSink for StrCol {
+    #[inline]
+    fn push_with(&mut self, f: impl FnOnce(&mut StrBuf<'_>)) {
+        StrCol::push_with(self, f)
+    }
+}
+
+impl<'a> StrBuf<'a> {
+    /// A value appended to the end of `buf`, which must hold valid UTF-8
+    /// (every write keeps it so).
+    #[inline]
+    pub fn appending(buf: &'a mut Vec<u8>) -> Self {
+        let start = buf.len();
+        StrBuf(buf, start)
+    }
+}
 
 impl StrBuf<'_> {
     #[inline]
@@ -119,18 +147,23 @@ impl StrBuf<'_> {
 
     /// Append `v` in decimal.
     #[inline]
-    pub fn push_u64(&mut self, mut v: u64) {
-        let mut b = [0u8; 20];
+    pub fn push_u64(&mut self, v: u64) {
+        self.push_u64_padded(v, 1);
+    }
+
+    /// Append `v` in decimal, zero-padded to at least `width` digits (at
+    /// most 20).
+    #[inline]
+    pub fn push_u64_padded(&mut self, mut v: u64, width: usize) {
+        let mut b = [b'0'; 20];
         let mut i = b.len();
-        loop {
+        while v > 0 {
             i -= 1;
             b[i] = b'0' + (v % 10) as u8;
             v /= 10;
-            if v == 0 {
-                break;
-            }
         }
-        self.0.extend_from_slice(&b[i..]);
+        self.0
+            .extend_from_slice(&b[i.min(b.len() - width.clamp(1, 20))..]);
     }
 
     /// Bytes in the whole column's buffer so far: every earlier value's
@@ -290,6 +323,33 @@ mod tests {
         let (o, d) = c.into_parts();
         assert_eq!(o, vec![0, 2, 9, 9]);
         assert_eq!(std::str::from_utf8(&d).unwrap(), "abx1024é");
+    }
+
+    #[test]
+    fn padded_digits() {
+        let mut c = StrCol::new();
+        for (v, w) in [
+            (7, 9),
+            (0, 1),
+            (0, 3),
+            (1_234_567_890, 9),
+            (u64::MAX, 20),
+            (5, 0),
+        ] {
+            c.push_with(|b| b.push_u64_padded(v, w));
+        }
+        let got: Vec<&str> = (0..c.len()).map(|i| c.get(i)).collect();
+        assert_eq!(
+            got,
+            [
+                "000000007",
+                "0",
+                "000",
+                "1234567890",
+                "18446744073709551615",
+                "5"
+            ]
+        );
     }
 
     #[test]

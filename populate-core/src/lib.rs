@@ -67,6 +67,7 @@ mod sink;
 mod spread;
 pub mod string;
 pub mod tuple;
+mod wide;
 
 pub use children::{ChildCols, Children};
 pub use columnar::{Columnar, Columns};
@@ -80,6 +81,7 @@ pub use seek::SeekRng;
 pub use sink::Sink;
 pub use spread::{Spread, SpreadCols};
 pub use string::{StrBuf, StrCol};
+pub use wide::{Wide, WideCols};
 
 /// A stream of rows of type [`Item`](Self::Item).
 ///
@@ -143,9 +145,17 @@ pub trait Distribution: Sized {
     /// wraps, and a tuple gives its fields' names in order.
     fn column_names(&self, _out: &mut Vec<String>) {}
 
+    /// Empty columns for this distribution's rows. The default is
+    /// `Default`; a distribution whose rows have a width chosen when it is
+    /// built ([`Wide`]) returns columns of that width, so they and the
+    /// schema read off them match the rows.
+    fn columns(&self) -> Columns<Self::Item> {
+        Columns::<Self::Item>::default()
+    }
+
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item> {
-        let mut cols = Columns::<Self::Item>::default();
+        let mut cols = self.columns();
         self.collect_into(&mut cols, rng, n);
         cols
     }

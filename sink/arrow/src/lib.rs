@@ -45,7 +45,7 @@ use arrow_buffer::{
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use populate_core::{
     ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
-    Timestamp, time_unit,
+    Timestamp, WideCols, time_unit,
 };
 use rand::Rng;
 use std::iter::repeat_n;
@@ -164,11 +164,12 @@ impl<V: IntoArrowColumns> IntoArrowArray for ListCol<V> {
 /// columns (a tuple) become a `StructArray` with fields `c0, c1, ...`.
 pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     let mut cols = Vec::with_capacity(V::LEN);
+    let null = nullables_of(&values);
     values.into_arrays(&mut cols);
     if cols.len() == 1 {
         return cols.pop().expect("one column");
     }
-    Arc::new(StructArray::new(column_fields::<V>(&cols), cols, None))
+    Arc::new(StructArray::new(column_fields(&cols, null), cols, None))
 }
 
 /// Whether [`columns_to_value_array`] of `V` may hold nulls: its one
@@ -199,12 +200,18 @@ pub fn value_type<V: IntoArrowColumns>() -> DataType {
     )
 }
 
-/// Fields `c0, c1, ...` typed after `cols`, nullable where `V`'s columns
-/// are.
-fn column_fields<V: IntoArrowColumns>(cols: &[ArrayRef]) -> Fields {
-    let mut null = Vec::with_capacity(V::LEN);
-    V::nullables(&mut null);
-    cols.iter()
+/// Whether each of `cols`' arrays may hold nulls, read off the instance
+/// ([`IntoArrowColumns::column_types`]) so run-time-width columns count.
+fn nullables_of<V: IntoArrowColumns>(cols: &V) -> Vec<bool> {
+    let mut types = Vec::with_capacity(V::LEN);
+    cols.column_types(&mut types);
+    types.into_iter().map(|(_, null)| null).collect()
+}
+
+/// Fields `c0, c1, ...` typed after `arrays`, nullable where `null` says.
+fn column_fields(arrays: &[ArrayRef], null: Vec<bool>) -> Fields {
+    arrays
+        .iter()
         .zip(null)
         .enumerate()
         .map(|(i, (a, null))| Field::new(format!("c{i}"), a.data_type().clone(), null))
@@ -327,11 +334,11 @@ impl<C: IntoArrowArray> IntoArrowArray for Nullable<C> {
     fn into_array(self) -> ArrayRef {
         let array = self.values.into_array();
         assert_eq!(array.len(), self.valid.len(), "a validity flag per row");
-        if self.valid.null_count() == 0 {
-            return array;
-        }
         let (words, len) = self.valid.into_parts();
         let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(words), 0, len));
+        if nulls.null_count() == 0 {
+            return array;
+        }
         // an `Option<Option<T>>`'s inner nulls stay null
         let nulls = NullBuffer::union(Some(&nulls), array.nulls());
         let data = array.into_data().into_builder().nulls(nulls);
@@ -362,6 +369,19 @@ pub trait IntoArrowColumns {
         out.extend(repeat_n(false, Self::LEN));
     }
 
+    /// The type and nullability of each array these columns will make, in
+    /// order. The default is [`data_types`](Self::data_types) with
+    /// [`nullables`](Self::nullables); columns whose width is set at run
+    /// time ([`WideCols`]) answer from the instance, and tuples ask each
+    /// field. [`schema_of`] reads this off [`Distribution::columns`].
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        let mut types = Vec::with_capacity(Self::LEN);
+        Self::data_types(&mut types);
+        let mut nullable = Vec::with_capacity(types.len());
+        Self::nullables(&mut nullable);
+        out.extend(types.into_iter().zip(nullable));
+    }
+
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
@@ -388,6 +408,9 @@ macro_rules! tuple_columns {
             fn nullables(out: &mut Vec<bool>) {
                 $($C::nullables(out);)+
             }
+            fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+                $(self.$idx.column_types(out);)+
+            }
             fn into_arrays(self, out: &mut Vec<ArrayRef>) {
                 $(self.$idx.into_arrays(out);)+
             }
@@ -410,8 +433,9 @@ tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 /// Top-level columns -> `RecordBatch` with columns `c0, c1, ...`.
 pub fn into_record_batch<S: IntoArrowColumns>(sink: S) -> Result<RecordBatch, ArrowError> {
     let mut cols = Vec::with_capacity(S::LEN);
+    let null = nullables_of(&sink);
     sink.into_arrays(&mut cols);
-    let schema = Schema::new(column_fields::<S>(&cols));
+    let schema = Schema::new(column_fields(&cols, null));
     RecordBatch::try_new(Arc::new(schema), cols)
 }
 
@@ -437,6 +461,9 @@ impl<V: IntoArrowColumns> IntoArrowColumns for ChildCols<V> {
     fn nullables(out: &mut Vec<bool>) {
         V::nullables(out);
     }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        self.values.column_types(out);
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         self.values.into_arrays(out);
     }
@@ -455,6 +482,35 @@ impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> 
             V::nullables(out);
         }
     }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        for c in &self.0 {
+            c.column_types(out);
+        }
+    }
+    fn into_arrays(self, out: &mut Vec<ArrayRef>) {
+        for c in self.0 {
+            c.into_arrays(out);
+        }
+    }
+}
+
+/// One group of columns per element, in order. The width is the
+/// instance's, so `WideCols` has no static types: its schema is read by
+/// [`column_types`](IntoArrowColumns::column_types) (top level, in tuples,
+/// `Spread`s and children), and it can't be a list's values.
+impl<C: IntoArrowColumns> IntoArrowColumns for WideCols<C> {
+    const LEN: usize = 0;
+    fn data_types(_: &mut Vec<DataType>) {
+        panic!("a run-time-width group of columns has no static types: use `column_types`");
+    }
+    fn nullables(_: &mut Vec<bool>) {
+        panic!("a run-time-width group of columns has no static types: use `column_types`");
+    }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        for c in &self.0 {
+            c.column_types(out);
+        }
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         for c in self.0 {
             c.into_arrays(out);
@@ -468,9 +524,9 @@ impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> 
 
 /// The schema of the rows `dist` makes, without making any: the names
 /// from the distribution ([`Distribution::column_names`]), the types from
-/// the columns it collects into ([`IntoArrowColumns::data_types`]).
-/// Unnamed columns are `c0, c1, ...`; a field is nullable where its column
-/// says so ([`IntoArrowColumns::nullables`]: `Option` rows).
+/// the columns it collects into ([`IntoArrowColumns::column_types`] of
+/// [`Distribution::columns`]). Unnamed columns are `c0, c1, ...`; a field
+/// is nullable where its column says so (`Option` rows).
 ///
 /// # Panics
 ///
@@ -480,11 +536,9 @@ where
     Columns<D::Item>: IntoArrowColumns,
 {
     let mut types = Vec::with_capacity(<Columns<D::Item>>::LEN);
-    <Columns<D::Item>>::data_types(&mut types);
+    dist.columns().column_types(&mut types);
     let mut names = Vec::with_capacity(types.len());
     dist.column_names(&mut names);
-    let mut nullable = Vec::with_capacity(types.len());
-    <Columns<D::Item>>::nullables(&mut nullable);
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
@@ -499,8 +553,7 @@ where
         names
             .into_iter()
             .zip(types)
-            .zip(nullable)
-            .map(|((n, t), null)| Field::new(n, t, null))
+            .map(|(n, (t, null))| Field::new(n, t, null))
             .collect::<Vec<_>>(),
     )
 }
@@ -570,6 +623,40 @@ mod tests {
         let cols = Row.collect(&mut SmallRng::seed_from_u64(0), 3);
         let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
         assert_eq!(b.num_rows(), 3);
+    }
+
+    #[test]
+    fn wide_rows_read_their_schema_off_the_instance() {
+        /// Column `name`: `Some(1)` every row, or `None` when not `some`.
+        #[derive(Clone)]
+        struct C(&'static str, bool);
+        impl Distribution for C {
+            type Item = Option<i64>;
+            fn sample(&mut self, _: &mut impl Rng) -> Option<i64> {
+                self.1.then_some(1)
+            }
+            fn column_names(&self, out: &mut Vec<String>) {
+                out.push(self.0.into());
+            }
+        }
+        let d = (Row, vec![C("a", true), C("b", false), C("c", true)]);
+        let s = schema_of(&d);
+        let names: Vec<_> = s.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["price", "day", "a", "b", "c"]);
+        assert!(!s.field(0).is_nullable() && s.field(3).is_nullable());
+        assert_eq!(s.field(4).data_type(), &DataType::Int64);
+        let cols = d
+            .clone()
+            .collect(&mut rand::rngs::SmallRng::seed_from_u64(0), 2);
+        let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
+        assert_eq!((b.num_rows(), b.column(3).null_count()), (2, 2));
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+        let b = d
+            .clone()
+            .collect_record_batch(&mut rng, 2)
+            .expect("columns");
+        assert_eq!(b.num_columns(), 5);
+        assert!(b.schema().field(3).is_nullable());
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 /// A string column being built: views, and one data buffer for strings
 /// longer than 12 bytes (shorter ones live in their view).
+#[derive(Default)]
 pub(crate) struct Views {
     views: Vec<u128>,
     data: Vec<u8>,
@@ -17,6 +18,28 @@ impl Views {
         Views {
             views: Vec::with_capacity(n),
             data: Vec::with_capacity(bytes),
+        }
+    }
+
+    /// Room for `n` more strings of `bytes` more bytes.
+    pub(crate) fn reserve(&mut self, n: usize, bytes: usize) {
+        self.views.reserve(n);
+        self.data.reserve(bytes);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.views.len()
+    }
+
+    /// A copy of string `i`.
+    pub(crate) fn get(&self, i: usize) -> Vec<u8> {
+        let v = self.views[i];
+        let len = v as u32 as usize;
+        if len <= 12 {
+            v.to_le_bytes()[4..4 + len].to_vec()
+        } else {
+            let at = (v >> 96) as usize;
+            self.data[at..at + len].to_vec()
         }
     }
 
@@ -79,7 +102,7 @@ mod tests {
             "thirteen byte",
             "a longer string than that",
         ];
-        let mut v = Views::with_capacity(words.len(), 64);
+        let mut v = Views::default();
         for w in words {
             v.push(w.as_bytes());
         }

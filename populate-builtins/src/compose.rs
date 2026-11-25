@@ -412,6 +412,10 @@ impl<D: Distribution> Distribution for Named<D> {
     fn column_names(&self, out: &mut Vec<String>) {
         out.extend(self.names.iter().cloned());
     }
+
+    fn columns(&self) -> Columns<D::Item> {
+        self.inner.columns()
+    }
 }
 
 #[cfg(test)]

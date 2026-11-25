@@ -35,7 +35,8 @@ Flags:
 
 ```sh
 # BI: OUT/initial_snapshot/{dynamic,static}/<Table>.csv and
-# OUT/{inserts,deletes}/dynamic/<Table>/batch_id=<day>/part-0.csv
+# OUT/{inserts,deletes}/dynamic/<Table>/batch_id=<day>/part-<k>.csv (a
+# new part once a string column of the batch passes 1 GiB)
 cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 1 --mode bi --out bi-out
 
 # factor tables: OUT/factors/csv/raw/composite-merged-fk/<name>/part-0.csv

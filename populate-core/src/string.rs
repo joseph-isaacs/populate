@@ -231,8 +231,9 @@ impl StrCol {
         self.data.reserve(bytes);
         for (c, i) in picks {
             self.data.extend_from_slice(&c.data[span(c, i)]);
-            // within 2 GiB, as checked above
-            self.offsets.push(self.data.len() as i32);
+            // checked again: a clone of `picks` need not yield the same
+            // values, and the offsets are trusted unchecked
+            self.offsets.push(offset(self.data.len()));
         }
     }
 

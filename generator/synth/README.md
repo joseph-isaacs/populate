@@ -2,7 +2,9 @@
 
 Synthetic tables shaped like data people benchmark on, on
 `populate-table`'s `Chunks` engine: Arrow `RecordBatch`es or Parquet, on all
-cores, deterministic. There is no reference generator to match, so these are
+cores, deterministic. Each shape is one populate `Distribution` (a
+`DistTable`), its Arrow schema read off the distribution's names and column
+types. There is no reference generator to match, so these are
 examples and fixtures, not benchmarks.
 
 | Shape | Looks like | Columns |
@@ -18,13 +20,14 @@ cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 10000
 ```
 
 Flags: `--rows`, `--seed`, `--threads` (default all cores), `--batch-size`,
-`--chunk-rows` (rows per row group), `--dim` (embeddings), `--out`. Without
+`--chunk-rows` (rows per row group), `--dim` (embeddings: 16, 32, 64, 128,
+256, 384, 512, 768, 1024, 1536, 2048, 3072 or 4096), `--out`. Without
 `--out` the batches are generated and dropped, to time generation alone.
 
 ```rust
-use populate_synth::{Hits, Synth};
+use populate_synth::{Hits, Shape};
 
-let hits = Synth::new(Hits::new(42), 100_000_000);
+let hits = Hits::new(42).table(100_000_000);
 hits.for_each_batch(0, |batch| { /* in order */ });
 hits.write_parquet(std::fs::File::create("hits.parquet")?, 0, None)?;
 ```

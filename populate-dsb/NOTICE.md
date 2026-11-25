@@ -2,7 +2,7 @@
 
 `dsbgen` (in `dsbgen/`) and `dsbgen-arrow` (in `dsbgen-arrow/`) are
 tpcdsgen 4.0 and tpcdsgen-arrow 4.0 from the
-[tpchgen-rs](https://github.com/datafusion-contrib/tpcgen-rs) project,
+[tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs) project,
 licensed under the Apache License 2.0 (`dsbgen/LICENSE`), modified here.
 
 The DSB changes in `dsbgen/src/dsb/`, the row generators and the

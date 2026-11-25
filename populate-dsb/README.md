@@ -34,7 +34,7 @@ sales.write_dat(std::fs::File::create("store_sales.dat")?, 0, Encoding::Utf8)?;
 ## Where the data comes from
 
 `dsbgen` is tpcdsgen 4.0 (the Apache-2.0 Rust port of TPC-DS dsdgen from
-tpchgen-rs) with DSB's changes to dsdgen ported in:
+tpcgen-rs) with DSB's changes to dsdgen ported in:
 
 - exponentially skewed ranks (`genrand_exp_rank`) through permutations of
   each value domain, for most dimension columns, sales keys and prices

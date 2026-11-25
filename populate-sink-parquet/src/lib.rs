@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn num_rows_detects_mismatch_past_the_first_pair() {
-        // The 5-row middle column used to be masked by the 10-row first one.
+        // The 5-row middle column must not be masked by the 10-row first one.
         let sink = (vec![1i64; 10], vec![1i64; 5], vec![1i64; 10]);
         assert_eq!(sink.num_rows(), None);
         // nor by nesting

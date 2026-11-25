@@ -1,7 +1,7 @@
 //! TPC-DS data, byte-identical to the reference `dsdgen`, on all cores.
 //!
 //! The values come from [`tpcdsgen`], the Apache-2.0 Rust port of dsdgen
-//! from the tpchgen-rs project (its default `CompatMode::C` reproduces
+//! from the tpcgen-rs project (its default `CompatMode::C` reproduces
 //! dsdgen's output, bugs included). This crate adds the parallel engine:
 //!
 //! - every table is split into small, independent ranges of *source rows*

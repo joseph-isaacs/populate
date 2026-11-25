@@ -101,7 +101,7 @@ On `populate-tpch`'s streams and `populate-table`'s engine:
 
 ## Performance
 
-4-core container, `.tbl` output to tmpfs, SF 1 (600 MB, 6.0 M line
+4-core cloud VM, `.tbl` output to tmpfs, SF 1 (600 MB, 6.0 M line
 orders); ssb-dbgen is single-threaded.
 
 | output            | threads | ssb-dbgen | populate-ssb |

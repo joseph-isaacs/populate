@@ -80,7 +80,7 @@ use rand::{Rng, SeedableRng};
 pub use seek::SeekRng;
 pub use sink::Sink;
 pub use spread::{Spread, SpreadCols};
-pub use string::{StrBuf, StrCol};
+pub use string::{StrBuf, StrCol, StrSink};
 pub use wide::{Wide, WideCols};
 
 /// A stream of rows of type [`Item`](Self::Item).
@@ -160,3 +160,10 @@ pub trait Distribution: Sized {
         cols
     }
 }
+
+/// A distribution of `T` rows that can be cloned and shared between
+/// threads, as every column of a table is: helpers that build a column
+/// return `impl Dist<T>`.
+pub trait Dist<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
+
+impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Dist<T> for D {}

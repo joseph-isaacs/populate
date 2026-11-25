@@ -12,10 +12,12 @@
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_builtins::{Range, ReadRows, range};
-use populate_core::{Columnar, Nullable, Sink, Validity};
+use populate_builtins::ReadRows;
+use populate_core::{Columnar, Distribution, Nullable, Sink, Validity};
 use populate_sink_arrow::IntoArrowArray;
 use populate_table::Stream;
+use rand::Rng;
+use std::ops::Range;
 use std::sync::Arc;
 
 /// `[0, 1)` from the top 53 bits.
@@ -464,22 +466,84 @@ pub fn put_nullable<T>(out: &mut Nullable<Vec<T>>, values: Vec<T>, present: &Val
     out.valid.append(present);
 }
 
-/// Row numbers, for writers that work a block at a time: a block is the
-/// rows [`span`] of its numbers.
-pub fn row_numbers() -> Range<u64> {
-    range(0u64, 1)
+/// A row number.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Row(pub u64);
+
+/// Consecutive row numbers, held as the range they are: a block of rows
+/// costs no memory, and loops over it count in a register.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Rows(pub Range<u64>);
+
+impl Rows {
+    pub fn len(&self) -> usize {
+        (self.0.end - self.0.start) as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
-/// A block of [`row_numbers`] as the range it is, so loops over it count
-/// in a register instead of reading the numbers back.
-pub fn span(rows: &[u64]) -> std::ops::Range<u64> {
-    let start = rows.first().copied().unwrap_or(0);
-    let end = start + rows.len() as u64;
-    debug_assert!(
-        rows.last().is_none_or(|&l| l + 1 == end),
-        "rows not consecutive"
-    );
-    start..end
+impl Columnar for Row {
+    type Columns = Rows;
+}
+
+impl Sink<Row> for Rows {
+    fn push(&mut self, Row(r): Row) {
+        if self.0.is_empty() {
+            self.0 = r..r + 1;
+        } else {
+            assert_eq!(r, self.0.end, "row numbers are consecutive");
+            self.0.end += 1;
+        }
+    }
+}
+
+impl ReadRows for Rows {
+    type Row = Row;
+
+    fn rows(&self) -> usize {
+        self.len()
+    }
+
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Row> + '_ {
+        self.0.clone().skip(start).map(Row)
+    }
+}
+
+/// The row numbers, for writers that work a block at a time.
+#[derive(Debug, Clone, Default)]
+pub struct RowNumbers {
+    next: u64,
+}
+
+pub fn row_numbers() -> RowNumbers {
+    RowNumbers::default()
+}
+
+impl Distribution for RowNumbers {
+    type Item = Row;
+
+    fn sample(&mut self, _: &mut impl Rng) -> Row {
+        self.next += 1;
+        Row(self.next - 1)
+    }
+
+    fn collect_into(&mut self, cols: &mut Rows, _: &mut impl Rng, n: usize) {
+        let end = self.next + n as u64;
+        if cols.0.is_empty() {
+            cols.0 = self.next..end;
+        } else {
+            assert_eq!(cols.0.end, self.next, "row numbers are consecutive");
+            cols.0.end = end;
+        }
+        self.next = end;
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.next += n;
+    }
 }
 
 /// Round to cents (non-negative inputs; `+ 0.5` then truncate, which

@@ -20,7 +20,7 @@
 
 use crate::Shape;
 use crate::kernel::{
-    Pool, Quantiles, View, ViewWriter, Views, Weighted, Zipf, put, row_numbers, span, threshold,
+    Pool, Quantiles, Rows, View, ViewWriter, Views, Weighted, Zipf, put, row_numbers, threshold,
     unit,
 };
 use populate_builtins::{derive_columns, named_all};
@@ -525,10 +525,10 @@ const COLUMNS: [&str; 30] = [
 ];
 
 impl Inner {
-    fn write(&self, rows: &[u64], out: &mut HitCols) {
+    fn write(&self, rows: &Rows, out: &mut HitCols) {
         let s = &self.s;
         let len = rows.len();
-        let span = span(rows);
+        let span = rows.0.clone();
         let rows = || span.clone();
         let per_day = self.hits_per_day;
 

@@ -9,7 +9,7 @@
 //! [`FastNormal`]: five draws per hash from 4,096 normal quantiles.
 
 use crate::Shape;
-use crate::kernel::{FastNormal, Quantiles, Zipf, row_numbers, span};
+use crate::kernel::{FastNormal, Quantiles, Rows, Zipf, row_numbers};
 use populate_builtins::{derive_columns, named, named_all, range};
 use populate_core::{Columnar, Distribution};
 use populate_sink_arrow::IntoArrowColumns;
@@ -79,15 +79,19 @@ impl<const DIM: usize> Embeddings<DIM> {
 
 impl<const DIM: usize> Inner<DIM> {
     /// The cluster and vector of each of `rows`.
-    fn write(&self, rows: &[u64], (cluster, vectors): &mut (Vec<i32>, Vec<[f32; DIM]>)) {
+    fn write(&self, rows: &Rows, (cluster, vectors): &mut (Vec<i32>, Vec<[f32; DIM]>)) {
         let first = cluster.len();
-        cluster.extend(span(rows).map(|r| self.cluster.sample(self.s_cluster.at(r)) as i32));
+        cluster.extend(
+            rows.0
+                .clone()
+                .map(|r| self.cluster.sample(self.s_cluster.at(r)) as i32),
+        );
         let scale = self.noise / (DIM as f32).sqrt();
         let hashes = FastNormal::hashes(DIM) as u64;
         let mut noise = [0.0f32; DIM];
         vectors.reserve(rows.len());
         let spare = &mut vectors.spare_capacity_mut()[..rows.len()];
-        for (slot, (r, &k)) in spare.iter_mut().zip(span(rows).zip(&cluster[first..])) {
+        for (slot, (r, &k)) in spare.iter_mut().zip(rows.0.clone().zip(&cluster[first..])) {
             let centre = &self.centres[k as usize];
             self.fast
                 .fill(self.s_noise, r.wrapping_mul(hashes), &mut noise);

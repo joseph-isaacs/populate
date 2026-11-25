@@ -864,6 +864,7 @@ dependencies = [
  "populate-core",
  "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]

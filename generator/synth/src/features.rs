@@ -20,7 +20,9 @@
 //! the table.
 
 use crate::Shape;
-use crate::kernel::{Pool, Quantiles, Views, Weighted, Zipf, row_numbers, span, threshold, unit};
+use crate::kernel::{
+    Pool, Quantiles, Row, Rows, View, Views, Weighted, Zipf, row_numbers, threshold, unit,
+};
 use populate_builtins::{derive_columns, map, named, named_all, range};
 use populate_core::{Columnar, Distribution, Nullable, Spread, SpreadCols, Timestamp, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
@@ -161,9 +163,9 @@ type BlockCols<const N: usize, const C: usize> = (
 );
 
 impl<const NUMERIC: usize, const CATEGORICAL: usize> Inner<NUMERIC, CATEGORICAL> {
-    fn write(&self, rows: &[u64], out: &mut BlockCols<NUMERIC, CATEGORICAL>) {
+    fn write(&self, rows: &Rows, out: &mut BlockCols<NUMERIC, CATEGORICAL>) {
         let len = rows.len();
-        let rows = span(rows);
+        let rows = rows.0.clone();
         let (features, cats, labels, targets) = out;
         // standard-normal draws of the signal features, for label / target
         let mut logit = vec![self.bias; len];
@@ -255,22 +257,18 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC,
             named("id", range(0i64, 1)),
             named(
                 "event_time",
-                map(row_numbers(), move |r: u64| -> Millis {
+                map(row_numbers(), move |Row(r)| -> Millis {
                     Timestamp(DEFAULT_START_MS + r as i64 * 100 + (time.s_time.at(r) % 100) as i64)
                 }),
             ),
             named(
                 "split",
-                derive_columns::<_, _, crate::kernel::View>(
-                    row_numbers(),
-                    move |rows: &Vec<u64>, out: &mut Views| {
-                        let idx: Vec<u32> = rows
-                            .iter()
-                            .map(|&r| split.split.sample(split.s_split.at(r)))
-                            .collect();
-                        split.splits.write(&idx, out);
-                    },
-                ),
+                derive_columns::<_, _, View>(row_numbers(), move |rows: &Rows, out: &mut Views| {
+                    let idx: Vec<u32> = (rows.0.clone())
+                        .map(|r| split.split.sample(split.s_split.at(r)))
+                        .collect();
+                    split.splits.write(&idx, out);
+                }),
             ),
             named_all(
                 &names,

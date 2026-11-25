@@ -2,6 +2,7 @@
 
 use crate::columnar::{Columnar, Columns};
 use crate::sink::Sink;
+use std::iter::repeat_n;
 
 /// The columns of `Option<T>`: `T`'s columns with a value in every row (a
 /// missing one is `T::default()`), and whether each row is present.
@@ -80,8 +81,15 @@ impl Validity {
 
     /// `n` more rows, all present.
     pub fn push_valid(&mut self, n: usize) {
-        for _ in 0..n {
-            self.push(true);
+        self.extend(repeat_n(true, n));
+    }
+
+    /// `other`'s rows after these (a copy of its words if this is empty).
+    pub fn append(&mut self, other: &Validity) {
+        if self.is_empty() {
+            self.clone_from(other);
+        } else {
+            self.extend(other.iter());
         }
     }
 
@@ -118,10 +126,38 @@ impl Validity {
     }
 }
 
+/// Packs a word at a time once the last word is full.
+impl Extend<bool> for Validity {
+    fn extend<I: IntoIterator<Item = bool>>(&mut self, iter: I) {
+        let mut it = iter.into_iter();
+        while !self.len.is_multiple_of(64) {
+            match it.next() {
+                Some(b) => self.push(b),
+                None => return,
+            }
+        }
+        loop {
+            let (mut w, mut k) = (0u64, 0);
+            for b in it.by_ref().take(64) {
+                w |= (b as u64) << k;
+                k += 1;
+            }
+            if k == 0 {
+                return;
+            }
+            self.words.push(w);
+            self.len += k;
+            if k < 64 {
+                return;
+            }
+        }
+    }
+}
+
 impl FromIterator<bool> for Validity {
     fn from_iter<I: IntoIterator<Item = bool>>(iter: I) -> Self {
         let mut v = Validity::default();
-        iter.into_iter().for_each(|b| v.push(b));
+        v.extend(iter);
         v
     }
 }
@@ -143,6 +179,14 @@ mod tests {
     #[test]
     fn bits_pack_across_words() {
         let v: Validity = (0..130).map(|i| i % 3 != 0).collect();
+        let mut w = Validity::default();
+        w.push(false);
+        w.extend((1..130).map(|i| i % 3 != 0));
+        assert_eq!(v, w);
+        let mut x = v.clone();
+        x.append(&v);
+        assert_eq!(x.len(), 260);
+        assert!(x.iter().skip(130).eq(v.iter()));
         assert_eq!(v.len(), 130);
         assert!(!v.get(129) && v.get(128) && !v.get(0) && v.get(64));
         assert_eq!(v.null_count(), 44);

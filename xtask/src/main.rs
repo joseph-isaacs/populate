@@ -3,7 +3,8 @@
 //! `bench` builds the generator binaries in release mode, runs each
 //! generator in each output format at each scale and thread count, and
 //! prints a Markdown table. Where a reference tool is installed
-//! (`tpcgen-cli` for TPC-H and TPC-DS, `tsbs_generate_data` for TSBS) it
+//! (`tpcgen-cli` for TPC-H and TPC-DS, `tsbs_generate_data` for TSBS,
+//! `ssb-dbgen` for SSB) it
 //! runs alternately with ours, so drift on a noisy machine hits both alike.
 //! The reference is run like for like: it writes the same tables, and for
 //! Parquet the codec, per-column dictionary use and row-group size it is
@@ -13,7 +14,7 @@
 
 mod check;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env::{args, current_dir, split_paths, temp_dir, var_os};
 use std::fs::{File, create_dir_all, read_dir, remove_dir_all, rename};
 use std::io::Read;
@@ -29,7 +30,7 @@ use report::Report;
 const USAGE: &str = "\
 usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--formats text,parquet,arrow]
                          [--runs 3] [--out DIR] [--tpcgen-cli PATH] [--tsbs-generate-data PATH]
-                         [--no-reference] [--json PATH] [--list]
+                         [--ssb-dbgen PATH] [--ssb-dists PATH] [--no-reference] [--json PATH] [--list]
 
   --scale       comma-separated scale factors; each generator maps one to its own size (see --list)
   --threads     comma-separated thread counts (default: 1 and every core)
@@ -40,6 +41,8 @@ usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--forma
                 it is written to DIR/populate-bench and deleted after every run. Against a
                 reference, one output of each is kept to compare: allow twice the output size
   --json        save a versioned JSON report, checkpointed after each configuration
+  --ssb-dbgen   SSB reference binary (single-threaded, text only)
+  --ssb-dists   its dists.dss file (default: beside the binary or in its parent directory)
   --no-reference  skip reference tools even when they are installed";
 
 fn main() -> ExitCode {
@@ -138,6 +141,8 @@ struct Opts {
     out: PathBuf,
     tpcgen_cli: Option<PathBuf>,
     tsbs_ref: Option<PathBuf>,
+    ssb_dbgen: Option<PathBuf>,
+    ssb_dists: Option<PathBuf>,
     list: bool,
     json: Option<PathBuf>,
 }
@@ -166,6 +171,8 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         },
         tpcgen_cli: which("tpcgen-cli"),
         tsbs_ref: which("tsbs_generate_data"),
+        ssb_dbgen: which("ssb-dbgen"),
+        ssb_dists: None,
         list: false,
         json: None,
     };
@@ -208,9 +215,12 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             "--json" => o.json = Some(PathBuf::from(val()?)),
             "--tpcgen-cli" => o.tpcgen_cli = Some(PathBuf::from(val()?)),
             "--tsbs-generate-data" => o.tsbs_ref = Some(PathBuf::from(val()?)),
+            "--ssb-dbgen" => o.ssb_dbgen = Some(PathBuf::from(val()?)),
+            "--ssb-dists" => o.ssb_dists = Some(PathBuf::from(val()?)),
             "--no-reference" => {
                 o.tpcgen_cli = None;
                 o.tsbs_ref = None;
+                o.ssb_dbgen = None;
             }
             "--list" => o.list = true,
             "--help" | "-h" => return Err(USAGE.to_string()),
@@ -228,6 +238,22 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         return Err("selections must be nonempty; --scale must be finite; --scale, --threads and --runs must be > 0".into());
     }
     o.out = o.out.join("populate-bench");
+    if let Some(p) = &o.ssb_dbgen
+        && !o.list
+        && o.generators.contains(&"ssb")
+        && o.formats.contains(&Format::Text)
+    {
+        if o.ssb_dists.is_none() {
+            o.ssb_dists = p.parent().and_then(|dir| {
+                [dir.join("dists.dss"), dir.join("../dists.dss")]
+                    .into_iter()
+                    .find(|p| p.is_file())
+            });
+        }
+        if o.ssb_dists.as_ref().is_none_or(|p| !p.is_file()) {
+            return Err("SSB reference needs dists.dss; pass --ssb-dists PATH".into());
+        }
+    }
     Ok(o)
 }
 
@@ -242,6 +268,7 @@ struct Cmd {
     program: PathBuf,
     args: Vec<String>,
     stdout: Option<&'static str>,
+    env: BTreeMap<String, String>,
 }
 
 impl Cmd {
@@ -250,6 +277,7 @@ impl Cmd {
             program: program.to_path_buf(),
             args: args.iter().map(|s| s.to_string()).collect(),
             stdout: None,
+            env: BTreeMap::new(),
         }
     }
 
@@ -259,7 +287,7 @@ impl Cmd {
     }
 
     fn key(&self) -> String {
-        format!("{} {}", self.program.display(), self.args.join(" "))
+        format!("{} {:?} {:?}", self.program.display(), self.args, self.env)
     }
 }
 
@@ -348,11 +376,21 @@ fn case(o: &Opts, bin: &Path, g: &str, scale: f64, f: Format, threads: usize) ->
         }
         "ssb" => {
             let (size, ff, ours) = tpc("ssb-gen", scale, "tbl");
+            let reference = o.ssb_dbgen.as_ref().filter(|_| f == Format::Text).map(|p| {
+                let mut c = Cmd::new(p, &["-q", "-f", "-s", &scale.to_string(), "-b"]).arg(
+                    o.ssb_dists
+                        .as_ref()
+                        .expect("validated distributions")
+                        .display(),
+                );
+                c.env.insert("DSS_PATH".into(), out.into());
+                ("ssb-dbgen", c)
+            });
             Case {
                 size,
                 format: ff,
                 ours,
-                reference: None,
+                reference,
             }
         }
         "h2o-groupby" | "h2o-join" => {
@@ -518,6 +556,7 @@ fn run(c: &Cmd, out: &Path, keep: bool) -> Result<(Duration, u64), String> {
     let t0 = Instant::now();
     let mut child = Command::new(&c.program)
         .args(&c.args)
+        .envs(&c.env)
         .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
@@ -553,6 +592,7 @@ fn tpcgen_like(ours: &Cmd, s: &check::Settings, f: Format) -> Cmd {
         program: ours.program.clone(),
         args: ours.args.clone(),
         stdout: ours.stdout,
+        env: ours.env.clone(),
     }
     .arg("--tables")
     .arg(s.tables.join(","));
@@ -680,6 +720,7 @@ fn bench(o: Opts) -> Result<(), String> {
     for (tool, p) in [
         ("tpcgen-cli", &o.tpcgen_cli),
         ("tsbs_generate_data", &o.tsbs_ref),
+        ("ssb-dbgen", &o.ssb_dbgen),
     ] {
         match p {
             Some(p) => eprintln!("reference: {tool} at {}", p.display()),
@@ -746,15 +787,32 @@ fn bench(o: Opts) -> Result<(), String> {
                         let _ = remove_dir_all(&ours_dir);
                         ours.push(run(&ours_cmd, &o.out, false));
                     }
-                    report.measurement("populate", (g.0, scale, t), (&size, format), &ours_cmd, &ours);
+                    report.measurement(
+                        "populate",
+                        (g.0, scale, t),
+                        (&size, format),
+                        &ours_cmd,
+                        &ours,
+                    );
                     let ours = best(&ours);
                     let theirs = match (&reference, cached) {
                         (Some(_), Some(r)) => Some(r),
                         (Some((name, r)), None) => {
-                            // The Go reference has no thread flag: cache its actual
+                            // These references have no thread flag: cache the actual
                             // single-threaded measurement, not a copy for each t.
-                            let threads = if *name == "tsbs_generate_data" { 1 } else { t };
-                            report.measurement(name, (g.0, scale, threads), (&size, format), r, &theirs);
+                            let threads =
+                                if name.starts_with("tsbs_generate_data") || *name == "ssb-dbgen" {
+                                    1
+                                } else {
+                                    t
+                                };
+                            report.measurement(
+                                name,
+                                (g.0, scale, threads),
+                                (&size, format),
+                                r,
+                                &theirs,
+                            );
                             let b = best(&theirs);
                             ref_cache.insert(r.key(), b.clone());
                             Some(b)
@@ -849,6 +907,39 @@ fn bench(o: Opts) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssb_reference_uses_one_cached_command_and_records_output_environment() {
+        let mut o = parse(&["--no-reference".into()]).unwrap();
+        o.ssb_dbgen = Some("reference/dbgen".into());
+        o.ssb_dists = Some("reference/dists.dss".into());
+        let a = case(&o, Path::new("bin"), "ssb", 1.0, Format::Text, 1).unwrap();
+        let b = case(&o, Path::new("bin"), "ssb", 1.0, Format::Text, 14).unwrap();
+        let (_, a) = a.reference.unwrap();
+        let (_, b) = b.reference.unwrap();
+        assert_eq!(a.key(), b.key());
+        assert_eq!(a.env["DSS_PATH"], o.out.to_str().unwrap());
+        assert!(
+            a.args
+                .ends_with(&["-b".into(), "reference/dists.dss".into()])
+        );
+        assert!(
+            case(&o, Path::new("bin"), "ssb", 1.0, Format::Parquet, 1)
+                .unwrap()
+                .reference
+                .is_none()
+        );
+        assert!(parse(&["--ssb-dbgen".into(), "/nonexistent/dbgen".into()]).is_err());
+        assert!(
+            parse(&[
+                "--ssb-dbgen".into(),
+                "/nonexistent/dbgen".into(),
+                "--formats".into(),
+                "parquet".into(),
+            ])
+            .is_ok()
+        );
+    }
 
     #[test]
     fn rejects_nonfinite_scales_and_empty_selections() {

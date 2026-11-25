@@ -197,7 +197,7 @@ impl FactorInput {
             (person, interest, study, work, knows),
             (_, _, member),
             (post, post_tag, comment, comment_tag, likes_post, likes_comment),
-        ) = raw;
+        ) = &raw.tables;
         let mut p = Part::default();
         {
             let ((c, d, _), id, first, _, _, _, _, _, city, _, _) = &person.values;

@@ -18,6 +18,7 @@
 //! | `[T; N]`                    | `Vec<[T; N]>`: `N` values per row, end to end |
 //! | [`Spread<T, N>`](Spread)    | [`SpreadCols`]: `N` sets of `T`'s columns     |
 //! | [`Children<T>`](Children)   | [`ChildCols`]: `T`'s columns, children end to end |
+//! | [`Tables<T>`](Tables)       | [`TableCols`]: one [`ChildCols`] per table    |
 //! | `(A, B, ...)`               | `(A`'s columns`, B`'s columns`, ...)`         |
 //!
 //! A tuple of distributions is a distribution of tuples (see [`tuple`]), so
@@ -69,7 +70,7 @@ pub mod string;
 pub mod tuple;
 mod wide;
 
-pub use children::{ChildCols, Children};
+pub use children::{ChildCols, Children, TableCols, Tables};
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
@@ -80,7 +81,7 @@ use rand::{Rng, SeedableRng};
 pub use seek::SeekRng;
 pub use sink::Sink;
 pub use spread::{Spread, SpreadCols};
-pub use string::{StrBuf, StrCol};
+pub use string::{Padded, StrBuf, StrCol};
 pub use wide::{Wide, WideCols};
 
 /// A stream of rows of type [`Item`](Self::Item).

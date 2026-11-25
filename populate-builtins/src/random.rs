@@ -7,7 +7,7 @@
 //! so no per-value `String` is ever allocated.
 
 use crate::bounded::Bounded;
-use populate_core::{Columnar, Columns, Distribution, Sink, StrBuf, StrCol, in_local};
+use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf, StrCol, in_local};
 use rand::Rng;
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
 use std::sync::Arc;
@@ -355,8 +355,8 @@ macro_rules! string_distribution {
 /// with one 16-byte move.
 const WORD_BLOCK: usize = 16;
 
-/// A word and a space, padded to [`WORD_BLOCK`] bytes, and that length.
-type WordBlock = ([u8; WORD_BLOCK], u8);
+/// A word and a space, padded to [`WORD_BLOCK`] bytes.
+type WordBlock = Padded<WORD_BLOCK>;
 
 /// `min..=max` words drawn uniformly from a list, joined by single spaces.
 #[derive(Clone)]
@@ -382,12 +382,8 @@ pub fn text(words: &'static [&'static str], min: usize, max: usize) -> Text {
         .div_ceil(words.len());
     let blocks = words
         .iter()
-        .map(|w| {
-            let mut b = [b' '; WORD_BLOCK];
-            b.get_mut(..w.len())?.copy_from_slice(w.as_bytes());
-            // the word and its space fit
-            (w.len() < WORD_BLOCK).then_some((b, w.len() as u8 + 1))
-        })
+        // the word and its space fit
+        .map(|w| Padded::new(w, w.len() + 1))
         .collect();
     Text {
         words,
@@ -407,8 +403,7 @@ impl WriteStr for Text {
             Some(blocks) => {
                 // every word with a space after it, then the last space off
                 for _ in 0..count {
-                    let (b, len) = &blocks[self.pick.next(rng) as usize];
-                    out.push_padded(b, *len as usize);
+                    out.push_padded(&blocks[self.pick.next(rng) as usize]);
                 }
                 if count > 0 {
                     out.pop_ascii();

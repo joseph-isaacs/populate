@@ -49,6 +49,34 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     v.truncate(start + n);
 }
 
+/// A short string padded with spaces to `W` bytes, for
+/// [`StrBuf::push_padded`]: a word list stored this way is appended by one
+/// fixed-size move per word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Padded<const W: usize> {
+    bytes: [u8; W],
+    len: u8,
+}
+
+impl<const W: usize> Padded<W> {
+    /// `s` padded with spaces to `W` bytes, of which the first `len` are
+    /// the value: `s` cut at `len`, or `s` and `len - s.len()` spaces.
+    /// `None` if `s` or `len` is longer than the block or `len` is not a
+    /// character boundary of `s`.
+    pub fn new(s: &str, len: usize) -> Option<Self> {
+        let ok = s.len() <= W && len <= W && len <= u8::MAX as usize;
+        if !ok || (len < s.len() && !s.is_char_boundary(len)) {
+            return None;
+        }
+        let mut bytes = [b' '; W];
+        bytes[..s.len()].copy_from_slice(s.as_bytes());
+        Some(Padded {
+            bytes,
+            len: len as u8,
+        })
+    }
+}
+
 /// Write access to the value being appended by [`StrCol::push_with`].
 pub struct StrBuf<'a>(&'a mut Vec<u8>, usize);
 
@@ -93,18 +121,14 @@ impl StrBuf<'_> {
         }
     }
 
-    /// Append the first `len` bytes of `padded`, a fixed-size block: the
-    /// copy is a fixed-size move, not a `memcpy` call. The whole block is
-    /// written and the tail cut off again, so it must be valid UTF-8 up to
-    /// `len` and at every byte after it (pad with ASCII). Panics if `len`
-    /// is past the block, or the bytes are not valid UTF-8 at `len`.
+    /// Append a [`Padded`] block's value: the copy is a fixed-size move, not
+    /// a `memcpy` call. The whole block is written and the tail cut off
+    /// again, which [`Padded::new`] checked leaves valid UTF-8.
     #[inline]
-    pub fn push_padded<const W: usize>(&mut self, padded: &[u8; W], len: usize) {
-        assert!(len <= W, "push_padded: length past the block");
+    pub fn push_padded<const W: usize>(&mut self, padded: &Padded<W>) {
         let start = self.0.len();
-        self.0.extend_from_slice(padded);
-        self.0.truncate(start + len);
-        debug_assert!(std::str::from_utf8(&self.0[start..]).is_ok());
+        self.0.extend_from_slice(&padded.bytes);
+        self.0.truncate(start + padded.len as usize);
     }
 
     /// Remove the last byte of this value if it is ASCII (so the buffer
@@ -338,11 +362,13 @@ mod tests {
         let mut c = StrCol::new();
         Sink::<&str>::push_n(&mut c, ["red", "", "green"].into_iter());
         Sink::<String>::push_n(&mut c, ["blue".to_string()].into_iter());
-        let mut block = [b' '; 8];
-        block[..3].copy_from_slice(b"one");
+        let space = Padded::<8>::new("one", 4).unwrap();
+        let word = Padded::<8>::new("one", 3).unwrap();
+        assert_eq!(Padded::<8>::new("é", 1), None);
+        assert_eq!(Padded::<2>::new("one", 3), None);
         c.push_n_with(2, |b| {
-            b.push_padded(&block, 4);
-            b.push_padded(&block, 3);
+            b.push_padded(&space);
+            b.push_padded(&word);
             b.extend_ascii(b"xy".iter().copied());
             assert_eq!(b.pop_ascii(), Some(b'y'));
         });

@@ -56,8 +56,8 @@ populate_table::text::write_text_many(&[&g.csv()], files, 0)?;
 ```
 
 The 14 dynamic tables are one populate `Distribution`, `g.raw_dist()`: a
-`fan_out` whose source rows are the chunks and whose children are each
-table's rows of a chunk. Each table's row type is a tuple in `rows.rs`
+`flat_map` to `Tables` whose source rows are the chunks and whose
+children are each table's rows of a chunk. Each table's row type is a tuple in `rows.rs`
 (`Timestamp`, `Date32`, `Option<String>`, ...), so its Arrow schema is
 read off the distribution (`schemas_of`), and `g.raw()` runs it as a
 `populate_table::DistTables`. The 4 static tables are `g.static_dist()`,

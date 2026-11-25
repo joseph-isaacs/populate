@@ -32,7 +32,7 @@ use populate_builtins::{
     Draws, children, constant, derive, draws, draws_reserving, flat_map, named, named_all, range,
 };
 use populate_combinators::lehmer::{INT_RANGE, Int, Ints, Lcg, bounded, scale};
-use populate_core::{Columns, Date32, Decimal, Distribution, Sink};
+use populate_core::{Children, Columns, Date32, Decimal, Distribution, Sink};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DistTable;
 use std::sync::{Arc, LazyLock};
@@ -634,9 +634,8 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
             stream::<{ 2 * LINES }>(1095462486),
         ),
     );
-    let lines = flat_map::<_, Line, _, _>(
+    let lines = flat_map::<Children<Line>, _, _>(
         per_order,
-        |((_, _, lines), ..)| *lines,
         move |(
             (key, od, lines),
             (qty, disc, tax, part, ship),
@@ -659,7 +658,7 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
                 } else {
                     n
                 };
-                out.push((
+                out.values.push((
                     (
                         key,
                         p,
@@ -683,7 +682,10 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
                 ));
             }
         },
-    );
+    )
+    // 1 to 7 lines an order, 4 on average; a batch of 8Ki orders is within
+    // 1% of the mean, so the line columns are allocated once
+    .reserving(&[4.1]);
     table(
         TableName::LineItem,
         rows,

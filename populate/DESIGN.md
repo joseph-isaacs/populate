@@ -127,16 +127,24 @@ table starts at its first row in `O(log n)`.
 - `derive(source, f)` collects `source` column by column, then maps each
   row: a column computed from others, with the source columns as scratch.
   Rows are read in place (`RowRefs`: a row of a `Vec<T>` is a `&T`).
+- `derive_columns(source, f)` is the same a block at a time: `f` reads
+  the source columns and writes one output row per source row, for
+  columns that share intermediate values.
 - `children(counts, slots)` is a child table column: for every source
   row, the first `count` of the `K` values `slots` makes for it (each line
   stream of an order reserves 7 slots). A tuple of `children` over the
   same counts is the child table.
-- `flat_map(source, count, f)` writes `count(row)` children for each
-  source row straight into the child columns, for children whose columns
-  share work, its source rows read in place too.
+- `flat_map(source, f)` writes any number of children for each source
+  row straight into the child columns, for children whose columns share
+  work, its source rows read in place too. `.reserving(per_source)`
+  allocates the child columns once from a mean per source row.
 
 A distribution of `Children<T>` is a table of `T` rows: its columns are
-the children's, and the source rows only drive them.
+the children's, and the source rows only drive them. `Tables<T>`, with
+`T` a tuple of `Children`, is several such tables made in one pass (a
+sale and its return): `flat_map` writes each, and `schemas_of` and
+`DistTables` give one schema and one batch per table. A plain tuple of
+`Children` stays one table whose columns are its fields.
 
 ## Writing a leaf
 
@@ -162,7 +170,7 @@ straight into the `StrCol` buffer.
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
 | `populate-core`         | the three traits, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, tuple impls |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `children`, `flat_map`, `named`, random leaves |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `named`, random leaves |
 | `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
 | `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on |

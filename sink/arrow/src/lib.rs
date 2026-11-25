@@ -44,8 +44,8 @@ use arrow_buffer::{
 };
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use populate_core::{
-    ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
-    Timestamp, WideCols, time_unit,
+    ChildCols, Columnar, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols,
+    StrCol, Tables, Timestamp, WideCols, time_unit,
 };
 use rand::Rng;
 use std::iter::repeat_n;
@@ -564,7 +564,9 @@ fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
 }
 
 /// The columns of several tables made together: a tuple of
-/// [`ChildCols`], one per table (`populate_builtins::fan_out` makes them).
+/// [`ChildCols`], one per table, inside the [`TableCols`] of a
+/// [`Tables`](populate_core::Tables) row (`populate_builtins::flat_map`
+/// makes them).
 pub trait IntoArrowTables {
     /// The number of tables.
     const TABLES: usize;
@@ -627,12 +629,13 @@ tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 /// # Panics
 ///
 /// If `dist` names some of its columns but not all.
-pub fn schemas_of<D: Distribution>(dist: &D) -> Vec<Schema>
+pub fn schemas_of<D, T>(dist: &D) -> Vec<Schema>
 where
-    Columns<D::Item>: IntoArrowTables,
+    D: Distribution<Item = Tables<T>>,
+    T: Columnar<Columns: IntoArrowTables>,
 {
-    let mut types = Vec::with_capacity(<Columns<D::Item>>::TABLES);
-    <Columns<D::Item>>::table_types(&mut types);
+    let mut types = Vec::with_capacity(<Columns<T>>::TABLES);
+    <Columns<T>>::table_types(&mut types);
     let mut names = Vec::new();
     dist.column_names(&mut names);
     let total: usize = types.iter().map(|(t, _)| t.len()).sum();

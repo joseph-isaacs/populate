@@ -20,13 +20,14 @@
 //! `DIR/factors/<csv|parquet>/raw/composite-merged-fk/<name>/part-0.*`
 //! (`--factor-format`, default `parquet` as the datagen's).
 
-use parquet::arrow::ArrowWriter;
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use populate_ldbc::bi::{Bi, BiRun, Period};
 use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
 use populate_ldbc::rows::{Rows, TableDef};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
 use populate_table::text::write_text_many;
-use populate_table::{MultiChunks, par_sources, write_parquet_many};
+use populate_table::{Chunks, MultiChunks, par_sources, write_parquet_many};
 use std::env::args;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -254,7 +255,7 @@ fn run(a: &Args, res: PathBuf) -> io::Result<()> {
             .join("raw")
             .join("composite-merged-fk");
         for x in g.factors(a.threads) {
-            write_factor(f, x.def, &x.rows, &dir.join(x.def.name))?;
+            write_factor(f, x.def, &x.rows, &dir.join(x.def.name), a.threads)?;
         }
         eprintln!("factors {:.2?}", t.elapsed());
     }
@@ -340,14 +341,14 @@ fn write_table(a: &Args, def: &TableDef, r: &Rows, dir: &Path, name: &str) -> io
             csv::write(def, r, &mut buf);
             fs::write(path, buf)
         }
-        Format::Parquet => write_parquet(def, r, &path),
+        Format::Parquet => write_parquet(def, r, &path, a.threads),
         Format::None => Ok(()),
     }
 }
 
 /// A factor table as `dir/part-0.csv` (Spark's default CSV options, no
 /// header) or `dir/part-0.parquet`.
-fn write_factor(f: Format, def: &TableDef, r: &Rows, dir: &Path) -> io::Result<()> {
+fn write_factor(f: Format, def: &TableDef, r: &Rows, dir: &Path, threads: usize) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("part-0.{}", f.ext()));
     match f {
@@ -356,16 +357,40 @@ fn write_factor(f: Format, def: &TableDef, r: &Rows, dir: &Path) -> io::Result<(
             csv::write_factor(def, r, &mut buf);
             fs::write(path, buf)
         }
-        Format::Parquet => write_parquet(def, r, &path),
+        Format::Parquet => write_parquet(def, r, &path, threads),
         Format::None => Ok(()),
     }
 }
 
-fn write_parquet(def: &TableDef, r: &Rows, path: &Path) -> io::Result<()> {
-    let batch = to_batch(def, r);
-    let mut w = ArrowWriter::try_new(File::create(path)?, batch.schema(), None)
+/// One built table as row groups of up to [`ROW_GROUP`] rows, each a
+/// zero-copy slice of the batch.
+struct Built(RecordBatch);
+
+/// Rows per row group of a static or factor table (`ArrowWriter`'s default).
+const ROW_GROUP: usize = 1 << 20;
+
+impl Chunks for Built {
+    fn schema(&self) -> SchemaRef {
+        self.0.schema()
+    }
+
+    fn num_chunks(&self) -> u64 {
+        self.0.num_rows().div_ceil(ROW_GROUP) as u64
+    }
+
+    fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
+        let start = i as usize * ROW_GROUP;
+        emit(
+            self.0
+                .slice(start, ROW_GROUP.min(self.0.num_rows() - start)),
+        );
+    }
+}
+
+/// A built table through the same parallel encoder as the generated ones.
+fn write_parquet(def: &TableDef, r: &Rows, path: &Path, threads: usize) -> io::Result<()> {
+    let w = BufWriter::with_capacity(1 << 20, File::create(path)?);
+    let w = populate_table::write_parquet(&Built(to_batch(def, r)), w, threads, None)
         .map_err(io::Error::other)?;
-    w.write(&batch).map_err(io::Error::other)?;
-    w.close().map_err(io::Error::other)?;
-    Ok(())
+    w.into_inner().map(drop).map_err(io::Error::other)
 }

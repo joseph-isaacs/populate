@@ -19,15 +19,15 @@
 
 use crate::csv::spark_micros;
 use crate::par_map;
-use crate::rows::{Col, Kind, OrgEdgeRow, RawCols, Rows, TableDef};
-use populate_core::{Columns, Sink, Timestamp};
+use crate::rows::{OrgEdgeRow, RawCols, Rows, StaticCols, TableDef, Ts, rows_of};
+use populate_core::{Children, Columns, Sink, Timestamp};
+use populate_table::resolve_threads;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::mem::{swap, take};
-use std::sync::Mutex;
-
-use Kind::{I32, I64, OptI64, Str, Ts};
+use std::sync::{LazyLock, Mutex};
+use std::thread;
 
 const DAY_US: i64 = 86_400_000_000;
 
@@ -177,7 +177,8 @@ fn chunk_once(i: usize) -> String {
     format!("chunk {i}: the factor tables need every chunk generated exactly once")
 }
 
-/// A factor table: its definition and rows, in the datagen's order.
+/// A factor table: its definition and rows, in the datagen's order, for
+/// the writers.
 pub struct Factor {
     pub def: &'static TableDef,
     pub rows: Rows,
@@ -267,9 +268,9 @@ impl FactorInput {
         self.counts.lock().expect("counts").merge(k);
     }
 
-    /// Every factor table, on `threads` threads (0 = all cores), from the
-    /// chunks added and the static tables ([`rows::STATIC`](crate::rows::STATIC)).
-    pub fn finish(&self, statics: &[Rows], threads: usize) -> Vec<Factor> {
+    /// Write every factor table to `out`, on `threads` threads (0 = all
+    /// cores), from the chunks added and the static tables.
+    pub fn finish_into(&self, statics: &StaticCols, threads: usize, out: &mut FactorCols) {
         let parts = take(&mut *self.parts.lock().expect("parts"));
         let counts = take(&mut *self.counts.lock().expect("counts"));
         let mut all = Part::default();
@@ -282,10 +283,7 @@ impl FactorInput {
             all.interests.extend(p.interests);
         }
         let ctx = Ctx::new(all, counts, statics, threads);
-        par_map(FACTORS.len(), threads, |k| {
-            let (def, f) = FACTORS[k];
-            Factor { def, rows: f(&ctx) }
-        })
+        tables_into(&ctx, out, threads);
     }
 }
 
@@ -325,7 +323,7 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn new(g: Part, k: Counts, statics: &[Rows], threads: usize) -> Self {
+    fn new(g: Part, k: Counts, statics: &StaticCols, threads: usize) -> Self {
         let idx: Map<i64, u32> = g
             .persons
             .iter()
@@ -338,29 +336,31 @@ impl Ctx {
             adj[a as usize].push(b);
             adj[b as usize].push(a);
         }
-        let s =
-            |r: &Rows, c: usize, j: usize| -> Box<str> { r.cols[c].str_at(j).expect("str").into() };
-        let (org, place, tag, class) = (&statics[0], &statics[1], &statics[2], &statics[3]);
-        let places = (0..place.len())
+        let (org, place, tag, class) = statics;
+        let (place_id, place_name, _, place_kind, part_of) = &place.values;
+        let places = (0..place_id.len())
             .map(|j| {
                 let p = Place {
-                    name: s(place, 1, j),
-                    kind: s(place, 3, j),
-                    part_of: place.cols[4].opt_i32_at(j),
+                    name: place_name.get(j).into(),
+                    kind: place_kind.get(j).into(),
+                    part_of: part_of.valid.get(j).then(|| part_of.values[j]),
                 };
-                (place.cols[0].i32s()[j], p)
+                (place_id[j], p)
             })
             .collect();
-        let tags: Vec<(i32, Box<str>, i32)> = (0..tag.len())
-            .map(|j| (tag.cols[0].i32s()[j], s(tag, 1, j), tag.cols[3].i32s()[j]))
+        let (tag_id, tag_name, _, tag_class) = &tag.values;
+        let tags: Vec<(i32, Box<str>, i32)> = (0..tag_id.len())
+            .map(|j| (tag_id[j], tag_name.get(j).into(), tag_class[j]))
             .collect();
         let tag_of = tags.iter().enumerate().map(|(i, t)| (t.0, i)).collect();
-        let classes = (0..class.len())
-            .map(|j| (class.cols[0].i32s()[j], s(class, 1, j)))
+        let (class_id, class_name, _, _) = &class.values;
+        let classes = (0..class_id.len())
+            .map(|j| (class_id[j], class_name.get(j).into()))
             .collect();
-        let companies = (0..org.len())
-            .filter(|&j| org.cols[1].str_at(j) == Some("Company"))
-            .map(|j| (org.cols[0].i32s()[j] as i64, s(org, 2, j)))
+        let (org_id, org_kind, org_name, _, _) = &org.values;
+        let companies = (0..org_id.len())
+            .filter(|&j| org_kind.get(j) == "Company")
+            .map(|j| (org_id[j] as i64, org_name.get(j).into()))
             .collect();
         Ctx {
             g,
@@ -404,109 +404,38 @@ impl Ctx {
 
 // ---- output helpers ----
 
-/// A value of an output row.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum V<'a> {
-    /// Null sorts first, as Spark's ascending order.
-    Null,
-    Int(i64),
-    Str(&'a str),
+/// Spark's `orderBy(frequency.desc, by.asc...)`: `(by, frequency)` pairs
+/// by frequency (nulls last), then by the grouping columns (nulls first,
+/// as `Option`'s order has them).
+fn frequency<K: Ord>(rows: &mut [(K, Option<i64>)]) {
+    rows.sort_by(|(ka, fa), (kb, fb)| {
+        let desc = match (fa, fb) {
+            (None, None) => Ordering::Equal,
+            (None, _) => Ordering::Greater,
+            (_, None) => Ordering::Less,
+            (x, y) => y.cmp(x),
+        };
+        desc.then_with(|| ka.cmp(kb))
+    });
 }
 
-impl From<i64> for V<'_> {
-    fn from(x: i64) -> Self {
-        V::Int(x)
-    }
-}
-
-impl From<i32> for V<'_> {
-    fn from(x: i32) -> Self {
-        V::Int(x as i64)
-    }
-}
-
-impl From<Option<i64>> for V<'_> {
-    fn from(x: Option<i64>) -> Self {
-        x.map_or(V::Null, V::Int)
-    }
-}
-
-impl<'a> From<&'a str> for V<'a> {
-    fn from(x: &'a str) -> Self {
-        V::Str(x)
-    }
-}
-
-impl<'a> From<&'a Box<str>> for V<'a> {
-    fn from(x: &'a Box<str>) -> Self {
-        V::Str(x)
-    }
-}
-
-/// Spark's `orderBy(frequency.desc, by.asc...)`: the last value is the
-/// frequency (nulls last), the others the grouping columns (nulls first).
-fn freq_order(a: &[V], b: &[V]) -> Ordering {
-    let (fa, ka) = a.split_last().expect("row");
-    let (fb, kb) = b.split_last().expect("row");
-    let desc = match (fa, fb) {
-        (V::Null, V::Null) => Ordering::Equal,
-        (V::Null, _) => Ordering::Greater,
-        (_, V::Null) => Ordering::Less,
-        (x, y) => y.cmp(x),
-    };
-    desc.then_with(|| ka.cmp(kb))
-}
-
-/// Append one row.
-fn push_row(out: &mut Rows, r: &[V]) {
-    for (c, v) in out.cols.iter_mut().zip(r) {
-        match (c, v) {
-            (Col::I64(c), V::Int(x)) => c.push(*x),
-            (Col::Ts(c), V::Int(x)) => c.push(Timestamp(*x)),
-            (Col::I32(c), V::Int(x)) => c.push(*x as i32),
-            (Col::OptI64(c), V::Int(x)) => c.push(Some(*x)),
-            (Col::OptI64(c), V::Null) => c.push(None),
-            (Col::Str(c), V::Str(s)) => c.push_str(s),
-            (c, v) => unreachable!("{v:?} in a {c:?} column"),
-        }
-    }
-}
-
-/// Rows of `def` from `rows` (in order).
-fn to_rows(def: &TableDef, rows: &[Vec<V>]) -> Rows {
-    let mut out = Rows::new(def);
-    for r in rows {
-        push_row(&mut out, r);
-    }
-    out
-}
-
-/// A `frequency` table: `(by..., frequency)` rows sorted as Spark does.
-fn frequency(def: &TableDef, mut rows: Vec<Vec<V>>) -> Rows {
-    rows.sort_by(|a, b| freq_order(a, b));
-    to_rows(def, &rows)
-}
-
-/// `(key, count)` pairs as frequency rows: `key(k)` gives the grouping
-/// columns, or `None` to drop the group (an inner join that misses).
-/// The grouping columns must order as `K` does (they start with `K`'s
+/// `(key, count)` pairs as frequency rows, written to `out`: `row(k, n)`
+/// gives the row, or `None` to drop the group (an inner join that
+/// misses). The rows must order as `K` does (they start with `K`'s
 /// values, the rest are functions of them), so the pairs are sorted as
-/// they are, before the columns are built.
-fn counted<'a, K: Copy + Ord>(
-    def: &TableDef,
+/// they are.
+fn counted<K: Copy + Ord, R>(
+    out: &mut impl Sink<R>,
     m: impl IntoIterator<Item = (K, i64)>,
-    key: impl Fn(K) -> Option<Vec<V<'a>>>,
-) -> Rows {
+    row: impl Fn(K, i64) -> Option<R>,
+) {
     let mut m: Vec<(K, i64)> = m.into_iter().collect();
     m.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let mut out = Rows::new(def);
     for (k, n) in m {
-        if let Some(mut r) = key(k) {
-            r.push(V::Int(n));
-            push_row(&mut out, &r);
+        if let Some(r) = row(k, n) {
+            out.push(r);
         }
     }
-    out
 }
 
 /// Group `items` by key and count them.
@@ -530,342 +459,251 @@ fn sum(vals: impl IntoIterator<Item = Option<i64>>) -> Option<i64> {
 
 // ---- the tables ----
 
-macro_rules! def {
-    ($name:ident, $tname:literal, [$(($c:literal, $k:expr)),* $(,)?]) => {
-        const $name: TableDef = TableDef { name: $tname, cols: &[$(($c, $k)),*] };
-    };
-}
+/// `(id, name, frequency)`: a count per place, tag, tag class or company.
+pub type NamedCountRow = (i32, String, i64);
+pub type CityPairsRow = (i32, i32, String, String, i32, i32, String, String, i64);
+pub type CountryPairsRow = (i32, i32, String, String, i64);
+/// `(creationDay, id, name, frequency)`.
+pub type DayNamedCountRow = (Ts, i32, String, i64);
+/// `(value, frequency)` of a string.
+pub type StrCountRow = (String, i64);
+/// `(Person1Id, Person2Id)` and both persons' dates.
+pub type HopsRow = (i64, i64, Ts, Ts, Ts, Ts);
+/// `(id, creationDate, deletionDate, frequency)` of a person.
+pub type PersonCountRow = (i64, Ts, Ts, i64);
+/// A person, its direct count, and its friends' and friends' friends' sums.
+pub type FofRow = (i64, Ts, Ts, i64, Option<i64>, Option<i64>);
+/// `(Person1Id, creationDate, deletionDate, numDirectTags, numFriendTags)`:
+/// the id is null for the group of persons without interests.
+pub type FriendTagsRow = (Option<i64>, Ts, Ts, i64, Option<i64>);
+/// `(PersonId, Component, count)`.
+pub type ComponentRow = (i64, i64, i64);
+/// An edge's two ids and its creation and deletion days.
+pub type EdgeDaysRow = (i64, i64, Ts, Ts);
 
-def!(
-    COUNTRY_NUM_PERSONS,
-    "countryNumPersons",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    CITY_NUM_PERSONS,
-    "cityNumPersons",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    COUNTRY_NUM_MESSAGES,
-    "countryNumMessages",
-    [
-        ("LocationCountryId", I64),
-        ("name", Str),
-        ("frequency", I64)
-    ]
-);
-def!(
-    CITY_PAIRS,
-    "cityPairsNumFriends",
-    [
-        ("city1Id", I32),
-        ("city2Id", I32),
-        ("city1Name", Str),
-        ("city2Name", Str),
-        ("country1Id", I32),
-        ("country2Id", I32),
-        ("country1Name", Str),
-        ("country2Name", Str),
-        ("frequency", I64),
-    ]
-);
-def!(
-    COUNTRY_PAIRS,
-    "countryPairsNumFriends",
-    [
-        ("country1Id", I32),
-        ("country2Id", I32),
-        ("country1Name", Str),
-        ("country2Name", Str),
-        ("frequency", I64),
-    ]
-);
-def!(
-    DAY_MESSAGES,
-    "creationDayNumMessages",
-    [("creationDay", Ts), ("frequency", I64)]
-);
-def!(
-    DAY_CLASS_MESSAGES,
-    "creationDayAndTagClassNumMessages",
-    [
-        ("creationDay", Ts),
-        ("id", I32),
-        ("name", Str),
-        ("frequency", I64),
-    ]
-);
-def!(
-    DAY_TAG_MESSAGES,
-    "creationDayAndTagNumMessages",
-    [
-        ("creationDay", Ts),
-        ("id", I32),
-        ("name", Str),
-        ("frequency", I64),
-    ]
-);
-def!(
-    DAY_LEN_MESSAGES,
-    "creationDayAndLengthCategoryNumMessages",
-    [
-        ("creationDay", Ts),
-        ("lengthCategory", I64),
-        ("frequency", I64),
-    ]
-);
-def!(
-    LEN_MESSAGES,
-    "lengthNumMessages",
-    [("length", I32), ("frequency", I64)]
-);
-def!(
-    TAG_MESSAGES,
-    "tagNumMessages",
-    [("tagId", I32), ("tagName", Str), ("frequency", I64)]
-);
-def!(
-    CLASS_MESSAGES,
-    "tagClassNumMessages",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    PERSON_NUM_FRIENDS,
-    "personNumFriends",
-    [
-        ("id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("frequency", I64),
-    ]
-);
-def!(
-    LANGUAGE_POSTS,
-    "languageNumPosts",
-    [("language", Str), ("frequency", I64)]
-);
-def!(
-    TAG_PERSONS,
-    "tagNumPersons",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    CLASS_TAGS,
-    "tagClassNumTags",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    DISJOINT_EMPLOYERS,
-    "personDisjointEmployerPairs",
-    [
-        ("person2id", I64),
-        ("companyName", Str),
-        ("companyId", I32),
-        ("person2creationDate", Ts),
-        ("person2deletionDate", Ts),
-    ]
-);
-def!(
-    COMPANY_EMPLOYEES,
-    "companyNumEmployees",
-    [("id", I32), ("name", Str), ("frequency", I64)]
-);
-def!(
-    PEOPLE_4_HOPS,
-    "people4Hops",
-    [
-        ("Person1Id", I64),
-        ("Person2Id", I64),
-        ("Person1CreationDate", Ts),
-        ("Person1DeletionDate", Ts),
-        ("Person2CreationDate", Ts),
-        ("Person2DeletionDate", Ts),
-    ]
-);
-def!(
-    PEOPLE_2_HOPS,
-    "people2Hops",
-    [
-        ("Person1Id", I64),
-        ("Person2Id", I64),
-        ("Person1CreationDate", Ts),
-        ("Person1DeletionDate", Ts),
-        ("Person2CreationDate", Ts),
-        ("Person2DeletionDate", Ts),
-    ]
-);
-def!(
-    FIRST_NAMES,
-    "personFirstNames",
-    [("firstName", Str), ("frequency", I64)]
-);
-def!(
-    FRIENDS_3,
-    "personNumFriendsOfFriendsOfFriends",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numFriends", I64),
-        ("numFriendsOfFriends", OptI64),
-        ("numFriendsOfFriendsOfFriends", OptI64),
-    ]
-);
-def!(
-    FOF_POSTS,
-    "personNumFriendOfFriendPosts",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numDirectPosts", I64),
-        ("numFriendPosts", OptI64),
-        ("numFriendOfFriendPosts", OptI64),
-    ]
-);
-def!(
-    FOF_COMMENTS,
-    "personNumFriendOfFriendComments",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numDirectComments", I64),
-        ("numFriendComments", OptI64),
-        ("numFriendOfFriendComments", OptI64),
-    ]
-);
-def!(
-    LIKES_MESSAGES,
-    "personLikesNumMessages",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("frequency", I64),
-    ]
-);
-def!(
-    FRIEND_TAGS,
-    "personNumFriendTags",
-    [
-        ("Person1Id", OptI64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numDirectTags", I64),
-        ("numFriendTags", OptI64),
-    ]
-);
-def!(
-    FOF_FORUMS,
-    "personNumFriendOfFriendForums",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numDirectForums", I64),
-        ("numFriendForums", OptI64),
-        ("numFriendOfFriendForums", OptI64),
-    ]
-);
-def!(
-    FOF_COMPANIES,
-    "personNumFriendOfFriendCompanies",
-    [
-        ("Person1Id", I64),
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("numDirectCompanies", I64),
-        ("numFriendCompanies", OptI64),
-        ("numFriendOfFriendCompanies", OptI64),
-    ]
-);
-def!(
-    SAME_UNIVERSITY,
-    "sameUniversityConnected",
-    [("PersonId", I64), ("Component", I64), ("count", I64)]
-);
-def!(
-    KNOWS_CONNECTED,
-    "personKnowsPersonConnected",
-    [("PersonId", I64), ("Component", I64), ("count", I64)]
-);
-def!(
-    KNOWS_DAYS,
-    "personKnowsPersonDays",
-    [
-        ("Person1Id", I64),
-        ("Person2Id", I64),
-        ("creationDay", Ts),
-        ("deletionDay", Ts),
-    ]
-);
-def!(
-    STUDY_DAYS,
-    "personStudyAtUniversityDays",
-    [
-        ("PersonId", I64),
-        ("UniversityId", I64),
-        ("creationDay", Ts),
-        ("deletionDay", Ts),
-    ]
-);
-def!(
-    WORK_DAYS,
-    "personWorkAtCompanyDays",
-    [
-        ("PersonId", I64),
-        ("CompanyId", I64),
-        ("creationDay", Ts),
-        ("deletionDay", Ts),
-    ]
-);
-def!(
-    PERSON_DAYS,
-    "personDays",
-    [("id", I64), ("creationDay", Ts), ("deletionDay", Ts)]
+/// The 34 factor tables, in [`FACTOR_TABLES`] order (nested to stay
+/// within a tuple's 12 fields).
+pub type Factors = (
+    (
+        Children<NamedCountRow>,
+        Children<CityPairsRow>,
+        Children<NamedCountRow>,
+        Children<(i64, String, i64)>,
+        Children<NamedCountRow>,
+        Children<CountryPairsRow>,
+        Children<(Ts, i64, i64)>,
+        Children<DayNamedCountRow>,
+        Children<DayNamedCountRow>,
+        Children<(Ts, i64)>,
+        Children<StrCountRow>,
+        Children<(i32, i64)>,
+    ),
+    (
+        Children<HopsRow>,
+        Children<HopsRow>,
+        Children<(i64, Ts, Ts)>,
+        Children<(i64, String, i32, Ts, Ts)>,
+        Children<StrCountRow>,
+        Children<ComponentRow>,
+        Children<EdgeDaysRow>,
+        Children<PersonCountRow>,
+        Children<FofRow>,
+        Children<FofRow>,
+        Children<FofRow>,
+        Children<FofRow>,
+    ),
+    (
+        Children<FriendTagsRow>,
+        Children<PersonCountRow>,
+        Children<FofRow>,
+        Children<EdgeDaysRow>,
+        Children<EdgeDaysRow>,
+        Children<ComponentRow>,
+        Children<NamedCountRow>,
+        Children<NamedCountRow>,
+        Children<NamedCountRow>,
+        Children<NamedCountRow>,
+    ),
 );
 
-type FactorFn = fn(&Ctx) -> Rows;
+/// The columns of [`Factors`].
+pub type FactorCols = Columns<Factors>;
 
-/// Every factor table, by name order of the datagen's output.
-const FACTORS: [(&TableDef, FactorFn); 34] = [
-    (&CITY_NUM_PERSONS, city_num_persons),
-    (&CITY_PAIRS, city_pairs),
-    (&COMPANY_EMPLOYEES, company_employees),
-    (&COUNTRY_NUM_MESSAGES, country_num_messages),
-    (&COUNTRY_NUM_PERSONS, country_num_persons),
-    (&COUNTRY_PAIRS, country_pairs),
-    (&DAY_LEN_MESSAGES, day_len_messages),
-    (&DAY_CLASS_MESSAGES, day_class_messages),
-    (&DAY_TAG_MESSAGES, day_tag_messages),
-    (&DAY_MESSAGES, day_messages),
-    (&LANGUAGE_POSTS, language_posts),
-    (&LEN_MESSAGES, len_messages),
-    (&PEOPLE_2_HOPS, people_2_hops),
-    (&PEOPLE_4_HOPS, people_4_hops),
-    (&PERSON_DAYS, person_days),
-    (&DISJOINT_EMPLOYERS, disjoint_employers),
-    (&FIRST_NAMES, first_names),
-    (&KNOWS_CONNECTED, knows_connected),
-    (&KNOWS_DAYS, knows_days),
-    (&LIKES_MESSAGES, likes_messages),
-    (&FOF_COMMENTS, fof_comments),
-    (&FOF_COMPANIES, fof_companies),
-    (&FOF_FORUMS, fof_forums),
-    (&FOF_POSTS, fof_posts),
-    (&FRIEND_TAGS, friend_tags),
-    (&PERSON_NUM_FRIENDS, person_num_friends),
-    (&FRIENDS_3, friends_3),
-    (&STUDY_DAYS, study_days),
-    (&WORK_DAYS, work_days),
-    (&SAME_UNIVERSITY, same_university),
-    (&CLASS_MESSAGES, class_messages),
-    (&CLASS_TAGS, class_tags),
-    (&TAG_MESSAGES, tag_messages),
-    (&TAG_PERSONS, tag_persons),
+const PERSON_FOF: [&str; 3] = ["Person1Id", "creationDate", "deletionDate"];
+const HOPS: &[&str] = &[
+    "Person1Id",
+    "Person2Id",
+    "Person1CreationDate",
+    "Person1DeletionDate",
+    "Person2CreationDate",
+    "Person2DeletionDate",
 ];
+const COMPONENT: &[&str] = &["PersonId", "Component", "count"];
+const ID_NAME_FREQ: &[&str] = &["id", "name", "frequency"];
+const PERSON_FREQ: &[&str] = &["Person1Id", "creationDate", "deletionDate", "frequency"];
+
+/// Every factor table's name and column names, by name order of the
+/// datagen's output.
+pub const FACTOR_TABLES: [(&str, &[&str]); 34] = [
+    ("cityNumPersons", ID_NAME_FREQ),
+    (
+        "cityPairsNumFriends",
+        &[
+            "city1Id",
+            "city2Id",
+            "city1Name",
+            "city2Name",
+            "country1Id",
+            "country2Id",
+            "country1Name",
+            "country2Name",
+            "frequency",
+        ],
+    ),
+    ("companyNumEmployees", ID_NAME_FREQ),
+    (
+        "countryNumMessages",
+        &["LocationCountryId", "name", "frequency"],
+    ),
+    ("countryNumPersons", ID_NAME_FREQ),
+    (
+        "countryPairsNumFriends",
+        &[
+            "country1Id",
+            "country2Id",
+            "country1Name",
+            "country2Name",
+            "frequency",
+        ],
+    ),
+    (
+        "creationDayAndLengthCategoryNumMessages",
+        &["creationDay", "lengthCategory", "frequency"],
+    ),
+    (
+        "creationDayAndTagClassNumMessages",
+        &["creationDay", "id", "name", "frequency"],
+    ),
+    (
+        "creationDayAndTagNumMessages",
+        &["creationDay", "id", "name", "frequency"],
+    ),
+    ("creationDayNumMessages", &["creationDay", "frequency"]),
+    ("languageNumPosts", &["language", "frequency"]),
+    ("lengthNumMessages", &["length", "frequency"]),
+    ("people2Hops", HOPS),
+    ("people4Hops", HOPS),
+    ("personDays", &["id", "creationDay", "deletionDay"]),
+    (
+        "personDisjointEmployerPairs",
+        &[
+            "person2id",
+            "companyName",
+            "companyId",
+            "person2creationDate",
+            "person2deletionDate",
+        ],
+    ),
+    ("personFirstNames", &["firstName", "frequency"]),
+    ("personKnowsPersonConnected", COMPONENT),
+    (
+        "personKnowsPersonDays",
+        &["Person1Id", "Person2Id", "creationDay", "deletionDay"],
+    ),
+    ("personLikesNumMessages", PERSON_FREQ),
+    (
+        "personNumFriendOfFriendComments",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numDirectComments",
+            "numFriendComments",
+            "numFriendOfFriendComments",
+        ],
+    ),
+    (
+        "personNumFriendOfFriendCompanies",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numDirectCompanies",
+            "numFriendCompanies",
+            "numFriendOfFriendCompanies",
+        ],
+    ),
+    (
+        "personNumFriendOfFriendForums",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numDirectForums",
+            "numFriendForums",
+            "numFriendOfFriendForums",
+        ],
+    ),
+    (
+        "personNumFriendOfFriendPosts",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numDirectPosts",
+            "numFriendPosts",
+            "numFriendOfFriendPosts",
+        ],
+    ),
+    (
+        "personNumFriendTags",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numDirectTags",
+            "numFriendTags",
+        ],
+    ),
+    (
+        "personNumFriends",
+        &["id", "creationDate", "deletionDate", "frequency"],
+    ),
+    (
+        "personNumFriendsOfFriendsOfFriends",
+        &[
+            PERSON_FOF[0],
+            PERSON_FOF[1],
+            PERSON_FOF[2],
+            "numFriends",
+            "numFriendsOfFriends",
+            "numFriendsOfFriendsOfFriends",
+        ],
+    ),
+    (
+        "personStudyAtUniversityDays",
+        &["PersonId", "UniversityId", "creationDay", "deletionDay"],
+    ),
+    (
+        "personWorkAtCompanyDays",
+        &["PersonId", "CompanyId", "creationDay", "deletionDay"],
+    ),
+    ("sameUniversityConnected", COMPONENT),
+    ("tagClassNumMessages", ID_NAME_FREQ),
+    ("tagClassNumTags", ID_NAME_FREQ),
+    ("tagNumMessages", &["tagId", "tagName", "frequency"]),
+    ("tagNumPersons", ID_NAME_FREQ),
+];
+
+/// The factor tables, as [`FACTOR_TABLES`] names them: their columns are
+/// the kinds of [`FactorCols`]' buffers.
+pub static FACTOR: LazyLock<Vec<TableDef>> = LazyLock::new(|| {
+    rows_of(FactorCols::default())
+        .iter()
+        .zip(FACTOR_TABLES)
+        .map(|(r, (name, names))| TableDef::of(name, names, &r.cols))
+        .collect()
+});
 
 /// The tables whose row order is not defined by the datagen (a `distinct`,
 /// or a graph's connected components): compare them as sets.
@@ -875,38 +713,97 @@ pub const UNORDERED: [&str; 3] = [
     "sameUniversityConnected",
 ];
 
-fn country_num_persons(c: &Ctx) -> Rows {
+/// Write every table of `c` into `out`, on `threads` threads (0 = all
+/// cores).
+fn tables_into(c: &Ctx, out: &mut FactorCols, threads: usize) {
+    let (
+        (a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11),
+        (b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11),
+        (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9),
+    ) = out;
+    let jobs: Vec<Box<dyn FnOnce() + Send + '_>> = vec![
+        Box::new(|| city_num_persons(c, &mut a0.values)),
+        Box::new(|| city_pairs(c, &mut a1.values)),
+        Box::new(|| company_employees(c, &mut a2.values)),
+        Box::new(|| country_num_messages(c, &mut a3.values)),
+        Box::new(|| country_num_persons(c, &mut a4.values)),
+        Box::new(|| country_pairs(c, &mut a5.values)),
+        Box::new(|| day_len_messages(c, &mut a6.values)),
+        Box::new(|| day_class_messages(c, &mut a7.values)),
+        Box::new(|| day_tag_messages(c, &mut a8.values)),
+        Box::new(|| day_messages(c, &mut a9.values)),
+        Box::new(|| language_posts(c, &mut a10.values)),
+        Box::new(|| len_messages(c, &mut a11.values)),
+        Box::new(|| hops(c, &mut b0.values, 2)),
+        Box::new(|| hops(c, &mut b1.values, 4)),
+        Box::new(|| person_days(c, &mut b2.values)),
+        Box::new(|| disjoint_employers(c, &mut b3.values)),
+        Box::new(|| first_names(c, &mut b4.values)),
+        Box::new(|| knows_connected(c, &mut b5.values)),
+        Box::new(|| days(&mut b6.values, &c.g.knows)),
+        Box::new(|| likes_messages(c, &mut b7.values)),
+        Box::new(|| fof_comments(c, &mut b8.values)),
+        Box::new(|| fof_companies(c, &mut b9.values)),
+        Box::new(|| fof_forums(c, &mut b10.values)),
+        Box::new(|| fof_posts(c, &mut b11.values)),
+        Box::new(|| friend_tags(c, &mut c0.values)),
+        Box::new(|| person_num_friends(c, &mut c1.values)),
+        Box::new(|| friends_3(c, &mut c2.values)),
+        Box::new(|| days(&mut c3.values, &c.g.study)),
+        Box::new(|| days(&mut c4.values, &c.g.work)),
+        Box::new(|| same_university(c, &mut c5.values)),
+        Box::new(|| class_messages(c, &mut c6.values)),
+        Box::new(|| class_tags(c, &mut c7.values)),
+        Box::new(|| tag_messages(c, &mut c8.values)),
+        Box::new(|| tag_persons(c, &mut c9.values)),
+    ];
+    run_all(jobs, threads);
+}
+
+/// Run every job, on up to `threads` threads (0 = all cores).
+fn run_all(jobs: Vec<Box<dyn FnOnce() + Send + '_>>, threads: usize) {
+    let threads = resolve_threads(threads).min(jobs.len()).max(1);
+    let queue = Mutex::new(jobs);
+    let next = || queue.lock().expect("jobs").pop();
+    thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(job) = next() {
+                    job();
+                }
+            });
+        }
+    });
+}
+
+fn ts(ms: i64) -> Ts {
+    Timestamp(ms)
+}
+
+fn country_num_persons(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let m = group_count(
         c.g.persons
             .iter()
             .filter_map(|p| Some(c.city_country(p)?.2)),
     );
-    counted(&COUNTRY_NUM_PERSONS, m, |id| {
-        Some(vec![id.into(), (&c.places[&id].name).into()])
-    })
+    counted(out, m, |id, n| Some((id, &*c.places[&id].name, n)));
 }
 
-fn city_num_persons(c: &Ctx) -> Rows {
+fn city_num_persons(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let m = group_count(
         c.g.persons
             .iter()
             .filter(|p| c.of_kind(p.city, "City").is_some())
             .map(|p| p.city),
     );
-    counted(&CITY_NUM_PERSONS, m, |id| {
-        Some(vec![id.into(), (&c.places[&id].name).into()])
-    })
+    counted(out, m, |id, n| Some((id, &*c.places[&id].name, n)));
 }
 
-fn country_num_messages(c: &Ctx) -> Rows {
-    counted(
-        &COUNTRY_NUM_MESSAGES,
-        c.k.country.iter().map(|(&k, &n)| (k, n)),
-        |id| {
-            let p = c.of_kind(i32::try_from(id).ok()?, "Country")?;
-            Some(vec![id.into(), (&p.name).into()])
-        },
-    )
+fn country_num_messages(c: &Ctx, out: &mut Columns<(i64, String, i64)>) {
+    counted(out, c.k.country.iter().map(|(&k, &n)| (k, n)), |id, n| {
+        let p = c.of_kind(i32::try_from(id).ok()?, "Country")?;
+        Some((id, &*p.name, n))
+    });
 }
 
 /// Both directions of every friendship, as person indices.
@@ -917,180 +814,169 @@ fn undirected(c: &Ctx) -> impl Iterator<Item = (u32, u32)> + '_ {
     })
 }
 
-fn city_pairs(c: &Ctx) -> Rows {
+fn city_pairs(c: &Ctx, out: &mut Columns<CityPairsRow>) {
     let m = group_count(undirected(c).filter_map(|(a, b)| {
         let x = c.city_country(&c.g.persons[a as usize])?;
         let y = c.city_country(&c.g.persons[b as usize])?;
         (x.0 < y.0).then_some((x.0, y.0))
     }));
-    counted(&CITY_PAIRS, m, |(a, b)| {
+    counted(out, m, |(a, b), n| {
         let (ca, cb) = (&c.places[&a], &c.places[&b]);
         let (na, nb) = (ca.part_of?, cb.part_of?);
-        Some(vec![
-            a.into(),
-            b.into(),
-            (&ca.name).into(),
-            (&cb.name).into(),
-            na.into(),
-            nb.into(),
-            (&c.places[&na].name).into(),
-            (&c.places[&nb].name).into(),
-        ])
-    })
+        Some((
+            a,
+            b,
+            &*ca.name,
+            &*cb.name,
+            na,
+            nb,
+            &*c.places[&na].name,
+            &*c.places[&nb].name,
+            n,
+        ))
+    });
 }
 
-fn country_pairs(c: &Ctx) -> Rows {
+fn country_pairs(c: &Ctx, out: &mut Columns<CountryPairsRow>) {
     let m = group_count(undirected(c).filter_map(|(a, b)| {
         let x = c.city_country(&c.g.persons[a as usize])?;
         let y = c.city_country(&c.g.persons[b as usize])?;
         (x.2 < y.2).then_some((x.2, y.2))
     }));
-    counted(&COUNTRY_PAIRS, m, |(a, b)| {
-        Some(vec![
-            a.into(),
-            b.into(),
-            (&c.places[&a].name).into(),
-            (&c.places[&b].name).into(),
-        ])
-    })
+    counted(out, m, |(a, b), n| {
+        Some((a, b, &*c.places[&a].name, &*c.places[&b].name, n))
+    });
 }
 
-fn day_messages(c: &Ctx) -> Rows {
-    counted(&DAY_MESSAGES, c.k.day.iter().map(|(&k, &n)| (k, n)), |d| {
-        Some(vec![d.into()])
-    })
+fn day_messages(c: &Ctx, out: &mut Columns<(Ts, i64)>) {
+    counted(out, c.k.day.iter().map(|(&k, &n)| (k, n)), |d, n| {
+        Some((ts(d), n))
+    });
 }
 
-fn day_class_messages(c: &Ctx) -> Rows {
+fn day_class_messages(c: &Ctx, out: &mut Columns<DayNamedCountRow>) {
     let mut m: Map<(i64, i32), i64> = Map::default();
     for (&(d, tag), &n) in &c.k.day_tag {
         if let Some(t) = c.tag(tag) {
             *m.entry((d, t.2)).or_default() += n;
         }
     }
-    counted(&DAY_CLASS_MESSAGES, m, |(d, class)| {
-        Some(vec![d.into(), class.into(), c.classes.get(&class)?.into()])
-    })
+    counted(out, m, |(d, class), n| {
+        Some((ts(d), class, &**c.classes.get(&class)?, n))
+    });
 }
 
-fn day_tag_messages(c: &Ctx) -> Rows {
+fn day_tag_messages(c: &Ctx, out: &mut Columns<DayNamedCountRow>) {
     counted(
-        &DAY_TAG_MESSAGES,
+        out,
         c.k.day_tag.iter().map(|(&k, &n)| (k, n)),
-        |(d, tag)| Some(vec![d.into(), tag.into(), (&c.tag(tag)?.1).into()]),
-    )
+        |(d, tag), n| Some((ts(d), tag, &*c.tag(tag)?.1, n)),
+    );
 }
 
-fn day_len_messages(c: &Ctx) -> Rows {
+fn day_len_messages(c: &Ctx, out: &mut Columns<(Ts, i64, i64)>) {
     counted(
-        &DAY_LEN_MESSAGES,
+        out,
         c.k.day_len.iter().map(|(&k, &n)| (k, n)),
-        |(d, l)| Some(vec![d.into(), l.into()]),
-    )
+        |(d, l), n| Some((ts(d), l, n)),
+    );
 }
 
-fn len_messages(c: &Ctx) -> Rows {
-    counted(&LEN_MESSAGES, c.k.len.iter().map(|(&k, &n)| (k, n)), |l| {
-        Some(vec![l.into()])
-    })
+fn len_messages(c: &Ctx, out: &mut Columns<(i32, i64)>) {
+    counted(out, c.k.len.iter().map(|(&k, &n)| (k, n)), |l, n| {
+        Some((l, n))
+    });
 }
 
-fn tag_messages(c: &Ctx) -> Rows {
-    counted(&TAG_MESSAGES, c.tag_messages(), |tag| {
-        Some(vec![tag.into(), (&c.tag(tag)?.1).into()])
-    })
+fn tag_messages(c: &Ctx, out: &mut Columns<NamedCountRow>) {
+    counted(out, c.tag_messages(), |tag, n| {
+        Some((tag, &*c.tag(tag)?.1, n))
+    });
 }
 
-fn class_messages(c: &Ctx) -> Rows {
+fn class_messages(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let mut m: Map<i32, i64> = Map::default();
     for (tag, n) in c.tag_messages() {
         if let Some(t) = c.tag(tag) {
             *m.entry(t.2).or_default() += n;
         }
     }
-    counted(&CLASS_MESSAGES, m, |class| {
-        Some(vec![class.into(), c.classes.get(&class)?.into()])
-    })
+    counted(out, m, |class, n| {
+        Some((class, &**c.classes.get(&class)?, n))
+    });
 }
 
-fn language_posts(c: &Ctx) -> Rows {
-    let rows =
-        c.k.lang
-            .iter()
-            .map(|(l, &n)| vec![l.into(), n.into()])
-            .collect();
-    frequency(&LANGUAGE_POSTS, rows)
+/// A frequency table of strings, `(value, frequency)`.
+fn str_frequency<'a>(out: &mut Columns<StrCountRow>, m: impl IntoIterator<Item = (&'a str, i64)>) {
+    let mut rows: Vec<(&str, Option<i64>)> = m.into_iter().map(|(s, n)| (s, Some(n))).collect();
+    frequency(&mut rows);
+    for (s, n) in rows {
+        out.push((s, n.expect("a count")));
+    }
 }
 
-fn tag_persons(c: &Ctx) -> Rows {
+fn language_posts(c: &Ctx, out: &mut Columns<StrCountRow>) {
+    str_frequency(out, c.k.lang.iter().map(|(l, &n)| (&**l, n)));
+}
+
+fn tag_persons(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let m = group_count(c.g.interests.iter().map(|&(_, tag)| tag));
-    counted(&TAG_PERSONS, m, |tag| {
-        Some(vec![tag.into(), (&c.tag(tag)?.1).into()])
-    })
+    counted(out, m, |tag, n| Some((tag, &*c.tag(tag)?.1, n)));
 }
 
-fn class_tags(c: &Ctx) -> Rows {
+fn class_tags(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let m = group_count(c.tags.iter().map(|t| t.2));
-    counted(&CLASS_TAGS, m, |class| {
-        Some(vec![class.into(), c.classes.get(&class)?.into()])
-    })
+    counted(out, m, |class, n| {
+        Some((class, &**c.classes.get(&class)?, n))
+    });
 }
 
-fn company_employees(c: &Ctx) -> Rows {
+fn company_employees(c: &Ctx, out: &mut Columns<NamedCountRow>) {
     let m = group_count(c.g.work.iter().map(|w| w[1]));
-    counted(&COMPANY_EMPLOYEES, m, |id| {
-        Some(vec![(id as i32).into(), c.companies.get(&id)?.into()])
-    })
+    counted(out, m, |id, n| {
+        Some((id as i32, &**c.companies.get(&id)?, n))
+    });
 }
 
-fn first_names(c: &Ctx) -> Rows {
+fn first_names(c: &Ctx, out: &mut Columns<StrCountRow>) {
     let mut m: Map<&str, i64> = Map::default();
     for p in &c.g.persons {
         *m.entry(&p.first_name).or_default() += 1;
     }
-    let rows = m
-        .into_iter()
-        .map(|(f, n)| vec![f.into(), n.into()])
-        .collect();
-    frequency(&FIRST_NAMES, rows)
+    str_frequency(out, m);
 }
 
-/// `(id, creationDate, deletionDate)` of person `i`.
-fn person_key(p: &Person) -> [V<'_>; 3] {
-    [p.id.into(), p.created.into(), p.deleted.into()]
-}
-
-fn person_num_friends(c: &Ctx) -> Rows {
-    let rows =
+/// A frequency table of `(id, creationDate, deletionDate, count)`, one row
+/// per person.
+fn person_frequency(
+    c: &Ctx,
+    out: &mut Columns<PersonCountRow>,
+    count: impl Fn(usize, &Person) -> i64,
+) {
+    let mut rows: Vec<((i64, i64, i64), Option<i64>)> =
         c.g.persons
             .iter()
-            .zip(&c.adj)
-            .map(|(p, f)| {
-                let mut r = person_key(p).to_vec();
-                r.push((f.len() as i64).into());
-                r
-            })
+            .enumerate()
+            .map(|(i, p)| ((p.id, p.created, p.deleted), Some(count(i, p))))
             .collect();
-    frequency(&PERSON_NUM_FRIENDS, rows)
+    frequency(&mut rows);
+    for ((id, created, deleted), n) in rows {
+        out.push((id, ts(created), ts(deleted), n.expect("a count")));
+    }
 }
 
-fn likes_messages(c: &Ctx) -> Rows {
-    let rows =
-        c.g.persons
-            .iter()
-            .map(|p| {
-                let mut r = person_key(p).to_vec();
-                r.push(c.k.likes.get(&p.id).copied().unwrap_or(0).into());
-                r
-            })
-            .collect();
-    frequency(&LIKES_MESSAGES, rows)
+fn person_num_friends(c: &Ctx, out: &mut Columns<PersonCountRow>) {
+    person_frequency(c, out, |i, _| c.adj[i].len() as i64);
+}
+
+fn likes_messages(c: &Ctx, out: &mut Columns<PersonCountRow>) {
+    person_frequency(c, out, |_, p| c.k.likes.get(&p.id).copied().unwrap_or(0));
 }
 
 /// The friend-of-friend pattern: per person its direct count, the sum of
 /// its friends' direct counts and the sum of its friends' friend sums
 /// (sums over no friends are null).
-fn friends_of_friends(c: &Ctx, def: &TableDef, direct: impl Fn(usize, &Person) -> i64) -> Rows {
+fn friends_of_friends(c: &Ctx, out: &mut Columns<FofRow>, direct: impl Fn(usize, &Person) -> i64) {
     let d: Vec<i64> =
         c.g.persons
             .iter()
@@ -1102,48 +988,43 @@ fn friends_of_friends(c: &Ctx, def: &TableDef, direct: impl Fn(usize, &Person) -
         .iter()
         .map(|fs| sum(fs.iter().map(|&f| Some(d[f as usize]))))
         .collect();
-    let rows =
+    let mut rows: Vec<_> =
         c.g.persons
             .iter()
             .enumerate()
             .map(|(i, p)| {
                 let f2 = sum(c.adj[i].iter().map(|&f| f1[f as usize]));
-                let mut r = person_key(p).to_vec();
-                r.extend([d[i].into(), f1[i].into(), f2.into()]);
-                r
+                ((p.id, p.created, p.deleted, d[i], f1[i]), f2)
             })
             .collect();
-    frequency(def, rows)
+    frequency(&mut rows);
+    for ((id, created, deleted, d, f1), f2) in rows {
+        out.push((id, ts(created), ts(deleted), d, f1, f2));
+    }
 }
 
-fn friends_3(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FRIENDS_3, |i, _| c.adj[i].len() as i64)
+fn friends_3(c: &Ctx, out: &mut Columns<FofRow>) {
+    friends_of_friends(c, out, |i, _| c.adj[i].len() as i64);
 }
 
-fn fof_posts(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_POSTS, |_, p| {
-        c.k.posts.get(&p.id).copied().unwrap_or(0)
-    })
+fn fof_posts(c: &Ctx, out: &mut Columns<FofRow>) {
+    friends_of_friends(c, out, |_, p| c.k.posts.get(&p.id).copied().unwrap_or(0));
 }
 
-fn fof_comments(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_COMMENTS, |_, p| {
-        c.k.comments.get(&p.id).copied().unwrap_or(0)
-    })
+fn fof_comments(c: &Ctx, out: &mut Columns<FofRow>) {
+    friends_of_friends(c, out, |_, p| c.k.comments.get(&p.id).copied().unwrap_or(0));
 }
 
-fn fof_forums(c: &Ctx) -> Rows {
-    friends_of_friends(c, &FOF_FORUMS, |_, p| {
-        c.k.forums.get(&p.id).copied().unwrap_or(0)
-    })
+fn fof_forums(c: &Ctx, out: &mut Columns<FofRow>) {
+    friends_of_friends(c, out, |_, p| c.k.forums.get(&p.id).copied().unwrap_or(0));
 }
 
-fn fof_companies(c: &Ctx) -> Rows {
+fn fof_companies(c: &Ctx, out: &mut Columns<FofRow>) {
     let m = group_count(c.g.work.iter().map(|w| w[0]));
-    friends_of_friends(c, &FOF_COMPANIES, |_, p| m.get(&p.id).copied().unwrap_or(0))
+    friends_of_friends(c, out, |_, p| m.get(&p.id).copied().unwrap_or(0));
 }
 
-fn friend_tags(c: &Ctx) -> Rows {
+fn friend_tags(c: &Ctx, out: &mut Columns<FriendTagsRow>) {
     // grouped by (interest.PersonId, creationDate, deletionDate): a person
     // without interests has a null id, so such persons with equal dates
     // are one group, and none of them is anyone's friend in the join
@@ -1155,13 +1036,7 @@ fn friend_tags(c: &Ctx) -> Rows {
         match direct(p) {
             Some(n) => {
                 let f = sum(c.adj[i].iter().map(|&f| direct(&c.g.persons[f as usize])));
-                rows.push(vec![
-                    p.id.into(),
-                    p.created.into(),
-                    p.deleted.into(),
-                    n.into(),
-                    f.into(),
-                ]);
+                rows.push(((Some(p.id), p.created, p.deleted, n), f));
             }
             None => {
                 none.insert((p.created, p.deleted), ());
@@ -1169,18 +1044,15 @@ fn friend_tags(c: &Ctx) -> Rows {
         }
     }
     for (created, deleted) in none.into_keys() {
-        rows.push(vec![
-            V::Null,
-            created.into(),
-            deleted.into(),
-            0i64.into(),
-            V::Null,
-        ]);
+        rows.push(((None, created, deleted, 0), None));
     }
-    frequency(&FRIEND_TAGS, rows)
+    frequency(&mut rows);
+    for ((id, created, deleted, n), f) in rows {
+        out.push((id, ts(created), ts(deleted), n, f));
+    }
 }
 
-fn disjoint_employers(c: &Ctx) -> Rows {
+fn disjoint_employers(c: &Ctx, out: &mut Columns<(i64, String, i32, Ts, Ts)>) {
     let mut sample: Vec<u32> = (0..c.g.persons.len() as u32).collect();
     sample.sort_unstable_by_key(|&i| c.g.persons[i as usize].id);
     sample.truncate(20);
@@ -1188,30 +1060,26 @@ fn disjoint_employers(c: &Ctx) -> Rows {
     for w in &c.g.work {
         works.entry(w[0]).or_default().push(w[1]);
     }
-    let mut out = BTreeSet::new();
+    let mut rows = BTreeSet::new();
     for &i in &sample {
         let p = &c.g.persons[i as usize];
         for &f in &c.adj[i as usize] {
             for co in works.get(&c.g.persons[f as usize].id).into_iter().flatten() {
                 if let Some(name) = c.companies.get(co) {
-                    out.insert(vec![
-                        p.id.into(),
-                        name.into(),
-                        (*co as i32).into(),
-                        p.created.into(),
-                        p.deleted.into(),
-                    ]);
+                    rows.insert((p.id, &**name, *co as i32, p.created, p.deleted));
                 }
             }
         }
     }
-    to_rows(&DISJOINT_EMPLOYERS, &out.into_iter().collect::<Vec<_>>())
+    for (id, name, co, created, deleted) in rows {
+        out.push((id, name, co, ts(created), ts(deleted)));
+    }
 }
 
 /// Connected components of `edges` over all persons: `(PersonId,
 /// Component, count)`, the component being its least person id (as
 /// graphx labels them), persons in raw order.
-fn components(c: &Ctx, def: &TableDef, edges: impl Iterator<Item = (u32, u32)>) -> Rows {
+fn components(c: &Ctx, out: &mut Columns<ComponentRow>, edges: impl Iterator<Item = (u32, u32)>) {
     let n = c.g.persons.len();
     let mut parent: Vec<u32> = (0..n as u32).collect();
     fn find(p: &mut [u32], mut x: u32) -> u32 {
@@ -1238,24 +1106,22 @@ fn components(c: &Ctx, def: &TableDef, edges: impl Iterator<Item = (u32, u32)>) 
             .or_insert(id);
         *size.entry(r).or_default() += 1;
     }
-    let rows: Vec<Vec<V>> = roots
-        .iter()
-        .enumerate()
-        .map(|(i, r)| vec![c.g.persons[i].id.into(), min_id[r].into(), size[r].into()])
-        .collect();
-    to_rows(def, &rows)
+    out.reserve(n);
+    for (i, r) in roots.iter().enumerate() {
+        out.push((c.g.persons[i].id, min_id[r], size[r]));
+    }
 }
 
-fn knows_connected(c: &Ctx) -> Rows {
+fn knows_connected(c: &Ctx, out: &mut Columns<ComponentRow>) {
     let edges: Vec<(u32, u32)> =
         c.g.knows
             .iter()
             .map(|e| (c.idx[&e[0]], c.idx[&e[1]]))
             .collect();
-    components(c, &KNOWS_CONNECTED, edges.into_iter())
+    components(c, out, edges.into_iter());
 }
 
-fn same_university(c: &Ctx) -> Rows {
+fn same_university(c: &Ctx, out: &mut Columns<ComponentRow>) {
     let mut study: Map<i64, Vec<&[i64; 4]>> = Map::default();
     for s in &c.g.study {
         study.entry(s[0]).or_default().push(s);
@@ -1274,51 +1140,30 @@ fn same_university(c: &Ctx) -> Rows {
             }
         }
     }
-    components(c, &SAME_UNIVERSITY, edges.into_iter())
+    components(c, out, edges.into_iter());
 }
 
-fn days(def: &TableDef, rows: impl Iterator<Item = [i64; 4]>) -> Rows {
-    let rows: Vec<Vec<V>> = rows
-        .map(|r| vec![r[0].into(), r[1].into(), day(r[2]).into(), day(r[3]).into()])
-        .collect();
-    to_rows(def, &rows)
+/// `(id1, id2, creationDay, deletionDay)` of every edge, in raw order.
+fn days(out: &mut Columns<EdgeDaysRow>, edges: &[[i64; 4]]) {
+    out.reserve(edges.len());
+    for r in edges {
+        out.push((r[0], r[1], ts(day(r[2])), ts(day(r[3]))));
+    }
 }
 
-fn knows_days(c: &Ctx) -> Rows {
-    days(&KNOWS_DAYS, c.g.knows.iter().copied())
-}
-
-fn study_days(c: &Ctx) -> Rows {
-    days(&STUDY_DAYS, c.g.study.iter().copied())
-}
-
-fn work_days(c: &Ctx) -> Rows {
-    days(&WORK_DAYS, c.g.work.iter().copied())
-}
-
-fn person_days(c: &Ctx) -> Rows {
-    let rows: Vec<Vec<V>> =
-        c.g.persons
-            .iter()
-            .map(|p| vec![p.id.into(), day(p.created).into(), day(p.deleted).into()])
-            .collect();
-    to_rows(&PERSON_DAYS, &rows)
+fn person_days(c: &Ctx, out: &mut Columns<(i64, Ts, Ts)>) {
+    out.reserve(c.g.persons.len());
+    for p in &c.g.persons {
+        out.push((p.id, ts(day(p.created)), ts(day(p.deleted))));
+    }
 }
 
 // ---- people2Hops / people4Hops ----
 
-fn people_2_hops(c: &Ctx) -> Rows {
-    hops(c, &PEOPLE_2_HOPS, 2)
-}
-
-fn people_4_hops(c: &Ctx) -> Rows {
-    hops(c, &PEOPLE_4_HOPS, 4)
-}
-
 /// `nHops(n)` from a sample of the persons in China (country 1): pairs
 /// `(s, x)` where the shortest walk from `s` to `x` has `n` steps (so `s`
 /// is two steps from itself), sorted, then sampled down to ~10,000.
-fn hops(c: &Ctx, def: &TableDef, n: u8) -> Rows {
+fn hops(c: &Ctx, out: &mut Columns<HopsRow>, n: u8) {
     let mut china: Vec<u32> = (0..c.g.persons.len() as u32)
         .filter(|&i| {
             let p = &c.g.persons[i as usize];
@@ -1373,22 +1218,13 @@ fn hops(c: &Ctx, def: &TableDef, n: u8) -> Rows {
     .collect();
     pairs.sort_unstable();
     let pairs = bernoulli(&pairs, (10000.0 / pairs.len() as f64).min(1.0));
-    let rows: Vec<Vec<V>> = pairs
-        .iter()
-        .map(|&(a, b, s)| {
-            // the datagen joins person 2 on Person1Id too
-            let p = &c.g.persons[s as usize];
-            vec![
-                a.into(),
-                b.into(),
-                p.created.into(),
-                p.deleted.into(),
-                p.created.into(),
-                p.deleted.into(),
-            ]
-        })
-        .collect();
-    to_rows(def, &rows)
+    out.reserve(pairs.len());
+    for &(a, b, s) in &pairs {
+        // the datagen joins person 2 on Person1Id too
+        let p = &c.g.persons[s as usize];
+        let (created, deleted) = (ts(p.created), ts(p.deleted));
+        out.push((a, b, created, deleted, created, deleted));
+    }
 }
 
 /// Spark's `sample(fraction, seed = 42)` of one partition (index 0): a
@@ -1503,30 +1339,23 @@ mod tests {
 
     #[test]
     fn frequency_order() {
-        let mut rows = vec![
-            vec![V::Int(2), V::Null],
-            vec![V::Int(1), V::Int(5)],
-            vec![V::Null, V::Int(5)],
-            vec![V::Int(0), V::Int(7)],
-        ];
-        rows.sort_by(|a, b| freq_order(a, b));
-        assert_eq!(
-            rows,
-            vec![
-                vec![V::Int(0), V::Int(7)],
-                vec![V::Null, V::Int(5)],
-                vec![V::Int(1), V::Int(5)],
-                vec![V::Int(2), V::Null],
-            ]
-        );
+        let mut rows = vec![(2, None), (1, Some(5)), (-1, Some(5)), (0, Some(7))];
+        frequency(&mut rows);
+        assert_eq!(rows, [(0, Some(7)), (-1, Some(5)), (1, Some(5)), (2, None)]);
+        let mut keys = vec![(Some(1), Some(5)), (None, Some(5))];
+        frequency(&mut keys);
+        assert_eq!(keys, [(None, Some(5)), (Some(1), Some(5))]);
     }
 
     #[test]
     fn unordered_names_exist() {
         for n in UNORDERED {
-            assert!(FACTORS.iter().any(|(d, _)| d.name == n));
+            assert!(FACTOR_TABLES.iter().any(|(t, _)| *t == n));
         }
-        let names: HashSet<&str> = FACTORS.iter().map(|(d, _)| d.name).collect();
-        assert_eq!(names.len(), FACTORS.len());
+        let names: HashSet<&str> = FACTOR_TABLES.iter().map(|(t, _)| *t).collect();
+        assert_eq!(names.len(), FACTOR_TABLES.len());
+        let mut sorted = FACTOR_TABLES.map(|(t, _)| t);
+        sorted.sort_unstable();
+        assert_eq!(sorted, FACTOR_TABLES.map(|(t, _)| t));
     }
 }

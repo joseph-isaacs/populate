@@ -10,7 +10,7 @@
 
 use crate::dict::push_u64;
 use crate::java::civil_from_days;
-use crate::rows::{Col, Kind, Rows, TableDef};
+use crate::rows::{Col, Rows, TableDef};
 
 /// Spark's microseconds of epoch milliseconds stored as a `Long`, divided
 /// by 1000 and cast to a timestamp.
@@ -93,12 +93,6 @@ fn timestamp_text<const Z: bool>(out: &mut Vec<u8>, ms: i64, days: &mut DayCache
     } else {
         out.extend_from_slice(&b);
     }
-}
-
-/// A date column value.
-#[inline]
-pub fn date(out: &mut Vec<u8>, ms: i64) {
-    out.extend_from_slice(&ymd(spark_micros(ms).div_euclid(86_400_000_000)));
 }
 
 #[inline]
@@ -191,44 +185,29 @@ fn write_styled<const FACTOR: bool>(def: &TableDef, rows: &Rows, out: &mut Vec<u
     out.reserve(n * 16 * def.cols.len());
     let mut days = vec![DayCache::default(); def.cols.len()];
     for r in 0..n {
-        for (c, (col, &(_, kind))) in rows.cols.iter().zip(def.cols).enumerate() {
+        for (c, col) in rows.cols.iter().enumerate() {
             if c > 0 {
                 out.push(sep);
             }
             match col {
-                Col::I64(v) => match kind {
-                    Kind::Ts => timestamp_text::<FACTOR>(out, v[r], &mut days[c]),
-                    Kind::Date => date(out, v[r]),
-                    _ => int(out, v[r]),
-                },
+                Col::Ts(v) => timestamp_text::<FACTOR>(out, v[r].0, &mut days[c]),
+                Col::Date(v) => out.extend_from_slice(&days[c].get(v[r].0 as i64)),
+                Col::I64(v) => int(out, v[r]),
                 Col::I32(v) => int(out, v[r] as i64),
                 Col::Bool(v) => out.extend_from_slice(if v[r] { b"true" } else { b"false" }),
-                Col::Str(d, o) => {
-                    let s = if r == 0 { 0 } else { o[r - 1] as usize };
-                    string(out, &d[s..o[r] as usize]);
-                }
-                Col::OptI64(v, valid) => {
-                    if valid[r] {
-                        int(out, v[r]);
-                    } else {
-                        out.extend_from_slice(null);
-                    }
-                }
-                Col::OptI32(v, valid) => {
-                    if valid[r] {
-                        int(out, v[r] as i64);
-                    } else {
-                        out.extend_from_slice(null);
-                    }
-                }
-                Col::OptStr(d, o, valid) => {
-                    if valid[r] {
-                        let s = if r == 0 { 0 } else { o[r - 1] as usize };
-                        string(out, &d[s..o[r] as usize]);
-                    } else {
-                        out.extend_from_slice(null);
-                    }
-                }
+                Col::Str(v) => string(out, v.get(r).as_bytes()),
+                Col::OptI64(v) => match v.valid.get(r) {
+                    true => int(out, v.values[r]),
+                    false => out.extend_from_slice(null),
+                },
+                Col::OptI32(v) => match v.valid.get(r) {
+                    true => int(out, v.values[r] as i64),
+                    false => out.extend_from_slice(null),
+                },
+                Col::OptStr(v) => match v.valid.get(r) {
+                    true => string(out, v.values.get(r).as_bytes()),
+                    false => out.extend_from_slice(null),
+                },
             }
         }
         out.push(b'\n');
@@ -238,7 +217,7 @@ fn write_styled<const FACTOR: bool>(def: &TableDef, rows: &Rows, out: &mut Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::java::ms_of_ymd;
+    use crate::java::{MS_PER_DAY, ms_of_ymd};
 
     #[test]
     fn spark_dates() {
@@ -248,9 +227,8 @@ mod tests {
             String::from_utf8(v).unwrap(),
             "2010-01-03T15:10:31.499+00:00"
         );
-        let mut v = Vec::new();
-        date(&mut v, ms_of_ymd(1984, 3, 11));
-        assert_eq!(String::from_utf8(v).unwrap(), "1984-03-11");
+        let day = ms_of_ymd(1984, 3, 11) / MS_PER_DAY;
+        assert_eq!(&ymd(day), b"1984-03-11");
     }
 
     #[test]

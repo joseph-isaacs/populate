@@ -19,9 +19,10 @@
 //!    one seed per block.
 //!
 //! Steps 1 and 2 are a global pre-pass ([`Ldbc::new`], blocks in
-//! parallel). Step 3 is the [`MultiChunks`] source: a chunk is
-//! [`SEGMENT`] persons of an activity block, generated from the state the
-//! block reaches at its first person, so it is a pure function of its
+//! parallel). Step 3 is [`Ldbc::raw`], one distribution of all 14 tables
+//! (a `fan_out` over chunks, its schemas read off its row types). A chunk
+//! is [`SEGMENT`] persons of an activity block, generated from the state
+//! the block reaches at its first person, so it is a pure function of its
 //! index and the pre-pass, and any number of threads gives the same
 //! output.
 //!
@@ -43,29 +44,31 @@ mod person;
 pub mod rows;
 
 use activity::{BlockGen, Resume, World};
-use arrow_array::{
-    ArrayRef, BooleanArray, Date32Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampMillisecondArray,
-};
-use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::SchemaRef;
+use arrow_array::RecordBatch;
 use dates::Dates;
 use dict::{Dictionaries, PlaceType};
 use factors::{Factor, FactorInput};
 use knows::Knows;
 use params::Params;
 use person::{Hot, Person, PersonGenerator};
-use populate_table::MultiChunks;
+use populate_builtins::{fan_out, named_all, range};
+use populate_core::{Distribution, Sink};
 use populate_table::text::TextChunks;
-use rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
+use populate_table::{DistTables, resolve_threads};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+use rows::{
+    DYNAMIC, DYNAMIC_COLUMNS, DYNAMIC_NAMES, Raw, RawCols, Rows, STATIC_TABLES, StaticCols,
+    Statics, TableDef, rows_of,
+};
 use std::collections::HashSet;
 use std::env::var_os;
 use std::fs::read_to_string;
 use std::io;
 use std::mem::take;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -73,13 +76,12 @@ pub use jrand::JavaRandom;
 pub use params::{SCALE_FACTORS, persons_for_scale_factor};
 
 /// Run `f(i)` for `i in 0..n` on `threads` threads (0 = all cores),
-/// results in order.
+/// results in order. For many small tasks (one per person, say), where
+/// [`populate_table::par_ordered`]'s per-task scheduling would cost more
+/// than the work: workers take indices off one counter and keep their
+/// results until the end.
 fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-    .min(n.max(1));
+    let threads = resolve_threads(threads).min(n.max(1));
     if threads <= 1 {
         return (0..n).map(f).collect();
     }
@@ -250,10 +252,7 @@ impl Ldbc {
     /// With fewer blocks, states are found as chunks need them, which
     /// overlaps one skipping pass with the chunks it unblocks.
     fn with_states(mut self, threads: usize) -> Self {
-        let threads = match threads {
-            0 => thread::available_parallelism().map_or(1, |t| t.get()),
-            t => t,
-        };
+        let threads = resolve_threads(threads);
         if threads > 1 && self.blocks.len() >= threads {
             let t0 = Instant::now();
             let g = &self;
@@ -300,11 +299,6 @@ impl Ldbc {
         }
     }
 
-    /// Fresh buffers for the dynamic tables.
-    pub fn dynamic_rows() -> Vec<Rows> {
-        DYNAMIC.iter().map(|d| Rows::new(d)).collect()
-    }
-
     /// The state before segment `k` of block `b`, skipping from the
     /// nearest known one if need be (the block's lock is held meanwhile, so
     /// each stretch is skipped once).
@@ -317,7 +311,7 @@ impl Ldbc {
                 .expect("block start");
             let members = &self.blocks[b][..];
             let w = self.world();
-            let mut g = BlockGen::new(&w, Vec::new());
+            let mut g = BlockGen::new(&w, RawCols::default());
             for s in j..k {
                 let range = s * SEGMENT..(s + 1) * SEGMENT;
                 let next = g.skip(b as u64, members, range, states[s].as_ref().expect("state"));
@@ -327,11 +321,16 @@ impl Ldbc {
         states[k].clone().expect("state")
     }
 
-    /// Generate chunk `i` into `out` (one [`Rows`] per [`rows::DYNAMIC`]
-    /// table, cleared first).
-    pub fn chunk_rows(&self, i: u64, out: &mut Vec<Rows>) {
-        for r in out.iter_mut() {
-            r.clear();
+    /// Append chunk `i`'s rows of every dynamic table to `out`.
+    ///
+    /// With [`Self::collect_factors`] on, `out` must hold no other chunk:
+    /// the factor tables take in every row of it.
+    pub fn chunk_into(&self, i: u64, out: &mut RawCols) {
+        if self.factor_input.is_some() {
+            assert!(
+                out.0.0.values.1.is_empty(),
+                "the factor tables take one chunk at a time"
+            );
         }
         let (b, start, end) = self.segments[i as usize];
         let k = start / SEGMENT;
@@ -349,6 +348,42 @@ impl Ldbc {
         if let Some(f) = &self.factor_input {
             f.add(i, out);
         }
+    }
+
+    /// Chunk `i`'s rows of every dynamic table: row `i` of
+    /// [`Self::raw_dist`].
+    fn chunk(&self, i: u64) -> RawCols {
+        let mut d = self.raw_dist();
+        d.skip(i);
+        // the chunks draw from their own `java.util.Random` farms
+        d.collect(&mut SmallRng::seed_from_u64(0), 1)
+    }
+
+    /// Chunk `i`'s rows, one [`Rows`] per [`rows::DYNAMIC`] table.
+    pub fn chunk_rows(&self, i: u64) -> Vec<Rows> {
+        rows_of(self.chunk(i))
+    }
+
+    /// The 14 dynamic tables as one distribution: a source row is a chunk,
+    /// and its children are the chunk's rows of each table. With
+    /// [`Self::collect_factors`] on, collect one source row at a time (as
+    /// [`Self::raw`] does).
+    pub fn raw_dist(&self) -> impl Distribution<Item = Raw> + Clone + Sync + '_ {
+        let names: Vec<&str> = DYNAMIC_COLUMNS.concat();
+        named_all(
+            &names,
+            fan_out::<_, Raw, _>(range(0u64, 1), |&i: &u64, out: &mut RawCols| {
+                self.chunk_into(i, out)
+            }),
+        )
+    }
+
+    /// The dynamic tables, a chunk (one Parquet row group per table) per
+    /// chunk of the network.
+    pub fn raw(&self) -> DistTables<impl Distribution<Item = Raw> + Clone + Sync + '_> {
+        DistTables::new(&DYNAMIC_NAMES, self.num_chunks(), self.raw_dist())
+            .chunk_rows(1)
+            .batch_rows(1)
     }
 
     /// Gather the factor tables' inputs from every chunk generated from
@@ -369,83 +404,91 @@ impl Ldbc {
     /// and count the dynamic tables' rows, without writing them.
     pub fn count_rows(&self, threads: usize) -> usize {
         par_map(self.segments.len(), threads, |i| {
-            let mut rows = Ldbc::dynamic_rows();
-            self.chunk_rows(i as u64, &mut rows);
-            rows.iter().map(Rows::len).sum::<usize>()
+            self.chunk_rows(i as u64)
+                .iter()
+                .map(Rows::len)
+                .sum::<usize>()
         })
         .into_iter()
         .sum()
     }
 
+    /// The four static tables as one distribution of a single source row,
+    /// its children the tables' rows.
+    pub fn static_dist(&self) -> impl Distribution<Item = Statics> + Clone + Sync + '_ {
+        let names: Vec<&str> = STATIC_TABLES
+            .iter()
+            .flat_map(|t| t.1.iter().copied())
+            .collect();
+        named_all(
+            &names,
+            fan_out::<_, Statics, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
+                self.static_into(out)
+            }),
+        )
+    }
+
     /// The four static tables ([`rows::STATIC`]).
     pub fn static_rows(&self) -> Vec<Rows> {
+        rows_of(
+            self.static_dist()
+                .collect(&mut SmallRng::seed_from_u64(0), 1),
+        )
+    }
+
+    fn static_into(&self, out: &mut StaticCols) {
         let d = &self.dicts;
-        let mut out: Vec<Rows> = STATIC.iter().map(|t| Rows::new(t)).collect();
         const DBP: &str = "http://dbpedia.org/resource/";
         const DBPOWL: &str = "http://dbpedia.org/ontology/";
+        let (orgs, places, tags, classes) = out;
         // organisations: companies, then universities
-        {
-            let r = &mut out[0];
-            for (id, name) in d.companies.name.iter().enumerate() {
-                let name = java::clamp(name, 256);
-                r.cols[0].i32(id as i32);
-                r.cols[1].str(b"Company");
-                r.cols[2].str(name.as_bytes());
-                r.cols[3].str(format!("{DBP}{name}").as_bytes());
-                r.cols[4].i32(d.companies.country[id]);
-            }
-            for (k, name) in d.universities.name.iter().enumerate() {
-                let name = java::clamp(name, 256);
-                r.cols[0].i32((d.universities.start + k as i64) as i32);
-                r.cols[1].str(b"University");
-                r.cols[2].str(name.as_bytes());
-                r.cols[3].str(format!("{DBP}{name}").as_bytes());
-                r.cols[4].i32(d.universities.city[k]);
+        for (id, name) in d.companies.name.iter().enumerate() {
+            let name = java::clamp(name, 256);
+            let url = format!("{DBP}{name}");
+            let country = d.companies.country[id];
+            orgs.values
+                .push((id as i32, "Company", name, url.as_str(), country));
+        }
+        for (k, name) in d.universities.name.iter().enumerate() {
+            let name = java::clamp(name, 256);
+            let id = (d.universities.start + k as i64) as i32;
+            let url = format!("{DBP}{name}");
+            let city = d.universities.city[k];
+            orgs.values
+                .push((id, "University", name, url.as_str(), city));
+        }
+        for (id, pl) in d.places.places.iter().enumerate() {
+            let name = java::clamp(&pl.name, 256);
+            let url = format!("{DBP}{name}");
+            let part_of = match pl.kind {
+                PlaceType::City | PlaceType::Country => Some(d.places.belongs_to(id as i32)),
+                PlaceType::Continent => None,
+            };
+            places
+                .values
+                .push((id as i32, name, url.as_str(), pl.kind.as_str(), part_of));
+        }
+        let mut exported = HashSet::new();
+        for (id, name) in d.tags.names.iter().enumerate() {
+            let name = java::clamp(name, 256).replace('"', "\\\"");
+            let class = d.tags.tag_class[id];
+            let url = format!("{DBP}{name}");
+            tags.values
+                .push((id as i32, name.as_str(), url.as_str(), class));
+            let mut c = class;
+            while c != -1 && exported.insert(c) {
+                let parent = d.tags.class_parent(c);
+                let cname = java::clamp(d.tags.class_name(c), 256);
+                let url = if cname == "Thing" {
+                    "http://www.w3.org/2002/07/owl#Thing".to_string()
+                } else {
+                    format!("{DBPOWL}{cname}")
+                };
+                let parent_id = (parent != -1).then_some(parent);
+                classes.values.push((c, cname, url.as_str(), parent_id));
+                c = parent;
             }
         }
-        {
-            let r = &mut out[1];
-            for (id, pl) in d.places.places.iter().enumerate() {
-                let name = java::clamp(&pl.name, 256);
-                r.cols[0].i32(id as i32);
-                r.cols[1].str(name.as_bytes());
-                r.cols[2].str(format!("{DBP}{name}").as_bytes());
-                r.cols[3].str(pl.kind.as_str().as_bytes());
-                r.cols[4].opt_i32(match pl.kind {
-                    PlaceType::City | PlaceType::Country => Some(d.places.belongs_to(id as i32)),
-                    PlaceType::Continent => None,
-                });
-            }
-        }
-        {
-            let mut exported = HashSet::new();
-            let (tags, classes) = out.split_at_mut(3);
-            let (rt, rc) = (&mut tags[2], &mut classes[0]);
-            for (id, name) in d.tags.names.iter().enumerate() {
-                let name = java::clamp(name, 256).replace('"', "\\\"");
-                let class = d.tags.tag_class[id];
-                rt.cols[0].i32(id as i32);
-                rt.cols[1].str(name.as_bytes());
-                rt.cols[2].str(format!("{DBP}{name}").as_bytes());
-                rt.cols[3].i32(class);
-                let mut c = class;
-                while c != -1 && exported.insert(c) {
-                    let parent = d.tags.class_parent(c);
-                    let cname = java::clamp(d.tags.class_name(c), 256);
-                    rc.cols[0].i32(c);
-                    rc.cols[1].str(cname.as_bytes());
-                    let url = if cname == "Thing" {
-                        "http://www.w3.org/2002/07/owl#Thing".to_string()
-                    } else {
-                        format!("{DBPOWL}{cname}")
-                    };
-                    rc.cols[2].str(url.as_bytes());
-                    rc.cols[3].opt_i32((parent != -1).then_some(parent));
-                    c = parent;
-                }
-            }
-        }
-        out
     }
 
     /// CSV text of the dynamic tables, for
@@ -471,8 +514,7 @@ impl TextChunks for DynamicCsv<'_> {
     }
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
-        let mut rows = Ldbc::dynamic_rows();
-        self.g.chunk_rows(i, &mut rows);
+        let rows = self.g.chunk_rows(i);
         for ((def, r), buf) in DYNAMIC.iter().zip(&rows).zip(bufs.iter_mut()) {
             if i == 0 {
                 csv::header(def, buf);
@@ -482,73 +524,10 @@ impl TextChunks for DynamicCsv<'_> {
     }
 }
 
-impl MultiChunks for Ldbc {
-    fn schemas(&self) -> Vec<SchemaRef> {
-        DYNAMIC.iter().map(|d| d.schema()).collect()
-    }
-
-    fn num_chunks(&self) -> u64 {
-        Ldbc::num_chunks(self)
-    }
-
-    fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
-        let mut rows = Ldbc::dynamic_rows();
-        self.chunk_rows(i, &mut rows);
-        for (k, (def, r)) in DYNAMIC.iter().zip(&rows).enumerate() {
-            if !r.is_empty() {
-                emit(k, to_batch(def, r));
-            }
-        }
-    }
-}
-
-/// An Arrow batch of `rows`.
-pub fn to_batch(def: &TableDef, rows: &Rows) -> RecordBatch {
-    let cols: Vec<ArrayRef> = rows
-        .cols
-        .iter()
-        .zip(def.cols)
-        .map(|(c, &(_, k))| -> ArrayRef {
-            match c {
-                Col::I64(v) => match k {
-                    Kind::Ts => {
-                        Arc::new(TimestampMillisecondArray::from(v.clone()).with_timezone("UTC"))
-                    }
-                    Kind::Date => Arc::new(Date32Array::from(
-                        v.iter()
-                            .map(|&ms| ms.div_euclid(java::MS_PER_DAY) as i32)
-                            .collect::<Vec<_>>(),
-                    )),
-                    _ => Arc::new(Int64Array::from(v.clone())),
-                },
-                Col::I32(v) => Arc::new(Int32Array::from(v.clone())),
-                Col::Bool(v) => Arc::new(BooleanArray::from(v.clone())),
-                Col::Str(d, o) => Arc::new(string_array(d, o, None)),
-                Col::OptI64(v, n) => Arc::new(Int64Array::new(
-                    ScalarBuffer::from(v.clone()),
-                    Some(NullBuffer::from(n.clone())),
-                )),
-                Col::OptI32(v, n) => Arc::new(Int32Array::new(
-                    ScalarBuffer::from(v.clone()),
-                    Some(NullBuffer::from(n.clone())),
-                )),
-                Col::OptStr(d, o, n) => Arc::new(string_array(d, o, Some(n))),
-            }
-        })
-        .collect();
+/// An Arrow batch of `rows`, a table of `def`.
+pub fn to_batch(def: &TableDef, rows: Rows) -> RecordBatch {
+    let cols = rows.cols.into_iter().map(|c| c.into_array()).collect();
     RecordBatch::try_new(def.schema(), cols).expect("schema matches")
-}
-
-fn string_array(d: &[u8], ends: &[u32], valid: Option<&Vec<bool>>) -> StringArray {
-    let mut offs = Vec::with_capacity(ends.len() + 1);
-    offs.push(0i32);
-    offs.extend(
-        ends.iter()
-            .map(|&e| i32::try_from(e).expect("a chunk's string column is over 2 GiB")),
-    );
-    let offsets = OffsetBuffer::new(ScalarBuffer::from(offs));
-    let nulls = valid.map(|v| NullBuffer::from(v.clone()));
-    StringArray::try_new(offsets, arrow_buffer::Buffer::from(d.to_vec()), nulls).expect("utf-8")
 }
 
 /// The resources directory: `$LDBC_DATAGEN_RESOURCES`, else

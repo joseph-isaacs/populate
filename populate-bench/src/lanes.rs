@@ -22,7 +22,7 @@
 //! than the serial chain.
 
 use crate::fair::{Cols, SF, cols_to_batch};
-use crate::{BATCH, Output, batch_bytes_60};
+use crate::{BATCH, Output, batch_bytes};
 use std::hint::black_box;
 use tpchgen::dates::{MIN_GENERATE_DATE, TOTAL_DATE_RANGE, TPCHDate};
 use tpchgen::generators::{LineItemGenerator, OrderGenerator};
@@ -318,7 +318,7 @@ pub fn tpch_lanes_numeric(n: usize) -> Output {
         g.fill_orders(ORDERS_PER_BLOCK, &mut c);
         let b = cols_to_batch(c);
         out.rows += b.num_rows();
-        out.bytes += batch_bytes_60(&b);
+        out.bytes += batch_bytes(&b);
         black_box(b);
     }
     out
@@ -393,7 +393,7 @@ mod tests {
         }
         let n = got.i64s[0].len();
         let rows: Vec<_> = LineItemGenerator::new(SF, 1, 1).iter().take(n).collect();
-        let want = crate::tpch_numeric_batch(&rows, &crate::numeric_schema_60());
+        let want = crate::tpch_numeric_batch(&rows, &crate::numeric_schema());
         assert_eq!(cols_to_batch(got), want);
     }
 

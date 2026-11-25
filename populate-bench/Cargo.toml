@@ -11,6 +11,7 @@ default-run = "populate-bench"
 populate = { workspace = true, features = ["parquet"] }
 rand = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # tpchgen 4 targets arrow 60, the same arrow and parquet as populate.

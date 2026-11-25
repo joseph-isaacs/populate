@@ -33,8 +33,9 @@ pub mod fair;
 pub mod lanes;
 
 use arrow_array::builder::{Int32Builder, Int64Builder};
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use populate::Distribution;
@@ -51,14 +52,6 @@ use std::sync::Arc;
 use tpchgen::generators::{LineItem, LineItemGenerator};
 use tpchgen::text::TextPool;
 use tpchgen_arrow::LineItemArrow;
-use tpchgen_arrow::arrow::array::{
-    Array as Array60, ArrayRef as ArrayRef60, Int32Array as Int32Array60,
-    Int64Array as Int64Array60, ListArray as ListArray60, RecordBatch as RecordBatch60,
-};
-use tpchgen_arrow::arrow::buffer::OffsetBuffer as OffsetBuffer60;
-use tpchgen_arrow::arrow::datatypes::{
-    DataType as DataType60, Field as Field60, Schema as Schema60, SchemaRef as SchemaRef60,
-};
 
 /// Batch size for streaming variants (tpchgen-arrow's default is 8000).
 pub const BATCH: usize = 8192;
@@ -98,13 +91,6 @@ impl Write for CountingWriter {
 pub fn parquet_props() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::UNCOMPRESSED)
-        .set_dictionary_enabled(false)
-        .build()
-}
-
-fn parquet_props_60() -> parquet::file::properties::WriterProperties {
-    parquet::file::properties::WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .build()
 }
@@ -166,10 +152,6 @@ pub fn batch_bytes(b: &RecordBatch) -> usize {
     b.columns().iter().map(|c| c.get_array_memory_size()).sum()
 }
 
-pub fn batch_bytes_60(b: &RecordBatch60) -> usize {
-    b.columns().iter().map(|c| c.get_array_memory_size()).sum()
-}
-
 /// Split `n` into `BATCH`-sized chunks.
 fn chunks(n: usize) -> impl Iterator<Item = usize> {
     (0..n.div_ceil(BATCH)).map(move |i| BATCH.min(n - i * BATCH))
@@ -180,7 +162,7 @@ fn chunks(n: usize) -> impl Iterator<Item = usize> {
 // ============================================================================
 
 /// 11 numeric columns, one `RecordBatch` of `n` rows.
-pub fn p2_numeric_arrow(n: usize) -> Output {
+pub fn populate_numeric_arrow(n: usize) -> Output {
     let mut d = lineitem_numeric();
     let batch = d.collect_record_batch(&mut rng(), n).expect("batch");
     black_box(Output {
@@ -190,9 +172,9 @@ pub fn p2_numeric_arrow(n: usize) -> Output {
 }
 
 /// Same, streamed as `BATCH`-row batches (bounded memory, like tpchgen-arrow).
-pub fn p2_numeric_arrow_batched(n: usize) -> Output {
+pub fn populate_numeric_arrow_batched(n: usize) -> Output {
     let mut out = Output { rows: 0, bytes: 0 };
-    p2_numeric_batches(1, n, BATCH, &mut rng(), |batch| {
+    populate_numeric_batches(1, n, BATCH, &mut rng(), |batch| {
         out.rows += batch.num_rows();
         out.bytes += batch_bytes(&batch);
         black_box(batch);
@@ -203,7 +185,7 @@ pub fn p2_numeric_arrow_batched(n: usize) -> Output {
 /// Stream `n` rows of [`lineitem_numeric`] as `batch`-row batches, orderkeys
 /// `first_key..first_key + n`. One distribution for the whole stream: the
 /// key `range` carries on from batch to batch.
-pub fn p2_numeric_batches(
+pub fn populate_numeric_batches(
     first_key: i64,
     n: usize,
     batch: usize,
@@ -256,7 +238,7 @@ const RANGES: NumericRanges = NumericRanges {
     ],
 };
 
-fn numeric_schema_57() -> Arc<Schema> {
+pub fn numeric_schema() -> SchemaRef {
     let i64f = |n: &str| Field::new(n, DataType::Int64, false);
     let i32f = |n: &str| Field::new(n, DataType::Int32, false);
     Arc::new(Schema::new(vec![
@@ -286,7 +268,7 @@ pub fn raw_columnar_arrow_batched(n: usize) -> Output {
         }
         v
     }
-    let schema = numeric_schema_57();
+    let schema = numeric_schema();
     let mut r = rng();
     let mut key = 1i64;
     let mut out = Output { rows: 0, bytes: 0 };
@@ -321,7 +303,7 @@ pub fn raw_columnar_arrow_batched(n: usize) -> Output {
 /// Hand-written row-at-a-time: draw all 11 values for a row, append each to
 /// a typed Arrow `PrimitiveBuilder` (the usual way to fill Arrow by hand).
 pub fn raw_row_builders_arrow_batched(n: usize) -> Output {
-    let schema = numeric_schema_57();
+    let schema = numeric_schema();
     let u64s = RANGES
         .i64s
         .map(|(lo, hi)| RandUniform::new_inclusive(lo, hi).expect("range"));
@@ -372,7 +354,7 @@ pub fn raw_row_builders_arrow_batched(n: usize) -> Output {
 }
 
 /// 11 numeric columns straight to Parquet with the zero-copy column writer.
-pub fn p2_numeric_parquet(n: usize) -> Output {
+pub fn populate_numeric_parquet(n: usize) -> Output {
     let mut d = lineitem_numeric();
     let w = d
         .collect_parquet(
@@ -389,7 +371,7 @@ pub fn p2_numeric_parquet(n: usize) -> Output {
 }
 
 /// 11 numeric columns: `RecordBatch`, then `ArrowWriter` (the generic path).
-pub fn p2_numeric_parquet_arrow_writer(n: usize) -> Output {
+pub fn populate_numeric_parquet_arrow_writer(n: usize) -> Output {
     let mut d = lineitem_numeric();
     let batch = d.collect_record_batch(&mut rng(), n).expect("batch");
     let w = write_parquet(&batch, CountingWriter::default(), Some(parquet_props())).expect("pq");
@@ -400,7 +382,7 @@ pub fn p2_numeric_parquet_arrow_writer(n: usize) -> Output {
 }
 
 /// `n / 4` orders with `list<i64>` line prices (about `n` list values).
-pub fn p2_list_arrow(n: usize) -> Output {
+pub fn populate_list_arrow(n: usize) -> Output {
     let mut d = orders_with_line_prices();
     let batch = d
         .collect_record_batch(&mut rng(), n / LINES_PER_ORDER)
@@ -412,7 +394,7 @@ pub fn p2_list_arrow(n: usize) -> Output {
 }
 
 /// Same list data written with the zero-copy Parquet writer.
-pub fn p2_list_parquet(n: usize) -> Output {
+pub fn populate_list_parquet(n: usize) -> Output {
     let rows = n / LINES_PER_ORDER;
     let mut d = orders_with_line_prices();
     let w = d
@@ -458,40 +440,22 @@ pub fn tpch_full_arrow(n: usize) -> Output {
     while out.rows < n {
         let batch = gen_.next().expect("batch").expect("ok");
         out.rows += batch.num_rows();
-        out.bytes += batch_bytes_60(&batch);
+        out.bytes += batch_bytes(&batch);
         black_box(batch);
     }
     out
 }
 
-pub fn numeric_schema_60() -> SchemaRef60 {
-    let i64f = |n: &str| Field60::new(n, DataType60::Int64, false);
-    let i32f = |n: &str| Field60::new(n, DataType60::Int32, false);
-    Arc::new(Schema60::new(vec![
-        i64f("orderkey"),
-        i64f("partkey"),
-        i64f("suppkey"),
-        i32f("linenumber"),
-        i64f("quantity"),
-        i64f("extendedprice"),
-        i64f("discount"),
-        i64f("tax"),
-        i32f("shipdate"),
-        i32f("commitdate"),
-        i32f("receiptdate"),
-    ]))
-}
-
 /// tpchgen rows -> the same 11 numeric columns populate makes, written into
 /// exactly-sized `Vec`s and moved into Arrow (the cheapest row->column path).
-pub fn tpch_numeric_batch(rows: &[LineItem<'_>], schema: &SchemaRef60) -> RecordBatch60 {
-    fn col64(rows: &[LineItem<'_>], f: impl Fn(&LineItem<'_>) -> i64) -> ArrayRef60 {
-        Arc::new(Int64Array60::from(rows.iter().map(f).collect::<Vec<_>>()))
+pub fn tpch_numeric_batch(rows: &[LineItem<'_>], schema: &SchemaRef) -> RecordBatch {
+    fn col64(rows: &[LineItem<'_>], f: impl Fn(&LineItem<'_>) -> i64) -> ArrayRef {
+        Arc::new(Int64Array::from(rows.iter().map(f).collect::<Vec<_>>()))
     }
-    fn col32(rows: &[LineItem<'_>], f: impl Fn(&LineItem<'_>) -> i32) -> ArrayRef60 {
-        Arc::new(Int32Array60::from(rows.iter().map(f).collect::<Vec<_>>()))
+    fn col32(rows: &[LineItem<'_>], f: impl Fn(&LineItem<'_>) -> i32) -> ArrayRef {
+        Arc::new(Int32Array::from(rows.iter().map(f).collect::<Vec<_>>()))
     }
-    RecordBatch60::try_new(
+    RecordBatch::try_new(
         schema.clone(),
         vec![
             col64(rows, |r| r.l_orderkey),
@@ -511,8 +475,8 @@ pub fn tpch_numeric_batch(rows: &[LineItem<'_>], schema: &SchemaRef60) -> Record
 }
 
 /// Stream `BATCH`-row numeric batches from tpchgen rows into `f`.
-fn tpch_numeric_batches(n: usize, mut f: impl FnMut(RecordBatch60)) {
-    let schema = numeric_schema_60();
+fn tpch_numeric_batches(n: usize, mut f: impl FnMut(RecordBatch)) {
+    let schema = numeric_schema();
     let mut it = tpch_lineitems().iter();
     let mut rows = Vec::with_capacity(BATCH);
     for len in chunks(n) {
@@ -527,7 +491,7 @@ pub fn tpch_numeric_arrow(n: usize) -> Output {
     let mut out = Output { rows: 0, bytes: 0 };
     tpch_numeric_batches(n, |b| {
         out.rows += b.num_rows();
-        out.bytes += batch_bytes_60(&b);
+        out.bytes += batch_bytes(&b);
         black_box(b);
     });
     out
@@ -538,7 +502,7 @@ pub fn tpch_full_parquet(n: usize) -> Output {
     let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
         LineItemArrow::schema_ref(),
-        Some(parquet_props_60()),
+        Some(parquet_props()),
     )
     .expect("writer");
     let mut rows = 0;
@@ -556,8 +520,8 @@ pub fn tpch_full_parquet(n: usize) -> Output {
 pub fn tpch_numeric_parquet(n: usize) -> Output {
     let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
-        numeric_schema_60(),
-        Some(parquet_props_60()),
+        numeric_schema(),
+        Some(parquet_props()),
     )
     .expect("writer");
     tpch_numeric_batches(n, |b| w.write(&b).expect("write"));
@@ -571,7 +535,7 @@ pub fn tpch_numeric_parquet(n: usize) -> Output {
 /// tpchgen lineitems grouped by orderkey into `(orderkey, list<extendedprice>)`:
 /// how you get the nested shape from a row generator. Stops after the order
 /// that crosses `n` values (about `n / 4` orders), one Arrow batch.
-pub fn tpch_list_batch(n: usize) -> RecordBatch60 {
+pub fn tpch_list_batch(n: usize) -> RecordBatch {
     let mut keys = Vec::with_capacity(n / LINES_PER_ORDER + 8);
     let mut offsets = Vec::with_capacity(n / LINES_PER_ORDER + 9);
     let mut prices = Vec::with_capacity(n + 8);
@@ -589,20 +553,20 @@ pub fn tpch_list_batch(n: usize) -> RecordBatch60 {
         prices.push(r.l_extendedprice.into_inner());
     }
     offsets.push(prices.len() as i32);
-    let item = Arc::new(Field60::new_list_field(DataType60::Int64, false));
-    let list = ListArray60::new(
+    let item = Arc::new(Field::new_list_field(DataType::Int64, false));
+    let list = ListArray::new(
         item.clone(),
-        OffsetBuffer60::new(offsets.into()),
-        Arc::new(Int64Array60::from(prices)),
+        OffsetBuffer::new(offsets.into()),
+        Arc::new(Int64Array::from(prices)),
         None,
     );
-    let schema = Arc::new(Schema60::new(vec![
-        Field60::new("orderkey", DataType60::Int64, false),
-        Field60::new("line_prices", DataType60::List(item), false),
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("line_prices", DataType::List(item), false),
     ]));
-    RecordBatch60::try_new(
+    RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array60::from(keys)), Arc::new(list)],
+        vec![Arc::new(Int64Array::from(keys)), Arc::new(list)],
     )
     .expect("batch")
 }
@@ -611,7 +575,7 @@ pub fn tpch_list_arrow(n: usize) -> Output {
     let b = tpch_list_batch(n);
     black_box(Output {
         rows: b.num_rows(),
-        bytes: batch_bytes_60(&b),
+        bytes: batch_bytes(&b),
     })
 }
 
@@ -620,7 +584,7 @@ pub fn tpch_list_parquet(n: usize) -> Output {
     let mut w = parquet::arrow::ArrowWriter::try_new(
         CountingWriter::default(),
         b.schema(),
-        Some(parquet_props_60()),
+        Some(parquet_props()),
     )
     .expect("writer");
     w.write(&b).expect("write");
@@ -659,12 +623,12 @@ pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "populate (one batch)",
         group: Group::NumericArrow,
-        run: p2_numeric_arrow,
+        run: populate_numeric_arrow,
     },
     Workload {
         name: "populate (8192-row batches)",
         group: Group::NumericArrow,
-        run: p2_numeric_arrow_batched,
+        run: populate_numeric_arrow_batched,
     },
     Workload {
         name: "hand-written columnar Vec -> Arrow, no populate (8192-row batches)",
@@ -699,22 +663,22 @@ pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "populate, every draw from tpchgen's RNG",
         group: Group::NumericArrow,
-        run: fair::p2_uniform_tpch_rng,
+        run: fair::populate_uniform_tpch_rng,
     },
     Workload {
         name: "populate, tpchgen's RNG as lane-parallel leaves (same values)",
         group: Group::NumericArrow,
-        run: fair::p2_uniform_tpch_rng_lanes,
+        run: fair::populate_uniform_tpch_rng_lanes,
     },
     Workload {
         name: "populate zero-copy writer",
         group: Group::NumericParquet,
-        run: p2_numeric_parquet,
+        run: populate_numeric_parquet,
     },
     Workload {
         name: "populate RecordBatch -> ArrowWriter",
         group: Group::NumericParquet,
-        run: p2_numeric_parquet_arrow_writer,
+        run: populate_numeric_parquet_arrow_writer,
     },
     Workload {
         name: "tpchgen -> ArrowWriter",
@@ -724,7 +688,7 @@ pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "populate",
         group: Group::ListArrow,
-        run: p2_list_arrow,
+        run: populate_list_arrow,
     },
     Workload {
         name: "tpchgen rows grouped by orderkey",
@@ -734,7 +698,7 @@ pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "populate, price(partkey) * quantity",
         group: Group::ListArrow,
-        run: fair::p2_list_fair,
+        run: fair::populate_list_fair,
     },
     Workload {
         name: "tpchgen, only the 3 RNG streams needed (same output)",
@@ -744,7 +708,7 @@ pub const WORKLOADS: &[Workload] = &[
     Workload {
         name: "populate zero-copy writer",
         group: Group::ListParquet,
-        run: p2_list_parquet,
+        run: populate_list_parquet,
     },
     Workload {
         name: "tpchgen grouped -> ArrowWriter",
@@ -772,13 +736,16 @@ mod tests {
     #[test]
     fn numeric_outputs_match_in_shape() {
         tpchgen_init();
-        let p2 = p2_numeric_arrow(N);
-        let p2b = p2_numeric_arrow_batched(N);
+        let populate_output = populate_numeric_arrow(N);
+        let populate_batched = populate_numeric_arrow_batched(N);
         let tp = tpch_numeric_arrow(N);
-        assert_eq!((p2.rows, p2b.rows, tp.rows), (N, N, N));
+        assert_eq!(
+            (populate_output.rows, populate_batched.rows, tp.rows),
+            (N, N, N)
+        );
         // same 11 columns, same widths: 7 x i64 + 4 x i32 per row
         let data = N * (7 * 8 + 4 * 4);
-        for o in [p2, p2b, tp] {
+        for o in [populate_output, populate_batched, tp] {
             assert!(o.bytes >= data, "{o:?}");
         }
     }
@@ -786,7 +753,7 @@ mod tests {
     #[test]
     fn batched_orderkeys_continue_across_batches() {
         let mut keys = Vec::new();
-        p2_numeric_batches(101, 3 * BATCH + 5, BATCH, &mut rng(), |b| {
+        populate_numeric_batches(101, 3 * BATCH + 5, BATCH, &mut rng(), |b| {
             let c = b
                 .column(0)
                 .as_any()
@@ -801,8 +768,8 @@ mod tests {
     #[test]
     fn parquet_files_are_comparable() {
         tpchgen_init();
-        let zc = p2_numeric_parquet(N);
-        let aw = p2_numeric_parquet_arrow_writer(N);
+        let zc = populate_numeric_parquet(N);
+        let aw = populate_numeric_parquet_arrow_writer(N);
         let tp = tpch_numeric_parquet(N);
         // plain encoding, no compression: files are about the raw data size
         let data = N * (7 * 8 + 4 * 4);
@@ -815,13 +782,13 @@ mod tests {
     #[test]
     fn list_workloads_have_tpch_shape() {
         tpchgen_init();
-        let p2 = p2_list_arrow(4 * N);
+        let populate_output = populate_list_arrow(4 * N);
         let tp = tpch_list_arrow(4 * N);
         // about N orders each (1..=7 lines per order, mean 4)
-        for o in [p2, tp] {
+        for o in [populate_output, tp] {
             assert!(o.rows > N * 9 / 10 && o.rows < N * 11 / 10, "{o:?}");
         }
-        let pq = p2_list_parquet(4 * N);
+        let pq = populate_list_parquet(4 * N);
         let tq = tpch_list_parquet(4 * N);
         assert_eq!(pq.rows, N);
         assert!(pq.bytes > 0 && tq.bytes > 0);

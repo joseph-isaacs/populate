@@ -32,8 +32,7 @@ use arrow_array::types::{Int32Type, Int64Type};
 use populate_bench::fair::{Cols, SF, TpchDirect, cols_to_batch};
 use populate_bench::lanes::{LANES, ORDERS, ORDERS_PER_BLOCK, TpchLanes};
 use populate_bench::{
-    BATCH, batch_bytes, batch_bytes_60, numeric_schema_60, p2_numeric_batches, tpch_numeric_batch,
-    tpchgen_init,
+    BATCH, batch_bytes, numeric_schema, populate_numeric_batches, tpch_numeric_batch, tpchgen_init,
 };
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -80,7 +79,7 @@ fn tpch_full(sf: f64, part: i32, parts: i32, batch: usize) -> Totals {
         let b = b.expect("batch");
         t.add(Totals {
             rows: b.num_rows(),
-            bytes: batch_bytes_60(&b),
+            bytes: batch_bytes(&b),
             hash: 0,
         });
         drop(black_box(b));
@@ -118,7 +117,7 @@ fn row_hash(b: &RecordBatch) -> u64 {
 
 fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize, check: bool) -> Totals {
     let mut t = Totals::default();
-    let schema = numeric_schema_60();
+    let schema = numeric_schema();
     let mut it = LineItemGenerator::new(sf, part, parts).iter();
     let mut rows = Vec::with_capacity(batch);
     loop {
@@ -130,7 +129,7 @@ fn tpch_numeric(sf: f64, part: i32, parts: i32, batch: usize, check: bool) -> To
         let b = tpch_numeric_batch(&rows, &schema);
         t.add(Totals {
             rows: b.num_rows(),
-            bytes: batch_bytes_60(&b),
+            bytes: batch_bytes(&b),
             hash: if check { row_hash(&b) } else { 0 },
         });
         drop(black_box(b));
@@ -151,7 +150,7 @@ fn tpch_direct(n: usize, batch: usize) -> Totals {
         let b = cols_to_batch(c);
         t.add(Totals {
             rows: b.num_rows(),
-            bytes: batch_bytes_60(&b),
+            bytes: batch_bytes(&b),
             hash: 0,
         });
         drop(black_box(b));
@@ -183,7 +182,7 @@ fn tpch_lanes(thread: usize, threads: usize, check: bool) -> Totals {
             let b = cols_to_batch(cols);
             t.add(Totals {
                 rows: b.num_rows(),
-                bytes: batch_bytes_60(&b),
+                bytes: batch_bytes(&b),
                 hash: if check { row_hash(&b) } else { 0 },
             });
             drop(black_box(b));
@@ -224,7 +223,7 @@ fn populate_numeric(n: usize, thread: usize, threads: usize, batch: usize, check
         let (start, end) = (c * CHUNK, ((c + 1) * CHUNK).min(n));
         let mut rng = SmallRng::seed_from_u64(c as u64);
         let mut h = 0xcbf2_9ce4_8422_2325;
-        p2_numeric_batches(start as i64 + 1, end - start, batch, &mut rng, |b| {
+        populate_numeric_batches(start as i64 + 1, end - start, batch, &mut rng, |b| {
             t.add(Totals {
                 rows: b.num_rows(),
                 bytes: batch_bytes(&b),

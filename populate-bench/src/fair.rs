@@ -6,14 +6,18 @@
 //!   streams and `LineItem` row structs that path pays for and discards.
 //! - [`tpch_direct_with_string_draws`]: the same plus the 4 string streams
 //!   (values discarded), to isolate their cost.
-//! - [`p2_uniform_tpch_rng`]: the benchmarked populate workload with every
+//! - [`populate_uniform_tpch_rng`]: the benchmarked populate workload with every
 //!   draw taken from tpchgen's RNG (`RandomBoundedInt`), to isolate the RNG.
-//! - [`tpch_list_direct`] / [`p2_list_fair`]: the list workload with only the
+//! - [`tpch_list_direct`] / [`populate_list_fair`]: the list workload with only the
 //!   3 tpchgen streams it needs, and the populate side computing the same
 //!   `price(partkey) * quantity` derivation.
 
+use arrow_array::{ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field, Schema};
+
 use crate::lanes::{A, LANES, M, mulmod, powmod};
-use crate::{BATCH, LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, numeric_schema_60, rng};
+use crate::{BATCH, LINES_PER_ORDER, Output, batch_bytes, numeric_schema, rng};
 use populate::arrow::DistributionArrow;
 use populate::dist::{Uniform, list, map, range, uniform};
 use populate::{Columnar, Distribution};
@@ -28,14 +32,6 @@ use tpchgen::generators::{
 };
 use tpchgen::random::{RandomBoundedInt, RandomBoundedLong, RandomString, RandomText};
 use tpchgen::text::TextPool;
-use tpchgen_arrow::arrow::array::{
-    ArrayRef as ArrayRef60, Int32Array as Int32Array60, Int64Array as Int64Array60,
-    ListArray as ListArray60, RecordBatch as RecordBatch60,
-};
-use tpchgen_arrow::arrow::buffer::OffsetBuffer as OffsetBuffer60;
-use tpchgen_arrow::arrow::datatypes::{
-    DataType as DataType60, Field as Field60, Schema as Schema60,
-};
 
 /// Same scale factor as `tpch_lineitems()` in lib.rs.
 pub const SF: f64 = 10.0;
@@ -201,13 +197,13 @@ impl TpchDirect {
     }
 }
 
-pub fn cols_to_batch(c: Cols) -> RecordBatch60 {
+pub fn cols_to_batch(c: Cols) -> RecordBatch {
     let [k, pk, sk, q, ep, d, t] = c.i64s;
     let [ln, sd, cd, rd] = c.i32s;
-    let a = |v: Vec<i64>| Arc::new(Int64Array60::from(v)) as ArrayRef60;
-    let b = |v: Vec<i32>| Arc::new(Int32Array60::from(v)) as ArrayRef60;
-    RecordBatch60::try_new(
-        numeric_schema_60(),
+    let a = |v: Vec<i64>| Arc::new(Int64Array::from(v)) as ArrayRef;
+    let b = |v: Vec<i32>| Arc::new(Int32Array::from(v)) as ArrayRef;
+    RecordBatch::try_new(
+        numeric_schema(),
         vec![
             a(k),
             a(pk),
@@ -233,7 +229,7 @@ fn tpch_direct(n: usize, strings: bool) -> Output {
         g.fill(len, &mut c);
         let b = cols_to_batch(c);
         out.rows += b.num_rows();
-        out.bytes += batch_bytes_60(&b);
+        out.bytes += batch_bytes(&b);
         black_box(b);
     }
     out
@@ -253,7 +249,7 @@ pub fn tpch_direct_with_string_draws(n: usize) -> Output {
 
 /// populate list with tpchgen's derivation: price(partkey) * quantity
 /// (2 draws per value instead of 1).
-pub fn p2_list_fair(n: usize) -> Output {
+pub fn populate_list_fair(n: usize) -> Output {
     let elem: Uniform<i64> = uniform(1i64, PARTS);
     let mut d = (
         map(range(1i64, 1), |i: i64| OrderGenerator::make_order_key(i)),
@@ -273,7 +269,7 @@ pub fn p2_list_fair(n: usize) -> Output {
 
 /// tpchgen's RNG streams for just what the list needs: line count, quantity,
 /// part key (spec-exact values), written straight into offsets + values.
-pub fn tpch_list_direct_batch(n: usize) -> RecordBatch60 {
+pub fn tpch_list_direct_batch(n: usize) -> RecordBatch {
     let mut line_count_random = OrderGenerator::create_line_count_random();
     let mut quantity_random = LineItemGenerator::create_quantity_random();
     let mut part_key_random = LineItemGenerator::create_part_key_random(SF);
@@ -296,29 +292,26 @@ pub fn tpch_list_direct_batch(n: usize) -> RecordBatch60 {
         keys.push(OrderGenerator::make_order_key(index));
         offsets.push(prices.len() as i32);
     }
-    let item = Arc::new(Field60::new_list_field(DataType60::Int64, false));
-    let l = ListArray60::new(
+    let item = Arc::new(Field::new_list_field(DataType::Int64, false));
+    let l = ListArray::new(
         item.clone(),
-        OffsetBuffer60::new(offsets.into()),
-        Arc::new(Int64Array60::from(prices)),
+        OffsetBuffer::new(offsets.into()),
+        Arc::new(Int64Array::from(prices)),
         None,
     );
-    let schema = Arc::new(Schema60::new(vec![
-        Field60::new("orderkey", DataType60::Int64, false),
-        Field60::new("line_prices", DataType60::List(item), false),
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("line_prices", DataType::List(item), false),
     ]));
-    RecordBatch60::try_new(
-        schema,
-        vec![Arc::new(Int64Array60::from(keys)), Arc::new(l)],
-    )
-    .expect("batch")
+    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(keys)), Arc::new(l)])
+        .expect("batch")
 }
 
 pub fn tpch_list_direct(n: usize) -> Output {
     let b = tpch_list_direct_batch(n);
     black_box(Output {
         rows: b.num_rows(),
-        bytes: batch_bytes_60(&b),
+        bytes: batch_bytes(&b),
     })
 }
 
@@ -438,8 +431,8 @@ where
     }
 }
 
-/// [`p2_uniform_tpch_rng`] with [`LaneLcg`] leaves: the same values.
-pub fn p2_uniform_tpch_rng_lanes(n: usize) -> Output {
+/// [`populate_uniform_tpch_rng`] with [`LaneLcg`] leaves: the same values.
+pub fn populate_uniform_tpch_rng_lanes(n: usize) -> Output {
     let mut d = (
         (
             range(1i64, 1),
@@ -479,7 +472,7 @@ pub fn p2_uniform_tpch_rng_lanes(n: usize) -> Output {
 /// The benchmarked populate workload (10 independent uniform columns + key),
 /// but every draw comes from tpchgen's RNG. Timing control only: the leaves
 /// keep their RNG state across batches, but the orderkey `range` restarts.
-pub fn p2_uniform_tpch_rng(n: usize) -> Output {
+pub fn populate_uniform_tpch_rng(n: usize) -> Output {
     let mut d = (
         (
             range(1i64, 1),
@@ -526,7 +519,7 @@ mod tests {
         tpchgen_init();
         let n = 100_000;
         let rows: Vec<_> = LineItemGenerator::new(SF, 1, 1).iter().take(n).collect();
-        let want = tpch_numeric_batch(&rows, &numeric_schema_60());
+        let want = tpch_numeric_batch(&rows, &numeric_schema());
         for strings in [false, true] {
             let mut c = Cols::default();
             TpchDirect::new(strings).fill(n, &mut c);
@@ -560,8 +553,8 @@ mod tests {
 
     #[test]
     fn fair_shapes() {
-        assert_eq!(p2_list_fair(80_000).rows, 20_000);
-        let o = p2_uniform_tpch_rng(20_000);
+        assert_eq!(populate_list_fair(80_000).rows, 20_000);
+        let o = populate_uniform_tpch_rng(20_000);
         assert_eq!(o.rows, 20_000);
         assert!(o.bytes >= 20_000 * 72);
     }

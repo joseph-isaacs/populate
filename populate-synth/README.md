@@ -54,7 +54,7 @@ features).
 ## Speed
 
 `cargo bench -p populate-synth` (256Ki rows, 64Ki for embeddings, one
-thread, 4-core container):
+thread, 4-core cloud VM):
 
 | Shape | Arrow | Parquet |
 |---|---|---|

@@ -5,7 +5,7 @@ column by column, straight into Arrow (and optionally Parquet).
 
 ```rust
 use populate::arrow::DistributionArrow;
-use populate::dist::{constant, list, map, range};
+use populate::dist::{list, map, range};
 
 // id: i64, tags: list<i64> with lengths cycling 0..8
 let mut table = (
@@ -40,6 +40,7 @@ let sales = Table::new("sales", 10_000_000)
     .col("note", choose(&["", "gift"])).nullable(0.1);
 
 sales.for_each_batch(64 * 1024, 0, |batch| { /* RecordBatch, in order */ });
+// with the `parquet` feature:
 sales.write_parquet(std::fs::File::create("sales.parquet")?, 64 * 1024, 0, None)?;
 ```
 
@@ -48,77 +49,34 @@ same engine: implement `populate::table::Chunks` (schema, chunk count,
 "generate chunk `i`") and `chunks::for_each_batch` / `write_parquet` run it
 on all cores, Parquet row groups encoded on the workers.
 
-## TPC-DS
+## Benchmark generators
 
-`populate-tpcds` generates all 24 TPC-DS tables byte-identical to the
-reference `dsdgen`, as Arrow, Parquet or dsdgen's own `.dat` text, on all
-cores. The values come from `tpcdsgen` (the Apache-2.0 Rust port of dsdgen
-from tpchgen-rs); populate-tpcds splits every table into small chunks and
-runs them through the `Chunks` engine.
+Each generator is a crate with its own CLI, built on the `Chunks` engine:
+Arrow, Parquet or the reference tool's own text format, on all cores, with
+output that does not depend on the thread count. Each crate's README covers
+its flags, how it was verified and its performance.
 
-```sh
-cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds              # Parquet
-cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --format dat # dsdgen text
-```
-
-See [`populate-tpcds/README.md`](populate-tpcds/README.md).
-
-## DSB
-
-`populate-dsb` generates all 24 tables of Microsoft's
-[DSB](https://github.com/microsoft/dsb) (TPC-DS with skewed, correlated
-data) byte-identical to DSB's `dsdgen`, on all cores. Its generator is
-tpcdsgen with DSB's changes to dsdgen ported in, run through the same
-`Chunks` engine as populate-tpcds.
-
-```sh
-cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat # DSB dsdgen text
-```
-
-See [`populate-dsb/README.md`](populate-dsb/README.md).
-
-## TPC-H
-
-`populate-tpch` generates all 8 TPC-H tables byte-identical to `dbgen` (and
-`tpchgen-cli`), as Arrow, Parquet or dbgen's `.tbl` text, on all cores, at
-any scale factor up to 10,000. Its generators are its own, column at a
-time, with dbgen's random streams skipped straight to any row.
+| benchmark | crate | CLI | matches |
+|---|---|---|---|
+| TPC-H | [`populate-tpch`](populate-tpch/README.md) | `tpch-gen` | `dbgen` / `tpchgen-cli`, byte for byte |
+| TPC-DS | [`populate-tpcds`](populate-tpcds/README.md) | `tpcds-gen` | `dsdgen`, byte for byte |
+| DSB | [`populate-dsb`](populate-dsb/README.md) | `dsb-gen` | DSB's `dsdgen`, byte for byte |
+| SSB (and SSB-flat) | [`populate-ssb`](populate-ssb/README.md) | `ssb-gen` | `ssb-dbgen`, byte for byte |
+| H2O db-benchmark | [`populate-h2o`](populate-h2o/README.md) | `h2o-gen` | its R datagen, byte for byte |
+| TSBS devops / IoT | [`populate-tsbs`](populate-tsbs/README.md) | `tsbs-gen` | `tsbs_generate_data`, byte for byte |
+| LDBC SNB | [`populate-ldbc`](populate-ldbc/README.md) | `ldbc-gen` | the LDBC Spark datagen |
+| YCSB | [`populate-ycsb`](populate-ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
+| TPC-C | [`populate-tpcc`](populate-tpcc/README.md) | `tpcc-gen` | the spec's population rules |
+| synthetic shapes | [`populate-synth`](populate-synth/README.md) | `synth-gen` | (no reference) |
 
 ```sh
 cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet
 cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl # dbgen text
 ```
 
-See [`populate-tpch/README.md`](populate-tpch/README.md).
-
-## TSBS
-
-`populate-tsbs` generates TSBS's devops and IoT data byte-identical to
-`tsbs_generate_data` for any seed and flags (Go's `math/rand`, its amd64
-`math.Exp`/`math.Log` and the per-host simulation, ported), as influx,
-timescaledb, cratedb, cassandra and the other text formats, prometheus,
-siridb and mongo's binary formats, or as Arrow and
-Parquet, one table per measurement, on all cores.
-
-```sh
-cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case devops --scale 100 --seed 123 --format influx > devops.influx
-cargo run -p populate-tsbs --release --bin tsbs-gen -- --use-case iot --scale 1000 --seed 123 --format parquet --out tsbs
-```
-
-See [`populate-tsbs/README.md`](populate-tsbs/README.md).
-
-## SSB
-
-`populate-ssb` generates the five Star Schema Benchmark tables
-byte-identical to `ssb-dbgen`, plus the denormalised `lineorder_flat`, as
-Arrow, Parquet or `.tbl` text, on all cores, on TPC-H's random streams.
-
-```sh
-cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb              # Parquet
-cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl # ssb-dbgen text
-```
-
-See [`populate-ssb/README.md`](populate-ssb/README.md).
+TPC-H, TPC-DS and TPC-C are trademarks of the Transaction Processing
+Performance Council. Data generated here is not valid for TPC result
+publication.
 
 ## Crates
 
@@ -130,29 +88,12 @@ See [`populate-ssb/README.md`](populate-ssb/README.md).
 | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
 | `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
-| `populate-tpcds`        | TPC-DS byte-identical to dsdgen, on all cores; the `tpcds-gen` CLI |
-| `populate-dsb`          | DSB byte-identical to DSB's dsdgen, on all cores; the `dsb-gen` CLI |
-| `populate-tpch`         | TPC-H byte-identical to dbgen, on all cores; the `tpch-gen` CLI |
-| `populate-tsbs`         | TSBS devops/IoT byte-identical to `tsbs_generate_data`, on all cores; the `tsbs-gen` CLI |
-| `populate-ssb`          | SSB byte-identical to ssb-dbgen, plus SSB-flat; the `ssb-gen` CLI |
-| `populate-h2o`          | H2O db-benchmark groupby and join data, byte-identical to its R datagen; the `h2o-gen` CLI |
-| `populate-tpcc`         | the TPC-C initial database, to the spec's population rules; the `tpcc-gen` CLI |
-| `populate-ycsb`         | YCSB load and run operations, byte-identical to YCSB 0.17.0; the `ycsb-gen` CLI |
-| `populate-ldbc`         | LDBC SNB, identical to the LDBC Spark datagen; the `ldbc-gen` CLI |
-| `populate-synth`        | synthetic data sets (ClickBench-style hits, taxi trips, embeddings, features); the `synth-gen` CLI |
+| `populate-bench`        | [benchmarks](populate-bench/README.md) against tpchgen and arrow-rs |
 
-See `populate/DESIGN.md` for the design.
+The generator crates are listed [above](#benchmark-generators). See
+[`populate/DESIGN.md`](populate/DESIGN.md) for the design.
 
-## H2O db-benchmark
+## Licence
 
-`populate-h2o` generates the H2O db-benchmark groupby and join data sets,
-byte-identical to the CSV its R datagen scripts write (R's Mersenne
-Twister, `sample()`, `round()` and data.table `fwrite` reproduced), as CSV,
-Arrow or Parquet, on all cores.
-
-```sh
-cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 0 --sort 0
-cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
-```
-
-See [`populate-h2o/README.md`](populate-h2o/README.md).
+MIT (see [`LICENSE`](LICENSE)). `populate-dsb` vendors code under
+Apache-2.0 and MIT; see [`populate-dsb/NOTICE.md`](populate-dsb/NOTICE.md).

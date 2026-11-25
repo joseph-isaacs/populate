@@ -16,7 +16,7 @@ arrow-buffer = { workspace = true }
 arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # dbgen's distributions and text grammar, and the reference generator the
-# tests compare against (Apache-2.0, tpchgen-rs project)
+# tests compare against (Apache-2.0, tpcgen-rs project)
 tpchgen = "4.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]

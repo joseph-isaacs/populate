@@ -6,6 +6,7 @@ members = [
     "sink/arrow",
     "sink/parquet",
     "populate-table",
+    "generator/combinators",
     "generator/tpcds",
     "generator/tpch",
     "generator/tsbs",
@@ -30,6 +31,7 @@ default-members = [
     "sink/arrow",
     "sink/parquet",
     "populate-table",
+    "generator/combinators",
     "generator/tpcds",
     "generator/tpch",
     "generator/tsbs",
@@ -65,6 +67,7 @@ populate-builtins = { path = "populate-builtins" }
 populate-sink-arrow = { path = "sink/arrow" }
 populate-sink-parquet = { path = "sink/parquet" }
 populate-table = { path = "populate-table" }
+populate-combinators = { path = "generator/combinators" }
 populate-tpcds = { path = "generator/tpcds" }
 populate-tpch = { path = "generator/tpch" }
 populate-tsbs = { path = "generator/tsbs" }

@@ -23,7 +23,7 @@ use crate::dict::{COLORS, DAYS, Dict, Views, days_in_month, holiday, season};
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
 use arrow_schema::DataType::{Int32, Int64, Utf8View};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use populate_tpch::rng::{M, bound_all, draws, scale};
+use populate_combinators::lehmer::{M, bound_all, draws, scale};
 use std::sync::{Arc, LazyLock};
 
 /// Most lines an order has, and the draws per order of the line streams.

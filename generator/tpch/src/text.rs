@@ -9,11 +9,11 @@
 //! into the pool and a distribution pick is a precomputed view, so neither
 //! copies a byte.
 
-#[cfg(test)]
-use crate::rng::Rng;
-use crate::rng::{draws, scale};
 use arrow_array::StringViewArray;
 use arrow_buffer::{Buffer, ScalarBuffer};
+#[cfg(test)]
+use populate_combinators::lehmer::Rng;
+use populate_combinators::lehmer::{draws, scale};
 use std::ptr::NonNull;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use tpchgen::distribution::{Distribution, Distributions};

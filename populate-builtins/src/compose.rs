@@ -637,7 +637,7 @@ mod tests {
         let (a, b) = d.collect(&mut rng(), 3);
         assert_eq!(a, [20, 22, 24]);
         assert_eq!(b.values, [10, 0, 12]);
-        assert_eq!(b.valid, [true, false, true]);
+        assert_eq!(b.valid.iter().collect::<Vec<_>>(), [true, false, true]);
         e.skip(1);
         assert_eq!(e.sample(&mut rng()), (22, None));
     }

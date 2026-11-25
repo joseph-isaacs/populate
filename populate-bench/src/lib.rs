@@ -37,10 +37,10 @@ use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::Distribution;
+use populate::arrow::DistributionArrow;
 use populate::dist::{list, range, uniform};
 use populate::parquet::{DistributionParquet, write_parquet};
-use populate::traits::Distribution;
 use rand::SeedableRng;
 use rand::distr::uniform::SampleUniform;
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
@@ -120,16 +120,14 @@ const D1998_END: i32 = D1992 + 2556;
 pub type LineItemNumeric = ((i64, i64, i64, i32), (i64, i64, i64, i64), (i32, i32, i32));
 
 /// The 11 numeric lineitem columns (see the module docs).
-pub fn lineitem_numeric() -> impl Distribution<ArrowBackend, Item = LineItemNumeric> {
+pub fn lineitem_numeric() -> impl Distribution<Item = LineItemNumeric> {
     lineitem_numeric_from(1)
 }
 
 /// [`lineitem_numeric`] with orderkeys starting at `first_key`. A partition
 /// that starts at row `k` skips ahead in O(1): only the key range moves, and
 /// the uniform columns just need their own RNG seed.
-pub fn lineitem_numeric_from(
-    first_key: i64,
-) -> impl Distribution<ArrowBackend, Item = LineItemNumeric> {
+pub fn lineitem_numeric_from(first_key: i64) -> impl Distribution<Item = LineItemNumeric> {
     (
         (
             range(first_key, 1),
@@ -153,7 +151,7 @@ pub fn lineitem_numeric_from(
 
 /// Orders with their line prices nested: `(orderkey, list<extendedprice>)`,
 /// 1..=7 lines per order (mean 4), as TPC-H.
-pub fn orders_with_line_prices() -> impl Distribution<ArrowBackend, Item = (i64, Vec<i64>)> {
+pub fn orders_with_line_prices() -> impl Distribution<Item = (i64, Vec<i64>)> {
     (
         range(1i64, 1),
         list(uniform(1usize, 7), uniform(90_100i64, 10_494_950)),
@@ -203,10 +201,8 @@ pub fn p2_numeric_arrow_batched(n: usize) -> Output {
 }
 
 /// Stream `n` rows of [`lineitem_numeric`] as `batch`-row batches, orderkeys
-/// `first_key..first_key + n`. `collect_into` restarts a `range` from its
-/// start on every call, so the distribution is rebuilt per batch at the next
-/// key (cheap: it's a few `Copy` structs). The uniform columns carry on from
-/// the shared `rng`.
+/// `first_key..first_key + n`. One distribution for the whole stream: the
+/// key `range` carries on from batch to batch.
 pub fn p2_numeric_batches(
     first_key: i64,
     n: usize,
@@ -214,13 +210,12 @@ pub fn p2_numeric_batches(
     rng: &mut SmallRng,
     mut f: impl FnMut(RecordBatch),
 ) {
-    let mut key = first_key;
+    let mut d = lineitem_numeric_from(first_key);
     let mut left = n;
     // made by the first batch, then shared by the rest
     let mut schema = None;
     while left > 0 {
         let len = batch.min(left);
-        let mut d = lineitem_numeric_from(key);
         let b = match &schema {
             None => d.collect_record_batch(rng, len),
             Some(s) => d.collect_record_batch_with(s, rng, len),
@@ -228,7 +223,6 @@ pub fn p2_numeric_batches(
         let b = b.expect("batch");
         schema.get_or_insert_with(|| b.schema());
         f(b);
-        key += len as i64;
         left -= len;
     }
 }

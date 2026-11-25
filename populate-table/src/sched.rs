@@ -1,16 +1,18 @@
-//! [`par_sources`]: run the chunks of several sources on a thread pool,
-//! biggest remaining work first, and consume each source's results in
-//! order.
+//! The two thread pools every driver runs on.
 //!
-//! [`par_ordered`](crate::par_ordered) runs jobs in index order and hands
-//! results back in that one global order. With several tables on one pool
-//! that has two costs. Chunks of different tables differ in cost by 20x or
+//! - [`par_ordered`]: run jobs `0..n` and consume the results in index
+//!   order. One table, or anything else with a single order.
+//! - [`par_sources`]: run the chunks of several sources, biggest remaining
+//!   work first, and consume each source's results in order.
+//!
+//! Why two: [`par_ordered`] hands results back in one global order. With
+//! several tables on one pool that has two costs. Chunks of different tables differ in cost by 20x or
 //! more (a TPC-DS store_sales chunk against an inventory one), and whichever
 //! table comes last leaves a tail of big chunks with the other cores idle.
 //! And a finished chunk of one table waits behind an unrelated slow chunk
 //! of another, though only each table's own order matters.
 //!
-//! So here each source's chunks still start in order (a source's results
+//! So in [`par_sources`] each source's chunks still start in order (a source's results
 //! come back nearly in order and wait in a small buffer), but which source
 //! a free worker takes is chosen by remaining work: the one with the most
 //! `chunks left * mean chunk time`, the mean measured as chunks finish. A
@@ -21,10 +23,63 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Instant;
+
+/// Run `work(0..n)` on `threads` threads (0 = all cores) and feed the
+/// results to `consume` in index order on the calling thread, stopping at
+/// the first error. Workers run at most about `2 * threads` tasks ahead.
+pub fn par_ordered<T: Send, E>(
+    n: u64,
+    threads: usize,
+    work: impl Fn(u64) -> T + Sync,
+    mut consume: impl FnMut(T) -> Result<(), E>,
+) -> Result<(), E> {
+    let threads = match threads {
+        0 => thread::available_parallelism().map_or(1, |t| t.get()),
+        t => t,
+    }
+    .min(n.max(1) as usize);
+    if threads <= 1 {
+        return (0..n).try_for_each(|i| consume(work(i)));
+    }
+    let next = AtomicU64::new(0);
+    let stop = AtomicBool::new(false);
+    thread::scope(|s| {
+        let (tx, rx) = sync_channel::<(u64, T)>(threads * 2);
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let (next, stop, work) = (&next, &stop, &work);
+            s.spawn(move || {
+                while !stop.load(Relaxed) {
+                    let i = next.fetch_add(1, Relaxed);
+                    if i >= n || tx.send((i, work(i))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        // Reorder. `rx` is dropped when this closure returns, before the
+        // scope joins, so a worker blocked on a full channel wakes up (its
+        // send fails) when we stop early.
+        let mut pending = BTreeMap::new();
+        let mut want = 0u64;
+        for (i, t) in rx.iter() {
+            pending.insert(i, t);
+            while let Some(t) = pending.remove(&want) {
+                want += 1;
+                if let Err(e) = consume(t) {
+                    stop.store(true, Relaxed);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    })
+}
 
 /// Who runs next: each source's next chunk, how many it has, and what its
 /// chunks have cost so far. [`par_sources`] uses it; a driver with its own

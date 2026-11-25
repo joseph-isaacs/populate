@@ -27,6 +27,6 @@ mod parquet_direct;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
-pub use sched::{Schedule, par_sources};
+pub use sched::{Schedule, par_ordered, par_sources};
 pub use stream::{Stream, hash_str, mix64};
-pub use table::{BatchCtx, DecimalRepr, Table, par_ordered};
+pub use table::{BatchCtx, DecimalRepr, Table};

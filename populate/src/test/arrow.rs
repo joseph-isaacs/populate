@@ -8,7 +8,6 @@ use crate::test::dist::{
     gen_list, gen_list_in_tuple, gen_list_of_struct_of_list, gen_list_of_tuples, gen_nested_list,
     gen_struct_of_list_of_struct, make_4tuple, make_tracked_list_of_struct_of_list,
 };
-use crate::traits::VecBackend;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type, Int64Type};
 use arrow_array::{Array, ListArray, StructArray};
@@ -62,7 +61,8 @@ fn record_batches_share_a_schema() {
     assert!(Arc::ptr_eq(&rb.schema(), &schema));
     assert_eq!(rb.num_rows(), 2);
     assert_eq!(i32s(rb.column(0)), vec![1, 1]);
-    assert_eq!(i64s(rb.column(1)), vec![0, 10]);
+    // the same distribution carries on: the range does not restart
+    assert_eq!(i64s(rb.column(1)), vec![30, 40]);
     assert_eq!(rb.column(2).as_boolean().true_count(), 2);
     assert_eq!(
         rb.column(3).as_primitive::<Float64Type>().values().to_vec(),
@@ -82,7 +82,7 @@ fn list_to_list_array() {
 
 #[test]
 fn list_in_tuple_to_record_batch() {
-    let mut d = gen_list_in_tuple::<VecBackend>();
+    let mut d = gen_list_in_tuple();
     let rb = d.collect_record_batch(&mut rng(), 2).unwrap();
     assert_eq!(i32s(rb.column(0)), vec![7, 7]);
     let l: &ListArray = rb.column(1).as_list();
@@ -119,7 +119,7 @@ fn nested_list_to_list_of_list() {
 
 #[test]
 fn struct_of_list_of_struct_to_record_batch() {
-    let mut d = gen_struct_of_list_of_struct::<VecBackend>();
+    let mut d = gen_struct_of_list_of_struct();
     let rb = d.collect_record_batch(&mut rng(), 3).unwrap();
     assert_eq!(i32s(rb.column(0)), vec![0, 1, 2]);
     let l: &ListArray = rb.column(1).as_list();
@@ -135,7 +135,7 @@ fn struct_of_list_of_struct_to_record_batch() {
 
 #[test]
 fn list_of_struct_of_list_to_arrow() {
-    let mut d = gen_list_of_struct_of_list::<VecBackend>();
+    let mut d = gen_list_of_struct_of_list();
     let rb = d.collect_record_batch(&mut rng(), 2).unwrap();
     let l: &ListArray = rb.column(0).as_list();
     assert_eq!(

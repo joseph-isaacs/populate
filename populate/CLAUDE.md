@@ -35,7 +35,7 @@ Every test MUST assert that the sink contains the expected values. Don't just ch
 fn test_col_by_col_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_tracked_tuple(&log);
-    let sink = dist.collect_into(&mut rng(), (Vec::new(), Vec::new()), 3);
+    let sink = dist.collect(&mut rng(), 3);
 
     // MUST assert sink values
     assert_eq!(sink.0, vec![0, 1, 2]);

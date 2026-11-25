@@ -12,9 +12,9 @@
 use arrow_array::RecordBatch;
 use arrow_cast::pretty::pretty_format_batches;
 use arrow_schema::{Field, Schema};
-use populate::arrow::{ArrowBackend, DistributionArrow};
+use populate::arrow::{DistributionArrow, IntoArrowColumns};
 use populate::dist::{range, uniform, with_column};
-use populate::traits::Distribution;
+use populate::{Columns, Distribution};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
@@ -53,7 +53,7 @@ type Price = (i64, i64, i64);
 type Dates = (i32, i32, i32, i32, (&'static str, &'static str));
 type LineItem = (i64, Price, (i64, i64), Dates);
 
-fn lineitem() -> impl Distribution<ArrowBackend, Item = LineItem> {
+fn lineitem() -> impl Distribution<Item = LineItem> {
     // extendedprice = quantity * retailprice(partkey)
     let price = with_column(
         (uniform(1i64, 200_000), uniform(1i64, 50)),
@@ -103,7 +103,7 @@ const STORE_SALES: [&str; 8] = [
 type StoreSales = (i64, i64, i64, i64, i64, i64, i64, i64);
 
 /// All money in cents. Each step reads every column before it.
-fn store_sales() -> impl Distribution<ArrowBackend, Item = StoreSales> {
+fn store_sales() -> impl Distribution<Item = StoreSales> {
     let base = (uniform(1i64, 100), uniform(100i64, 10_000)); // quantity, wholesale
     // list = wholesale marked up 0..=200%
     let list = with_column(base, |(_, w), rng| w + w * rng.random_range(0..=200) / 100);
@@ -135,10 +135,9 @@ fn named(batch: RecordBatch, names: &[&str]) -> RecordBatch {
     RecordBatch::try_new(Arc::new(Schema::new(fields)), batch.columns().to_vec()).unwrap()
 }
 
-fn run<D: DistributionArrow<ArrowBackend>>(name: &str, mut d: D, names: &[&str])
+fn run<D: Distribution>(name: &str, mut d: D, names: &[&str])
 where
-    <D::Item as populate::traits::DefaultSink<ArrowBackend>>::Sink:
-        Default + populate::arrow::IntoArrowColumns,
+    Columns<D::Item>: IntoArrowColumns,
 {
     let mut rng = SmallRng::seed_from_u64(42);
     let sample = named(d.collect_record_batch(&mut rng, 6).unwrap(), names);

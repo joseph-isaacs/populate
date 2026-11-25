@@ -11,7 +11,7 @@
 //! The column types say they are `Utf8View`, which is where the tables'
 //! schemas get their string types from.
 
-use crate::dict::{Dict, Views};
+use crate::dict::{DATA, Dict, Views};
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
@@ -147,16 +147,78 @@ where
     }
 }
 
-/// A view into the buffers of the [`SharedCols`] it is pushed to.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Shared(pub(crate) u128);
+/// A view into the buffers of a [`SharedCols`]. Only [`SharedCols`]
+/// hands them out (reading its rows back).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Shared(u128);
 
-/// Columns of [`Shared`] views, and the buffers they point into. Whoever
-/// pushes the views sets the buffers (they are not part of a row).
+/// One text column of a whole dimension table, made once: its views and
+/// the buffers they point into, every byte ASCII.
+#[derive(Debug, Default)]
+pub(crate) struct SharedText {
+    views: Vec<u128>,
+    buffers: Arc<[Buffer]>,
+}
+
+impl SharedText {
+    /// Per-job columns, end to end: job `k`'s bytes become buffer `k`, and
+    /// its views (which name buffer `DATA`) are pointed at it.
+    ///
+    /// # Panics
+    ///
+    /// If any string is not ASCII, or a view is not within its bytes: what
+    /// makes every in-bounds view of these buffers valid UTF-8.
+    pub(crate) fn new(parts: Vec<Views>) -> SharedText {
+        let mut views = Vec::with_capacity(parts.iter().map(|p| p.views.len()).sum());
+        let mut buffers = Vec::with_capacity(parts.len());
+        for (k, p) in parts.into_iter().enumerate() {
+            assert!(p.data.is_ascii(), "dimension text is ASCII");
+            let k = u128::from(u32::try_from(k).expect("buffers fit in u32"));
+            for v in p.views {
+                let len = v as u32;
+                if len <= 12 {
+                    let inline = v.to_le_bytes();
+                    assert!(
+                        inline[4..4 + len as usize].is_ascii(),
+                        "dimension text is ASCII"
+                    );
+                    views.push(v);
+                } else {
+                    let (buffer, offset) = ((v >> 64) as u32, (v >> 96) as u32);
+                    assert!(
+                        buffer == DATA && offset as usize + len as usize <= p.data.len(),
+                        "a view within its job's bytes"
+                    );
+                    // the buffer index is bits 64..96 of a long view
+                    views.push(v & !(u128::from(u32::MAX) << 64) | k << 64);
+                }
+            }
+            buffers.push(Buffer::from_vec(p.data));
+        }
+        SharedText {
+            views,
+            buffers: Arc::from(buffers),
+        }
+    }
+
+    /// The rows keyed `rows` (1-based), pushed onto `cols`, which then
+    /// point at this column's buffers.
+    pub(crate) fn gather(&self, rows: &[i32], cols: &mut SharedCols) {
+        if !Arc::ptr_eq(&cols.buffers, &self.buffers) {
+            assert!(cols.views.is_empty(), "views into one text's buffers only");
+            cols.buffers = self.buffers.clone();
+        }
+        cols.views
+            .extend(rows.iter().map(|&k| k as usize - 1).map(|r| self.views[r]));
+    }
+}
+
+/// Columns of [`Shared`] views, and the buffers they point into: those of
+/// the [`SharedText`] the views were gathered from.
 #[derive(Debug, Default)]
 pub(crate) struct SharedCols {
     views: Vec<u128>,
-    pub(crate) buffers: Arc<[Buffer]>,
+    buffers: Arc<[Buffer]>,
 }
 
 impl Columnar for Shared {
@@ -164,17 +226,26 @@ impl Columnar for Shared {
 }
 
 impl Sink<Shared> for SharedCols {
-    #[inline(always)]
+    /// # Panics
+    ///
+    /// If `s` is not within these columns' buffers (a row of columns over
+    /// other ones).
     fn push(&mut self, s: Shared) {
+        let len = s.0 as u32 as usize;
+        if len > 12 {
+            let (buffer, offset) = ((s.0 >> 64) as u32 as usize, (s.0 >> 96) as u32 as usize);
+            assert!(
+                self.buffers
+                    .get(buffer)
+                    .is_some_and(|b| offset + len <= b.len()),
+                "a shared view outside these columns' buffers"
+            );
+        }
         self.views.push(s.0);
     }
 
     fn reserve(&mut self, n: usize) {
         self.views.reserve(n);
-    }
-
-    fn push_n(&mut self, values: impl Iterator<Item = Shared>) {
-        self.views.extend(values.map(|s| s.0));
     }
 }
 
@@ -196,18 +267,11 @@ impl IntoArrowArray for SharedCols {
     }
 
     fn into_array(self) -> ArrayRef {
-        // Only `flat::Text::gather` pushes views here, and it sets the
-        // buffers of the column they came from (a full check would cost
-        // as much as the join)
-        debug_assert!(
-            self.views.iter().all(|&v| {
-                let len = v as u32;
-                len <= 12 || ((v >> 64) as u32 as usize) < self.buffers.len()
-            }),
-            "shared views without their buffers"
-        );
-        // SAFETY: every view comes from a valid `StringViewArray` over
-        // these buffers (`flat::Text`), in the same order
+        // SAFETY: every view is from a `SharedText`, which checked each is
+        // inline ASCII or within an ASCII buffer (`SharedText::new`), and
+        // is within these buffers: gathered from the text they are
+        // (`SharedText::gather`), or pushed with that checked (`push`). So
+        // each is valid UTF-8, in bounds.
         Arc::new(unsafe {
             StringViewArray::new_unchecked(ScalarBuffer::from(self.views), self.buffers, None)
         })

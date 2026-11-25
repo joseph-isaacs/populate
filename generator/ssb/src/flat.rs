@@ -14,13 +14,12 @@
 //! dimension's whole buffer.
 
 use crate::TableName;
-use crate::cols::{Shared, SharedCols, Word, Words, children_of};
-use crate::dict::{DATA, Dict, Views};
+use crate::cols::{Shared, SharedCols, SharedText, Word, Words, children_of};
+use crate::dict::{Dict, Views};
 use crate::tables::{
     LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, TableGen, at,
     lines, orders, part_codes, party_codes, party_text, segment_codes, table,
 };
-use arrow_buffer::Buffer;
 use populate_builtins::{ReadRows, named_all};
 use populate_core::{ChildCols, Children, Columns, Distribution, Sink};
 use populate_table::par_ordered;
@@ -36,70 +35,22 @@ type SupplierRow = (Shared, Shared, Word, Word, Word, Shared);
 /// One `lineorder_flat` row.
 type FlatRow = (Line, (CustomerRow, SupplierRow, PartWords));
 
-/// One text column of a whole dimension table: its views and the
-/// buffers they point into.
-#[derive(Debug, Default)]
-struct Text {
-    views: Vec<u128>,
-    buffers: Arc<[Buffer]>,
-}
-
-impl Text {
-    /// Rows `rows`, pushed onto `cols` (which then point at this
-    /// column's buffers).
-    fn gather(&self, rows: &[usize], cols: &mut SharedCols) {
-        if !Arc::ptr_eq(&cols.buffers, &self.buffers) {
-            assert!(cols.rows() == 0, "views into one dimension's buffers only");
-            cols.buffers = self.buffers.clone();
-        }
-        cols.push_n(rows.iter().map(|&r| Shared(self.views[r])));
-    }
-
-    /// The per-job columns, end to end: job `k`'s bytes become buffer
-    /// `k`, and its views (which name buffer `DATA`) are pointed at it.
-    fn concat(parts: Vec<Views>) -> Text {
-        let mut views = Vec::with_capacity(parts.iter().map(|p| p.views.len()).sum());
-        let mut buffers = Vec::with_capacity(parts.len());
-        for (k, p) in parts.into_iter().enumerate() {
-            debug_assert!(
-                p.views
-                    .iter()
-                    .all(|&v| v as u32 <= 12 || (v >> 64) as u32 == DATA)
-            );
-            let k = u128::from(u32::try_from(k).expect("buffers fit in u32"));
-            views.extend(p.views.into_iter().map(|v| {
-                if v as u32 <= 12 {
-                    v
-                } else {
-                    // the buffer index is bits 64..96 of a long view
-                    v & !(u128::from(u32::MAX) << 64) | k << 64
-                }
-            }));
-            buffers.push(Buffer::from_vec(p.data));
-        }
-        Text {
-            views,
-            buffers: Arc::from(buffers),
-        }
-    }
-}
-
 /// A whole supplier or customer table: its codes, its market segments
 /// (customers only), and its name, address and phone columns.
 #[derive(Debug, Default)]
 struct Dim {
     codes: Columns<PartyCode>,
     segment: Vec<u8>,
-    text: [Text; 3],
+    text: [SharedText; 3],
 }
 
 impl Dim {
-    /// Name, address, city, nation, region and phone of rows `rows`, a
-    /// column at a time.
+    /// Name, address, city, nation, region and phone of the rows keyed
+    /// `rows` (1-based), a column at a time.
     fn gather(
         &self,
         d: &Dict,
-        rows: &[usize],
+        rows: &[i32],
         (name, address, city, nation, region, phone): (
             &mut SharedCols,
             &mut SharedCols,
@@ -117,10 +68,19 @@ impl Dim {
         let nat = |r: usize| nations[r] as usize;
         city.push_n(
             rows.iter()
-                .map(|&r| Word(d.cities[nat(r) * 10 + cities[r] as usize])),
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.cities[nat(r) * 10 + cities[r] as usize])),
         );
-        nation.push_n(rows.iter().map(|&r| Word(d.nations[nat(r)])));
-        region.push_n(rows.iter().map(|&r| Word(d.regions[nat(r)])));
+        nation.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.nations[nat(r)])),
+        );
+        region.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.regions[nat(r)])),
+        );
         p.gather(rows, phone);
     }
 }
@@ -191,7 +151,7 @@ fn party(d: &'static Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> Di
             v.push(c);
         }
     });
-    dim.text = parts.map(Text::concat);
+    dim.text = parts.map(SharedText::new);
     dim
 }
 
@@ -207,25 +167,48 @@ impl Dims {
         }
     }
 
-    /// The columns after `p_partkey` of parts `rows`, a column at a time.
-    fn gather_part(&self, d: &Dict, rows: &[usize], out: &mut Columns<PartWords>) {
+    /// The columns after `p_partkey` of the parts keyed `rows` (1-based), a
+    /// column at a time.
+    fn gather_part(&self, d: &Dict, rows: &[i32], out: &mut Columns<PartWords>) {
         let ((name, color), category, brand, kind, container, size) = &self.part;
         let (o_name, o_mfgr, o_cat, o_brand, o_color, o_type, o_size, o_container) = out;
         // as `part_words` maps them (the tests check the join against it)
         let cat = |r: usize| category[r] as usize;
-        o_name.push_n(rows.iter().map(|&r| Word(d.names[name[r] as usize])));
-        o_mfgr.push_n(rows.iter().map(|&r| Word(d.mfgrs[cat(r) / 5])));
-        o_cat.push_n(rows.iter().map(|&r| Word(d.categories[cat(r)])));
+        o_name.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.names[name[r] as usize])),
+        );
+        o_mfgr.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.mfgrs[cat(r) / 5])),
+        );
+        o_cat.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.categories[cat(r)])),
+        );
         o_brand.push_n(
             rows.iter()
-                .map(|&r| Word(d.brands[cat(r) * 40 + brand[r] as usize])),
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.brands[cat(r) * 40 + brand[r] as usize])),
         );
-        o_color.push_n(rows.iter().map(|&r| Word(d.colors[color[r] as usize])));
-        o_type.push_n(rows.iter().map(|&r| Word(d.types.views[kind[r] as usize])));
-        o_size.extend(rows.iter().map(|&r| size[r]));
+        o_color.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.colors[color[r] as usize])),
+        );
+        o_type.push_n(
+            rows.iter()
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.types.views[kind[r] as usize])),
+        );
+        o_size.extend(rows.iter().map(|&k| k as usize - 1).map(|r| size[r]));
         o_container.push_n(
             rows.iter()
-                .map(|&r| Word(d.containers.views[container[r] as usize])),
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.containers.views[container[r] as usize])),
         );
     }
 }
@@ -257,25 +240,24 @@ impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
         let d = Dict::get();
         let lines = self.lines.collect(rng, n).values;
         let ((_, _, cust, part, supp, ..), _) = &lines;
-        let rows = |keys: &[i32]| -> Vec<usize> { keys.iter().map(|&k| k as usize - 1).collect() };
-        let (cust, part, supp) = (rows(cust), rows(part), rows(supp));
         let (lo, (c, s, p)) = &mut cols.values;
         let dims = &self.dims;
         dims.customer.gather(
             d,
-            &cust,
+            cust,
             (&mut c.0, &mut c.1, &mut c.2, &mut c.3, &mut c.4, &mut c.5),
         );
         c.6.push_n(
             cust.iter()
-                .map(|&r| Word(d.segments.views[dims.customer.segment[r] as usize])),
+                .map(|&k| k as usize - 1)
+                .map(|r| Word(d.segments.views[dims.customer.segment[r] as usize])),
         );
         dims.supplier.gather(
             d,
-            &supp,
+            supp,
             (&mut s.0, &mut s.1, &mut s.2, &mut s.3, &mut s.4, &mut s.5),
         );
-        dims.gather_part(d, &part, p);
+        dims.gather_part(d, part, p);
         if lo.rows() == 0 {
             *lo = lines;
         } else {

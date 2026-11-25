@@ -20,6 +20,8 @@
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -33,6 +35,12 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
+
+/// mimalloc: buffers are reused instead of returned to the OS and faulted
+/// in again for every batch
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Format {

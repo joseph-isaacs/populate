@@ -417,7 +417,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            fan_out::<_, Factors, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
+            flat_map::<Factors, _, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
                 let f = self.factor_input.as_ref().expect("collect_factors first");
                 let mut statics = StaticCols::default();
                 self.static_into(&mut statics);

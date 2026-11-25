@@ -20,7 +20,7 @@
 use crate::csv::spark_micros;
 use crate::par_map;
 use crate::rows::{OrgEdgeRow, RawCols, Rows, StaticCols, TableDef, Ts, rows_of};
-use populate_core::{Children, Columns, Sink, Timestamp};
+use populate_core::{Children, Columns, Sink, Tables, Timestamp};
 use populate_table::resolve_threads;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -345,7 +345,7 @@ impl Ctx {
             adj[a as usize].push(b);
             adj[b as usize].push(a);
         }
-        let (org, place, tag, class) = statics;
+        let (org, place, tag, class) = &statics.tables;
         let (place_id, place_name, _, place_kind, part_of) = &place.values;
         let places = (0..place_id.len())
             .map(|j| {
@@ -492,7 +492,7 @@ pub type EdgeDaysRow = (i64, i64, Ts, Ts);
 
 /// The 34 factor tables, in [`FACTOR_TABLES`] order (nested to stay
 /// within a tuple's 12 fields).
-pub type Factors = (
+pub type Factors = Tables<(
     (
         Children<NamedCountRow>,
         Children<CityPairsRow>,
@@ -533,7 +533,7 @@ pub type Factors = (
         Children<NamedCountRow>,
         Children<NamedCountRow>,
     ),
-);
+)>;
 
 /// The columns of [`Factors`].
 pub type FactorCols = Columns<Factors>;
@@ -729,7 +729,7 @@ fn tables_into(c: &Ctx, out: &mut FactorCols, threads: usize) {
         (a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11),
         (b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11),
         (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9),
-    ) = out;
+    ) = &mut out.tables;
     let jobs: Vec<Box<dyn FnOnce() + Send + '_>> = vec![
         // the n-hop tables, the slowest, start first
         Box::new(|| hops(c, &mut b0.values, 2)),

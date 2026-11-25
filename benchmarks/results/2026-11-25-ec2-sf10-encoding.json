@@ -54,7 +54,7 @@
     {
       "id": "tpcgen-cli",
       "version": "4.0.0",
-      "revision": null
+      "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4"
     },
     {
       "id": "populate",
@@ -79,6 +79,7 @@
       "variant": "all-data-tables",
       "validation_status": "not_run",
       "notes": [
+        "Rust tpchgen / tpchgen-arrow 4.0.0 baseline from datafusion-contrib/tpcgen-rs, measured through a tpcgen-cli wrapper.",
         "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
         "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
         "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
@@ -244,6 +245,7 @@
       "variant": "all-data-tables",
       "validation_status": "not_run",
       "notes": [
+        "Rust tpchgen / tpchgen-arrow 4.0.0 baseline from datafusion-contrib/tpcgen-rs, measured through a tpcgen-cli wrapper.",
         "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
         "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
       ],
@@ -407,6 +409,7 @@
       "variant": "all-data-tables",
       "validation_status": "not_run",
       "notes": [
+        "Rust tpcdsgen / tpcdsgen-arrow 4.0.0 baseline from datafusion-contrib/tpcgen-rs, measured through a tpcgen-cli wrapper.",
         "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
         "Writer defaults and file layouts differ. Common-table row counts, where available, do not establish full value equivalence.",
         "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
@@ -572,6 +575,7 @@
       "variant": "all-data-tables",
       "validation_status": "not_run",
       "notes": [
+        "Rust tpcdsgen / tpcdsgen-arrow 4.0.0 baseline from datafusion-contrib/tpcgen-rs, measured through a tpcgen-cli wrapper.",
         "Encoded output written through per-table symlinks to /dev/null; excludes storage throughput. ",
         "Discarded contents cannot be validated. See file-output report for associated dataset checks; zero regular-file bytes verified for every attempt."
       ],
@@ -1055,7 +1059,14 @@
         "version": "4.0.0",
         "profile": "release",
         "lto": "thin",
-        "arrow_version": "60.0.0"
+        "arrow_version": "60.0.0",
+        "language": "Rust",
+        "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+        "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+        "generator_libraries": {
+          "tpchgen": "4.0.0",
+          "tpcdsgen": "4.0.0"
+        }
       },
       "tpcgen-arrow": {
         "libraries": {
@@ -1065,7 +1076,10 @@
           "tpcdsgen-arrow": "4.0.0"
         },
         "profile": "release",
-        "lto": "thin"
+        "lto": "thin",
+        "language": "Rust",
+        "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+        "upstream_revision": "2a9b8868aa1006aded4176abff45318a9e808ba4"
       },
       "ssb-dbgen": {
         "repository": "https://github.com/eyalroz/ssb-dbgen",
@@ -1109,7 +1123,40 @@
         "SPARK_LOCAL_IP": "127.0.0.1",
         "SPARK_LOCAL_DIRS": "/mnt/vortex-ssd/data-comb-bench-20261125/output/spark-tmp",
         "OMP_NUM_THREADS": "32"
-      }
+      },
+      "rust_baseline_package_metadata": {
+        "tpchgen": {
+          "version": "4.0.0",
+          "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+          "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+          "path_in_repository": "tpchgen"
+        },
+        "tpchgen-arrow": {
+          "version": "4.0.0",
+          "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+          "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+          "path_in_repository": "tpchgen-arrow"
+        },
+        "tpcdsgen": {
+          "version": "4.0.0",
+          "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+          "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+          "path_in_repository": "tpcdsgen"
+        },
+        "tpcdsgen-arrow": {
+          "version": "4.0.0",
+          "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+          "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+          "path_in_repository": "tpcdsgen-arrow"
+        },
+        "tpcgen-cli": {
+          "version": "4.0.0",
+          "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+          "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+          "path_in_repository": "tpcgen-cli"
+        }
+      },
+      "rust_baseline_metadata_evidence": "Repository and source revision read from the installed 4.0.0 packages Cargo.toml and .cargo_vcs_info.json. tpcgen-cli declares both Rust generator and Arrow crates as dependencies."
     },
     "resource_observations": [
       {
@@ -1514,6 +1561,28 @@
       "environment": {
         "BENCH_STORAGE": "discard",
         "BENCH_TAG": "encoding-"
+      }
+    },
+    "baselines": {
+      "tpch": {
+        "language": "Rust",
+        "library": "tpchgen",
+        "arrow_library": "tpchgen-arrow",
+        "version": "4.0.0",
+        "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+        "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+        "arrow_entrypoint": "External adapter directly using tpchgen and tpchgen-arrow",
+        "parquet_and_text_entrypoint": "tpcgen-cli 4.0.0 using the same Rust libraries"
+      },
+      "tpcds": {
+        "language": "Rust",
+        "library": "tpcdsgen",
+        "arrow_library": "tpcdsgen-arrow",
+        "version": "4.0.0",
+        "repository": "https://github.com/datafusion-contrib/tpcgen-rs",
+        "revision": "2a9b8868aa1006aded4176abff45318a9e808ba4",
+        "arrow_entrypoint": "External adapter directly using tpcdsgen and tpcdsgen-arrow",
+        "parquet_and_text_entrypoint": "tpcgen-cli 4.0.0 using the same Rust libraries"
       }
     }
   },

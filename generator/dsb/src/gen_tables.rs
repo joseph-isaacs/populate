@@ -25,13 +25,9 @@ use std::sync::Arc;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
-/// Default Arrow batch size: dsbgen's own conversion size, so batches are
-/// passed on as made. Larger sizes are built by concatenating them.
-pub const DEFAULT_BATCH_SIZE: usize = GEN_BATCH;
-/// Rows dsbgen-arrow converts at a time. Its row-to-column conversion
-/// makes one pass over the buffered rows per column, so the rows must stay
-/// in cache: at 8Ki rows `catalog_sales` (~400 B/row) converts 5x slower.
-const GEN_BATCH: usize = 2048;
+/// Default Arrow batch size, in rows. A sales or returns batch holds whole
+/// tickets or orders, so it is about this size.
+pub const DEFAULT_BATCH_SIZE: usize = 2048;
 
 /// One table of a [`Dsb`](crate::Dsb) data set.
 ///
@@ -231,7 +227,8 @@ impl DsTable {
         self
     }
 
-    /// Rows per Arrow batch (default 8Ki).
+    /// Rows per Arrow batch, about (whole tickets or orders) for the sales
+    /// and returns tables (default [`DEFAULT_BATCH_SIZE`]).
     pub fn batch_size(mut self, n: usize) -> Self {
         assert!(n > 0, "batch_size must be > 0");
         self.batch_size = n;
@@ -442,7 +439,7 @@ impl Rebatch {
         while b.num_rows() > 0 {
             let take = if self.held == 0 && b.num_rows() >= self.rows {
                 // whole batches of `rows` as one: arrow-rs writes a batch in
-                // mini-batches of `write_batch_size`, which divides `rows`,
+                // mini-batches of `write_batch_size` (1024 by default, dividing `rows`),
                 // so its pages are those of the batches one at a time
                 b.num_rows() / self.rows * self.rows
             } else {
@@ -475,14 +472,13 @@ impl Rebatch {
 /// The channel (store 0, catalog 1, web 2) of a sales or returns table, and
 /// whether it is the sales table.
 fn channel(t: TableName) -> Option<(u8, bool)> {
-    use TableName::*;
     Some(match t {
-        StoreSales => (0, true),
-        StoreReturns => (0, false),
-        CatalogSales => (1, true),
-        CatalogReturns => (1, false),
-        WebSales => (2, true),
-        WebReturns => (2, false),
+        TableName::StoreSales => (0, true),
+        TableName::StoreReturns => (0, false),
+        TableName::CatalogSales => (1, true),
+        TableName::CatalogReturns => (1, false),
+        TableName::WebSales => (2, true),
+        TableName::WebReturns => (2, false),
         _ => return None,
     })
 }

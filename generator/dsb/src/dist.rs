@@ -9,6 +9,7 @@
 //!
 //! [`schema_of`]: populate_sink_arrow::schema_of
 
+use crate::TableName;
 use crate::dat::Encoding;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -334,7 +335,11 @@ where
     fn range(&self, first: u64, last: u64, batch: usize, emit: &mut dyn FnMut(RecordBatch)) {
         let schema = DistTable::schema(self);
         blocks(self.dist(), first, last, batch, |cols| {
-            emit(into_record_batch_with(schema, cols).expect("columns match the schema"))
+            let b = into_record_batch_with(schema, cols).expect("columns match the schema");
+            // a block of tickets may have no returns
+            if b.num_rows() > 0 {
+                emit(b);
+            }
         });
     }
 }
@@ -371,27 +376,26 @@ where
 }
 
 /// Dimension table `t`, or `None` for a fact table.
-pub(crate) fn dimension(t: crate::TableName, s: &Session) -> Option<Box<dyn Gen>> {
-    use crate::TableName as T;
+pub(crate) fn dimension(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
     Some(match t {
-        T::CallCenter => call_center(s),
-        T::CatalogPage => catalog_page(s),
-        T::Customer => customer(s),
-        T::CustomerAddress => customer_address(s),
-        T::CustomerDemographics => customer_demographics(s),
-        T::DateDim => date_dim(s),
-        T::HouseholdDemographics => household_demographics(s),
-        T::IncomeBand => income_band(s),
-        T::Inventory => inventory(s),
-        T::Item => item(s),
-        T::Promotion => promotion(s),
-        T::Reason => reason(s),
-        T::ShipMode => ship_mode(s),
-        T::Store => store(s),
-        T::TimeDim => time_dim(s),
-        T::Warehouse => warehouse(s),
-        T::WebPage => web_page(s),
-        T::WebSite => web_site(s),
+        TableName::CallCenter => call_center(s),
+        TableName::CatalogPage => catalog_page(s),
+        TableName::Customer => customer(s),
+        TableName::CustomerAddress => customer_address(s),
+        TableName::CustomerDemographics => customer_demographics(s),
+        TableName::DateDim => date_dim(s),
+        TableName::HouseholdDemographics => household_demographics(s),
+        TableName::IncomeBand => income_band(s),
+        TableName::Inventory => inventory(s),
+        TableName::Item => item(s),
+        TableName::Promotion => promotion(s),
+        TableName::Reason => reason(s),
+        TableName::ShipMode => ship_mode(s),
+        TableName::Store => store(s),
+        TableName::TimeDim => time_dim(s),
+        TableName::Warehouse => warehouse(s),
+        TableName::WebPage => web_page(s),
+        TableName::WebSite => web_site(s),
         _ => return None,
     })
 }
@@ -902,7 +906,8 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
                 let words = |col: &mut Nullable<StrViews>, list: &[&str], d: usize| {
                     let views: Vec<Interned> = list.iter().map(|w| col.values.intern(w)).collect();
                     Sink::<Str>::reserve(&mut col.values, n);
-                    digits(i, n, d).for_each(|v| col.values.push_interned(views[v]));
+                    // SAFETY: the views were interned in this column just above
+                    digits(i, n, d).for_each(|v| unsafe { col.values.push_interned(views[v]) });
                     col.valid.push_valid(n);
                 };
                 words(&mut out.1, &gender, 0);
@@ -1637,30 +1642,24 @@ where
         per_batch: u64,
         emit: &mut dyn FnMut(usize, RecordBatch),
     ) {
-        let mut d = self.dist().clone();
-        d.skip(first - 1);
-        let mut rng = SmallRng::seed_from_u64(0);
         let schemas = DistTables::schemas(self);
-        let mut at = first;
-        while at <= last {
-            let n = per_batch.min(last - at + 1);
+        blocks(self.dist(), first, last, per_batch as usize, |cols| {
             let mut tables = Vec::with_capacity(2);
-            d.collect(&mut rng, n as usize).into_tables(&mut tables);
+            cols.into_tables(&mut tables);
             for (k, cols) in tables.into_iter().enumerate() {
+                // a block of tickets may have no returns
                 if !cols[0].is_empty() {
                     let b = RecordBatch::try_new(schemas[k].clone(), cols)
                         .expect("columns match the schema");
                     emit(k, b);
                 }
             }
-            at += n;
-        }
+        });
     }
 }
 
 /// Sales or returns table `t` alone, or `None` for a dimension.
-pub(crate) fn fact(t: crate::TableName, s: &Session) -> Option<Box<dyn Gen>> {
-    use crate::TableName as T;
+pub(crate) fn fact(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
     fn lines<G>(s: &Session) -> Box<dyn Gen>
     where
         G: Source + Send + Sync + 'static,
@@ -1674,19 +1673,18 @@ pub(crate) fn fact(t: crate::TableName, s: &Session) -> Option<Box<dyn Gen>> {
         })
     }
     Some(match t {
-        T::StoreSales => lines::<StoreSalesRowGenerator>(s),
-        T::StoreReturns => lines::<StoreReturnsRowGenerator>(s),
-        T::CatalogSales => lines::<CatalogSalesRowGenerator>(s),
-        T::CatalogReturns => lines::<CatalogReturnsRowGenerator>(s),
-        T::WebSales => lines::<WebSalesRowGenerator>(s),
-        T::WebReturns => lines::<WebReturnsRowGenerator>(s),
+        TableName::StoreSales => lines::<StoreSalesRowGenerator>(s),
+        TableName::StoreReturns => lines::<StoreReturnsRowGenerator>(s),
+        TableName::CatalogSales => lines::<CatalogSalesRowGenerator>(s),
+        TableName::CatalogReturns => lines::<CatalogReturnsRowGenerator>(s),
+        TableName::WebSales => lines::<WebSalesRowGenerator>(s),
+        TableName::WebReturns => lines::<WebReturnsRowGenerator>(s),
         _ => return None,
     })
 }
 
 /// A channel's sales and returns from one pass: `t` is either of them.
-pub(crate) fn pair(t: crate::TableName, s: &Session) -> Option<Box<dyn PairGen>> {
-    use crate::TableName as T;
+pub(crate) fn pair(t: TableName, s: &Session) -> Option<Box<dyn PairGen>> {
     fn pairs<G>(s: &Session, sales: Ds) -> Box<dyn PairGen>
     where
         G: WithSale + Send + Sync + 'static,
@@ -1703,11 +1701,15 @@ pub(crate) fn pair(t: crate::TableName, s: &Session) -> Option<Box<dyn PairGen>>
         Box::new(DistTables::new(&["sales", "returns"], rows, dist))
     }
     Some(match t {
-        T::StoreSales | T::StoreReturns => pairs::<StoreReturnsRowGenerator>(s, Ds::StoreSales),
-        T::CatalogSales | T::CatalogReturns => {
+        TableName::StoreSales | TableName::StoreReturns => {
+            pairs::<StoreReturnsRowGenerator>(s, Ds::StoreSales)
+        }
+        TableName::CatalogSales | TableName::CatalogReturns => {
             pairs::<CatalogReturnsRowGenerator>(s, Ds::CatalogSales)
         }
-        T::WebSales | T::WebReturns => pairs::<WebReturnsRowGenerator>(s, Ds::WebSales),
+        TableName::WebSales | TableName::WebReturns => {
+            pairs::<WebReturnsRowGenerator>(s, Ds::WebSales)
+        }
         _ => return None,
     })
 }
@@ -1715,7 +1717,6 @@ pub(crate) fn pair(t: crate::TableName, s: &Session) -> Option<Box<dyn PairGen>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TableName;
     use arrow_select::concat::concat_batches;
     use dsbgen::config::SessionBuilder;
     use dsbgen_arrow::{CustomerDemographicsArrow, InventoryArrow};

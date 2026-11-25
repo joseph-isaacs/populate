@@ -72,8 +72,12 @@ impl StrViews {
     }
 
     /// Append a row of a string [`intern`](Self::intern)ed in this column.
+    ///
+    /// # Safety
+    /// `s` comes from `intern` on this column: its view points into this
+    /// column's data.
     #[inline]
-    pub fn push_interned(&mut self, s: Interned) {
+    pub unsafe fn push_interned(&mut self, s: Interned) {
         self.views.push(s.0);
     }
 
@@ -133,7 +137,12 @@ impl TextField for StrViews {
     }
 
     fn text_bytes(&self) -> usize {
-        self.data.len() + 12 * self.views.len()
+        // a short string is written with one 12-byte store; a long one is
+        // counted per row, as an interned one is written once per row
+        self.views
+            .iter()
+            .map(|&v| (v as u32 as usize).max(12))
+            .sum()
     }
 
     #[inline(always)]

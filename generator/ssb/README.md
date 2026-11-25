@@ -78,14 +78,22 @@ reproduces ssb-dbgen's quirks, because they are in the data:
 
 ## How it is generated
 
-On `populate-tpch`'s streams and `populate-table`'s engine:
+On `populate`'s combinators, `populate-tpch`'s streams and
+`populate-table`'s engine:
 
+- **Each table is one `Distribution`**: a tuple of named columns, each
+  a distribution over source rows, run by `populate_table::DistTable`.
+  The Arrow schema is read off it (`populate_sink_arrow::schema_of`):
+  names from `named`, types from the column types the values collect
+  into. Every dbgen stream is a seekable leaf (`draws`, `Ints`), computed
+  columns are `derive`s of the streams they read, and `lineorder` is the
+  children of each block of orders, written a column at a time.
 - **Chunks of source rows** (orders for `lineorder`). Every stream jumps to
   a chunk's first row with one multiply by `16807^k`, so chunks are
   independent and concatenate to the sequential output for any chunk size
   and thread count.
 - **Columns, not rows.** Each stream's draws for a block of rows are made
-  at once by 16 LCG lanes (`populate_tpch::rng::draws`) and mapped to
+  at once by 16 LCG lanes (`populate_tpch::rng::Lcg`) and mapped to
   ranges with integer arithmetic.
 - **A shared dictionary.** SSB has no comments: apart from names,
   addresses and phone numbers, every string is from a small set

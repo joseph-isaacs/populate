@@ -394,13 +394,6 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    pub(crate) fn with_capacity(n: usize, bytes: usize) -> Self {
-        Views {
-            views: Vec::with_capacity(n),
-            data: Vec::with_capacity(bytes),
-        }
-    }
-
     /// Append the bytes `data[start..]` (just written) as the next string.
     #[inline(always)]
     pub(crate) fn end_string(&mut self, start: usize) {

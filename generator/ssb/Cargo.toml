@@ -6,7 +6,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
+rand = { workspace = true }
 # dbgen's skip-ahead random streams, shared with TPC-H
 populate-tpch = { workspace = true }
 arrow-array = { workspace = true }

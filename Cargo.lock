@@ -839,8 +839,12 @@ dependencies = [
  "arrow-select",
  "bytes",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
  "populate-tpch",
+ "rand",
  "tpchgen",
 ]
 

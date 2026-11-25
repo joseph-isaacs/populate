@@ -474,6 +474,11 @@ impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> 
             V::nullables(out);
         }
     }
+    fn column_types(&self, out: &mut Vec<(DataType, bool)>) {
+        for c in &self.0 {
+            c.column_types(out);
+        }
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         for c in self.0 {
             c.into_arrays(out);
@@ -482,9 +487,9 @@ impl<V: IntoArrowColumns, const N: usize> IntoArrowColumns for SpreadCols<V, N> 
 }
 
 /// One group of columns per element, in order. The width is the
-/// instance's, so `WideCols` has no static types: it can be a top-level
-/// group of columns (read by
-/// [`column_types`](IntoArrowColumns::column_types)), not a list's values.
+/// instance's, so `WideCols` has no static types: its schema is read by
+/// [`column_types`](IntoArrowColumns::column_types) (top level, in tuples,
+/// `Spread`s and children), and it can't be a list's values.
 impl<C: IntoArrowColumns> IntoArrowColumns for WideCols<C> {
     const LEN: usize = 0;
     fn data_types(_: &mut Vec<DataType>) {
@@ -610,6 +615,33 @@ mod tests {
         let cols = Row.collect(&mut SmallRng::seed_from_u64(0), 3);
         let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
         assert_eq!(b.num_rows(), 3);
+    }
+
+    #[test]
+    fn wide_rows_read_their_schema_off_the_instance() {
+        /// Column `name`: `Some(1)` every row, or `None` when not `some`.
+        #[derive(Clone)]
+        struct C(&'static str, bool);
+        impl Distribution for C {
+            type Item = Option<i64>;
+            fn sample(&mut self, _: &mut impl Rng) -> Option<i64> {
+                self.1.then_some(1)
+            }
+            fn column_names(&self, out: &mut Vec<String>) {
+                out.push(self.0.into());
+            }
+        }
+        let d = (Row, vec![C("a", true), C("b", false), C("c", true)]);
+        let s = schema_of(&d);
+        let names: Vec<_> = s.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, ["price", "day", "a", "b", "c"]);
+        assert!(!s.field(0).is_nullable() && s.field(3).is_nullable());
+        assert_eq!(s.field(4).data_type(), &DataType::Int64);
+        let cols = d
+            .clone()
+            .collect(&mut rand::rngs::SmallRng::seed_from_u64(0), 2);
+        let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
+        assert_eq!((b.num_rows(), b.column(3).null_count()), (2, 2));
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::model::{Measurement, NO_TAG, Point, Statics, TagVal, Type, Val};
 use crate::sim::AnySim;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use populate_builtins::ReadRows;
 use populate_builtins::{Named, named};
 use populate_core::{
     Columnar, Columns, Distribution, Nullable, Sink, StrCol, Timestamp, time_unit,
@@ -29,8 +30,11 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::mem::{swap, take};
 use std::ops::Range;
+use std::str::from_utf8_unchecked;
 use std::sync::Arc;
 
 /// A point's time: Unix nanoseconds, UTC.
@@ -44,90 +48,48 @@ const ALWAYS: &str = "only nullable columns are left empty";
 
 /// A row type whose columns can be read back: the time and field columns
 /// are logged in their final form, and a leaf hands them on.
-trait Logged: Columnar<Columns: Clone> {
-    /// Row `i` of `cols`.
-    fn row(cols: &Self::Columns, i: usize) -> Self;
+trait Logged: Columnar<Columns: ReadRows<Row = Self> + Clone> {}
 
-    /// Append `src`'s rows `r` to `dst`.
-    fn extend(dst: &mut Self::Columns, src: &Self::Columns, r: Range<usize>);
+impl<S: Columnar<Columns: ReadRows<Row = S> + Clone>> Logged for S {}
 
-    fn len(cols: &Self::Columns) -> usize;
-
+/// A field's row type: plain, or `Option` where a run leaves some out.
+trait Field: Logged {
     /// The row of a logged field value, missing where the point has none.
     fn of_val(v: Option<Val>) -> Self;
 }
 
-macro_rules! logged {
-    ($($t:ty => $of:expr),* $(,)?) => {$(
-        impl Logged for $t {
-            fn row(cols: &Vec<$t>, i: usize) -> $t {
-                cols[i]
-            }
-
-            fn extend(dst: &mut Vec<$t>, src: &Vec<$t>, r: Range<usize>) {
-                dst.extend_from_slice(&src[r]);
-            }
-
-            fn len(cols: &Vec<$t>) -> usize {
-                cols.len()
-            }
-
-            #[inline]
-            fn of_val(v: Option<Val>) -> $t {
-                let f: fn(Val) -> Option<$t> = $of;
-                v.and_then(f).expect(ALWAYS)
-            }
-        }
-
-        impl Logged for Option<$t> {
-            fn row(cols: &Nullable<Vec<$t>>, i: usize) -> Option<$t> {
-                cols.valid.get(i).then(|| cols.values[i])
-            }
-
-            fn extend(dst: &mut Nullable<Vec<$t>>, src: &Nullable<Vec<$t>>, r: Range<usize>) {
-                dst.valid.reserve(r.len());
-                for i in r.clone() {
-                    dst.valid.push(src.valid.get(i));
-                }
-                dst.values.extend_from_slice(&src.values[r]);
-            }
-
-            fn len(cols: &Nullable<Vec<$t>>) -> usize {
-                cols.len()
-            }
-
-            #[inline]
-            fn of_val(v: Option<Val>) -> Option<$t> {
-                let f: fn(Val) -> Option<$t> = $of;
-                v.and_then(f)
-            }
-        }
-    )*};
-}
-
-logged!(
-    i64 => |v| match v {
+fn int(v: Val) -> Option<i64> {
+    match v {
         Val::I(i) => Some(i),
         _ => None,
-    },
-    f64 => Val::as_f64,
-);
-
-impl Logged for Time {
-    fn row(cols: &Vec<Time>, i: usize) -> Time {
-        cols[i]
     }
+}
 
-    fn extend(dst: &mut Vec<Time>, src: &Vec<Time>, r: Range<usize>) {
-        dst.extend_from_slice(&src[r]);
+impl Field for i64 {
+    #[inline]
+    fn of_val(v: Option<Val>) -> i64 {
+        v.and_then(int).expect(ALWAYS)
     }
+}
 
-    fn len(cols: &Vec<Time>) -> usize {
-        cols.len()
+impl Field for Option<i64> {
+    #[inline]
+    fn of_val(v: Option<Val>) -> Option<i64> {
+        v.and_then(int)
     }
+}
 
-    fn of_val(_: Option<Val>) -> Time {
-        unreachable!("times are logged from the point")
+impl Field for f64 {
+    #[inline]
+    fn of_val(v: Option<Val>) -> f64 {
+        v.and_then(Val::as_f64).expect(ALWAYS)
+    }
+}
+
+impl Field for Option<f64> {
+    #[inline]
+    fn of_val(v: Option<Val>) -> Option<f64> {
+        v.and_then(Val::as_f64)
     }
 }
 
@@ -154,8 +116,8 @@ impl<S: Logged> Column<S> {
 
     fn take(&mut self, n: usize) -> Range<usize> {
         let r = self.at..self.at + n;
-        let len = S::len(&self.cols);
-        assert!(r.end <= len, "the column has {len} rows");
+        let len = self.cols.rows();
+        assert!(r.end <= len, "row {} of a column of {len}", r.end);
         self.at = r.end;
         r
     }
@@ -166,21 +128,21 @@ impl<S: Logged> Distribution for Column<S> {
 
     fn sample(&mut self, _: &mut impl Rng) -> S {
         let i = self.take(1).start;
-        S::row(&self.cols, i)
+        self.cols.rows_from(i).next().expect("a row")
     }
 
     fn collect_into(&mut self, cols: &mut Columns<S>, _: &mut impl Rng, n: usize) {
         let r = self.take(n);
-        if r.start == 0 && r.end == S::len(&self.cols) && S::len(cols) == 0 {
+        if r.start == 0 && r.end == self.cols.rows() && cols.rows() == 0 {
             // every row, into nothing yet: the buffers are the result
-            std::mem::swap(cols, &mut self.cols);
+            swap(cols, &mut self.cols);
         } else {
-            S::extend(cols, &self.cols, r);
+            cols.push_n(self.cols.rows_from(r.start).take(n));
         }
     }
 
     fn skip(&mut self, n: u64) {
-        self.at += usize::try_from(n).expect("a chunk fits in memory");
+        self.take(usize::try_from(n).expect("a chunk fits in memory"));
     }
 }
 
@@ -212,7 +174,7 @@ impl Rows {
     }
 
     fn skip(&mut self, n: u64) {
-        self.at += usize::try_from(n).expect("a chunk fits in memory");
+        self.take(usize::try_from(n).expect("a chunk fits in memory"));
     }
 }
 
@@ -327,7 +289,7 @@ struct StrTable {
 
 /// A kind of tag: where its values are and how one is read.
 trait TagKind {
-    type Values: std::fmt::Debug;
+    type Values: Debug;
     type Out<'a>;
     /// The `i`th tag of this kind.
     fn values(t: &TagValues, i: usize) -> Arc<Self::Values>;
@@ -354,7 +316,7 @@ impl TagKind for StrTag {
     fn get(v: &StrTable, source: usize) -> &str {
         let b = &v.bytes[v.offsets[source]..v.offsets[source + 1]];
         // SAFETY: the table holds whole `str`s, split at their ends
-        unsafe { std::str::from_utf8_unchecked(b) }
+        unsafe { from_utf8_unchecked(b) }
     }
 }
 
@@ -465,7 +427,7 @@ impl Distribution for ExtraCol {
 
 /// One measurement's points from one chunk, in order: `IS`/`DS` are its
 /// int64 and float64 field rows.
-struct Log<IS: Logged, DS: Logged> {
+struct Log<IS: Field, DS: Field> {
     time: Vec<Time>,
     sources: Sources,
     /// Per field, in order: whether it is a float64, and its index in
@@ -475,7 +437,7 @@ struct Log<IS: Logged, DS: Logged> {
     floats: Vec<Columns<DS>>,
 }
 
-impl<IS: Logged, DS: Logged> Log<IS, DS> {
+impl<IS: Field, DS: Field> Log<IS, DS> {
     /// Empty, for measurement `m`, with room for `rows` points, reusing
     /// the `sources` buffers of an earlier chunk.
     fn new(m: &Measurement, mut sources: Sources, rows: usize) -> Self {
@@ -554,8 +516,8 @@ type MeasDist<TS, FS, IS, DS> = (
 trait Slots: 'static {
     type TS: for<'a> Slot<&'a str>;
     type FS: Slot<f32>;
-    type IS: Logged;
-    type DS: Logged;
+    type IS: Field;
+    type DS: Field;
 }
 
 /// Devops: nothing is ever missing.
@@ -634,39 +596,6 @@ where
         log: Log<R::IS, R::DS>,
         sources: &Arc<Sources>,
     ) -> Dist<R> {
-        fn tag_cols<S, K>(
-            st: &Statics,
-            tags: &TagValues,
-            rows: &Rows,
-            ks: Range<usize>,
-        ) -> Vec<Named<TagCol<S, K>>>
-        where
-            K: TagKind,
-            S: for<'a> Slot<K::Out<'a>>,
-        {
-            let first = ks.start;
-            ks.map(|k| {
-                let c = TagCol {
-                    rows: rows.clone(),
-                    values: K::values(tags, k - first),
-                    k,
-                    _slot: PhantomData,
-                };
-                named(&st.tag_keys[k], c)
-            })
-            .collect()
-        }
-
-        fn field_cols<S: Logged>(
-            keys: &[Box<str>],
-            cols: impl Iterator<Item = Columns<S>>,
-        ) -> Vec<Named<Column<S>>> {
-            keys.iter()
-                .zip(cols)
-                .map(|(key, c)| named(key, Column::new(c)))
-                .collect()
-        }
-
         let meas = &st.measurements[m];
         let rows = Rows {
             sources: sources.clone(),
@@ -716,6 +645,41 @@ where
     }
 }
 
+/// Named columns of tags `ks`, all of kind `K`.
+fn tag_cols<S, K>(
+    st: &Statics,
+    tags: &TagValues,
+    rows: &Rows,
+    ks: Range<usize>,
+) -> Vec<Named<TagCol<S, K>>>
+where
+    K: TagKind,
+    S: for<'a> Slot<K::Out<'a>>,
+{
+    let first = ks.start;
+    ks.map(|k| {
+        let c = TagCol {
+            rows: rows.clone(),
+            values: K::values(tags, k - first),
+            k,
+            _slot: PhantomData,
+        };
+        named(&st.tag_keys[k], c)
+    })
+    .collect()
+}
+
+/// Named columns over logged fields.
+fn field_cols<S: Logged>(
+    keys: &[Box<str>],
+    cols: impl Iterator<Item = Columns<S>>,
+) -> Vec<Named<Column<S>>> {
+    keys.iter()
+        .zip(cols)
+        .map(|(key, c)| named(key, Column::new(c)))
+        .collect()
+}
+
 /// A run's tables, whichever row types they have.
 trait Tables: Send + Sync {
     fn chunks(&self) -> &Chunked<AnySim>;
@@ -738,7 +702,7 @@ where
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let st = &*self.st;
         let n = st.measurements.len();
-        let mut pool = POOL.with_borrow_mut(std::mem::take);
+        let mut pool = POOL.with_borrow_mut(take);
         pool.sources.resize_with(n, Sources::default);
         pool.rows.resize(n, 0);
         let mut logs: Vec<Log<R::IS, R::DS>> = st
@@ -753,7 +717,7 @@ where
         for (m, mut log) in logs.into_iter().enumerate() {
             let rows = log.time.len();
             pool.rows[m] = rows;
-            let sources = Arc::new(std::mem::take(&mut log.sources));
+            let sources = Arc::new(take(&mut log.sources));
             if rows > 0 {
                 let mut d = Self::dist(&self.st, &self.tags, m, log, &sources);
                 // the leaves read the log and draw nothing

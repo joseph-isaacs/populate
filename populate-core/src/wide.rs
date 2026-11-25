@@ -5,7 +5,8 @@
 //! distributions is a distribution of [`Wide`] rows: one value per
 //! element, each stored in its own column, as if the elements were the
 //! fields of a tuple. [`Distribution::columns`] gives the columns their
-//! width before the first row arrives.
+//! width before the first row arrives, so a schema can be read off them;
+//! columns made by `Default` take their width from the first rows.
 
 use crate::{Columnar, Columns, Distribution, Sink};
 use rand::Rng;
@@ -22,8 +23,11 @@ impl<T: Columnar> Columnar for Wide<T> {
     type Columns = WideCols<T::Columns>;
 }
 
-impl<T, C: Sink<T>> Sink<Wide<T>> for WideCols<C> {
+impl<T, C: Sink<T> + Default> Sink<Wide<T>> for WideCols<C> {
     fn push(&mut self, row: Wide<T>) {
+        if self.0.is_empty() {
+            self.0.resize_with(row.0.len(), C::default);
+        }
         assert_eq!(
             row.0.len(),
             self.0.len(),
@@ -52,11 +56,10 @@ impl<D: Distribution> Distribution for Vec<D> {
     }
 
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl Rng, n: usize) {
-        assert_eq!(
-            cols.0.len(),
-            self.len(),
-            "columns from `Distribution::columns` have the distribution's width"
-        );
+        if cols.0.is_empty() {
+            *cols = self.columns();
+        }
+        assert_eq!(cols.0.len(), self.len(), "columns of another width");
         for (d, c) in self.iter_mut().zip(&mut cols.0) {
             d.collect_into(c, rng, n);
         }
@@ -106,5 +109,27 @@ mod tests {
         let mut cols = d.columns();
         cols.push(Wide(vec![0, 0, 0]));
         assert_eq!(cols.0.len(), 3);
+    }
+
+    #[test]
+    fn default_columns_take_their_width() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut d = vec![Count(0), Count(10)];
+        let mut cols = WideCols::<Vec<i64>>::default();
+        d.collect_into(&mut cols, &mut rng, 1);
+        let mut pushed = WideCols::<Vec<i64>>::default();
+        pushed.push(d.sample(&mut rng));
+        assert_eq!(cols.0, vec![vec![1], vec![11]]);
+        assert_eq!(pushed.0, vec![vec![2], vec![12]]);
+    }
+
+    #[test]
+    fn skips_and_empty() {
+        let mut rng = SmallRng::seed_from_u64(0);
+        let mut d = vec![Count(0), Count(10)];
+        d.skip(5);
+        assert_eq!(d.collect(&mut rng, 1).0, vec![vec![6], vec![16]]);
+        let mut none: Vec<Count> = Vec::new();
+        assert!(none.collect(&mut rng, 3).0.is_empty());
     }
 }

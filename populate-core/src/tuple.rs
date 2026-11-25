@@ -23,6 +23,7 @@ macro_rules! tuple_impls {
         }
 
         impl<$($T, $S: Sink<$T>),+> Sink<($($T,)+)> for ($($S,)+) {
+            #[inline]
             fn push(&mut self, value: ($($T,)+)) {
                 $(self.$idx.push(value.$idx);)+
             }
@@ -50,6 +51,10 @@ macro_rules! tuple_impls {
 
             fn skip(&mut self, n: u64) {
                 $(self.$idx.skip(n);)+
+            }
+
+            fn column_names(&self, out: &mut Vec<String>) {
+                $(self.$idx.column_names(out);)+
             }
         }
     };

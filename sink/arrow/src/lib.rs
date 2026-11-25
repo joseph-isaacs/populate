@@ -30,12 +30,12 @@ use arrow_array::types::{
     UInt32Type, UInt64Type,
 };
 use arrow_array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, ListArray, PrimitiveArray, RecordBatch,
-    StringArray, StructArray, UInt64Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Date32Array, Decimal128Array, ListArray,
+    PrimitiveArray, RecordBatch, StringArray, StructArray, UInt64Array,
 };
 use arrow_buffer::{ArrowNativeType, Buffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{ArrowError, Field, Fields, Schema, SchemaRef};
-use populate_core::{Columns, Distribution, ListCol, StrCol};
+use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
+use populate_core::{ChildCols, Columns, Date32, Decimal, Distribution, ListCol, StrCol};
 use rand::Rng;
 use std::sync::Arc;
 
@@ -45,6 +45,10 @@ use std::sync::Arc;
 
 /// A column that becomes exactly one Arrow array.
 pub trait IntoArrowArray {
+    /// The type of the array [`into_array`](Self::into_array) makes, known
+    /// from the column type alone: a schema needs no rows.
+    fn data_type() -> DataType;
+
     fn into_array(self) -> ArrayRef;
 }
 
@@ -66,18 +70,30 @@ impl_arrow_native!(
 );
 
 impl<T: ArrowNative> IntoArrowArray for Vec<T> {
+    fn data_type() -> DataType {
+        T::Arrow::DATA_TYPE
+    }
+
     fn into_array(self) -> ArrayRef {
         Arc::new(PrimitiveArray::<T::Arrow>::new(self.into(), None))
     }
 }
 
 impl IntoArrowArray for Vec<bool> {
+    fn data_type() -> DataType {
+        DataType::Boolean
+    }
+
     fn into_array(self) -> ArrayRef {
         Arc::new(BooleanArray::from(self))
     }
 }
 
 impl IntoArrowArray for Vec<usize> {
+    fn data_type() -> DataType {
+        DataType::UInt64
+    }
+
     fn into_array(self) -> ArrayRef {
         Arc::new(UInt64Array::from_iter_values(
             self.into_iter().map(|v| v as u64),
@@ -87,6 +103,10 @@ impl IntoArrowArray for Vec<usize> {
 
 /// `StrCol` -> `StringArray`: offsets and bytes are moved, not copied.
 impl IntoArrowArray for StrCol {
+    fn data_type() -> DataType {
+        DataType::Utf8
+    }
+
     fn into_array(self) -> ArrayRef {
         let (offsets, data) = self.into_parts();
         // SAFETY: `StrCol` only accepts UTF-8 (`&str`, `char`, checked ASCII)
@@ -100,6 +120,10 @@ impl IntoArrowArray for StrCol {
 /// `ListCol` -> `ListArray`: the offsets buffer is moved into the array, no
 /// copy.
 impl<V: IntoArrowColumns> IntoArrowArray for ListCol<V> {
+    fn data_type() -> DataType {
+        DataType::List(Arc::new(Field::new_list_field(value_type::<V>(), false)))
+    }
+
     fn into_array(self) -> ArrayRef {
         let (offsets, values) = self.into_parts();
         let values = columns_to_value_array(values);
@@ -124,12 +148,72 @@ pub fn columns_to_value_array<V: IntoArrowColumns>(values: V) -> ArrayRef {
     Arc::new(StructArray::new(column_fields(&cols), cols, None))
 }
 
+/// The type [`columns_to_value_array`] gives `V`: its one column's type,
+/// or a `Struct` of fields `c0, c1, ...`.
+pub fn value_type<V: IntoArrowColumns>() -> DataType {
+    let mut types = Vec::with_capacity(V::LEN);
+    V::data_types(&mut types);
+    if types.len() == 1 {
+        return types.pop().expect("one column");
+    }
+    DataType::Struct(
+        types
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| Field::new(format!("c{i}"), t, false))
+            .collect(),
+    )
+}
+
 /// Non-nullable fields `c0, c1, ...` typed after `cols`.
 fn column_fields(cols: &[ArrayRef]) -> Fields {
     cols.iter()
         .enumerate()
         .map(|(i, a)| Field::new(format!("c{i}"), a.data_type().clone(), false))
         .collect()
+}
+
+/// A `Vec` of a `#[repr(transparent)]` wrapper of `T` as a `Vec<T>`, without
+/// copying.
+///
+/// # Safety
+///
+/// `W` must be `#[repr(transparent)]` over `T`.
+unsafe fn unwrap_vec<W, T>(v: Vec<W>) -> Vec<T> {
+    let mut v = std::mem::ManuallyDrop::new(v);
+    // SAFETY: same size, alignment and validity (the caller's guarantee),
+    // so the allocation is a valid `Vec<T>` of the same length and capacity.
+    unsafe { Vec::from_raw_parts(v.as_mut_ptr().cast::<T>(), v.len(), v.capacity()) }
+}
+
+/// `Date32` days, moved into a `Date32Array`.
+impl IntoArrowArray for Vec<Date32> {
+    fn data_type() -> DataType {
+        DataType::Date32
+    }
+
+    fn into_array(self) -> ArrayRef {
+        // SAFETY: `Date32` is `#[repr(transparent)]` over `i32`
+        let days: Vec<i32> = unsafe { unwrap_vec(self) };
+        Arc::new(Date32Array::new(days.into(), None))
+    }
+}
+
+/// `Decimal<P, S>` units, moved into a `Decimal128Array`.
+impl<const P: u8, const S: i8> IntoArrowArray for Vec<Decimal<P, S>> {
+    fn data_type() -> DataType {
+        DataType::Decimal128(P, S)
+    }
+
+    fn into_array(self) -> ArrayRef {
+        // SAFETY: `Decimal` is `#[repr(transparent)]` over `i128`
+        let units: Vec<i128> = unsafe { unwrap_vec(self) };
+        Arc::new(
+            Decimal128Array::new(units.into(), None)
+                .with_precision_and_scale(P, S)
+                .expect("valid decimal precision and scale"),
+        )
+    }
 }
 
 // ============================================================================
@@ -141,11 +225,20 @@ fn column_fields(cols: &[ArrayRef]) -> Fields {
 pub trait IntoArrowColumns {
     /// The number of arrays, so the `Vec` of them is allocated once.
     const LEN: usize;
+
+    /// The type of each array [`into_arrays`](Self::into_arrays) makes, in
+    /// order. This is where a schema's types come from: the sinks a
+    /// distribution collects into know what they will become.
+    fn data_types(out: &mut Vec<DataType>);
+
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
 impl<C: IntoArrowArray> IntoArrowColumns for C {
     const LEN: usize = 1;
+    fn data_types(out: &mut Vec<DataType>) {
+        out.push(C::data_type());
+    }
     fn into_arrays(self, out: &mut Vec<ArrayRef>) {
         out.push(self.into_array());
     }
@@ -155,6 +248,9 @@ macro_rules! tuple_columns {
     ($($C:ident $idx:tt),+) => {
         impl<$($C: IntoArrowColumns),+> IntoArrowColumns for ($($C,)+) {
             const LEN: usize = 0 $(+ $C::LEN)+;
+            fn data_types(out: &mut Vec<DataType>) {
+                $($C::data_types(out);)+
+            }
             fn into_arrays(self, out: &mut Vec<ArrayRef>) {
                 $(self.$idx.into_arrays(out);)+
             }
@@ -195,6 +291,56 @@ pub fn into_record_batch_with<S: IntoArrowColumns>(
     RecordBatch::try_new(schema.clone(), cols)
 }
 
+/// Children are the rows: their columns, as if collected directly.
+impl<V: IntoArrowColumns> IntoArrowColumns for ChildCols<V> {
+    const LEN: usize = V::LEN;
+    fn data_types(out: &mut Vec<DataType>) {
+        V::data_types(out);
+    }
+    fn into_arrays(self, out: &mut Vec<ArrayRef>) {
+        self.values.into_arrays(out);
+    }
+}
+
+// ============================================================================
+// Schema
+// ============================================================================
+
+/// The schema of the rows `dist` makes, without making any: the names
+/// from the distribution ([`Distribution::column_names`]), the types from
+/// the columns it collects into ([`IntoArrowColumns::data_types`]).
+/// Unnamed columns are `c0, c1, ...`; every field is non-nullable.
+///
+/// # Panics
+///
+/// If `dist` names some of its columns but not all.
+pub fn schema_of<D: Distribution>(dist: &D) -> Schema
+where
+    Columns<D::Item>: IntoArrowColumns,
+{
+    let mut types = Vec::with_capacity(<Columns<D::Item>>::LEN);
+    <Columns<D::Item>>::data_types(&mut types);
+    let mut names = Vec::with_capacity(types.len());
+    dist.column_names(&mut names);
+    if names.is_empty() {
+        names = (0..types.len()).map(|i| format!("c{i}")).collect();
+    }
+    assert_eq!(
+        names.len(),
+        types.len(),
+        "the distribution names {} of its {} columns: {names:?}",
+        names.len(),
+        types.len()
+    );
+    Schema::new(
+        names
+            .into_iter()
+            .zip(types)
+            .map(|(n, t)| Field::new(n, t, false))
+            .collect::<Vec<_>>(),
+    )
+}
+
 // ============================================================================
 // DistributionArrow — collect straight to a RecordBatch
 // ============================================================================
@@ -228,3 +374,49 @@ pub trait DistributionArrow: Distribution {
 }
 
 impl<D: Distribution> DistributionArrow for D {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use populate_core::{Children, Sink};
+    use rand::SeedableRng;
+
+    /// One `Decimal<9, 2>` and one `Date32` per row.
+    #[derive(Clone)]
+    struct Row;
+
+    impl Distribution for Row {
+        type Item = (Decimal<9, 2>, Date32);
+        fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
+            (Decimal(1234), Date32(19_000))
+        }
+        fn column_names(&self, out: &mut Vec<String>) {
+            out.extend(["price".into(), "day".into()]);
+        }
+    }
+
+    #[test]
+    fn schema_from_names_and_sinks() {
+        let s = schema_of(&Row);
+        assert_eq!(s.field(0).name(), "price");
+        assert_eq!(s.field(0).data_type(), &DataType::Decimal128(9, 2));
+        assert_eq!(s.field(1).data_type(), &DataType::Date32);
+        let cols = Row.collect(&mut rand::rngs::SmallRng::seed_from_u64(0), 3);
+        let b = into_record_batch_with(&Arc::new(s), cols).expect("schema matches");
+        assert_eq!(b.num_rows(), 3);
+    }
+
+    #[test]
+    fn children_are_the_rows() {
+        let mut c = ChildCols::<Vec<i64>>::default();
+        c.push(Children(vec![1, 2]));
+        c.push(Children(vec![]));
+        c.push(Children(vec![3]));
+        let mut types = Vec::new();
+        ChildCols::<Vec<i64>>::data_types(&mut types);
+        assert_eq!(types, [DataType::Int64]);
+        let mut out = Vec::new();
+        c.into_arrays(&mut out);
+        assert_eq!(out[0].len(), 3);
+    }
+}

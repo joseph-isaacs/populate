@@ -37,3 +37,7 @@ required-features = ["parquet"]
 [[test]]
 name = "parquet_direct"
 required-features = ["parquet"]
+
+[[test]]
+name = "direct"
+required-features = ["parquet"]

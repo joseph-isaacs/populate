@@ -169,11 +169,6 @@ pub fn uniform<T: UniformValue>(lo: T, hi: T) -> Uniform<T> {
 impl<T: UniformValue + Columnar> Distribution for Uniform<T> {
     type Item = T;
 
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        T::sample(&mut self.sampler, rng)
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         T::fill(&mut self.sampler, rng, cols, n);
     }
@@ -204,11 +199,6 @@ pub fn choose<T: Copy>(values: &'static [T]) -> Choose<T> {
 
 impl<T: Copy + Columnar> Distribution for Choose<T> {
     type Item = T;
-
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        self.values[self.idx.next(rng) as usize]
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
@@ -276,16 +266,6 @@ pub fn weighted<T: Copy>(values: &'static [(T, u32)]) -> Weighted<T> {
 impl<T: Copy + Columnar> Distribution for Weighted<T> {
     type Item = T;
 
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        let x = self.draw.next(rng) as u32;
-        let i = match &self.pick {
-            Pick::Table(t) => t[x as usize] as usize,
-            Pick::Search(c) => c.partition_point(|&c| c <= x),
-        };
-        self.values[i].0
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
         match &self.pick {
@@ -328,14 +308,6 @@ macro_rules! string_distribution {
     ($t:ty) => {
         impl Distribution for $t {
             type Item = String;
-
-            /// Allocates a `String`; collecting writes into the column's
-            /// buffer instead.
-            fn sample(&mut self, rng: &mut impl Rng) -> String {
-                let mut col = StrCol::new();
-                col.push_with(|b| self.write(rng, b));
-                col.get(0).to_owned()
-            }
 
             fn collect_into(&mut self, cols: &mut StrCol, rng: &mut impl Rng, n: usize) {
                 cols.reserve_bytes(n * self.mean_len());

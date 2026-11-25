@@ -86,7 +86,38 @@ impl<V> ListCol<V> {
     }
 }
 
-// Row at a time (a `map` that returns `Vec<T>`, say): explode into columns.
+impl<V> ListCol<V> {
+    /// Append rows whose lengths `write` appends to the offsets buffer,
+    /// turned into offsets in place, and return the sum of the lengths: a
+    /// column of `i32` lengths collected straight into the offsets, with no
+    /// buffer of its own. The caller then appends that many elements to
+    /// [`Self::values`].
+    ///
+    /// # Panics
+    ///
+    /// If a length is negative or the offsets pass `i32::MAX`.
+    pub fn push_lengths_in_place(&mut self, write: impl FnOnce(&mut Vec<i32>)) -> usize {
+        self.start(0);
+        let rows = self.offsets.len();
+        let start = self.offsets[rows - 1] as usize;
+        write(&mut self.offsets);
+        let mut end = start;
+        let mut negative = false;
+        for o in &mut self.offsets[rows..] {
+            negative |= *o < 0;
+            end = end.wrapping_add(*o as usize);
+            *o = end as i32;
+        }
+        if negative || i32::try_from(end).is_err() {
+            self.offsets.truncate(rows);
+            assert!(!negative, "negative list length");
+            offset(end);
+        }
+        end - start
+    }
+}
+
+// Row at a time: explode into columns.
 impl<T, V: Sink<T>> Sink<Vec<T>> for ListCol<V> {
     fn push(&mut self, value: Vec<T>) {
         let n = self.push_lengths(std::iter::once(value.len()));

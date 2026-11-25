@@ -709,9 +709,10 @@ mod tests {
 
     impl Distribution for Row {
         type Item = (Decimal<9, 2>, Date32);
-        fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
-            (Decimal(1234), Date32(19_000))
+        fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+            cols.push_n((0..n).map(|_| (Decimal(1234), Date32(19_000))));
         }
+        fn skip(&mut self, _: u64) {}
         fn column_names(&self, out: &mut Vec<String>) {
             out.extend(["price".into(), "day".into()]);
         }
@@ -735,9 +736,10 @@ mod tests {
         struct C(&'static str, bool);
         impl Distribution for C {
             type Item = Option<i64>;
-            fn sample(&mut self, _: &mut impl Rng) -> Option<i64> {
-                self.1.then_some(1)
+            fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+                cols.push_n((0..n).map(|_| self.1.then_some(1)));
             }
+            fn skip(&mut self, _: u64) {}
             fn column_names(&self, out: &mut Vec<String>) {
                 out.push(self.0.into());
             }
@@ -769,15 +771,20 @@ mod tests {
         struct R(i64);
         impl Distribution for R {
             type Item = (Option<i32>, Ts, [f32; 2], Spread<i16, 2>);
-            fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
-                self.0 += 1;
-                let x = self.0;
-                (
-                    (x % 2 == 0).then_some(x as i32),
-                    Timestamp(x),
-                    [x as f32; 2],
-                    Spread([1, 2]),
-                )
+            fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+                cols.push_n((0..n).map(|_| {
+                    self.0 += 1;
+                    let x = self.0;
+                    (
+                        (x % 2 == 0).then_some(x as i32),
+                        Timestamp(x),
+                        [x as f32; 2],
+                        Spread([1, 2]),
+                    )
+                }));
+            }
+            fn skip(&mut self, n: u64) {
+                self.0 += n as i64;
             }
         }
         let s = schema_of(&R(0));

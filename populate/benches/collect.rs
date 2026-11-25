@@ -1,4 +1,4 @@
-//! Columnar (`collect_into`) vs row-by-row (`sample` + `Sink::push`) collection.
+//! Columnar collection (`collect_into`) against hand-written loops.
 //!
 //! Measurement hygiene:
 //! - Leaf parameters go through `black_box`, so LLVM can't constant-fold a
@@ -16,9 +16,8 @@
 
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
-use populate::dist::{constant, list, map, range};
-use populate::{Distribution, ListCol, Sink, in_local};
-use rand::rngs::ThreadRng;
+use populate::dist::{constant, derive, list, range};
+use populate::{Distribution, ListCol};
 
 fn main() {
     divan::main();
@@ -48,14 +47,14 @@ fn d_tuple4() -> impl Distribution<Item = (i64, i32, bool, f64)> {
 /// lengths cycle 0..16 (mean 7.5 elements per row)
 fn d_list() -> impl Distribution<Item = Vec<i64>> {
     list(
-        map(range(black_box(0usize), 1), |i: usize| i & 15),
+        derive(range(black_box(0i32), 1), |&i: &i32| i & 15),
         range(black_box(0i64), black_box(3)),
     )
 }
 
 fn d_list_tuple3() -> impl Distribution<Item = Vec<(i64, i32, bool)>> {
     list(
-        map(range(black_box(0usize), 1), |i: usize| i & 15),
+        derive(range(black_box(0i32), 1), |&i: &i32| i & 15),
         (
             range(black_box(0i64), black_box(3)),
             range(black_box(0i32), black_box(1)),
@@ -67,30 +66,12 @@ fn d_list_tuple3() -> impl Distribution<Item = Vec<(i64, i32, bool)>> {
 /// 4 inner lists per row, inner lengths cycle 0..8 => ~14 elements per row
 fn d_nested() -> impl Distribution<Item = Vec<Vec<i64>>> {
     list(
-        constant(black_box(4usize)),
+        constant(black_box(4i32)),
         list(
-            map(range(black_box(0usize), 1), |i: usize| i & 7),
+            derive(range(black_box(0i32), 1), |&i: &i32| i & 7),
             range(black_box(0i64), black_box(3)),
         ),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Row-mode driver: what you get without the columnar unwinding
-// ---------------------------------------------------------------------------
-
-fn collect_rows<D: Distribution, S: Sink<D::Item>>(
-    d: &mut D,
-    sink: &mut S,
-    rng: &mut ThreadRng,
-    n: usize,
-) {
-    // the distribution in a local, as a caller that owns it has it
-    in_local(d, |d| {
-        for _ in 0..n {
-            sink.push(d.sample(rng));
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -118,13 +99,6 @@ mod scalar {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_scalar(), Vec::<i64>::new(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
-    }
-
-    #[divan::bench(args = NS)]
-    fn row(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_scalar(), Vec::<i64>::new(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
     }
 }
 
@@ -169,13 +143,6 @@ mod tuple4 {
             .with_inputs(|| (d_tuple4(), Rows4::default(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
     }
-
-    #[divan::bench(args = NS)]
-    fn row(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_tuple4(), Rows4::default(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,23 +158,6 @@ mod list_i64 {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_list(), ListCol::<Vec<i64>>::default(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
-    }
-
-    /// row mode into Vec<Vec<i64>>: one heap allocation per row
-    #[divan::bench(args = NS)]
-    fn row_vec_vec(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_list(), Vec::<Vec<i64>>::new(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
-    }
-
-    /// row mode into the columnar sink (the `map -> Vec` fallback path):
-    /// same output layout as `columnar`, but builds a temp Vec per row
-    #[divan::bench(args = NS)]
-    fn row_into_listcol(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_list(), ListCol::<Vec<i64>>::default(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
     }
 }
 
@@ -226,26 +176,6 @@ mod list_tuple3 {
             .with_inputs(|| (d_list_tuple3(), Soa::default(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
     }
-
-    #[divan::bench(args = NS)]
-    fn row_vec_vec(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| {
-                (
-                    d_list_tuple3(),
-                    Vec::<Vec<(i64, i32, bool)>>::new(),
-                    rand::rng(),
-                )
-            })
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
-    }
-
-    #[divan::bench(args = NS)]
-    fn row_into_listcol(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_list_tuple3(), Soa::default(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,17 +193,10 @@ mod nested {
             .with_inputs(|| (d_nested(), Nested::default(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
     }
-
-    #[divan::bench(args = NS)]
-    fn row_vec_vec_vec(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_nested(), Vec::<Vec<Vec<i64>>>::new(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostics: why is tuple4 row-mode faster than columnar?
+// Diagnostics: where the columnar paths spend their time
 // ---------------------------------------------------------------------------
 
 mod diag {
@@ -308,13 +231,6 @@ mod diag {
         b.counter(ItemsCount::new(n))
             .with_inputs(|| (d_int4(), Int4::default(), rand::rng()))
             .bench_local_refs(|(d, out, rng)| d.collect_into(out, rng, black_box(n)));
-    }
-
-    #[divan::bench(args = NS)]
-    fn int4_row(b: Bencher, n: usize) {
-        b.counter(ItemsCount::new(n))
-            .with_inputs(|| (d_int4(), Int4::default(), rand::rng()))
-            .bench_local_refs(|(d, out, rng)| collect_rows(d, out, rng, black_box(n)));
     }
 
     /// sink pre-reserved to n: removes Vec growth, isolates per-push cost

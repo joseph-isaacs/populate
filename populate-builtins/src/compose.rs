@@ -36,9 +36,10 @@
 //! assert_eq!(q.values.len(), lines.iter().sum::<usize>());
 //! ```
 
-use crate::with_column::{ReadRows, RowRefs};
+use crate::RowRefs;
 use populate_core::{
-    ChildCols, Children, Columnar, Columns, Distribution, SeekRng, Sink, TableCols, Tables,
+    ChildCols, Children, Columnar, Columns, Distribution, RowCount, SeekRng, Sink, TableCols,
+    Tables,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -80,12 +81,6 @@ where
 {
     type Item = [S::Draw; K];
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> [S::Draw; K] {
-        let row = std::array::from_fn(|_| self.stream.next_draw());
-        self.stream.advance(self.per_row - K as u64);
-        row
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<[S::Draw; K]>, _rng: &mut impl Rng, n: usize) {
         let start = cols.len();
         cols.resize(start + n, [S::Draw::default(); K]);
@@ -120,7 +115,7 @@ pub struct Derive<D, F, Out> {
 
 /// `f` of every row of `source`: a column computed from others.
 ///
-/// Unlike [`map`](crate::map), `source` is collected column by column
+/// `source` is collected column by column
 /// first (a tuple of streams fills each stream's block in one go), then
 /// `f` runs in one pass over those columns. The source columns are
 /// scratch: only `f`'s output is kept. Rows are read in place
@@ -147,12 +142,6 @@ where
     Out: Columnar,
 {
     type Item = Out;
-
-    /// One source row, collected (so read the way `collect` reads it).
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let src = self.source.collect(rng, 1);
-        (self.f)(src.row_refs().next().expect("one row"))
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
@@ -199,26 +188,16 @@ impl<D, F, Out> Distribution for DeriveColumns<D, F, Out>
 where
     D: Distribution,
     Out: Columnar,
-    Columns<Out>: ReadRows<Row = Out>,
+    Columns<Out>: RowCount,
     F: Fn(&Columns<D::Item>, &mut Columns<Out>),
 {
     type Item = Out;
-
-    /// One row, written as `collect` writes it.
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let src = self.source.collect(rng, 1);
-        let mut out = Columns::<Out>::default();
-        (self.f)(&src, &mut out);
-        out.rows_from(0)
-            .next()
-            .expect("derive_columns wrote no row")
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
         let before = cols.rows();
         (self.f)(&src, cols);
-        debug_assert_eq!(
+        assert_eq!(
             cols.rows() - before,
             n,
             "derive_columns: f must write one row per source row"
@@ -259,11 +238,6 @@ where
     T: Columnar + Copy,
 {
     type Item = Children<T>;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Children<T> {
-        let n = self.counts.sample(rng);
-        Children(self.slots.sample(rng)[..n].to_vec())
-    }
 
     fn collect_into(&mut self, cols: &mut ChildCols<Columns<T>>, rng: &mut impl Rng, n: usize) {
         let counts = self.counts.collect(rng, n);
@@ -330,8 +304,7 @@ pub fn flat_map<Out, D, F>(source: D, f: F) -> FlatMap<D, F, Out>
 where
     D: Distribution,
     Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    Columns<Out>: ChildTables<Rows = Out>,
+    Out: ChildTables,
     F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
 {
     FlatMap {
@@ -346,17 +319,10 @@ impl<D, F, Out> Distribution for FlatMap<D, F, Out>
 where
     D: Distribution,
     Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    Columns<Out>: ChildTables<Rows = Out>,
+    Out: ChildTables,
     F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
 {
     type Item = Out;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let mut out = Columns::<Out>::default();
-        self.collect_into(&mut out, rng, 1);
-        out.into_rows()
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
@@ -366,12 +332,12 @@ where
                 .iter()
                 .map(|r| (r * n as f64).ceil() as usize)
                 .collect();
-            cols.reserve_children(&per);
+            Out::reserve_children(cols, &per);
         }
         for row in src.row_refs() {
             (self.f)(row, cols);
         }
-        cols.add_sources(n);
+        Out::add_sources(cols, n);
     }
 
     fn skip(&mut self, n: u64) {
@@ -379,67 +345,51 @@ where
     }
 }
 
-/// The columns [`flat_map`] writes: one child table ([`ChildCols`]), a
-/// tuple of them, or [`TableCols`] of a tuple of them.
-pub trait ChildTables: Default {
-    /// The row type collected into these columns.
-    type Rows;
-
+/// The rows [`flat_map`] writes: one child table ([`Children`]), a tuple
+/// of them, or [`Tables`] of a tuple of them.
+pub trait ChildTables: Columnar {
     /// Count `n` more source rows in every table.
-    fn add_sources(&mut self, n: usize);
+    fn add_sources(cols: &mut Self::Columns, n: usize);
 
     /// Reserve `children[k]` more rows in table `k`, for as many tables as
     /// `children` covers; returns the rest of `children`.
-    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize];
-
-    /// Every table's children, as one row (for a collect of one source row).
-    fn into_rows(self) -> Self::Rows;
+    fn reserve_children<'a>(cols: &mut Self::Columns, children: &'a [usize]) -> &'a [usize];
 }
 
-impl<V: ReadRows + Sink<V::Row> + Default> ChildTables for ChildCols<V> {
-    type Rows = Children<V::Row>;
+impl<T: Columnar> ChildTables for Children<T> {
+    fn add_sources(cols: &mut ChildCols<Columns<T>>, n: usize) {
+        cols.sources += n;
+    }
 
-    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
+    fn reserve_children<'a>(
+        cols: &mut ChildCols<Columns<T>>,
+        children: &'a [usize],
+    ) -> &'a [usize] {
         match children.split_first() {
             Some((&n, rest)) => {
-                self.values.reserve(n);
+                cols.values.reserve(n);
                 rest
             }
             None => children,
         }
-    }
-
-    fn add_sources(&mut self, n: usize) {
-        self.sources += n;
-    }
-
-    fn into_rows(self) -> Children<V::Row> {
-        Children(self.values.rows_from(0).collect())
     }
 }
 
 macro_rules! child_tables {
     ($($T:ident $i:tt),+) => {
         impl<$($T: ChildTables),+> ChildTables for ($($T,)+) {
-            type Rows = ($($T::Rows,)+);
-
-            fn add_sources(&mut self, n: usize) {
-                $(self.$i.add_sources(n);)+
+            fn add_sources(cols: &mut Self::Columns, n: usize) {
+                $($T::add_sources(&mut cols.$i, n);)+
             }
 
-            fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
-                $(let children = self.$i.reserve_children(children);)+
+            fn reserve_children<'a>(cols: &mut Self::Columns, children: &'a [usize]) -> &'a [usize] {
+                $(let children = $T::reserve_children(&mut cols.$i, children);)+
                 children
-            }
-
-            fn into_rows(self) -> Self::Rows {
-                ($(self.$i.into_rows(),)+)
             }
         }
     };
 }
 
-child_tables!(A 0);
 child_tables!(A 0, B 1);
 child_tables!(A 0, B 1, C 2);
 child_tables!(A 0, B 1, C 2, D 3);
@@ -452,19 +402,16 @@ child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
 child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
 child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
-impl<C: ChildTables> ChildTables for TableCols<C> {
-    type Rows = Tables<C::Rows>;
-
-    fn add_sources(&mut self, n: usize) {
-        self.tables.add_sources(n);
+impl<T: ChildTables> ChildTables for Tables<T> {
+    fn add_sources(cols: &mut TableCols<Columns<T>>, n: usize) {
+        T::add_sources(&mut cols.tables, n);
     }
 
-    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
-        self.tables.reserve_children(children)
-    }
-
-    fn into_rows(self) -> Tables<C::Rows> {
-        Tables(self.tables.into_rows())
+    fn reserve_children<'a>(
+        cols: &mut TableCols<Columns<T>>,
+        children: &'a [usize],
+    ) -> &'a [usize] {
+        T::reserve_children(&mut cols.tables, children)
     }
 }
 
@@ -501,10 +448,6 @@ pub fn named_all<D: Distribution>(names: &[&str], inner: D) -> Named<D> {
 
 impl<D: Distribution> Distribution for Named<D> {
     type Item = D::Item;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> D::Item {
-        self.inner.sample(rng)
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<D::Item>, rng: &mut impl Rng, n: usize) {
         self.inner.collect_into(cols, rng, n)
@@ -555,7 +498,7 @@ mod tests {
         let mut d = draws_reserving::<_, 2>(Count(0), 3);
         d.skip(2);
         assert_eq!(d.collect(&mut rng(), 2), [[7, 8], [10, 11]]);
-        assert_eq!(d.sample(&mut rng()), [13, 14]);
+        assert_eq!(d.collect(&mut rng(), 1), [[13, 14]]);
         let mut e = draws::<_, 2>(Count(0));
         assert_eq!(e.collect(&mut rng(), 2), [[1, 2], [3, 4]]);
     }
@@ -568,7 +511,7 @@ mod tests {
         assert_eq!(c.sources, 4);
         // row 0: none, row 1: [3], row 2: [5, 6], row 3: none
         assert_eq!(c.values, [3, 5, 6]);
-        assert_eq!(k.sample(&mut rng()).0, [9]);
+        assert_eq!(k.collect(&mut rng(), 1).values, [9]);
     }
 
     #[test]
@@ -588,7 +531,7 @@ mod tests {
         assert_eq!(c.values, (vec![2, 3, 3], vec![0, 0, 1]));
         assert_eq!(c.sources, 4);
         g.skip(2);
-        assert_eq!(g.sample(&mut rng()).0, [(3, 0), (3, 1)]);
+        assert_eq!(g.collect(&mut rng(), 1).values, (vec![3, 3], vec![0, 1]));
     }
 
     #[test]
@@ -613,9 +556,9 @@ mod tests {
         assert_eq!(returns.values, [10, 20, 30, 32]);
         assert_eq!((lines.sources, returns.sources), (3, 3));
         g.skip(2);
-        let Tables((l, r)) = g.sample(&mut rng());
-        assert_eq!(l.0, [(3, 0), (3, 1), (3, 2)]);
-        assert_eq!(r.0, [30, 32]);
+        let (l, r) = g.collect(&mut rng(), 1).tables;
+        assert_eq!(l.values, (vec![3, 3, 3], vec![0, 1, 2]));
+        assert_eq!(r.values, [30, 32]);
     }
 
     #[test]
@@ -635,7 +578,8 @@ mod tests {
         assert_eq!(b.values, [10, 0, 12]);
         assert_eq!(b.valid.iter().collect::<Vec<_>>(), [true, false, true]);
         e.skip(1);
-        assert_eq!(e.sample(&mut rng()), (22, None));
+        let (a, b) = e.collect(&mut rng(), 1);
+        assert_eq!((a, b.valid.get(0)), (vec![22], false));
     }
 
     #[test]

@@ -19,10 +19,9 @@ use crate::model::{Measurement, NO_TAG, Point, Statics, TagVal, Type, Val};
 use crate::sim::AnySim;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use populate_builtins::ReadRows;
 use populate_builtins::{Named, named};
 use populate_core::{
-    Columnar, Columns, Distribution, Nullable, Sink, StrCol, Timestamp, time_unit,
+    Columnar, Columns, Distribution, Nullable, RowCount, Sink, StrCol, Timestamp, time_unit,
 };
 use populate_sink_arrow::{IntoArrowColumns, into_record_batch_with, schema_of};
 use populate_table::MultiChunks;
@@ -46,11 +45,29 @@ const ALWAYS: &str = "only nullable columns are left empty";
 // Logged columns
 // ============================================================================
 
-/// A row type whose columns can be read back: the time and field columns
-/// are logged in their final form, and a leaf hands them on.
-trait Logged: Columnar<Columns: ReadRows<Row = Self> + Clone> {}
+/// A row type whose columns are logged in their final form (the time and
+/// field columns), and a leaf hands them on.
+trait Logged: Columnar<Columns: CopyRows + RowCount + Clone> {}
 
-impl<S: Columnar<Columns: ReadRows<Row = S> + Clone>> Logged for S {}
+impl<S: Columnar<Columns: CopyRows + RowCount + Clone>> Logged for S {}
+
+/// Columns that can append a range of another's rows, column by column.
+trait CopyRows {
+    fn copy_rows(&mut self, from: &Self, rows: Range<usize>);
+}
+
+impl<T: Copy> CopyRows for Vec<T> {
+    fn copy_rows(&mut self, from: &Self, rows: Range<usize>) {
+        self.extend_from_slice(&from[rows]);
+    }
+}
+
+impl<C: CopyRows> CopyRows for Nullable<C> {
+    fn copy_rows(&mut self, from: &Self, rows: Range<usize>) {
+        self.values.copy_rows(&from.values, rows.clone());
+        self.valid.extend(rows.map(|i| from.valid.get(i)));
+    }
+}
 
 /// A field's row type: plain, or `Option` where a run leaves some out.
 trait Field: Logged {
@@ -126,18 +143,13 @@ impl<S: Logged> Column<S> {
 impl<S: Logged> Distribution for Column<S> {
     type Item = S;
 
-    fn sample(&mut self, _: &mut impl Rng) -> S {
-        let i = self.take(1).start;
-        self.cols.rows_from(i).next().expect("a row")
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<S>, _: &mut impl Rng, n: usize) {
         let r = self.take(n);
         if r.start == 0 && r.end == self.cols.rows() && cols.rows() == 0 {
             // every row, into nothing yet: the buffers are the result
             swap(cols, &mut self.cols);
         } else {
-            cols.push_n(self.cols.rows_from(r.start).take(n));
+            cols.copy_rows(&self.cols, r);
         }
     }
 
@@ -371,11 +383,6 @@ where
 {
     type Item = S;
 
-    fn sample(&mut self, _: &mut impl Rng) -> S {
-        let i = self.rows.take(1).start;
-        S::of(Self::value(&self.values, &self.rows.sources, self.k, i))
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<S>, _: &mut impl Rng, n: usize) {
         let r = self.rows.take(n);
         let (values, src, k) = (&*self.values, &*self.rows.sources, self.k);
@@ -405,11 +412,6 @@ impl ExtraCol {
 
 impl Distribution for ExtraCol {
     type Item = String;
-
-    fn sample(&mut self, _: &mut impl Rng) -> String {
-        let i = self.rows.take(1).start;
-        self.value(i).to_owned()
-    }
 
     fn collect_into(&mut self, cols: &mut StrCol, _: &mut impl Rng, n: usize) {
         let mut r = self.rows.take(n);

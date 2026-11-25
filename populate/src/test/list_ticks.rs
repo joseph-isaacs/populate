@@ -11,9 +11,8 @@ use crate::Distribution;
 use crate::test::Log;
 use crate::test::dist::{
     make_list_wrapped_in_tracked, make_tracked_empty_list, make_tracked_list,
-    make_tracked_list_between_cols, make_tracked_list_from_1, make_tracked_list_in_tuple,
-    make_tracked_list_len2, make_tracked_list_of_tuples, make_tracked_map_to_list,
-    make_tracked_nested_list,
+    make_tracked_list_between_cols, make_tracked_list_in_tuple, make_tracked_list_len2,
+    make_tracked_list_of_tuples, make_tracked_map_to_list, make_tracked_nested_list,
 };
 use rand::rng;
 
@@ -91,26 +90,10 @@ fn nested_list_is_level_by_level() {
     assert_eq!(runs(&log), vec![("OUTER", 3), ("INNER", 6), ("E", 21)]);
 }
 
+/// A wrapper that forwards `collect_into` keeps the list under it
+/// columnar: all lengths, then all elements.
 #[test]
-fn sampling_interleaves_lengths_and_elements() {
-    let log = Log::default();
-    let mut d = make_tracked_list_from_1(&log);
-    let mut r = rng();
-    let rows: Vec<_> = (0..3).map(|_| d.sample(&mut r)).collect();
-    assert_eq!(rows, vec![vec![0], vec![1, 2], vec![3, 4, 5]]);
-    // Row by row: same values as columnar, but ticks interleave per row
-    assert_eq!(
-        ticks(&log),
-        vec!["LEN", "E", "LEN", "E", "E", "LEN", "E", "E", "E"]
-    );
-}
-
-/// `Tracked` (like `Map`) keeps the default `collect_into`, which samples
-/// row by row, so wrapping a list in it makes the whole subtree go row by
-/// row. Same output, different tick order — a wrapper must forward
-/// `collect_into` to stay columnar.
-#[test]
-fn sampling_wrapper_forces_subtree_row_by_row() {
+fn wrapper_keeps_subtree_columnar() {
     let log = Log::default();
     let mut d = make_list_wrapped_in_tracked(&log);
     let c = d.collect(&mut rng(), 2);
@@ -118,12 +101,12 @@ fn sampling_wrapper_forces_subtree_row_by_row() {
     assert_eq!(c.values, vec![0, 1, 2, 3]);
     assert_eq!(
         ticks(&log),
-        vec!["LIST", "LEN", "E", "E", "LIST", "LEN", "E", "E"]
+        vec!["LIST", "LIST", "LEN", "LEN", "E", "E", "E", "E"]
     );
 }
 
 #[test]
-fn map_returning_list_is_sampled_into_columns() {
+fn derive_returning_list_is_written_into_columns() {
     let log = Log::default();
     let mut d = make_tracked_map_to_list(&log);
     let c = d.collect(&mut rng(), 3);

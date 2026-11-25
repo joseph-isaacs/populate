@@ -23,18 +23,6 @@ impl Views {
         self.views.len()
     }
 
-    /// A copy of string `i`.
-    pub(crate) fn get(&self, i: usize) -> Vec<u8> {
-        let v = self.views[i];
-        let len = v as u32 as usize;
-        if len <= 12 {
-            v.to_le_bytes()[4..4 + len].to_vec()
-        } else {
-            let at = (v >> 96) as usize;
-            self.data[at..at + len].to_vec()
-        }
-    }
-
     /// Append a string of `len` ASCII bytes, written by `fill`.
     #[inline(always)]
     pub(crate) fn push_with(&mut self, len: usize, fill: impl FnOnce(&mut [u8])) {

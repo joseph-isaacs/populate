@@ -570,26 +570,6 @@ impl Ops {
 impl Distribution for Ops {
     type Item = Children<CallRow>;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> Self::Item {
-        let names = self.run.load.field_names();
-        let mut calls = Vec::new();
-        self.run(1, &mut |r| {
-            let mut read = Vec::new();
-            r.read_fields(&names, &mut read);
-            let values = (0..names.len())
-                .map(|f| r.written[f].then(|| Text(r.values[f].clone())))
-                .collect();
-            calls.push((
-                Text(r.op.as_bytes().to_vec()),
-                Text(r.key.clone().into_bytes()),
-                r.scan,
-                r.read.is_some().then_some(Text(read)),
-                Wide(values),
-            ));
-        });
-        Children(calls)
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _rng: &mut impl Rng, n: usize) {
         let names = self.run.load.field_names();
         let (op, key, scan, read, WideCols(fields)) = &mut cols.values;

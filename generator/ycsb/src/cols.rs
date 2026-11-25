@@ -6,7 +6,7 @@ use crate::strings::Views;
 use crate::ycsb::{RandomLayout, Ycsb, deterministic_value, java_hash};
 use arrow_array::ArrayRef;
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
+use populate_core::RowCount;
 use populate_core::{Columnar, Columns, Distribution, Sink, Wide, WideCols};
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
@@ -34,15 +34,9 @@ impl Sink<Text> for TextCol {
     }
 }
 
-impl ReadRows for TextCol {
-    type Row = Text;
-
+impl RowCount for TextCol {
     fn rows(&self) -> usize {
         self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Text> + '_ {
-        (start..self.0.len()).map(|i| Text(self.0.get(i)))
     }
 }
 
@@ -77,13 +71,6 @@ pub(crate) struct Load {
 
 impl Distribution for Records {
     type Item = (Text, Wide<Text>);
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
-        let mut c = self.columns();
-        self.collect_into(&mut c, rng, 1);
-        let fields = c.1.0.iter().map(|f| Text(f.0.get(0))).collect();
-        (Text(c.0.0.get(0)), Wide(fields))
-    }
 
     fn collect_into(
         &mut self,

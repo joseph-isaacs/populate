@@ -21,7 +21,7 @@
 //! |-------------|-------------------------|---------------------------------------------|
 //! | crate root  | `populate-core`         | [`Distribution`], [`Columnar`], [`Sink`],   |
 //! |             |                         | and the columns [`StrCol`] and [`ListCol`]  |
-//! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `map`, `list`, ...     |
+//! | [`dist`]    | `populate-builtins`     | `constant`, `range`, `list`, `derive`, ...  |
 //! | [`arrow`]   | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output       |
 //! | [`parquet`] | `populate-sink-parquet` | Parquet encoder (`parquet` feature)         |
 //! | [`table`]   | `populate-table`        | named, typed tables; parallel batches       |

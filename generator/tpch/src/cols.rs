@@ -12,7 +12,8 @@
 use crate::text::{POOL_SIZE, Text, Views, view};
 use arrow_array::ArrayRef;
 use arrow_schema::DataType;
-use populate_builtins::{ReadRows, RowRefs};
+use populate_builtins::RowRefs;
+use populate_core::RowCount;
 use populate_core::{Columnar, Columns, Distribution, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
@@ -53,15 +54,9 @@ impl Sink<Word> for Words {
     }
 }
 
-impl ReadRows for Words {
-    type Row = Word;
-
+impl RowCount for Words {
     fn rows(&self) -> usize {
         self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Word> + '_ {
-        self.0[start..].iter().map(|&v| Word(v))
     }
 }
 
@@ -134,15 +129,9 @@ impl Sink<Comment> for Comments {
     }
 }
 
-impl ReadRows for Comments {
-    type Row = Comment;
-
+impl RowCount for Comments {
     fn rows(&self) -> usize {
         self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Comment> + '_ {
-        self.0[start..].iter().copied()
     }
 }
 
@@ -213,13 +202,6 @@ where
     F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Vec<u8>),
 {
     type Item = Bytes;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Bytes {
-        let src = self.source.collect(rng, 1);
-        let mut out = Vec::new();
-        (self.f)(src.row_refs().next().expect("one row"), &mut out);
-        Bytes(out)
-    }
 
     fn collect_into(&mut self, cols: &mut Views, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);

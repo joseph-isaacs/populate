@@ -5,12 +5,12 @@ column by column, straight into Arrow (and optionally Parquet).
 
 ```rust
 use populate::arrow::DistributionArrow;
-use populate::dist::{list, map, range};
+use populate::dist::{derive, list, range};
 
 // id: i64, tags: list<i64> with lengths cycling 0..8
 let mut table = (
     range(0i64, 1),
-    list(map(range(0usize, 1), |i| i % 8), range(0i64, 1)),
+    list(derive(range(0i32, 1), |i: &i32| i % 8), range(0i64, 1)),
 );
 let batch = table.collect_record_batch(&mut rand::rng(), 1_000)?;
 ```
@@ -95,7 +95,7 @@ and the data-set generators under `generator/`.
 |-------------------------|-----------------------------------------------------|
 | `populate`              | facade: re-exports everything below                 |
 | `populate-core`         | `Distribution`, `Columnar`, `Sink`, `StrCol`, `ListCol`, tuples |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `uniform`, `choose`, `weighted`, `text`, `chars` |
+| `populate-builtins`     | `constant`, `range`, `list`, `derive`, `derive_columns`, `flat_map`, `children`, `named`, `uniform`, `choose`, `weighted`, `text`, `chars` |
 | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
 | `populate-sink-parquet` | Parquet encoder for collected columns and Arrow arrays (`parquet` feature) |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |

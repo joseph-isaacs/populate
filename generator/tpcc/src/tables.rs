@@ -195,12 +195,6 @@ impl OrderCustomers {
 impl Distribution for OrderCustomers {
     type Item = i32;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> i32 {
-        let r = self.next;
-        self.next += 1;
-        self.perm(r / ORDERS)[(r % ORDERS) as usize]
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<i32>, _rng: &mut impl Rng, n: usize) {
         cols.reserve(n);
         let end = self.next + n as u64;

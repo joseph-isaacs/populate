@@ -63,19 +63,3 @@ fn map_returning_list_of_tuples_row_fallback() {
     assert_eq!(c.values.0, vec![0, 0, 1, 1]);
     assert_eq!(c.values.1, vec![0, 0, 1, 1]);
 }
-
-#[test]
-fn sampled_rows_match_columnar() {
-    let mut d = gen_list();
-    let mut r = rng();
-    let rows: Vec<_> = (0..4).map(|_| d.sample(&mut r)).collect();
-    assert_eq!(rows, vec![vec![], vec![0], vec![1, 2], vec![3, 4, 5]]);
-
-    let c = gen_list().collect(&mut rng(), 4);
-    let from_cols: Vec<Vec<i64>> = c
-        .offsets()
-        .windows(2)
-        .map(|w| c.values[w[0] as usize..w[1] as usize].to_vec())
-        .collect();
-    assert_eq!(rows, from_cols);
-}

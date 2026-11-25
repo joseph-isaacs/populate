@@ -5,9 +5,8 @@
 use crate::Distribution;
 use crate::test::Log;
 use crate::test::dist::{
-    collect, gen_col4, make_3tuple, make_4tuple, make_flatten_order, make_map_in_tuple,
-    make_nested_tuple, make_row_order, make_tracked_2tuple, make_tracked_3tuple,
-    make_tracked_4tuple, make_tuple,
+    gen_col4, make_3tuple, make_4tuple, make_flatten_order, make_map_in_tuple, make_nested_tuple,
+    make_tracked_2tuple, make_tracked_3tuple, make_tracked_4tuple, make_tuple,
 };
 use rand::rng;
 use std::cell::RefCell;
@@ -147,7 +146,7 @@ fn test_map_tuple_in_tuple() {
 }
 
 #[test]
-fn test_map_tuple_in_tuple_order() {
+fn test_derive_tuple_in_tuple_order() {
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let mut dist = make_flatten_order(&log);
 
@@ -157,11 +156,11 @@ fn test_map_tuple_in_tuple_order() {
     assert_eq!(product, vec![100000, 101101, 102204]);
     assert_eq!(c4, vec![0, 5, 10]);
 
-    // COL1 col-by-col, then Map row-by-row (MAP_A, MAP_B per row), then COL4 col-by-col
+    // every column col-by-col, the derive's source columns included
     assert_eq!(
         *log.borrow(),
         vec![
-            "COL1", "COL1", "COL1", "MAP_A", "MAP_B", "MAP_A", "MAP_B", "MAP_A", "MAP_B", "COL4",
+            "COL1", "COL1", "COL1", "MAP_A", "MAP_A", "MAP_A", "MAP_B", "MAP_B", "MAP_B", "COL4",
             "COL4", "COL4",
         ]
     );
@@ -186,26 +185,5 @@ fn test_nested_tuple_is_col_by_col() {
             "COL1", "COL1", "COL1", "COL2", "COL2", "COL2", "COL3", "COL3", "COL3", "COL4", "COL4",
             "COL4",
         ]
-    );
-}
-
-// ========================================================================
-// Row-by-row iteration order test
-// ========================================================================
-
-#[test]
-fn test_row_order() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
-    let mut dist = make_row_order(&log);
-    let mut sink: (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
-
-    collect(&mut dist, &mut sink, 3, &mut rng());
-
-    assert_eq!(sink.0, vec![0, 1, 2]);
-    assert_eq!(sink.1, vec![100, 101, 102]);
-    // Row-by-row: COL1, COL2, COL1, COL2, COL1, COL2
-    assert_eq!(
-        *log.borrow(),
-        vec!["COL1", "COL2", "COL1", "COL2", "COL1", "COL2"]
     );
 }

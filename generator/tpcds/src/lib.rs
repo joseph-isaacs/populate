@@ -31,10 +31,12 @@
 //! assert!(dat.starts_with(b"1|AAAAAAAABAAAAAAA|"));
 //! ```
 
+mod channels;
+mod cols;
 pub mod dat;
-mod direct;
-mod fused;
+mod dims;
 mod gen_tables;
+mod inventory;
 mod seeds;
 
 pub use dat::Encoding;
@@ -203,7 +205,7 @@ impl Tpcds {
 
     /// Table `t`, ready to generate.
     pub fn table(&self, t: TableName) -> DsTable {
-        DsTable::new(t, self.session.clone())
+        DsTable::new(t, &self.session)
     }
 
     /// Every table, in [`TableName::ALL`] order.

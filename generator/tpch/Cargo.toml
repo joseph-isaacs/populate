@@ -11,6 +11,7 @@ license.workspace = true
 mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
+populate-combinators = { workspace = true }
 populate-sink-arrow = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
 rand = { workspace = true }

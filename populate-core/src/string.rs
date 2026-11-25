@@ -240,36 +240,20 @@ impl StrCol {
     }
 }
 
-impl Sink<String> for StrCol {
+/// `String` and `&str` rows.
+impl<S: AsRef<str>> Sink<S> for StrCol {
     #[inline]
-    fn push(&mut self, value: String) {
-        self.push_str(&value);
+    fn push(&mut self, value: S) {
+        self.push_str(value.as_ref());
     }
 
-    fn push_n(&mut self, values: impl Iterator<Item = String>) {
+    fn push_n(&mut self, values: impl Iterator<Item = S>) {
         let (lo, _) = values.size_hint();
         let mut values = values;
-        self.push_n_with(lo, |b| b.push_str(&values.next().expect("size_hint")));
-        values.for_each(|v| self.push_str(&v));
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        self.start();
-        self.offsets.reserve(additional);
-    }
-}
-
-impl<'a> Sink<&'a str> for StrCol {
-    #[inline]
-    fn push(&mut self, value: &'a str) {
-        self.push_str(value);
-    }
-
-    fn push_n(&mut self, values: impl Iterator<Item = &'a str>) {
-        let (lo, _) = values.size_hint();
-        let mut values = values;
-        self.push_n_with(lo, |b| b.push_str(values.next().expect("size_hint")));
-        values.for_each(|v| self.push_str(v));
+        self.push_n_with(lo, |b| {
+            b.push_str(values.next().expect("size_hint").as_ref())
+        });
+        values.for_each(|v| self.push_str(v.as_ref()));
     }
 
     fn reserve(&mut self, additional: usize) {

@@ -30,7 +30,7 @@ impl<T: Columnar + Default> Columnar for Option<T> {
 }
 
 impl<T: Default, C: Sink<T>> Sink<Option<T>> for Nullable<C> {
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, value: Option<T>) {
         self.valid.push(value.is_some());
         self.values.push(value.unwrap_or_default());
@@ -67,14 +67,14 @@ impl Validity {
     }
 
     /// One more row.
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, valid: bool) {
         let bit = self.len % 64;
         if bit == 0 {
-            self.words.push(0);
+            self.words.push(valid as u64);
+        } else if let Some(w) = self.words.last_mut() {
+            *w |= (valid as u64) << bit;
         }
-        let last = self.words.len() - 1;
-        self.words[last] |= (valid as u64) << bit;
         self.len += 1;
     }
 
@@ -89,6 +89,11 @@ impl Validity {
     pub fn get(&self, i: usize) -> bool {
         assert!(i < self.len, "row {i} of {}", self.len);
         self.words[i / 64] >> (i % 64) & 1 == 1
+    }
+
+    /// The packed flags: row `i` is bit `i % 64` of word `i / 64`.
+    pub fn words(&self) -> &[u64] {
+        &self.words
     }
 
     /// Every row's flag, in order.

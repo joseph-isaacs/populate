@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex};
 /// Whether a flat column, a required `List` of required numbers, or a
 /// required `FixedSizeList` of required numbers with its dictionary off, of
 /// type `dt`, stored as `descr`, can be encoded here under `props` (anything else goes to arrow-rs).
-pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
+pub fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
     if let DataType::List(item) = dt {
         // a required list of required numbers
@@ -116,25 +116,25 @@ fn common_ok(path: &ColumnPath, props: &WriterProperties) -> bool {
 }
 
 /// One column chunk's arrays, encoded on [`DirectColumn::close`].
-pub(crate) struct DirectColumn {
+pub struct DirectColumn {
     descr: ColumnDescPtr,
     arrays: Vec<ArrayRef>,
 }
 
 impl DirectColumn {
-    pub(crate) fn new(descr: ColumnDescPtr) -> Self {
+    pub fn new(descr: ColumnDescPtr) -> Self {
         Self {
             descr,
             arrays: Vec::new(),
         }
     }
 
-    pub(crate) fn write(&mut self, array: &ArrayRef) {
+    pub fn write(&mut self, array: &ArrayRef) {
         self.arrays.push(array.clone());
     }
 
     /// The encoded chunk (offsets relative to its start) and its metadata.
-    pub(crate) fn close(self, props: &WriterProperties) -> Result<(Rope, ColumnCloseResult)> {
+    pub fn close(self, props: &WriterProperties) -> Result<(Rope, ColumnCloseResult)> {
         if let Some(DataType::List(_)) = self.arrays.first().map(|a| a.data_type()) {
             let d = &self.descr;
             return match d.physical_type() {
@@ -606,11 +606,11 @@ unsafe fn avx2<R>(f: impl FnOnce() -> R) -> R {
 /// encoded into: a page body is not copied into one chunk-sized buffer,
 /// only page headers and small pages are.
 ///
-/// [`ChunkWriter`] names each page body in `next` before writing it; when
+/// `ChunkWriter` names each page body in `next` before writing it; when
 /// the page writer then hands over exactly those bytes, they are kept as
 /// they are.
 #[derive(Default)]
-pub(crate) struct Rope {
+pub struct Rope {
     parts: Vec<Bytes>,
     tail: Vec<u8>,
     len: usize,
@@ -662,7 +662,7 @@ impl Length for Rope {
 }
 
 /// Reads a sealed [`Rope`] from an offset.
-pub(crate) struct RopeRead {
+pub struct RopeRead {
     parts: VecDeque<Bytes>,
 }
 

@@ -13,7 +13,7 @@
 //!   `price(partkey) * quantity` derivation.
 
 use crate::lanes::{A, LANES, M, mulmod, powmod};
-use crate::{BATCH, LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, numeric_schema_60, rng};
+use crate::{LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, chunks, numeric_schema_60, rng};
 use populate::arrow::DistributionArrow;
 use populate::dist::{Uniform, list, map, range, uniform};
 use populate::{Columnar, Distribution};
@@ -42,10 +42,6 @@ pub const SF: f64 = 10.0;
 const PARTS: i64 = 2_000_000;
 /// 1992-01-01 in unix days.
 const D1992: i32 = 8035;
-
-fn chunks(n: usize) -> impl Iterator<Item = usize> {
-    (0..n.div_ceil(BATCH)).map(move |i| BATCH.min(n - i * BATCH))
-}
 
 fn price(part_key: i64) -> i64 {
     PartGeneratorIterator::calculate_part_price(part_key)

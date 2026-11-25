@@ -2,6 +2,7 @@
 //! `BufferedReader.readLine`, `String.trim`, `Double.parseDouble`,
 //! `HashMap` iteration order, `Arrays.binarySearch`, `java.time` dates.
 
+use populate_core::StrBuf;
 use std::cmp::Ordering;
 
 /// `BufferedReader.readLine` over a whole file: lines end at `\n`, `\r` or
@@ -143,39 +144,33 @@ pub fn ms_of_ymd(y: i64, m: u32, d: u32) -> i64 {
     days_from_civil(y, m, d) * MS_PER_DAY
 }
 
-/// Java's UTF-8 encoding of a UTF-16 string: unpaired surrogates become `?`.
-pub fn push_utf16(out: &mut Vec<u8>, s: &[u16]) {
-    let mut i = 0;
-    while i < s.len() {
-        let c = s[i];
-        if c < 0x80 {
-            out.push(c as u8);
-            i += 1;
-        } else if c < 0x800 {
-            out.push(0xC0 | (c >> 6) as u8);
-            out.push(0x80 | (c & 0x3F) as u8);
-            i += 1;
-        } else if (0xD800..0xDC00).contains(&c) {
-            if i + 1 < s.len() && (0xDC00..0xE000).contains(&s[i + 1]) {
-                let cp = 0x10000 + (((c as u32) - 0xD800) << 10) + ((s[i + 1] as u32) - 0xDC00);
-                out.push(0xF0 | (cp >> 18) as u8);
-                out.push(0x80 | ((cp >> 12) & 0x3F) as u8);
-                out.push(0x80 | ((cp >> 6) & 0x3F) as u8);
-                out.push(0x80 | (cp & 0x3F) as u8);
-                i += 2;
-            } else {
-                out.push(b'?');
-                i += 1;
-            }
-        } else if (0xDC00..0xE000).contains(&c) {
-            out.push(b'?');
-            i += 1;
+/// The characters of a UTF-16 string as Java encodes them: unpaired
+/// surrogates become `?`.
+pub fn java_chars(s: &[u16]) -> impl Iterator<Item = char> + '_ {
+    char::decode_utf16(s.iter().copied()).map(|c| c.unwrap_or('?'))
+}
+
+/// Append a UTF-16 string, as Java encodes it, to a string value: runs
+/// of ASCII in one go, anything else a character at a time.
+#[inline]
+pub fn push_utf16(out: &mut StrBuf<'_>, mut s: &[u16]) {
+    while !s.is_empty() {
+        let ascii = s.iter().position(|&u| u >= 0x80).unwrap_or(s.len());
+        out.extend_ascii(s[..ascii].iter().map(|&u| u as u8));
+        s = &s[ascii..];
+        // one character: a surrogate pair takes two units
+        let n = if s.len() > 1
+            && (0xD800..0xDC00).contains(&s[0])
+            && (0xDC00..0xE000).contains(&s[1])
+        {
+            2
         } else {
-            out.push(0xE0 | (c >> 12) as u8);
-            out.push(0x80 | ((c >> 6) & 0x3F) as u8);
-            out.push(0x80 | (c & 0x3F) as u8);
-            i += 1;
+            s.len().min(1)
+        };
+        for c in java_chars(&s[..n]) {
+            out.push_char(c);
         }
+        s = &s[n..];
     }
 }
 
@@ -191,9 +186,7 @@ pub fn clamp(s: &str, n: usize) -> String {
         return s.to_string();
     }
     let u: Vec<u16> = s.encode_utf16().take(n).collect();
-    let mut out = Vec::new();
-    push_utf16(&mut out, &u);
-    String::from_utf8(out).expect("utf-8")
+    java_chars(&u).collect()
 }
 
 #[cfg(test)]

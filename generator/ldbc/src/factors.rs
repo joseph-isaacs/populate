@@ -19,7 +19,8 @@
 
 use crate::csv::spark_micros;
 use crate::par_map;
-use crate::rows::{Col, Kind, Rows, TableDef, t};
+use crate::rows::{Col, Kind, OrgEdgeRow, RawCols, Rows, TableDef};
+use populate_core::{Columns, Sink, Timestamp};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -99,7 +100,7 @@ struct Person {
     id: i64,
     created: i64,
     deleted: i64,
-    first_name: Box<[u8]>,
+    first_name: Box<str>,
     city: i32,
 }
 
@@ -132,7 +133,7 @@ struct Counts {
     /// message's).
     day_tag: Map<(i64, i32), i64>,
     /// Posts per language (non-null).
-    lang: Map<Box<[u8]>, i64>,
+    lang: Map<Box<str>, i64>,
     /// Posts, comments, likes and memberships per person.
     posts: Map<i64, i64>,
     comments: Map<i64, i64>,
@@ -190,35 +191,37 @@ impl FactorInput {
         }
     }
 
-    /// Take in chunk `i`'s raw rows (one [`Rows`] per
-    /// [`rows::DYNAMIC`](crate::rows::DYNAMIC) table).
-    pub fn add(&self, i: u64, raw: &[Rows]) {
+    /// Take in chunk `i`'s raw rows.
+    pub fn add(&self, i: u64, raw: &RawCols) {
+        let (
+            (person, interest, study, work, knows),
+            (_, _, member),
+            (post, post_tag, comment, comment_tag, likes_post, likes_comment),
+        ) = raw;
         let mut p = Part::default();
         {
-            let r = &raw[t::PERSON];
-            let (c, d, id) = (r.cols[0].i64s(), r.cols[1].i64s(), r.cols[3].i64s());
-            let city = r.cols[10].i32s();
-            p.persons = (0..r.len())
+            let ((c, d, _), id, first, _, _, _, _, _, city, _, _) = &person.values;
+            p.persons = (0..id.len())
                 .map(|j| Person {
                     id: id[j],
-                    created: c[j],
-                    deleted: d[j],
-                    first_name: r.cols[4].str_at(j).expect("firstName").into(),
+                    created: c[j].0,
+                    deleted: d[j].0,
+                    first_name: first.get(j).into(),
                     city: city[j],
                 })
                 .collect();
         }
-        let quad = |r: &Rows, a: usize, b: usize| -> Vec<[i64; 4]> {
-            let (c, d) = (r.cols[0].i64s(), r.cols[1].i64s());
-            let (x, y) = (r.cols[a].i64s(), r.cols[b].i64s());
-            (0..r.len()).map(|j| [x[j], y[j], c[j], d[j]]).collect()
+        let quad = |(c, d, x, y, _): &Columns<OrgEdgeRow>| -> Vec<[i64; 4]> {
+            (0..x.len()).map(|j| [x[j], y[j], c[j].0, d[j].0]).collect()
         };
-        p.knows = quad(&raw[t::KNOWS], 3, 4);
-        p.study = quad(&raw[t::STUDY_AT], 2, 3);
-        p.work = quad(&raw[t::WORK_AT], 2, 3);
         {
-            let r = &raw[t::HAS_INTEREST];
-            let (pid, tag) = (r.cols[2].i64s(), r.cols[3].i32s());
+            let (c, d, _, x, y) = &knows.values;
+            p.knows = (0..x.len()).map(|j| [x[j], y[j], c[j].0, d[j].0]).collect();
+        }
+        p.study = quad(&study.values);
+        p.work = quad(&work.values);
+        {
+            let (_, _, pid, tag) = &interest.values;
             p.interests = pid.iter().copied().zip(tag.iter().copied()).collect();
         }
 
@@ -229,36 +232,31 @@ impl FactorInput {
             }
         };
         {
-            let r = &raw[t::POST];
-            let (c, len) = (r.cols[0].i64s(), r.cols[9].i32s());
-            let country = r.cols[12].i64s();
-            for j in 0..r.len() {
-                message(&mut k, c[j], len[j], country[j]);
-                if let Some(l) = r.cols[7].str_at(j) {
-                    *k.lang.entry(l.into()).or_default() += 1;
+            let ((c, _, _), _, _, _, _, lang, _, len, creator, _, country) = &post.values;
+            for j in 0..len.len() {
+                message(&mut k, c[j].0, len[j], country[j]);
+                if lang.valid.get(j) {
+                    *k.lang.entry(lang.values.get(j).into()).or_default() += 1;
                 }
             }
-            count(&mut k.posts, r.cols[10].i64s());
+            count(&mut k.posts, creator);
         }
         {
-            let r = &raw[t::COMMENT];
-            let (c, len) = (r.cols[0].i64s(), r.cols[7].i32s());
-            let country = r.cols[9].i32s();
-            for j in 0..r.len() {
-                message(&mut k, c[j], len[j], country[j] as i64);
+            let (c, _, _, _, _, _, _, len, creator, country, _, _) = &comment.values;
+            for j in 0..len.len() {
+                message(&mut k, c[j].0, len[j], country[j] as i64);
             }
-            count(&mut k.comments, r.cols[8].i64s());
+            count(&mut k.comments, creator);
         }
-        for tt in [t::POST_TAG, t::COMMENT_TAG] {
-            let r = &raw[tt];
-            let (c, tag) = (r.cols[0].i64s(), r.cols[3].i32s());
-            for j in 0..r.len() {
-                *k.day_tag.entry((day(c[j]), tag[j])).or_default() += 1;
+        for t in [post_tag, comment_tag] {
+            let (c, _, _, tag) = &t.values;
+            for j in 0..tag.len() {
+                *k.day_tag.entry((day(c[j].0), tag[j])).or_default() += 1;
             }
         }
-        count(&mut k.likes, raw[t::LIKES_POST].cols[3].i64s());
-        count(&mut k.likes, raw[t::LIKES_COMMENT].cols[3].i64s());
-        count(&mut k.forums, raw[t::FORUM_MEMBER].cols[4].i64s());
+        count(&mut k.likes, &likes_post.values.3);
+        count(&mut k.likes, &likes_comment.values.3);
+        count(&mut k.forums, &member.values.4);
 
         {
             let mut parts = self.parts.lock().expect("parts");
@@ -301,8 +299,8 @@ fn message(k: &mut Counts, created: i64, len: i32, country: i64) {
 
 /// A place of the static `Place` table.
 struct Place {
-    name: Box<[u8]>,
-    kind: Box<[u8]>,
+    name: Box<str>,
+    kind: Box<str>,
     part_of: Option<i32>,
 }
 
@@ -317,12 +315,12 @@ struct Ctx {
     adj: Vec<Vec<u32>>,
     places: Map<i32, Place>,
     /// Tag id to `(name, TypeTagClassId)`.
-    tags: Vec<(i32, Box<[u8]>, i32)>,
+    tags: Vec<(i32, Box<str>, i32)>,
     tag_of: Map<i32, usize>,
     /// Tag class id to name.
-    classes: Map<i32, Box<[u8]>>,
+    classes: Map<i32, Box<str>>,
     /// Company id to name (organisations of type `Company`).
-    companies: Map<i64, Box<[u8]>>,
+    companies: Map<i64, Box<str>>,
     threads: usize,
 }
 
@@ -340,9 +338,8 @@ impl Ctx {
             adj[a as usize].push(b);
             adj[b as usize].push(a);
         }
-        let s = |r: &Rows, c: usize, j: usize| -> Box<[u8]> {
-            r.cols[c].str_at(j).expect("str").into()
-        };
+        let s =
+            |r: &Rows, c: usize, j: usize| -> Box<str> { r.cols[c].str_at(j).expect("str").into() };
         let (org, place, tag, class) = (&statics[0], &statics[1], &statics[2], &statics[3]);
         let places = (0..place.len())
             .map(|j| {
@@ -354,7 +351,7 @@ impl Ctx {
                 (place.cols[0].i32s()[j], p)
             })
             .collect();
-        let tags: Vec<(i32, Box<[u8]>, i32)> = (0..tag.len())
+        let tags: Vec<(i32, Box<str>, i32)> = (0..tag.len())
             .map(|j| (tag.cols[0].i32s()[j], s(tag, 1, j), tag.cols[3].i32s()[j]))
             .collect();
         let tag_of = tags.iter().enumerate().map(|(i, t)| (t.0, i)).collect();
@@ -362,7 +359,7 @@ impl Ctx {
             .map(|j| (class.cols[0].i32s()[j], s(class, 1, j)))
             .collect();
         let companies = (0..org.len())
-            .filter(|&j| org.cols[1].str_at(j) == Some(b"Company"))
+            .filter(|&j| org.cols[1].str_at(j) == Some("Company"))
             .map(|j| (org.cols[0].i32s()[j] as i64, s(org, 2, j)))
             .collect();
         Ctx {
@@ -379,19 +376,19 @@ impl Ctx {
         }
     }
 
-    fn of_kind(&self, id: i32, kind: &[u8]) -> Option<&Place> {
+    fn of_kind(&self, id: i32, kind: &str) -> Option<&Place> {
         self.places.get(&id).filter(|p| &*p.kind == kind)
     }
 
     /// A person's city and its country, if both are what they should be.
     fn city_country(&self, p: &Person) -> Option<(i32, &Place, i32, &Place)> {
-        let city = self.of_kind(p.city, b"City")?;
+        let city = self.of_kind(p.city, "City")?;
         let cid = city.part_of?;
-        let country = self.of_kind(cid, b"Country")?;
+        let country = self.of_kind(cid, "Country")?;
         Some((p.city, city, cid, country))
     }
 
-    fn tag(&self, id: i32) -> Option<&(i32, Box<[u8]>, i32)> {
+    fn tag(&self, id: i32) -> Option<&(i32, Box<str>, i32)> {
         self.tag_of.get(&id).map(|&i| &self.tags[i])
     }
 
@@ -413,7 +410,7 @@ enum V<'a> {
     /// Null sorts first, as Spark's ascending order.
     Null,
     Int(i64),
-    Str(&'a [u8]),
+    Str(&'a str),
 }
 
 impl From<i64> for V<'_> {
@@ -434,14 +431,14 @@ impl From<Option<i64>> for V<'_> {
     }
 }
 
-impl<'a> From<&'a [u8]> for V<'a> {
-    fn from(x: &'a [u8]) -> Self {
+impl<'a> From<&'a str> for V<'a> {
+    fn from(x: &'a str) -> Self {
         V::Str(x)
     }
 }
 
-impl<'a> From<&'a Box<[u8]>> for V<'a> {
-    fn from(x: &'a Box<[u8]>) -> Self {
+impl<'a> From<&'a Box<str>> for V<'a> {
+    fn from(x: &'a Box<str>) -> Self {
         V::Str(x)
     }
 }
@@ -464,11 +461,12 @@ fn freq_order(a: &[V], b: &[V]) -> Ordering {
 fn push_row(out: &mut Rows, r: &[V]) {
     for (c, v) in out.cols.iter_mut().zip(r) {
         match (c, v) {
-            (c @ Col::I64(_), V::Int(x)) => c.i64(*x),
-            (c @ Col::I32(_), V::Int(x)) => c.i32(*x as i32),
-            (c @ Col::OptI64(..), V::Int(x)) => c.opt_i64(Some(*x)),
-            (c @ Col::OptI64(..), V::Null) => c.opt_i64(None),
-            (c @ Col::Str(..), V::Str(s)) => c.str(s),
+            (Col::I64(c), V::Int(x)) => c.push(*x),
+            (Col::Ts(c), V::Int(x)) => c.push(Timestamp(*x)),
+            (Col::I32(c), V::Int(x)) => c.push(*x as i32),
+            (Col::OptI64(c), V::Int(x)) => c.push(Some(*x)),
+            (Col::OptI64(c), V::Null) => c.push(None),
+            (Col::Str(c), V::Str(s)) => c.push_str(s),
             (c, v) => unreachable!("{v:?} in a {c:?} column"),
         }
     }
@@ -892,7 +890,7 @@ fn city_num_persons(c: &Ctx) -> Rows {
     let m = group_count(
         c.g.persons
             .iter()
-            .filter(|p| c.of_kind(p.city, b"City").is_some())
+            .filter(|p| c.of_kind(p.city, "City").is_some())
             .map(|p| p.city),
     );
     counted(&CITY_NUM_PERSONS, m, |id| {
@@ -905,7 +903,7 @@ fn country_num_messages(c: &Ctx) -> Rows {
         &COUNTRY_NUM_MESSAGES,
         c.k.country.iter().map(|(&k, &n)| (k, n)),
         |id| {
-            let p = c.of_kind(i32::try_from(id).ok()?, b"Country")?;
+            let p = c.of_kind(i32::try_from(id).ok()?, "Country")?;
             Some(vec![id.into(), (&p.name).into()])
         },
     )
@@ -1046,7 +1044,7 @@ fn company_employees(c: &Ctx) -> Rows {
 }
 
 fn first_names(c: &Ctx) -> Rows {
-    let mut m: Map<&[u8], i64> = Map::default();
+    let mut m: Map<&str, i64> = Map::default();
     for p in &c.g.persons {
         *m.entry(&p.first_name).or_default() += 1;
     }
@@ -1324,7 +1322,7 @@ fn hops(c: &Ctx, def: &TableDef, n: u8) -> Rows {
     let mut china: Vec<u32> = (0..c.g.persons.len() as u32)
         .filter(|&i| {
             let p = &c.g.persons[i as usize];
-            c.of_kind(p.city, b"City").and_then(|x| x.part_of) == Some(1)
+            c.of_kind(p.city, "City").and_then(|x| x.part_of) == Some(1)
         })
         .collect();
     china.sort_unstable_by_key(|&i| c.g.persons[i as usize].id);

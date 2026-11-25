@@ -20,12 +20,12 @@
 //! the table.
 
 use crate::Shape;
-use crate::kernel::{Pool, Quantiles, Weighted, Zipf, prim_ref, threshold, unit, validity};
-use arrow_array::types::{
-    Float32Type, Float64Type, Int32Type, Int64Type, TimestampMillisecondType,
+use crate::kernel::{
+    Pool, Quantiles, Row, Rows, View, Views, Weighted, Zipf, row_numbers, threshold, unit,
 };
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use populate_builtins::{derive_columns, map, named, named_all, range};
+use populate_core::{Columnar, Distribution, Nullable, Spread, SpreadCols, Timestamp, time_unit};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;
 use std::array::from_fn;
 use std::mem::swap;
@@ -35,6 +35,8 @@ use std::sync::Arc;
 const DEFAULT_START_MS: i64 = 1_735_689_600_000;
 /// Features that feed the label and target.
 const SIGNAL: usize = 8;
+
+type Millis = Timestamp<{ time_unit::MILLISECOND }>;
 
 #[derive(Debug, Clone)]
 struct Numeric {
@@ -63,13 +65,18 @@ struct Categorical {
     zipf: Zipf,
 }
 
-/// The feature table. See the [module docs](self).
+/// The feature table, with `NUMERIC` numeric and `CATEGORICAL` categorical
+/// features. See the [module docs](self).
 #[derive(Debug, Clone)]
-pub struct Features {
+pub struct Features<const NUMERIC: usize = 32, const CATEGORICAL: usize = 8> {
+    inner: Arc<Inner<NUMERIC, CATEGORICAL>>,
+}
+
+#[derive(Debug)]
+struct Inner<const NUMERIC: usize, const CATEGORICAL: usize> {
     seed: u64,
-    schema: SchemaRef,
-    numeric: Vec<Numeric>,
-    categorical: Vec<Categorical>,
+    numeric: [Numeric; NUMERIC],
+    categorical: [Categorical; CATEGORICAL],
     normal: Quantiles,
     split: Weighted<u32>,
     splits: Pool,
@@ -87,85 +94,141 @@ pub struct Features {
 impl Features {
     /// 32 numeric and 8 categorical features, 2% missing values.
     pub fn new(seed: u64) -> Self {
-        Self::with_sizes(seed, 32, 8, 0.02)
+        Self::with_sizes(seed, 0.02)
     }
+}
 
-    /// `numeric` and `categorical` features, a share `missing` of each
-    /// numeric feature NULL.
-    pub fn with_sizes(seed: u64, numeric: usize, categorical: usize, missing: f64) -> Self {
+impl<const NUMERIC: usize, const CATEGORICAL: usize> Features<NUMERIC, CATEGORICAL> {
+    /// A share `missing` of each numeric feature NULL.
+    pub fn with_sizes(seed: u64, missing: f64) -> Self {
         let st = |n: &str| Stream::new(seed, n);
         let params = st("features.params");
-        let numeric: Vec<Numeric> = (0..numeric)
-            .map(|i| {
-                let b = params.at(i as u64);
-                let kind = match i % 4 {
-                    0 => Kind::Normal,
-                    1 => Kind::LogNormal,
-                    2 => Kind::Correlated,
-                    _ => Kind::Uniform,
-                };
-                Numeric {
-                    kind,
-                    values: st("features.f").sub(i as u64),
-                    nulls: st("features.f_null").sub(i as u64),
-                    null_t: threshold(missing),
-                    loc: 100.0 * (unit(b) - 0.5),
-                    scale: 0.5 + 20.0 * unit(b << 16),
-                    rho: 0.5 + 0.45 * unit(b << 32),
-                }
-            })
-            .collect();
-        let cats: Vec<Categorical> = (0..categorical)
-            .map(|j| Categorical {
-                values: st("features.c").sub(j as u64),
-                zipf: Zipf::new(10u64.pow(1 + (j % 5) as u32), 1.1),
-            })
-            .collect();
+        let numeric = from_fn(|i| {
+            let b = params.at(i as u64);
+            let kind = match i % 4 {
+                0 => Kind::Normal,
+                1 => Kind::LogNormal,
+                2 => Kind::Correlated,
+                _ => Kind::Uniform,
+            };
+            Numeric {
+                kind,
+                values: st("features.f").sub(i as u64),
+                nulls: st("features.f_null").sub(i as u64),
+                null_t: threshold(missing),
+                loc: 100.0 * (unit(b) - 0.5),
+                scale: 0.5 + 20.0 * unit(b << 16),
+                rho: 0.5 + 0.45 * unit(b << 32),
+            }
+        });
+        let categorical = from_fn(|j| Categorical {
+            values: st("features.c").sub(j as u64),
+            zipf: Zipf::new(10u64.pow(1 + (j % 5) as u32), 1.1),
+        });
         let w = st("features.weights");
         let weight = |i: u64| 2.0 * unit(w.at(i)) - 1.0;
-        let c0_card = if categorical > 0 { 10 } else { 0 };
+        let c0_card = if CATEGORICAL > 0 { 10 } else { 0 };
         Features {
-            seed,
-            schema: schema(numeric.len(), categorical),
-            numeric,
-            categorical: cats,
-            normal: Quantiles::normal(0.0, 1.0),
-            split: Weighted::new(&[(0, 0.8), (1, 0.1), (2, 0.1)]),
-            splits: Pool::new(["train", "valid", "test"]),
-            s_time: st("features.time"),
-            s_split: st("features.split"),
-            s_label: st("features.label"),
-            s_target: st("features.target"),
-            bias: -0.5,
-            w_label: from_fn(|i| weight(i as u64)),
-            w_target: from_fn(|i| 3.0 * weight(100 + i as u64)),
-            c0_effect: (0..c0_card).map(|k| weight(1000 + k)).collect(),
+            inner: Arc::new(Inner {
+                seed,
+                numeric,
+                categorical,
+                normal: Quantiles::normal(0.0, 1.0),
+                split: Weighted::new(&[(0, 0.8), (1, 0.1), (2, 0.1)]),
+                splits: Pool::new(["train", "valid", "test"]),
+                s_time: st("features.time"),
+                s_split: st("features.split"),
+                s_label: st("features.label"),
+                s_target: st("features.target"),
+                bias: -0.5,
+                w_label: from_fn(|i| weight(i as u64)),
+                w_target: from_fn(|i| 3.0 * weight(100 + i as u64)),
+                c0_effect: (0..c0_card).map(|k| weight(1000 + k)).collect(),
+            }),
         }
     }
 
     pub fn seed(&self) -> u64 {
-        self.seed
+        self.inner.seed
     }
 }
 
-fn schema(numeric: usize, categorical: usize) -> SchemaRef {
-    let mut f = vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new(
-            "event_time",
-            DataType::Timestamp(TimeUnit::Millisecond, None),
-            false,
-        ),
-        Field::new("split", DataType::Utf8View, false),
-    ];
-    f.extend((0..numeric).map(|i| Field::new(format!("f_{i}"), DataType::Float32, true)));
-    f.extend((0..categorical).map(|j| Field::new(format!("c_{j}"), DataType::Int32, false)));
-    f.push(Field::new("label", DataType::Int32, false));
-    f.push(Field::new("target", DataType::Float64, false));
-    Arc::new(Schema::new(f))
+/// The features, the label and the target of a block of rows.
+type Block<const N: usize, const C: usize> = (Spread<Option<f32>, N>, Spread<i32, C>, i32, f64);
+type BlockCols<const N: usize, const C: usize> = (
+    SpreadCols<Nullable<Vec<f32>>, N>,
+    SpreadCols<Vec<i32>, C>,
+    Vec<i32>,
+    Vec<f64>,
+);
+
+impl<const NUMERIC: usize, const CATEGORICAL: usize> Inner<NUMERIC, CATEGORICAL> {
+    fn write(&self, rows: &Rows, out: &mut BlockCols<NUMERIC, CATEGORICAL>) {
+        let len = rows.len();
+        let rows = rows.0.clone();
+        let (features, cats, labels, targets) = out;
+        // standard-normal draws of the signal features, for label / target
+        let mut logit = vec![self.bias; len];
+        let mut target = vec![0.0f64; len];
+        let mut prev: Vec<f64> = vec![0.0; len];
+        let mut z: Vec<f64> = vec![0.0; len];
+        for (i, (f, col)) in self.numeric.iter().zip(&mut features.0).enumerate() {
+            for (zk, r) in z.iter_mut().zip(rows.clone()) {
+                *zk = self.normal.sample(f.values.at(r));
+            }
+            if f.kind == Kind::Correlated {
+                let c = (1.0 - f.rho * f.rho).sqrt();
+                for (zk, pk) in z.iter_mut().zip(&prev) {
+                    *zk = f.rho * pk + c * *zk;
+                }
+            }
+            match f.kind {
+                Kind::Normal | Kind::Correlated => col
+                    .values
+                    .extend(z.iter().map(|&x| (f.loc + f.scale * x) as f32)),
+                Kind::LogNormal => col
+                    .values
+                    .extend(z.iter().map(|&x| (0.75 * x).exp() as f32)),
+                // uniform from the normal draw's own bits keeps one stream
+                Kind::Uniform => col
+                    .values
+                    .extend(rows.clone().map(|r| unit(f.values.at(r)) as f32)),
+            }
+            if i < SIGNAL {
+                let (wl, wt) = (self.w_label[i], self.w_target[i]);
+                for k in 0..len {
+                    logit[k] += wl * z[k];
+                    target[k] += wt * z[k];
+                }
+            }
+            col.valid
+                .extend(rows.clone().map(|r| f.nulls.at(r) >= f.null_t));
+            swap(&mut prev, &mut z);
+        }
+
+        for (j, (c, col)) in self.categorical.iter().zip(&mut cats.0).enumerate() {
+            let first = col.len();
+            col.extend(rows.clone().map(|r| c.zipf.sample(c.values.at(r)) as i32));
+            if j == 0 {
+                for (l, &code) in logit.iter_mut().zip(&col[first..]) {
+                    *l += self.c0_effect[code as usize];
+                }
+            }
+        }
+
+        labels.extend(
+            rows.clone()
+                .zip(&logit)
+                .map(|(r, &l)| (unit(self.s_label.at(r)) * (1.0 + (-l).exp()) < 1.0) as i32),
+        );
+        targets.extend(
+            rows.zip(&target)
+                .map(|(r, &t)| t + self.normal.sample(self.s_target.at(r))),
+        );
+    }
 }
 
-impl Shape for Features {
+impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC, CATEGORICAL> {
     fn name(&self) -> &'static str {
         "features"
     }
@@ -178,91 +241,44 @@ impl Shape for Features {
         column == "target" || column.starts_with("f_")
     }
 
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn batch(&self, start: u64, len: usize) -> RecordBatch {
-        let rows = || start..start + len as u64;
-        let mut cols: Vec<ArrayRef> = Vec::with_capacity(self.schema.fields().len());
-        cols.push(prim_ref::<Int64Type>(
-            rows().map(|r| r as i64).collect(),
-            None,
-        ));
-        cols.push(prim_ref::<TimestampMillisecondType>(
-            rows()
-                .map(|r| DEFAULT_START_MS + r as i64 * 100 + (self.s_time.at(r) % 100) as i64)
-                .collect(),
-            None,
-        ));
-        cols.push(
-            self.splits.column(
-                &rows()
-                    .map(|r| self.split.sample(self.s_split.at(r)))
-                    .collect::<Vec<u32>>(),
-                None,
+    fn dist(
+        &self,
+    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>>
+    + Clone
+    + Send
+    + Sync
+    + use<NUMERIC, CATEGORICAL> {
+        let (time, split, block) = (self.inner.clone(), self.inner.clone(), self.inner.clone());
+        let mut names: Vec<String> = (0..NUMERIC).map(|i| format!("f_{i}")).collect();
+        names.extend((0..CATEGORICAL).map(|j| format!("c_{j}")));
+        names.extend(["label".into(), "target".into()]);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        (
+            named("id", range(0i64, 1)),
+            named(
+                "event_time",
+                map(row_numbers(), move |Row(r)| -> Millis {
+                    Timestamp(DEFAULT_START_MS + r as i64 * 100 + (time.s_time.at(r) % 100) as i64)
+                }),
             ),
-        );
-
-        // standard-normal draws of the signal features, for label / target
-        let mut logit = vec![self.bias; len];
-        let mut target = vec![0.0f64; len];
-        let mut prev: Vec<f64> = vec![0.0; len];
-        let mut z: Vec<f64> = vec![0.0; len];
-        for (i, f) in self.numeric.iter().enumerate() {
-            for (k, r) in rows().enumerate() {
-                z[k] = self.normal.sample(f.values.at(r));
-            }
-            if f.kind == Kind::Correlated {
-                let c = (1.0 - f.rho * f.rho).sqrt();
-                for (zk, pk) in z.iter_mut().zip(&prev) {
-                    *zk = f.rho * pk + c * *zk;
-                }
-            }
-            let out: Vec<f32> = match f.kind {
-                Kind::Normal | Kind::Correlated => {
-                    z.iter().map(|&x| (f.loc + f.scale * x) as f32).collect()
-                }
-                Kind::LogNormal => z.iter().map(|&x| (0.75 * x).exp() as f32).collect(),
-                // uniform from the normal draw's own bits keeps one stream
-                Kind::Uniform => rows().map(|r| unit(f.values.at(r)) as f32).collect(),
-            };
-            if i < SIGNAL {
-                let (wl, wt) = (self.w_label[i], self.w_target[i]);
-                for k in 0..len {
-                    logit[k] += wl * z[k];
-                    target[k] += wt * z[k];
-                }
-            }
-            cols.push(prim_ref::<Float32Type>(
-                out,
-                validity(start, len, |r| f.nulls.at(r) >= f.null_t),
-            ));
-            swap(&mut prev, &mut z);
-        }
-
-        for (j, c) in self.categorical.iter().enumerate() {
-            let codes: Vec<i32> = rows()
-                .map(|r| c.zipf.sample(c.values.at(r)) as i32)
-                .collect();
-            if j == 0 {
-                for (l, &code) in logit.iter_mut().zip(&codes) {
-                    *l += self.c0_effect[code as usize];
-                }
-            }
-            cols.push(prim_ref::<Int32Type>(codes, None));
-        }
-
-        let label: Vec<i32> = rows()
-            .zip(&logit)
-            .map(|(r, &l)| (unit(self.s_label.at(r)) * (1.0 + (-l).exp()) < 1.0) as i32)
-            .collect();
-        cols.push(prim_ref::<Int32Type>(label, None));
-        let target: Vec<f64> = rows()
-            .zip(&target)
-            .map(|(r, &t)| t + self.normal.sample(self.s_target.at(r)))
-            .collect();
-        cols.push(prim_ref::<Float64Type>(target, None));
-        RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
+            named(
+                "split",
+                derive_columns::<_, _, View>(row_numbers(), move |rows: &Rows, out: &mut Views| {
+                    let idx: Vec<u32> = rows
+                        .0
+                        .clone()
+                        .map(|r| split.split.sample(split.s_split.at(r)))
+                        .collect();
+                    split.splits.write(&idx, out);
+                }),
+            ),
+            named_all(
+                &names,
+                derive_columns::<_, _, Block<NUMERIC, CATEGORICAL>>(
+                    row_numbers(),
+                    move |rows, out| block.write(rows, out),
+                ),
+            ),
+        )
     }
 }

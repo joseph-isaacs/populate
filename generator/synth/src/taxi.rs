@@ -18,11 +18,13 @@
 //!   together, with payment type 0, as in the real files.
 
 use crate::Shape;
-use crate::kernel::{Pool, Quantiles, Weighted, Zipf, cents, prim_ref, threshold, unit};
-use arrow_array::types::{Float64Type, Int32Type, TimestampMicrosecondType};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_buffer::{BooleanBuffer, NullBuffer};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use crate::kernel::{
+    Pool, Quantiles, Rows, View, Views, Weighted, Zipf, cents, put, put_nullable, row_numbers,
+    threshold, unit,
+};
+use populate_builtins::{derive_columns, named_all};
+use populate_core::{Columnar, Distribution, Nullable, Timestamp, Validity, time_unit};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;
 use std::sync::Arc;
 
@@ -45,13 +47,19 @@ const SPEED: [f64; 24] = [
     9.0, 9.0, 9.5, 11.0, 12.5, 13.5, 14.5, 15.0,
 ];
 
+type Micros = Timestamp<{ time_unit::MICROSECOND }>;
+
 /// Taxi trips. See the [module docs](self).
 #[derive(Debug, Clone)]
 pub struct Taxi {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug, Clone)]
+struct Inner {
     seed: u64,
     trips_per_day: u64,
     start_us: i64,
-    schema: SchemaRef,
     s: Streams,
     tod: Quantiles,
     distance: Quantiles,
@@ -113,11 +121,10 @@ impl Taxi {
         let order = Stream::new(seed, "taxi.zone_order");
         let mut zone_of_rank: Vec<i32> = (1..=ZONES as i32).collect();
         zone_of_rank.sort_by_key(|&z| order.at(z as u64));
-        Taxi {
+        let inner = Inner {
             seed,
             trips_per_day: 100_000,
             start_us: DEFAULT_START_US,
-            schema: schema(),
             s,
             tod: Quantiles::histogram(0.0, 86_400.0, &HOURLY),
             distance: Quantiles::lognormal(1.7f64.ln(), 0.85),
@@ -152,101 +159,121 @@ impl Taxi {
                 (0.30, 0.08),
             ]),
             flag: Pool::new(["N", "Y"]),
+        };
+        Taxi {
+            inner: Arc::new(inner),
         }
     }
 
     /// Trips per day (sets how many days the rows span).
     pub fn trips_per_day(mut self, n: u64) -> Self {
         assert!(n > 0, "trips_per_day must be > 0");
-        self.trips_per_day = n;
+        Arc::make_mut(&mut self.inner).trips_per_day = n;
         self
     }
 
     /// First day, as microseconds since the epoch at midnight UTC.
     pub fn start_micros(mut self, us: i64) -> Self {
-        self.start_us = us;
+        Arc::make_mut(&mut self.inner).start_us = us;
         self
     }
 
     pub fn seed(&self) -> u64 {
-        self.seed
+        self.inner.seed
     }
 }
 
-fn schema() -> SchemaRef {
-    let ts = DataType::Timestamp(TimeUnit::Microsecond, None);
-    let f = |n: &str, t: DataType, null: bool| Field::new(n, t, null);
-    Arc::new(Schema::new(vec![
-        f("VendorID", DataType::Int32, false),
-        f("tpep_pickup_datetime", ts.clone(), false),
-        f("tpep_dropoff_datetime", ts, false),
-        f("passenger_count", DataType::Int32, true),
-        f("trip_distance", DataType::Float64, false),
-        f("RatecodeID", DataType::Int32, true),
-        f("store_and_fwd_flag", DataType::Utf8View, true),
-        f("PULocationID", DataType::Int32, false),
-        f("DOLocationID", DataType::Int32, false),
-        f("payment_type", DataType::Int32, false),
-        f("fare_amount", DataType::Float64, false),
-        f("extra", DataType::Float64, false),
-        f("mta_tax", DataType::Float64, false),
-        f("tip_amount", DataType::Float64, false),
-        f("tolls_amount", DataType::Float64, false),
-        f("improvement_surcharge", DataType::Float64, false),
-        f("total_amount", DataType::Float64, false),
-        f("congestion_surcharge", DataType::Float64, true),
-        f("Airport_fee", DataType::Float64, true),
-    ]))
-}
+/// The columns, in schema order.
+type Trip = (
+    (
+        i32,
+        Micros,
+        Micros,
+        Option<i32>,
+        f64,
+        Option<i32>,
+        Option<View>,
+        i32,
+        i32,
+        i32,
+    ),
+    (f64, f64, f64, f64, f64, f64, f64, Option<f64>, Option<f64>),
+);
+type TripCols = (
+    (
+        Vec<i32>,
+        Vec<Micros>,
+        Vec<Micros>,
+        Nullable<Vec<i32>>,
+        Vec<f64>,
+        Nullable<Vec<i32>>,
+        Nullable<Views>,
+        Vec<i32>,
+        Vec<i32>,
+        Vec<i32>,
+    ),
+    (
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Nullable<Vec<f64>>,
+        Nullable<Vec<f64>>,
+    ),
+);
 
-fn f64s(v: Vec<f64>, nulls: Option<NullBuffer>) -> ArrayRef {
-    prim_ref::<Float64Type>(v, nulls)
-}
+const COLUMNS: [&str; 19] = [
+    "VendorID",
+    "tpep_pickup_datetime",
+    "tpep_dropoff_datetime",
+    "passenger_count",
+    "trip_distance",
+    "RatecodeID",
+    "store_and_fwd_flag",
+    "PULocationID",
+    "DOLocationID",
+    "payment_type",
+    "fare_amount",
+    "extra",
+    "mta_tax",
+    "tip_amount",
+    "tolls_amount",
+    "improvement_surcharge",
+    "total_amount",
+    "congestion_surcharge",
+    "Airport_fee",
+];
 
-fn i32s(v: Vec<i32>, nulls: Option<NullBuffer>) -> ArrayRef {
-    prim_ref::<Int32Type>(v, nulls)
-}
-
-impl Shape for Taxi {
-    fn name(&self) -> &'static str {
-        "taxi"
-    }
-
-    fn is_plain(&self, column: &str) -> bool {
-        column.ends_with("_datetime")
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn batch(&self, start: u64, len: usize) -> RecordBatch {
+impl Inner {
+    fn write(&self, rows: &Rows, out: &mut TripCols) {
         let s = &self.s;
-        let rows = || start..start + len as u64;
+        let len = rows.len();
+        let span = rows.0.clone();
+        let rows = || span.clone();
         let per_day = self.trips_per_day;
 
         // pickup: day, then position in the day through the hourly profile
         let mut hour = Vec::with_capacity(len);
-        let pickup: Vec<i64> = rows()
+        let pickup: Vec<Micros> = rows()
             .map(|r| {
                 let (day, k) = (r / per_day, r % per_day);
                 let p = (k as f64 + unit(s.pickup.at(r))) / per_day as f64;
                 let secs = self.tod.at(p);
                 hour.push((secs * (1.0 / 3600.0)) as usize % 24);
-                self.start_us + (day as f64 * MICROS_PER_DAY + secs * 1e6) as i64
+                Timestamp(self.start_us + (day as f64 * MICROS_PER_DAY + secs * 1e6) as i64)
             })
             .collect();
 
         let miss_t = threshold(0.03);
-        let present =
-            BooleanBuffer::collect_bool(len, |i| s.missing.at(start + i as u64) >= miss_t);
-        let nulls = {
-            let n = NullBuffer::new(present.clone());
-            (n.null_count() > 0).then_some(n)
-        };
-        let missing = |i: usize| !present.value(i);
+        let is_present: Vec<bool> = rows().map(|r| s.missing.at(r) >= miss_t).collect();
+        let present: Validity = is_present.iter().copied().collect();
+        let missing = |i: usize| !is_present[i];
 
         let vendor: Vec<i32> = rows().map(|r| self.vendor.sample(s.vendor.at(r))).collect();
+
         let passengers: Vec<i32> = rows()
             .map(|r| self.passengers.sample(s.passengers.at(r)))
             .collect();
@@ -273,10 +300,10 @@ impl Shape for Taxi {
                 ((d / mph * 3600.0 + wait) * 1e6) as i64
             })
             .collect();
-        let dropoff: Vec<i64> = pickup
+        let dropoff: Vec<Micros> = pickup
             .iter()
             .zip(&duration_us)
-            .map(|(p, d)| p + d)
+            .map(|(p, d)| Timestamp(p.0 + d))
             .collect();
 
         let flag_y = threshold(0.005);
@@ -371,27 +398,49 @@ impl Shape for Taxi {
             })
             .collect();
 
-        let cols: Vec<ArrayRef> = vec![
-            i32s(vendor, None),
-            prim_ref::<TimestampMicrosecondType>(pickup, None),
-            prim_ref::<TimestampMicrosecondType>(dropoff, None),
-            i32s(passengers, nulls.clone()),
-            f64s(distance, None),
-            i32s(rate, nulls.clone()),
-            self.flag.column(&flag, nulls.clone()),
-            i32s(pu, None),
-            i32s(dropoff_zone, None),
-            i32s(payment, None),
-            f64s(fare, None),
-            f64s(extra, None),
-            f64s(vec![0.5; len], None),
-            f64s(tip, None),
-            f64s(tolls, None),
-            f64s(vec![1.0; len], None),
-            f64s(total, None),
-            f64s(congestion, nulls.clone()),
-            f64s(airport, nulls),
-        ];
-        RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
+        let ((vendor_c, pu_t, do_t, pass_c, dist_c, rate_c, flag_c, pu_c, dz_c, pay_c), money) =
+            out;
+        put(vendor_c, vendor);
+        put(pu_t, pickup);
+        put(do_t, dropoff);
+        put_nullable(pass_c, passengers, &present);
+        put(dist_c, distance);
+        put_nullable(rate_c, rate, &present);
+        self.flag.write(&flag, &mut flag_c.values);
+        flag_c.valid.append(&present);
+        put(pu_c, pu);
+        put(dz_c, dropoff_zone);
+        put(pay_c, payment);
+        let (fare_c, extra_c, mta_c, tip_c, tolls_c, imp_c, total_c, cong_c, air_c) = money;
+        put(fare_c, fare);
+        put(extra_c, extra);
+        put(mta_c, vec![0.5; len]);
+        put(tip_c, tip);
+        put(tolls_c, tolls);
+        put(imp_c, vec![1.0; len]);
+        put(total_c, total);
+        put_nullable(cong_c, congestion, &present);
+        put_nullable(air_c, airport, &present);
+    }
+}
+
+impl Shape for Taxi {
+    fn name(&self) -> &'static str {
+        "taxi"
+    }
+
+    fn is_plain(&self, column: &str) -> bool {
+        column.ends_with("_datetime")
+    }
+
+    fn dist(
+        &self,
+    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<>
+    {
+        let t = self.inner.clone();
+        named_all(
+            &COLUMNS,
+            derive_columns::<_, _, Trip>(row_numbers(), move |rows, out| t.write(rows, out)),
+        )
     }
 }

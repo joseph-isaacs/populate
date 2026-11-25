@@ -1,6 +1,7 @@
-//! dbgen's random number generator, positioned anywhere in O(log n).
+//! The Lehmer generator of dbgen and dsdgen (TPC-H, SSB, TPC-DS),
+//! positioned anywhere in O(log n).
 //!
-//! Every TPC-H column has its own stream: the Park–Miller LCG
+//! dbgen gives every TPC-H column its own stream: the Park–Miller LCG
 //! `x' = 16807 * x mod (2^31 - 1)` from a fixed seed. A stream reserves a
 //! fixed number of draws per row (`per_row`) and skips the ones a row
 //! doesn't use, so draw `k` of row `r` is always draw `r * per_row + k + 1`
@@ -30,6 +31,21 @@ pub fn mulmod(a: u64, b: u64) -> u64 {
     let p = a * b;
     let r = (p & M) + (p >> 31);
     (r & M) + (r >> 31)
+}
+
+/// The multiplier that steps a stream `n` draws: `A^n mod m`.
+#[inline]
+pub fn pow(n: u64) -> u64 {
+    powmod(A, n)
+}
+
+/// A seed as a residue in `[0, m)`. dsdgen starts some streams above `m`
+/// (`SEED_BASE + column * (i32::MAX / 799)` is not reduced); a step
+/// reduces it, so reducing it first makes the same draws, and keeps
+/// [`mulmod`]'s inputs in range.
+#[inline]
+fn residue(seed: i64) -> u64 {
+    seed as u64 % M
 }
 
 /// `base^exp mod m`.
@@ -82,7 +98,7 @@ pub fn scale(x: u32, range: u32) -> u32 {
 /// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
 /// so the multiply chain vectorises.
 pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
-    fill_after(mulmod(seed as u64, powmod(A, start)), out)
+    fill_after(mulmod(residue(seed), pow(start)), out)
 }
 
 /// The `out.len()` draws after state `x` (a seed, or the last draw made).
@@ -104,7 +120,7 @@ unsafe fn fill_avx2(x: u64, out: &mut [u32]) {
 
 #[cfg(test)]
 fn draws_any(seed: i64, start: u64, out: &mut [u32]) {
-    fill_any(mulmod(seed as u64, powmod(A, start)), out)
+    fill_any(mulmod(residue(seed), pow(start)), out)
 }
 
 #[inline(always)]
@@ -122,7 +138,7 @@ fn fill_any(mut x: u64, out: &mut [u32]) {
         x = mulmod(x, A);
         *l = x;
     }
-    let step = powmod(A, LANES as u64);
+    let step = pow(LANES as u64);
     // as u32 lanes: every value is below 2^31, so each product is one
     // 32 x 32 -> 64 bit multiply (`pmuludq`), and the store is a plain copy
     let mut lanes = lanes.map(|x| x as u32);
@@ -173,7 +189,7 @@ fn bound_all_any(v: &mut [u32], lo: i32, hi: i32) {
 
 /// One dbgen stream as a [`SeekRng`]: the draws after a state, made in
 /// lanes by [`fill`](SeekRng::fill), jumped over in `O(log n)` by
-/// [`advance`](SeekRng::advance). `populate_builtins::draws` makes it a
+/// [`advance`](SeekRng::advance). [`draws`](populate_builtins::draws) makes it a
 /// column that reserves a fixed number of draws per row.
 #[derive(Debug, Clone, Copy)]
 pub struct Lcg {
@@ -184,7 +200,7 @@ pub struct Lcg {
 impl Lcg {
     /// The stream seeded `seed`, before its first draw.
     pub fn new(seed: i64) -> Self {
-        Lcg { x: seed as u64 }
+        Lcg { x: residue(seed) }
     }
 }
 
@@ -200,7 +216,7 @@ impl SeekRng for Lcg {
     #[inline]
     fn advance(&mut self, n: u64) {
         if n > 0 {
-            self.x = mulmod(self.x, powmod(A, n));
+            self.x = mulmod(self.x, pow(n));
         }
     }
 
@@ -295,7 +311,7 @@ impl Rng {
     /// of row `row`.
     pub fn at(seed: i64, per_row: u32, row: u64) -> Self {
         Rng {
-            seed: mulmod(seed as u64, powmod(A, per_row as u64 * row)),
+            seed: mulmod(residue(seed), pow(per_row as u64 * row)),
             usage: 0,
             per_row,
         }
@@ -320,7 +336,7 @@ impl Rng {
     #[inline(always)]
     pub fn row_finished(&mut self) {
         if self.usage < self.per_row {
-            self.seed = mulmod(self.seed, powmod(A, (self.per_row - self.usage) as u64));
+            self.seed = mulmod(self.seed, pow((self.per_row - self.usage) as u64));
         }
         self.usage = 0;
     }
@@ -330,13 +346,6 @@ impl Rng {
 mod tests {
     use super::*;
     use tpchgen::random::RowRandomInt;
-
-    #[test]
-    fn mulmod_matches_modulo() {
-        for (a, b) in [(1u64, 1u64), (M - 1, M - 1), (A, 123_456_789), (M - 1, 2)] {
-            assert_eq!(mulmod(a, b), (a * b) % M);
-        }
-    }
 
     #[test]
     fn rng_matches_tpchgen_anywhere() {
@@ -357,6 +366,44 @@ mod tests {
         let mut b = RowRandomInt::new(77, 9);
         for _ in 0..9 {
             assert_eq!(a.next_int(0, i32::MAX), b.next_int(0, i32::MAX));
+        }
+    }
+
+    /// dsdgen's seeds above `m`, stepped as tpcdsgen steps them.
+    #[test]
+    fn unreduced_seeds_step_like_dsdgen() {
+        const SEED_BASE: i64 = 19_620_718;
+        for column in [0i64, 1, 500, 797, 798] {
+            let seed = SEED_BASE + column * (i32::MAX as i64 / 799);
+            let mut naive = seed as u64;
+            let mut serial = Lcg::new(seed);
+            let mut filled = vec![0u32; 100];
+            Lcg::new(seed).fill(&mut filled);
+            for (k, &f) in filled.iter().enumerate() {
+                naive = naive * A % M;
+                assert_eq!(serial.next_draw() as u64, naive);
+                assert_eq!(f as u64, naive);
+                let mut jumped = Lcg::new(seed);
+                jumped.advance(k as u64);
+                assert_eq!(jumped.next_draw() as u64, naive);
+            }
+            assert!(column < 798 || seed as u64 > M);
+        }
+    }
+
+    #[test]
+    fn pow_steps_n_draws() {
+        let mut x = 12345u64;
+        for _ in 0..1000 {
+            x = x * A % M;
+        }
+        assert_eq!(mulmod(12345, pow(1000)), x);
+    }
+
+    #[test]
+    fn mulmod_matches_modulo() {
+        for (a, b) in [(1u64, 1u64), (M - 1, M - 1), (A, 123_456_789), (M - 1, 2)] {
+            assert_eq!(mulmod(a, b), (a * b) % M);
         }
     }
 

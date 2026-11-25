@@ -759,6 +759,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-combinators"
+version = "0.1.0"
+dependencies = [
+ "populate-builtins",
+ "populate-core",
+ "rand",
+ "tpchgen",
+]
+
+[[package]]
 name = "populate-core"
 version = "0.1.0"
 dependencies = [
@@ -842,8 +852,8 @@ dependencies = [
  "arrow-select",
  "bytes",
  "parquet",
+ "populate-combinators",
  "populate-table",
- "populate-tpch",
  "tpchgen",
 ]
 
@@ -860,7 +870,11 @@ dependencies = [
  "divan",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]
@@ -932,6 +946,7 @@ dependencies = [
  "mimalloc",
  "parquet",
  "populate-builtins",
+ "populate-combinators",
  "populate-core",
  "populate-sink-arrow",
  "populate-table",

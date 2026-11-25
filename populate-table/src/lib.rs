@@ -34,7 +34,7 @@ mod parquet_direct;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use direct::{DirectColumns, ParquetOptions, write_dist_parquet};
-pub use dist::DistTable;
+pub use dist::{DistTable, DistTables};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
 pub use sched::{Schedule, par_ordered, par_sources};

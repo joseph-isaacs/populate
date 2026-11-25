@@ -125,7 +125,8 @@ command line.
 ## Performance
 
 SF 1 (19.6M rows, 24 tables) and SF 10 (192M rows) on a 4-core cloud VM,
-`scripts/e2e-bench.sh --suite tpcds` against `tpcgen-cli tpcds`. The
+`cargo xtask bench --generators tpcds --scale 1,10` (see
+[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds`. The
 VM is noisy (±10% run to run, and it drifts), so both tools run
 interleaved and each keeps its best time: best of 3 at SF 1 (output to
 tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use

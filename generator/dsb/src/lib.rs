@@ -7,6 +7,10 @@
 //! attributes, skewed sales dates and joint item/customer draws. This
 //! crate adds the parallel engine:
 //!
+//! - every table is one populate
+//!   [`Distribution`](populate_core::Distribution) over dsbgen's row
+//!   generator (a sales table and its returns, one distribution of both),
+//!   and its schema is read off the distribution's column types;
 //! - every table is split into small, independent ranges of *source rows*
 //!   (a ticket, an order, a customer). dsbgen's random streams skip
 //!   exactly to any row, so the chunks concatenate to the sequential output

@@ -9,29 +9,29 @@
 //!
 //! [`schema_of`]: populate_sink_arrow::schema_of
 
+use crate::dat::Encoding;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use dsbgen::config::{Session, Table as Ds};
-use dsbgen::row::*;
-use dsbgen::types::{Address, Decimal as DsDecimal};
-use crate::dat::Encoding;
-use populate_combinators::lehmer::{A, M, mulmod};
-use populate_combinators::text::{Gmt, Interned, Str, StrViews};
-use populate_table::text::{TextColumns, TextTables, write_columns};
 use dsbgen::distribution::DemographicsDistributions as Demo;
 use dsbgen::generator::InventoryGeneratorColumn as Inv;
 use dsbgen::random::RandomNumberStream;
+use dsbgen::row::*;
 use dsbgen::slowly_changing_dimension_utils::match_surrogate_key;
 use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
+use dsbgen::types::{Address, Decimal as DsDecimal};
 use populate_builtins::{derive_columns, named_all, range};
-use std::iter::repeat_n;
+use populate_combinators::lehmer::{A, M, mulmod};
+use populate_combinators::text::{Gmt, Interned, Str, StrViews};
 use populate_core::{Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, into_record_batch_with};
+use populate_table::text::{TextColumns, TextTables, write_columns};
 use populate_table::{DistTable, DistTables};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::fmt::Write as _;
+use std::iter::repeat_n;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -237,14 +237,18 @@ where
 
     fn sample(&mut self, _rng: &mut impl rand::Rng) -> Out {
         let (session, next) = (&self.session, self.next);
-        let g = self.open.get_or_insert_with(|| G::open(session, next, u64::MAX));
+        let g = self
+            .open
+            .get_or_insert_with(|| G::open(session, next, u64::MAX));
         self.next += 1;
         (self.f)(&g.next().expect("a row in range"))
     }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, _rng: &mut impl rand::Rng, n: usize) {
         let (session, next) = (&self.session, self.next);
-        let g = self.open.get_or_insert_with(|| G::open(session, next, u64::MAX));
+        let g = self
+            .open
+            .get_or_insert_with(|| G::open(session, next, u64::MAX));
         let f = &self.f;
         cols.reserve(n);
         cols.push_n(g.by_ref().take(n).map(|r| f(&r)));
@@ -310,8 +314,17 @@ where
     D: Distribution + Clone + Send + Sync,
     Columns<D::Item>: IntoArrowColumns + TextColumns,
 {
-    fn range_dat(&self, first: u64, last: u64, batch: usize, encoding: Encoding, out: &mut Vec<u8>) {
-        blocks(self.dist(), first, last, batch, |cols| write_columns(&cols, encoding, out));
+    fn range_dat(
+        &self,
+        first: u64,
+        last: u64,
+        batch: usize,
+        encoding: Encoding,
+        out: &mut Vec<u8>,
+    ) {
+        blocks(self.dist(), first, last, batch, |cols| {
+            write_columns(&cols, encoding, out)
+        });
     }
 
     fn schema(&self) -> SchemaRef {
@@ -330,7 +343,13 @@ where
 /// each block of up to `block` of them. One stream from `first` on, not a
 /// skip per block (as `DistTable::range` makes): DSB's generators are
 /// cheap to step and dear to open.
-fn blocks<D: Distribution + Clone>(dist: &D, first: u64, last: u64, block: usize, mut f: impl FnMut(Columns<D::Item>)) {
+fn blocks<D: Distribution + Clone>(
+    dist: &D,
+    first: u64,
+    last: u64,
+    block: usize,
+    mut f: impl FnMut(Columns<D::Item>),
+) {
     let mut d = dist.clone();
     d.skip(first - 1);
     // the leaves draw from their own streams, not this
@@ -819,7 +838,10 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
         Demo::get_marital_status_size(),
         Demo::get_marital_status_for_index_mod_size,
     );
-    let education = list(Demo::get_education_size(), Demo::get_education_for_index_mod_size);
+    let education = list(
+        Demo::get_education_size(),
+        Demo::get_education_for_index_mod_size,
+    );
     let credit = list(
         Demo::get_credit_rating_size(),
         Demo::get_credit_rating_for_index_mod_size,
@@ -869,31 +891,34 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
         ],
         // a block at a time: the digits are plain loops over the rows, and
         // the columns are never NULL
-        derive_columns::<_, _, DemoRow>(range(1i64, 1), move |rows: &Vec<i64>, out: &mut Columns<DemoRow>| {
-            let n = rows.len();
-            let Some(&first) = rows.first() else { return };
-            let i = first - 1;
-            out.0.extend(rows.iter().map(|&r| r as i32));
-            // each word's bytes once per block, not once per row
-            let words = |col: &mut Nullable<StrViews>, list: &[&str], d: usize| {
-                let views: Vec<Interned> = list.iter().map(|w| col.values.intern(w)).collect();
-                Sink::<Str>::reserve(&mut col.values, n);
-                digits(i, n, d).for_each(|v| col.values.push_interned(views[v]));
-                col.valid.push_valid(n);
-            };
-            words(&mut out.1, &gender, 0);
-            words(&mut out.2, &marital, 1);
-            words(&mut out.3, &education, 2);
-            let ints = |col: &mut Nullable<Vec<i32>>, d: usize, f: &dyn Fn(usize) -> i32| {
-                col.values.extend(digits(i, n, d).map(f));
-                col.valid.push_valid(n);
-            };
-            ints(&mut out.4, 3, &|v| purchase[v]);
-            words(&mut out.5, &credit, 4);
-            ints(&mut out.6, 5, &|v| v as i32);
-            ints(&mut out.7, 6, &|v| v as i32);
-            ints(&mut out.8, 7, &|v| v as i32);
-        }),
+        derive_columns::<_, _, DemoRow>(
+            range(1i64, 1),
+            move |rows: &Vec<i64>, out: &mut Columns<DemoRow>| {
+                let n = rows.len();
+                let Some(&first) = rows.first() else { return };
+                let i = first - 1;
+                out.0.extend(rows.iter().map(|&r| r as i32));
+                // each word's bytes once per block, not once per row
+                let words = |col: &mut Nullable<StrViews>, list: &[&str], d: usize| {
+                    let views: Vec<Interned> = list.iter().map(|w| col.values.intern(w)).collect();
+                    Sink::<Str>::reserve(&mut col.values, n);
+                    digits(i, n, d).for_each(|v| col.values.push_interned(views[v]));
+                    col.valid.push_valid(n);
+                };
+                words(&mut out.1, &gender, 0);
+                words(&mut out.2, &marital, 1);
+                words(&mut out.3, &education, 2);
+                let ints = |col: &mut Nullable<Vec<i32>>, d: usize, f: &dyn Fn(usize) -> i32| {
+                    col.values.extend(digits(i, n, d).map(f));
+                    col.valid.push_valid(n);
+                };
+                ints(&mut out.4, 3, &|v| purchase[v]);
+                words(&mut out.5, &credit, 4);
+                ints(&mut out.6, 5, &|v| v as i32);
+                ints(&mut out.7, 6, &|v| v as i32);
+                ints(&mut out.8, 7, &|v| v as i32);
+            },
+        ),
     ))
 }
 
@@ -971,7 +996,12 @@ impl Distribution for Inventory {
     fn sample(&mut self, rng: &mut impl rand::Rng) -> InventoryRow {
         let mut c = Columns::<InventoryRow>::default();
         self.collect_into(&mut c, rng, 1);
-        (c.0[0], c.1[0], c.2[0], c.3.valid.get(0).then_some(c.3.values[0]))
+        (
+            c.0[0],
+            c.1[0],
+            c.2[0],
+            c.3.valid.get(0).then_some(c.3.values[0]),
+        )
     }
 
     fn collect_into(
@@ -1113,208 +1143,208 @@ macro_rules! fact {
 }
 
 fact!(STORE_SALES, StoreSalesCols, StoreSalesRow, 12.0, |r, n|
-        [
-            (0, 0) ss_sold_date_sk: Option<i32> = sk(n, 0, r.get_ss_sold_date_sk()),
-            (0, 1) ss_sold_time_sk: Option<i32> = sk(n, 1, r.get_ss_sold_time_sk()),
-            (0, 2) ss_item_sk: i32 = r.get_ss_sold_item_sk() as i32,
-            (0, 3) ss_customer_sk: Option<i32> = sk(n, 3, r.get_ss_sold_customer_sk()),
-            (0, 4) ss_cdemo_sk: Option<i32> = sk(n, 4, r.get_ss_sold_cdemo_sk()),
-            (0, 5) ss_hdemo_sk: Option<i32> = sk(n, 5, r.get_ss_sold_hdemo_sk()),
-            (0, 6) ss_addr_sk: Option<i32> = sk(n, 6, r.get_ss_sold_addr_sk()),
-            (0, 7) ss_store_sk: Option<i32> = sk(n, 7, r.get_ss_sold_store_sk()),
-            (0, 8) ss_promo_sk: Option<i32> = sk(n, 8, r.get_ss_sold_promo_sk()),
-            (0, 9) ss_ticket_number: i64 = r.get_ss_ticket_number(),
-            (0, 10) ss_quantity: Option<i32> = int(n, 10, r.get_ss_pricing().get_quantity()),
-            (0, 11) ss_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 11, r.get_ss_pricing().get_wholesale_cost()),
-        ]
-        [
-            (1, 0) ss_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 12, r.get_ss_pricing().get_list_price()),
-            (1, 1) ss_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 13, r.get_ss_pricing().get_sales_price()),
-            (1, 2) ss_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_ss_pricing().get_coupon_amount()),
-            (1, 3) ss_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_ss_pricing().get_ext_sales_price()),
-            (1, 4) ss_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_ss_pricing().get_ext_wholesale_cost()),
-            (1, 5) ss_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_ss_pricing().get_ext_list_price()),
-            (1, 6) ss_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_ss_pricing().get_ext_tax()),
-            (1, 7) ss_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_ss_pricing().get_coupon_amount()),
-            (1, 8) ss_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_ss_pricing().get_net_paid()),
-            (1, 9) ss_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_ss_pricing().get_net_paid_including_tax()),
-            (1, 10) ss_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_ss_pricing().get_net_profit()),
-        ]);
+[
+    (0, 0) ss_sold_date_sk: Option<i32> = sk(n, 0, r.get_ss_sold_date_sk()),
+    (0, 1) ss_sold_time_sk: Option<i32> = sk(n, 1, r.get_ss_sold_time_sk()),
+    (0, 2) ss_item_sk: i32 = r.get_ss_sold_item_sk() as i32,
+    (0, 3) ss_customer_sk: Option<i32> = sk(n, 3, r.get_ss_sold_customer_sk()),
+    (0, 4) ss_cdemo_sk: Option<i32> = sk(n, 4, r.get_ss_sold_cdemo_sk()),
+    (0, 5) ss_hdemo_sk: Option<i32> = sk(n, 5, r.get_ss_sold_hdemo_sk()),
+    (0, 6) ss_addr_sk: Option<i32> = sk(n, 6, r.get_ss_sold_addr_sk()),
+    (0, 7) ss_store_sk: Option<i32> = sk(n, 7, r.get_ss_sold_store_sk()),
+    (0, 8) ss_promo_sk: Option<i32> = sk(n, 8, r.get_ss_sold_promo_sk()),
+    (0, 9) ss_ticket_number: i64 = r.get_ss_ticket_number(),
+    (0, 10) ss_quantity: Option<i32> = int(n, 10, r.get_ss_pricing().get_quantity()),
+    (0, 11) ss_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 11, r.get_ss_pricing().get_wholesale_cost()),
+]
+[
+    (1, 0) ss_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 12, r.get_ss_pricing().get_list_price()),
+    (1, 1) ss_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 13, r.get_ss_pricing().get_sales_price()),
+    (1, 2) ss_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_ss_pricing().get_coupon_amount()),
+    (1, 3) ss_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_ss_pricing().get_ext_sales_price()),
+    (1, 4) ss_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_ss_pricing().get_ext_wholesale_cost()),
+    (1, 5) ss_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_ss_pricing().get_ext_list_price()),
+    (1, 6) ss_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_ss_pricing().get_ext_tax()),
+    (1, 7) ss_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_ss_pricing().get_coupon_amount()),
+    (1, 8) ss_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_ss_pricing().get_net_paid()),
+    (1, 9) ss_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_ss_pricing().get_net_paid_including_tax()),
+    (1, 10) ss_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_ss_pricing().get_net_profit()),
+]);
 
 fact!(STORE_RETURNS, StoreReturnsCols, StoreReturnsRow, 1.2, |r, n|
-        [
-            (0, 0) sr_returned_date_sk: Option<i32> = sk(n, 0, r.get_sr_returned_date_sk()),
-            (0, 1) sr_return_time_sk: Option<i32> = sk(n, 1, r.get_sr_returned_time_sk()),
-            (0, 2) sr_item_sk: i32 = r.get_sr_item_sk() as i32,
-            (0, 3) sr_customer_sk: Option<i32> = sk(n, 3, r.get_sr_customer_sk()),
-            (0, 4) sr_cdemo_sk: Option<i32> = sk(n, 4, r.get_sr_cdemo_sk()),
-            (0, 5) sr_hdemo_sk: Option<i32> = sk(n, 5, r.get_sr_hdemo_sk()),
-            (0, 6) sr_addr_sk: Option<i32> = sk(n, 6, r.get_sr_addr_sk()),
-            (0, 7) sr_store_sk: Option<i32> = sk(n, 7, r.get_sr_store_sk()),
-            (0, 8) sr_reason_sk: Option<i32> = sk(n, 8, r.get_sr_reason_sk()),
-            (0, 9) sr_ticket_number: i64 = r.get_sr_ticket_number(),
-            (0, 10) sr_return_quantity: Option<i32> = int(n, 10, r.get_sr_pricing().get_quantity()),
-            (0, 11) sr_return_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 11, r.get_sr_pricing().get_net_paid()),
-        ]
-        [
-            (1, 0) sr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 12, r.get_sr_pricing().get_ext_tax()),
-            (1, 1) sr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 13, r.get_sr_pricing().get_net_paid_including_tax()),
-            (1, 2) sr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_sr_pricing().get_fee()),
-            (1, 3) sr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_sr_pricing().get_ext_ship_cost()),
-            (1, 4) sr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_sr_pricing().get_refunded_cash()),
-            (1, 5) sr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_sr_pricing().get_reversed_charge()),
-            (1, 6) sr_store_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_sr_pricing().get_store_credit()),
-            (1, 7) sr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_sr_pricing().get_net_loss()),
-        ]);
+[
+    (0, 0) sr_returned_date_sk: Option<i32> = sk(n, 0, r.get_sr_returned_date_sk()),
+    (0, 1) sr_return_time_sk: Option<i32> = sk(n, 1, r.get_sr_returned_time_sk()),
+    (0, 2) sr_item_sk: i32 = r.get_sr_item_sk() as i32,
+    (0, 3) sr_customer_sk: Option<i32> = sk(n, 3, r.get_sr_customer_sk()),
+    (0, 4) sr_cdemo_sk: Option<i32> = sk(n, 4, r.get_sr_cdemo_sk()),
+    (0, 5) sr_hdemo_sk: Option<i32> = sk(n, 5, r.get_sr_hdemo_sk()),
+    (0, 6) sr_addr_sk: Option<i32> = sk(n, 6, r.get_sr_addr_sk()),
+    (0, 7) sr_store_sk: Option<i32> = sk(n, 7, r.get_sr_store_sk()),
+    (0, 8) sr_reason_sk: Option<i32> = sk(n, 8, r.get_sr_reason_sk()),
+    (0, 9) sr_ticket_number: i64 = r.get_sr_ticket_number(),
+    (0, 10) sr_return_quantity: Option<i32> = int(n, 10, r.get_sr_pricing().get_quantity()),
+    (0, 11) sr_return_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 11, r.get_sr_pricing().get_net_paid()),
+]
+[
+    (1, 0) sr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 12, r.get_sr_pricing().get_ext_tax()),
+    (1, 1) sr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 13, r.get_sr_pricing().get_net_paid_including_tax()),
+    (1, 2) sr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 14, r.get_sr_pricing().get_fee()),
+    (1, 3) sr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_sr_pricing().get_ext_ship_cost()),
+    (1, 4) sr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_sr_pricing().get_refunded_cash()),
+    (1, 5) sr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_sr_pricing().get_reversed_charge()),
+    (1, 6) sr_store_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_sr_pricing().get_store_credit()),
+    (1, 7) sr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_sr_pricing().get_net_loss()),
+]);
 
 fact!(CATALOG_SALES, CatalogSalesCols, CatalogSalesRow, 9.0, |r, n|
-        [
-            (0, 0) cs_sold_date_sk: Option<i32> = sk(n, 0, r.get_cs_sold_date_sk()),
-            (0, 1) cs_sold_time_sk: Option<i32> = sk(n, 1, r.get_cs_sold_time_sk()),
-            (0, 2) cs_ship_date_sk: Option<i32> = sk(n, 2, r.get_cs_ship_date_sk()),
-            (0, 3) cs_bill_customer_sk: Option<i32> = sk(n, 3, r.get_cs_bill_customer_sk()),
-            (0, 4) cs_bill_cdemo_sk: Option<i32> = sk(n, 4, r.get_cs_bill_cdemo_sk()),
-            (0, 5) cs_bill_hdemo_sk: Option<i32> = sk(n, 5, r.get_cs_bill_hdemo_sk()),
-            (0, 6) cs_bill_addr_sk: Option<i32> = sk(n, 6, r.get_cs_bill_addr_sk()),
-            (0, 7) cs_ship_customer_sk: Option<i32> = sk(n, 7, r.get_cs_ship_customer_sk()),
-            (0, 8) cs_ship_cdemo_sk: Option<i32> = sk(n, 8, r.get_cs_ship_cdemo_sk()),
-            (0, 9) cs_ship_hdemo_sk: Option<i32> = sk(n, 9, r.get_cs_ship_hdemo_sk()),
-            (0, 10) cs_ship_addr_sk: Option<i32> = sk(n, 10, r.get_cs_ship_addr_sk()),
-            (0, 11) cs_call_center_sk: Option<i32> = sk(n, 11, r.get_cs_call_center_sk()),
-        ]
-        [
-            (1, 0) cs_catalog_page_sk: Option<i32> = sk(n, 12, r.get_cs_catalog_page_sk()),
-            (1, 1) cs_ship_mode_sk: Option<i32> = sk(n, 13, r.get_cs_ship_mode_sk()),
-            (1, 2) cs_warehouse_sk: Option<i32> = sk(n, 14, r.get_cs_warehouse_sk()),
-            (1, 3) cs_item_sk: i32 = r.get_cs_sold_item_sk() as i32,
-            (1, 4) cs_promo_sk: Option<i32> = sk(n, 16, r.get_cs_promo_sk()),
-            (1, 5) cs_order_number: i64 = r.get_cs_order_number(),
-            (1, 6) cs_quantity: Option<i32> = int(n, 18, r.get_cs_pricing().get_quantity()),
-            (1, 7) cs_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_cs_pricing().get_wholesale_cost()),
-            (1, 8) cs_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_cs_pricing().get_list_price()),
-            (1, 9) cs_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_cs_pricing().get_sales_price()),
-            (1, 10) cs_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_cs_pricing().get_ext_discount_amount()),
-            (1, 11) cs_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_cs_pricing().get_ext_sales_price()),
-        ]
-        [
-            (2, 0) cs_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_cs_pricing().get_ext_wholesale_cost()),
-            (2, 1) cs_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_cs_pricing().get_ext_list_price()),
-            (2, 2) cs_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 27, r.get_cs_pricing().get_ext_tax()),
-            (2, 3) cs_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_cs_pricing().get_coupon_amount()),
-            (2, 4) cs_ext_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 28, r.get_cs_pricing().get_ext_ship_cost()),
-            (2, 5) cs_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 29, r.get_cs_pricing().get_net_paid()),
-            (2, 6) cs_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 30, r.get_cs_pricing().get_net_paid_including_tax()),
-            (2, 7) cs_net_paid_inc_ship: Option<Decimal<7, 2>> = dec::<7, 2>(n, 31, r.get_cs_pricing().get_net_paid_including_shipping()),
-            (2, 8) cs_net_paid_inc_ship_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 32, r.get_cs_pricing().get_net_paid_including_shipping_and_tax(),),
-            (2, 9) cs_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 33, r.get_cs_pricing().get_net_profit()),
-        ]);
+[
+    (0, 0) cs_sold_date_sk: Option<i32> = sk(n, 0, r.get_cs_sold_date_sk()),
+    (0, 1) cs_sold_time_sk: Option<i32> = sk(n, 1, r.get_cs_sold_time_sk()),
+    (0, 2) cs_ship_date_sk: Option<i32> = sk(n, 2, r.get_cs_ship_date_sk()),
+    (0, 3) cs_bill_customer_sk: Option<i32> = sk(n, 3, r.get_cs_bill_customer_sk()),
+    (0, 4) cs_bill_cdemo_sk: Option<i32> = sk(n, 4, r.get_cs_bill_cdemo_sk()),
+    (0, 5) cs_bill_hdemo_sk: Option<i32> = sk(n, 5, r.get_cs_bill_hdemo_sk()),
+    (0, 6) cs_bill_addr_sk: Option<i32> = sk(n, 6, r.get_cs_bill_addr_sk()),
+    (0, 7) cs_ship_customer_sk: Option<i32> = sk(n, 7, r.get_cs_ship_customer_sk()),
+    (0, 8) cs_ship_cdemo_sk: Option<i32> = sk(n, 8, r.get_cs_ship_cdemo_sk()),
+    (0, 9) cs_ship_hdemo_sk: Option<i32> = sk(n, 9, r.get_cs_ship_hdemo_sk()),
+    (0, 10) cs_ship_addr_sk: Option<i32> = sk(n, 10, r.get_cs_ship_addr_sk()),
+    (0, 11) cs_call_center_sk: Option<i32> = sk(n, 11, r.get_cs_call_center_sk()),
+]
+[
+    (1, 0) cs_catalog_page_sk: Option<i32> = sk(n, 12, r.get_cs_catalog_page_sk()),
+    (1, 1) cs_ship_mode_sk: Option<i32> = sk(n, 13, r.get_cs_ship_mode_sk()),
+    (1, 2) cs_warehouse_sk: Option<i32> = sk(n, 14, r.get_cs_warehouse_sk()),
+    (1, 3) cs_item_sk: i32 = r.get_cs_sold_item_sk() as i32,
+    (1, 4) cs_promo_sk: Option<i32> = sk(n, 16, r.get_cs_promo_sk()),
+    (1, 5) cs_order_number: i64 = r.get_cs_order_number(),
+    (1, 6) cs_quantity: Option<i32> = int(n, 18, r.get_cs_pricing().get_quantity()),
+    (1, 7) cs_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_cs_pricing().get_wholesale_cost()),
+    (1, 8) cs_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_cs_pricing().get_list_price()),
+    (1, 9) cs_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_cs_pricing().get_sales_price()),
+    (1, 10) cs_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_cs_pricing().get_ext_discount_amount()),
+    (1, 11) cs_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_cs_pricing().get_ext_sales_price()),
+]
+[
+    (2, 0) cs_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_cs_pricing().get_ext_wholesale_cost()),
+    (2, 1) cs_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_cs_pricing().get_ext_list_price()),
+    (2, 2) cs_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 27, r.get_cs_pricing().get_ext_tax()),
+    (2, 3) cs_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_cs_pricing().get_coupon_amount()),
+    (2, 4) cs_ext_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 28, r.get_cs_pricing().get_ext_ship_cost()),
+    (2, 5) cs_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 29, r.get_cs_pricing().get_net_paid()),
+    (2, 6) cs_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 30, r.get_cs_pricing().get_net_paid_including_tax()),
+    (2, 7) cs_net_paid_inc_ship: Option<Decimal<7, 2>> = dec::<7, 2>(n, 31, r.get_cs_pricing().get_net_paid_including_shipping()),
+    (2, 8) cs_net_paid_inc_ship_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 32, r.get_cs_pricing().get_net_paid_including_shipping_and_tax(),),
+    (2, 9) cs_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 33, r.get_cs_pricing().get_net_profit()),
+]);
 
 fact!(CATALOG_RETURNS, CatalogReturnsCols, CatalogReturnsRow, 0.9, |r, n|
-        [
-            (0, 0) cr_returned_date_sk: Option<i32> = sk(n, 0, r.get_cr_returned_date_sk()),
-            (0, 1) cr_returned_time_sk: Option<i32> = sk(n, 1, r.get_cr_returned_time_sk()),
-            (0, 2) cr_item_sk: i32 = r.get_cr_item_sk() as i32,
-            (0, 3) cr_refunded_customer_sk: Option<i32> = sk(n, 3, r.get_cr_refunded_customer_sk()),
-            (0, 4) cr_refunded_cdemo_sk: Option<i32> = sk(n, 4, r.get_cr_refunded_cdemo_sk()),
-            (0, 5) cr_refunded_hdemo_sk: Option<i32> = sk(n, 5, r.get_cr_refunded_hdemo_sk()),
-            (0, 6) cr_refunded_addr_sk: Option<i32> = sk(n, 6, r.get_cr_refunded_addr_sk()),
-            (0, 7) cr_returning_customer_sk: Option<i32> = sk(n, 7, r.get_cr_returning_customer_sk()),
-            (0, 8) cr_returning_cdemo_sk: Option<i32> = sk(n, 8, r.get_cr_returning_cdemo_sk()),
-            (0, 9) cr_returning_hdemo_sk: Option<i32> = sk(n, 9, r.get_cr_returning_hdemo_sk()),
-            (0, 10) cr_returning_addr_sk: Option<i32> = sk(n, 10, r.get_cr_returning_addr_sk()),
-            (0, 11) cr_call_center_sk: Option<i32> = sk(n, 11, r.get_cr_call_center_sk()),
-        ]
-        [
-            (1, 0) cr_catalog_page_sk: Option<i32> = sk(n, 12, r.get_cr_catalog_page_sk()),
-            (1, 1) cr_ship_mode_sk: Option<i32> = sk(n, 13, r.get_cr_ship_mode_sk()),
-            (1, 2) cr_warehouse_sk: Option<i32> = sk(n, 14, r.get_cr_warehouse_sk()),
-            (1, 3) cr_reason_sk: Option<i32> = sk(n, 15, r.get_cr_reason_sk()),
-            (1, 4) cr_order_number: i64 = r.get_cr_order_number(),
-            (1, 5) cr_return_quantity: Option<i32> = int(n, 17, r.get_cr_pricing().get_quantity()),
-            (1, 6) cr_return_amount: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_cr_pricing().get_net_paid()),
-            (1, 7) cr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_cr_pricing().get_ext_tax()),
-            (1, 8) cr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_cr_pricing().get_net_paid_including_tax()),
-            (1, 9) cr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_cr_pricing().get_fee()),
-            (1, 10) cr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_cr_pricing().get_ext_ship_cost()),
-            (1, 11) cr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_cr_pricing().get_refunded_cash()),
-        ]
-        [
-            (2, 0) cr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_cr_pricing().get_reversed_charge()),
-            (2, 1) cr_store_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_cr_pricing().get_store_credit()),
-            (2, 2) cr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_cr_pricing().get_net_loss()),
-        ]);
+[
+    (0, 0) cr_returned_date_sk: Option<i32> = sk(n, 0, r.get_cr_returned_date_sk()),
+    (0, 1) cr_returned_time_sk: Option<i32> = sk(n, 1, r.get_cr_returned_time_sk()),
+    (0, 2) cr_item_sk: i32 = r.get_cr_item_sk() as i32,
+    (0, 3) cr_refunded_customer_sk: Option<i32> = sk(n, 3, r.get_cr_refunded_customer_sk()),
+    (0, 4) cr_refunded_cdemo_sk: Option<i32> = sk(n, 4, r.get_cr_refunded_cdemo_sk()),
+    (0, 5) cr_refunded_hdemo_sk: Option<i32> = sk(n, 5, r.get_cr_refunded_hdemo_sk()),
+    (0, 6) cr_refunded_addr_sk: Option<i32> = sk(n, 6, r.get_cr_refunded_addr_sk()),
+    (0, 7) cr_returning_customer_sk: Option<i32> = sk(n, 7, r.get_cr_returning_customer_sk()),
+    (0, 8) cr_returning_cdemo_sk: Option<i32> = sk(n, 8, r.get_cr_returning_cdemo_sk()),
+    (0, 9) cr_returning_hdemo_sk: Option<i32> = sk(n, 9, r.get_cr_returning_hdemo_sk()),
+    (0, 10) cr_returning_addr_sk: Option<i32> = sk(n, 10, r.get_cr_returning_addr_sk()),
+    (0, 11) cr_call_center_sk: Option<i32> = sk(n, 11, r.get_cr_call_center_sk()),
+]
+[
+    (1, 0) cr_catalog_page_sk: Option<i32> = sk(n, 12, r.get_cr_catalog_page_sk()),
+    (1, 1) cr_ship_mode_sk: Option<i32> = sk(n, 13, r.get_cr_ship_mode_sk()),
+    (1, 2) cr_warehouse_sk: Option<i32> = sk(n, 14, r.get_cr_warehouse_sk()),
+    (1, 3) cr_reason_sk: Option<i32> = sk(n, 15, r.get_cr_reason_sk()),
+    (1, 4) cr_order_number: i64 = r.get_cr_order_number(),
+    (1, 5) cr_return_quantity: Option<i32> = int(n, 17, r.get_cr_pricing().get_quantity()),
+    (1, 6) cr_return_amount: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_cr_pricing().get_net_paid()),
+    (1, 7) cr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_cr_pricing().get_ext_tax()),
+    (1, 8) cr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_cr_pricing().get_net_paid_including_tax()),
+    (1, 9) cr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_cr_pricing().get_fee()),
+    (1, 10) cr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_cr_pricing().get_ext_ship_cost()),
+    (1, 11) cr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_cr_pricing().get_refunded_cash()),
+]
+[
+    (2, 0) cr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_cr_pricing().get_reversed_charge()),
+    (2, 1) cr_store_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_cr_pricing().get_store_credit()),
+    (2, 2) cr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_cr_pricing().get_net_loss()),
+]);
 
 fact!(WEB_SALES, WebSalesCols, WebSalesRow, 12.0, |r, n|
-        [
-            (0, 0) ws_sold_date_sk: Option<i32> = sk(n, 0, r.get_ws_sold_date_sk()),
-            (0, 1) ws_sold_time_sk: Option<i32> = sk(n, 1, r.get_ws_sold_time_sk()),
-            (0, 2) ws_ship_date_sk: Option<i32> = sk(n, 2, r.get_ws_ship_date_sk()),
-            (0, 3) ws_item_sk: i32 = r.get_ws_item_sk() as i32,
-            (0, 4) ws_bill_customer_sk: Option<i32> = sk(n, 4, r.get_ws_bill_customer_sk()),
-            (0, 5) ws_bill_cdemo_sk: Option<i32> = sk(n, 5, r.get_ws_bill_cdemo_sk()),
-            (0, 6) ws_bill_hdemo_sk: Option<i32> = sk(n, 6, r.get_ws_bill_hdemo_sk()),
-            (0, 7) ws_bill_addr_sk: Option<i32> = sk(n, 7, r.get_ws_bill_addr_sk()),
-            (0, 8) ws_ship_customer_sk: Option<i32> = sk(n, 8, r.get_ws_ship_customer_sk()),
-            (0, 9) ws_ship_cdemo_sk: Option<i32> = sk(n, 9, r.get_ws_ship_cdemo_sk()),
-            (0, 10) ws_ship_hdemo_sk: Option<i32> = sk(n, 10, r.get_ws_ship_hdemo_sk()),
-            (0, 11) ws_ship_addr_sk: Option<i32> = sk(n, 11, r.get_ws_ship_addr_sk()),
-        ]
-        [
-            (1, 0) ws_web_page_sk: Option<i32> = sk(n, 12, r.get_ws_web_page_sk()),
-            (1, 1) ws_web_site_sk: Option<i32> = sk(n, 13, r.get_ws_web_site_sk()),
-            (1, 2) ws_ship_mode_sk: Option<i32> = sk(n, 14, r.get_ws_ship_mode_sk()),
-            (1, 3) ws_warehouse_sk: Option<i32> = sk(n, 15, r.get_ws_warehouse_sk()),
-            (1, 4) ws_promo_sk: Option<i32> = sk(n, 16, r.get_ws_promo_sk()),
-            (1, 5) ws_order_number: i64 = r.get_ws_order_number(),
-            (1, 6) ws_quantity: Option<i32> = int(n, 18, r.get_ws_pricing().get_quantity()),
-            (1, 7) ws_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_ws_pricing().get_wholesale_cost()),
-            (1, 8) ws_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_ws_pricing().get_list_price()),
-            (1, 9) ws_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_ws_pricing().get_sales_price()),
-            (1, 10) ws_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_ws_pricing().get_ext_discount_amount()),
-            (1, 11) ws_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_ws_pricing().get_ext_sales_price()),
-        ]
-        [
-            (2, 0) ws_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_ws_pricing().get_ext_wholesale_cost()),
-            (2, 1) ws_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_ws_pricing().get_ext_list_price()),
-            (2, 2) ws_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_ws_pricing().get_ext_tax()),
-            (2, 3) ws_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 27, r.get_ws_pricing().get_coupon_amount()),
-            (2, 4) ws_ext_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 28, r.get_ws_pricing().get_ext_ship_cost()),
-            (2, 5) ws_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 29, r.get_ws_pricing().get_net_paid()),
-            (2, 6) ws_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 30, r.get_ws_pricing().get_net_paid_including_tax()),
-            (2, 7) ws_net_paid_inc_ship: Option<Decimal<7, 2>> = dec::<7, 2>(n, 31, r.get_ws_pricing().get_net_paid_including_shipping()),
-            (2, 8) ws_net_paid_inc_ship_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 32, r.get_ws_pricing().get_net_paid_including_shipping_and_tax(),),
-            (2, 9) ws_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 33, r.get_ws_pricing().get_net_profit()),
-        ]);
+[
+    (0, 0) ws_sold_date_sk: Option<i32> = sk(n, 0, r.get_ws_sold_date_sk()),
+    (0, 1) ws_sold_time_sk: Option<i32> = sk(n, 1, r.get_ws_sold_time_sk()),
+    (0, 2) ws_ship_date_sk: Option<i32> = sk(n, 2, r.get_ws_ship_date_sk()),
+    (0, 3) ws_item_sk: i32 = r.get_ws_item_sk() as i32,
+    (0, 4) ws_bill_customer_sk: Option<i32> = sk(n, 4, r.get_ws_bill_customer_sk()),
+    (0, 5) ws_bill_cdemo_sk: Option<i32> = sk(n, 5, r.get_ws_bill_cdemo_sk()),
+    (0, 6) ws_bill_hdemo_sk: Option<i32> = sk(n, 6, r.get_ws_bill_hdemo_sk()),
+    (0, 7) ws_bill_addr_sk: Option<i32> = sk(n, 7, r.get_ws_bill_addr_sk()),
+    (0, 8) ws_ship_customer_sk: Option<i32> = sk(n, 8, r.get_ws_ship_customer_sk()),
+    (0, 9) ws_ship_cdemo_sk: Option<i32> = sk(n, 9, r.get_ws_ship_cdemo_sk()),
+    (0, 10) ws_ship_hdemo_sk: Option<i32> = sk(n, 10, r.get_ws_ship_hdemo_sk()),
+    (0, 11) ws_ship_addr_sk: Option<i32> = sk(n, 11, r.get_ws_ship_addr_sk()),
+]
+[
+    (1, 0) ws_web_page_sk: Option<i32> = sk(n, 12, r.get_ws_web_page_sk()),
+    (1, 1) ws_web_site_sk: Option<i32> = sk(n, 13, r.get_ws_web_site_sk()),
+    (1, 2) ws_ship_mode_sk: Option<i32> = sk(n, 14, r.get_ws_ship_mode_sk()),
+    (1, 3) ws_warehouse_sk: Option<i32> = sk(n, 15, r.get_ws_warehouse_sk()),
+    (1, 4) ws_promo_sk: Option<i32> = sk(n, 16, r.get_ws_promo_sk()),
+    (1, 5) ws_order_number: i64 = r.get_ws_order_number(),
+    (1, 6) ws_quantity: Option<i32> = int(n, 18, r.get_ws_pricing().get_quantity()),
+    (1, 7) ws_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_ws_pricing().get_wholesale_cost()),
+    (1, 8) ws_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_ws_pricing().get_list_price()),
+    (1, 9) ws_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_ws_pricing().get_sales_price()),
+    (1, 10) ws_ext_discount_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_ws_pricing().get_ext_discount_amount()),
+    (1, 11) ws_ext_sales_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_ws_pricing().get_ext_sales_price()),
+]
+[
+    (2, 0) ws_ext_wholesale_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 24, r.get_ws_pricing().get_ext_wholesale_cost()),
+    (2, 1) ws_ext_list_price: Option<Decimal<7, 2>> = dec::<7, 2>(n, 25, r.get_ws_pricing().get_ext_list_price()),
+    (2, 2) ws_ext_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 26, r.get_ws_pricing().get_ext_tax()),
+    (2, 3) ws_coupon_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 27, r.get_ws_pricing().get_coupon_amount()),
+    (2, 4) ws_ext_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 28, r.get_ws_pricing().get_ext_ship_cost()),
+    (2, 5) ws_net_paid: Option<Decimal<7, 2>> = dec::<7, 2>(n, 29, r.get_ws_pricing().get_net_paid()),
+    (2, 6) ws_net_paid_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 30, r.get_ws_pricing().get_net_paid_including_tax()),
+    (2, 7) ws_net_paid_inc_ship: Option<Decimal<7, 2>> = dec::<7, 2>(n, 31, r.get_ws_pricing().get_net_paid_including_shipping()),
+    (2, 8) ws_net_paid_inc_ship_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 32, r.get_ws_pricing().get_net_paid_including_shipping_and_tax(),),
+    (2, 9) ws_net_profit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 33, r.get_ws_pricing().get_net_profit()),
+]);
 
 fact!(WEB_RETURNS, WebReturnsCols, WebReturnsRow, 1.2, |r, n|
-        [
-            (0, 0) wr_returned_date_sk: Option<i32> = sk(n, 0, r.get_wr_returned_date_sk()),
-            (0, 1) wr_returned_time_sk: Option<i32> = sk(n, 1, r.get_wr_returned_time_sk()),
-            (0, 2) wr_item_sk: i32 = r.get_wr_item_sk() as i32,
-            (0, 3) wr_refunded_customer_sk: Option<i32> = sk(n, 3, r.get_wr_refunded_customer_sk()),
-            (0, 4) wr_refunded_cdemo_sk: Option<i32> = sk(n, 4, r.get_wr_refunded_cdemo_sk()),
-            (0, 5) wr_refunded_hdemo_sk: Option<i32> = sk(n, 5, r.get_wr_refunded_hdemo_sk()),
-            (0, 6) wr_refunded_addr_sk: Option<i32> = sk(n, 6, r.get_wr_refunded_addr_sk()),
-            (0, 7) wr_returning_customer_sk: Option<i32> = sk(n, 7, r.get_wr_returning_customer_sk()),
-            (0, 8) wr_returning_cdemo_sk: Option<i32> = sk(n, 8, r.get_wr_returning_cdemo_sk()),
-            (0, 9) wr_returning_hdemo_sk: Option<i32> = sk(n, 9, r.get_wr_returning_hdemo_sk()),
-            (0, 10) wr_returning_addr_sk: Option<i32> = sk(n, 10, r.get_wr_returning_addr_sk()),
-            (0, 11) wr_web_page_sk: Option<i32> = sk(n, 11, r.get_wr_web_page_sk()),
-        ]
-        [
-            (1, 0) wr_reason_sk: Option<i32> = sk(n, 12, r.get_wr_reason_sk()),
-            (1, 1) wr_order_number: i64 = r.get_wr_order_number(),
-            (1, 2) wr_return_quantity: Option<i32> = int(n, 14, r.get_wr_pricing().get_quantity()),
-            (1, 3) wr_return_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_wr_pricing().get_net_paid()),
-            (1, 4) wr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_wr_pricing().get_ext_tax()),
-            (1, 5) wr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_wr_pricing().get_net_paid_including_tax()),
-            (1, 6) wr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_wr_pricing().get_fee()),
-            (1, 7) wr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_wr_pricing().get_ext_ship_cost()),
-            (1, 8) wr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_wr_pricing().get_refunded_cash()),
-            (1, 9) wr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_wr_pricing().get_reversed_charge()),
-            (1, 10) wr_account_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_wr_pricing().get_store_credit()),
-            (1, 11) wr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_wr_pricing().get_net_loss()),
-        ]);
+[
+    (0, 0) wr_returned_date_sk: Option<i32> = sk(n, 0, r.get_wr_returned_date_sk()),
+    (0, 1) wr_returned_time_sk: Option<i32> = sk(n, 1, r.get_wr_returned_time_sk()),
+    (0, 2) wr_item_sk: i32 = r.get_wr_item_sk() as i32,
+    (0, 3) wr_refunded_customer_sk: Option<i32> = sk(n, 3, r.get_wr_refunded_customer_sk()),
+    (0, 4) wr_refunded_cdemo_sk: Option<i32> = sk(n, 4, r.get_wr_refunded_cdemo_sk()),
+    (0, 5) wr_refunded_hdemo_sk: Option<i32> = sk(n, 5, r.get_wr_refunded_hdemo_sk()),
+    (0, 6) wr_refunded_addr_sk: Option<i32> = sk(n, 6, r.get_wr_refunded_addr_sk()),
+    (0, 7) wr_returning_customer_sk: Option<i32> = sk(n, 7, r.get_wr_returning_customer_sk()),
+    (0, 8) wr_returning_cdemo_sk: Option<i32> = sk(n, 8, r.get_wr_returning_cdemo_sk()),
+    (0, 9) wr_returning_hdemo_sk: Option<i32> = sk(n, 9, r.get_wr_returning_hdemo_sk()),
+    (0, 10) wr_returning_addr_sk: Option<i32> = sk(n, 10, r.get_wr_returning_addr_sk()),
+    (0, 11) wr_web_page_sk: Option<i32> = sk(n, 11, r.get_wr_web_page_sk()),
+]
+[
+    (1, 0) wr_reason_sk: Option<i32> = sk(n, 12, r.get_wr_reason_sk()),
+    (1, 1) wr_order_number: i64 = r.get_wr_order_number(),
+    (1, 2) wr_return_quantity: Option<i32> = int(n, 14, r.get_wr_pricing().get_quantity()),
+    (1, 3) wr_return_amt: Option<Decimal<7, 2>> = dec::<7, 2>(n, 15, r.get_wr_pricing().get_net_paid()),
+    (1, 4) wr_return_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 16, r.get_wr_pricing().get_ext_tax()),
+    (1, 5) wr_return_amt_inc_tax: Option<Decimal<7, 2>> = dec::<7, 2>(n, 17, r.get_wr_pricing().get_net_paid_including_tax()),
+    (1, 6) wr_fee: Option<Decimal<7, 2>> = dec::<7, 2>(n, 18, r.get_wr_pricing().get_fee()),
+    (1, 7) wr_return_ship_cost: Option<Decimal<7, 2>> = dec::<7, 2>(n, 19, r.get_wr_pricing().get_ext_ship_cost()),
+    (1, 8) wr_refunded_cash: Option<Decimal<7, 2>> = dec::<7, 2>(n, 20, r.get_wr_pricing().get_refunded_cash()),
+    (1, 9) wr_reversed_charge: Option<Decimal<7, 2>> = dec::<7, 2>(n, 21, r.get_wr_pricing().get_reversed_charge()),
+    (1, 10) wr_account_credit: Option<Decimal<7, 2>> = dec::<7, 2>(n, 22, r.get_wr_pricing().get_store_credit()),
+    (1, 11) wr_net_loss: Option<Decimal<7, 2>> = dec::<7, 2>(n, 23, r.get_wr_pricing().get_net_loss()),
+]);
 
 /// A sales or returns line: the source row (ticket or order) it is of.
 pub(crate) trait Line {
@@ -1412,8 +1442,14 @@ where
         Children(v)
     }
 
-    fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _rng: &mut impl rand::Rng, n: usize) {
-        cols.values.reserve(lines_in(n, <G::Item as Fact>::PER_SOURCE_ROW));
+    fn collect_into(
+        &mut self,
+        cols: &mut Columns<Self::Item>,
+        _rng: &mut impl rand::Rng,
+        n: usize,
+    ) {
+        cols.values
+            .reserve(lines_in(n, <G::Item as Fact>::PER_SOURCE_ROW));
         self.lines(n as u64, |r| r.push(&mut cols.values));
         cols.sources += n;
     }
@@ -1453,13 +1489,16 @@ with_sale!(
     WebReturnsRowGenerator => WebSalesRow,
 );
 
+/// A sale line and its return, if any.
+type SaleAndReturn<G> = (<G as WithSale>::Sale, Option<<G as Iterator>::Item>);
+
 /// A sales table and its returns from one pass: the returns generator `G`
 /// makes each sale line with its return, if any. Its generator stays open
 /// as [`Lines`]'s does.
 pub(crate) struct Pairs<G: WithSale> {
     session: Session,
     next: u64,
-    open: Option<Open<G, (G::Sale, Option<G::Item>)>>,
+    open: Option<Open<G, SaleAndReturn<G>>>,
 }
 
 impl<G: WithSale> Clone for Pairs<G> {
@@ -1518,8 +1557,11 @@ where
         _rng: &mut impl rand::Rng,
         n: usize,
     ) {
-        sales.values.reserve(lines_in(n, <G::Sale as Fact>::PER_SOURCE_ROW));
-        rets.values.reserve(lines_in(n, <G::Item as Fact>::PER_SOURCE_ROW));
+        sales
+            .values
+            .reserve(lines_in(n, <G::Sale as Fact>::PER_SOURCE_ROW));
+        rets.values
+            .reserve(lines_in(n, <G::Item as Fact>::PER_SOURCE_ROW));
         self.lines(n as u64, |s, r| {
             s.push(&mut sales.values);
             if let Some(r) = r {
@@ -1549,12 +1591,25 @@ where
 pub(crate) trait PairGen: Send + Sync {
     /// Source rows `first..=last` (1-based), in blocks of `per_batch`
     /// source rows; `emit(k, batch)` for table `k` (0 sales, 1 returns).
-    fn range(&self, first: u64, last: u64, per_batch: u64, emit: &mut dyn FnMut(usize, RecordBatch));
+    fn range(
+        &self,
+        first: u64,
+        last: u64,
+        per_batch: u64,
+        emit: &mut dyn FnMut(usize, RecordBatch),
+    );
 
     /// Source rows `first..=last` in blocks of `per_batch`, as `.dat`
     /// lines of the sales (`bufs[0]`) and returns (`bufs[1]`), written from
     /// the columns.
-    fn range_dat(&self, first: u64, last: u64, per_batch: u64, encoding: Encoding, bufs: &mut [Vec<u8>]);
+    fn range_dat(
+        &self,
+        first: u64,
+        last: u64,
+        per_batch: u64,
+        encoding: Encoding,
+        bufs: &mut [Vec<u8>],
+    );
 }
 
 impl<D> PairGen for DistTables<D>
@@ -1562,11 +1617,26 @@ where
     D: Distribution + Clone + Send + Sync,
     Columns<D::Item>: IntoArrowTables + TextTables,
 {
-    fn range_dat(&self, first: u64, last: u64, per_batch: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
-        blocks(self.dist(), first, last, per_batch as usize, |cols| cols.write_tables(encoding, bufs));
+    fn range_dat(
+        &self,
+        first: u64,
+        last: u64,
+        per_batch: u64,
+        encoding: Encoding,
+        bufs: &mut [Vec<u8>],
+    ) {
+        blocks(self.dist(), first, last, per_batch as usize, |cols| {
+            cols.write_tables(encoding, bufs)
+        });
     }
 
-    fn range(&self, first: u64, last: u64, per_batch: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
+    fn range(
+        &self,
+        first: u64,
+        last: u64,
+        per_batch: u64,
+        emit: &mut dyn FnMut(usize, RecordBatch),
+    ) {
         let mut d = self.dist().clone();
         d.skip(first - 1);
         let mut rng = SmallRng::seed_from_u64(0);
@@ -1577,7 +1647,7 @@ where
             let mut tables = Vec::with_capacity(2);
             d.collect(&mut rng, n as usize).into_tables(&mut tables);
             for (k, cols) in tables.into_iter().enumerate() {
-                if cols[0].len() > 0 {
+                if !cols[0].is_empty() {
                     let b = RecordBatch::try_new(schemas[k].clone(), cols)
                         .expect("columns match the schema");
                     emit(k, b);
@@ -1658,7 +1728,10 @@ mod tests {
 
     #[test]
     fn inventory_matches_dsbgen_arrow() {
-        let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+        let s = SessionBuilder::new()
+            .with_scale_factor(1.0)
+            .build()
+            .unwrap();
         let t = dimension(TableName::Inventory, &s).unwrap();
         // the start, a warehouse and a week boundary, the end
         for (first, last) in [
@@ -1679,7 +1752,10 @@ mod tests {
 
     #[test]
     fn demographics_match_dsbgen_arrow() {
-        let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+        let s = SessionBuilder::new()
+            .with_scale_factor(1.0)
+            .build()
+            .unwrap();
         let t = dimension(TableName::CustomerDemographics, &s).unwrap();
         for (first, last) in [(1, 3000), (1_000_000, 1_003_000), (1_920_000, 1_920_800)] {
             let want = collect(|e| {

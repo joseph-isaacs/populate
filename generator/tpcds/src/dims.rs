@@ -7,8 +7,8 @@
 //! is negative, a date is a Julian day (NULL when negative), text is
 //! `Utf8View`, and an address is ten columns ([`Address`]).
 
-use populate_combinators::text::{Gmt, PushText, Str};
 use populate_builtins::{ReadRows, named_all};
+use populate_combinators::text::{Gmt, PushText, Str};
 use populate_core::{Columnar, Columns, Date32, Decimal as Fixed, Distribution, Sink};
 use rand::Rng;
 use std::borrow::Borrow;
@@ -1049,9 +1049,9 @@ pub(crate) fn time_dim(s: &Session) -> impl Distribution<Item = TimeDim> + Clone
                 c3.push(int(nbm, 3, r.t_hour));
                 c4.push(int(nbm, 4, r.t_minute));
                 c5.push(int(nbm, 5, r.t_second));
-                c6.push_text(valid(nbm, 6).then(|| r.t_am_pm.as_str()));
-                c7.push_text(valid(nbm, 7).then(|| r.t_shift.as_str()));
-                c8.push_text(valid(nbm, 8).then(|| r.t_sub_shift.as_str()));
+                c6.push_text(valid(nbm, 6).then_some(r.t_am_pm.as_str()));
+                c7.push_text(valid(nbm, 7).then_some(r.t_shift.as_str()));
+                c8.push_text(valid(nbm, 8).then_some(r.t_sub_shift.as_str()));
                 c9.push_text((!r.t_meal_time.is_empty()).then_some(r.t_meal_time.as_str()));
             },
         ),

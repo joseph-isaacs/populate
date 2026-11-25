@@ -19,9 +19,9 @@ use populate_table::text::{TextChunks, write_text_many};
 use populate_table::{Chunks, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
 use std::fmt;
-use std::sync::Arc;
 use std::fmt::Write as _;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 /// Default output rows per chunk (one Parquet row group).
 pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
@@ -537,7 +537,9 @@ impl Unit<'_> {
             let pair = t.pair.as_ref().expect("a sales table pairs");
             pair.0.range_dat(first, last, per_batch, encoding, bufs);
         } else {
-            t.dist.0.range_dat(first, last, per_batch as usize, encoding, &mut bufs[0]);
+            t.dist
+                .0
+                .range_dat(first, last, per_batch as usize, encoding, &mut bufs[0]);
         }
     }
 }
@@ -572,7 +574,9 @@ impl MultiChunks for Unit<'_> {
         let mut cut = [Rebatch::new(rows), Rebatch::new(rows)];
         if self.idx.len() == 2 {
             let pair = t.pair.as_ref().expect("a sales table pairs");
-            pair.0.range(first, last, block, &mut |k, b| cut[k].push(b, &mut |b| emit(k, b)));
+            pair.0.range(first, last, block, &mut |k, b| {
+                cut[k].push(b, &mut |b| emit(k, b))
+            });
         } else {
             t.dist.0.range(first, last, block as usize, &mut |b| {
                 cut[0].push(b, &mut |b| emit(0, b))
@@ -596,7 +600,8 @@ impl Chunks for DsTable {
     /// Batches of about `batch_size` rows.
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
         let (first, last) = self.range(i);
-        self.dist.0.range(first, last, self.batch_source_rows() as usize, emit)
+        self.dist
+            .0
+            .range(first, last, self.batch_source_rows() as usize, emit)
     }
 }
-

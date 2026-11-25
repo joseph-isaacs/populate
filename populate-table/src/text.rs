@@ -269,6 +269,8 @@ const ZEROS: u64 = 0x3030_3030_3030_3030;
 pub struct Cursor(*mut u8);
 
 impl Cursor {
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn byte(&mut self, b: u8) {
         unsafe {
@@ -277,6 +279,8 @@ impl Cursor {
         }
     }
 
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn bytes(&mut self, b: &[u8]) {
         unsafe {
@@ -325,6 +329,8 @@ impl Cursor {
         }
     }
 
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn int(&mut self, v: i64) {
         unsafe {
@@ -337,6 +343,9 @@ impl Cursor {
 
     /// `%.{scale}f` of `v / 10^scale` (what dsdgen's `print_decimal`
     /// prints; `-0.05` keeps its sign).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     pub unsafe fn decimal(&mut self, v: i64, scale: u32) {
         unsafe {
             if scale == 0 {
@@ -395,6 +404,9 @@ impl Cursor {
     }
 
     /// [`Self::decimal`] at scale 2, with constant divisors.
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn decimal2(&mut self, v: i64) {
         unsafe {
@@ -410,6 +422,9 @@ impl Cursor {
 
     /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in [`DATES`] for
     /// the years 1900 to 2099.
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn day(&mut self, days: i32) {
         unsafe {
@@ -472,6 +487,9 @@ impl Cursor {
 
     /// The first `len <= 12` of 12 bytes: one 12-byte store (the
     /// reservation has 12 bytes of slack per string for this).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn short(&mut self, b: &[u8; 12], len: usize) {
         unsafe {
@@ -481,6 +499,9 @@ impl Cursor {
     }
 
     /// `s` in `encoding` (Latin-1 is never longer than UTF-8).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn text(&mut self, s: &str, encoding: Encoding) {
         unsafe {
@@ -813,8 +834,14 @@ impl TextField for StrCol {
         // bounds and on character boundaries.
         unsafe {
             let o = self.offsets();
-            let (a, b) = (*o.get_unchecked(r) as usize, *o.get_unchecked(r + 1) as usize);
-            w.text(std::str::from_utf8_unchecked(self.data().get_unchecked(a..b)), encoding)
+            let (a, b) = (
+                *o.get_unchecked(r) as usize,
+                *o.get_unchecked(r + 1) as usize,
+            );
+            w.text(
+                std::str::from_utf8_unchecked(self.data().get_unchecked(a..b)),
+                encoding,
+            )
         }
     }
 }

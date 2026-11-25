@@ -69,7 +69,8 @@ one core.
 
 - **Sales and returns in one pass.** dsbgen's returns generators replay
   every sales line item. When a sales table and its returns are asked for
-  with the same chunks, one pass makes both (`src/pairs.rs`).
+  with the same chunks, one distribution makes both tables
+  (`DistTables` over the returns generator's `next_with_sale`).
 - **Exponential ranks by lookup.** `genrand_exp_rank` takes a logarithm a
   draw. The rank only steps at fixed draws (checked monotone over every
   31-bit draw, `exp_ratio_is_monotone`), so for ranges up to 4096 it is a

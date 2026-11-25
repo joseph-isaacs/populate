@@ -17,7 +17,6 @@ populate-table = { workspace = true, features = ["parquet"] }
 rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
 arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # tpcdsgen 4.0 (Apache-2.0, tpcgen-rs project) with DSB's dsdgen changes

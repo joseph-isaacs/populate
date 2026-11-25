@@ -785,7 +785,6 @@ name = "populate-dsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
  "arrow-select",

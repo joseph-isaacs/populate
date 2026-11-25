@@ -3,9 +3,9 @@
 //! compute. Both are a cross product of keys; inventory adds a random
 //! quantity, nulled by its row's null bitmap.
 
-use populate_combinators::text::Word;
 use crate::seeds::stream;
 use populate_builtins::{derive, draws, named_all, range};
+use populate_combinators::text::Word;
 use populate_core::{Columns, Distribution};
 use rand::Rng;
 use tpcdsgen::config::{Session, Table as Ds};

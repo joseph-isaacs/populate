@@ -10,7 +10,8 @@ members = [
     "populate-tpch",
     "populate-ssb",
     "populate-h2o",
-    "populate-oltp",
+    "populate-tpcc",
+    "populate-ycsb",
     "populate-synth",
     "populate-dsb",
     "populate-dsb/dsbgen",
@@ -32,7 +33,8 @@ default-members = [
     "populate-tpch",
     "populate-ssb",
     "populate-h2o",
-    "populate-oltp",
+    "populate-tpcc",
+    "populate-ycsb",
     "populate-synth",
     "populate-dsb",
     "populate-dsb/dsbgen",
@@ -65,7 +67,8 @@ populate-tpcds = { path = "populate-tpcds" }
 populate-tpch = { path = "populate-tpch" }
 populate-ssb = { path = "populate-ssb" }
 populate-h2o = { path = "populate-h2o" }
-populate-oltp = { path = "populate-oltp" }
+populate-tpcc = { path = "populate-tpcc" }
+populate-ycsb = { path = "populate-ycsb" }
 populate-synth = { path = "populate-synth" }
 populate-ldbc = { path = "populate-ldbc" }
 

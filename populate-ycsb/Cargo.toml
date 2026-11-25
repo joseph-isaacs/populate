@@ -1,6 +1,6 @@
 [package]
-name = "populate-oltp"
-description = "TPC-C initial load and YCSB load (byte-identical to YCSB), on all cores: Arrow, Parquet or text"
+name = "populate-ycsb"
+description = "YCSB load and run operations, byte-identical to YCSB 0.17.0, on all cores: Arrow, Parquet or TSV"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,13 +22,11 @@ mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 divan = { workspace = true }
-arrow-select = "60"
-bytes = "1"
 
 [[bin]]
-name = "oltp-gen"
-path = "src/bin/oltp-gen.rs"
+name = "ycsb-gen"
+path = "src/bin/ycsb-gen.rs"
 
 [[bench]]
-name = "oltp"
+name = "ycsb"
 harness = false

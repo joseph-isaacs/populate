@@ -1,13 +1,11 @@
-//! Generate the TPC-C initial database or the YCSB load.
+//! Generate the YCSB load, or the operations of a YCSB run.
 //!
 //! ```text
-//! oltp-gen tpcc [--warehouses 1] [--tables a,b,...] [--seed 0] [--load-time MICROS]
-//!               [common flags]
-//! oltp-gen ycsb [--records 1000] [--insert-start 0] [--insert-count N]
+//! ycsb-gen load [--records 1000] [--insert-start 0] [--insert-count N]
 //!               [--field-count 10] [--field-length 100] [--field-prefix field]
 //!               [--ordered] [--zero-padding 1] [--data-integrity]
 //!               [--java-seed 0] [--java-thread 1] [common flags]
-//! oltp-gen ycsb-run [ycsb flags] [--operations 1000] [--workload a-f]
+//! ycsb-gen run  [load flags] [--operations 1000] [--workload a-f]
 //!               [--read P] [--update P] [--insert P] [--scan P] [--rmw P]
 //!               [--distribution uniform|zipfian|latest|hotspot]
 //!               [--hotspot-data 0.2] [--hotspot-ops 0.8] [--read-one-field]
@@ -19,11 +17,11 @@
 //!               [--no-dictionary]
 //! ```
 //!
-//! `--format parquet` (the default) writes `DIR/<table>.parquet`; `--format
-//! text` writes TPC-C as `DIR/<table>.csv` (go-tpc's CSV layout) and YCSB as
-//! `DIR/usertable.tsv` (`key\tfield0\t...`), and the YCSB run as
-//! `DIR/transactions.{parquet,tsv}` (one row per binding call: `op`, key, scan
-//! length, fields read, values written); `--format none` only generates.
+//! `--format parquet` (the default) writes the load as
+//! `DIR/usertable.parquet` and the run as `DIR/transactions.parquet` (one
+//! row per binding call: `op`, key, scan length, fields read, values
+//! written); `--format text` writes them as TSV (`key\tfield0\t...` for the
+//! load); `--format none` only generates.
 //! Every chunk of every table is a job on one pool of `--threads` threads
 //! (default: all cores); the data is the same for any thread count and
 //! `--row-group`.
@@ -36,12 +34,12 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
-use populate_oltp::{
-    JavaTlr, RequestDistribution, Tpcc, TpccTable, TpccTableName, Ycsb, YcsbRun,
-    for_each_batch_many, tpcc, write_parquet_many, write_text_many,
-};
 use populate_table::Chunks;
 use populate_table::text::TextChunks;
+use populate_ycsb::{
+    JavaTlr, RequestDistribution, Ycsb, YcsbRun, for_each_batch_many, write_parquet_many,
+    write_text_many,
+};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -55,14 +53,13 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-const USAGE: &str = "usage: oltp-gen tpcc|ycsb|ycsb-run [flags]  (see --help)";
+const USAGE: &str = "usage: ycsb-gen load|run [flags]  (see --help)";
 
 const HELP: &str =
-    "oltp-gen tpcc [--warehouses 1] [--tables a,b,...] [--seed 0] [--load-time MICROS]
-oltp-gen ycsb [--records 1000] [--insert-start 0] [--insert-count N] [--field-count 10]
+    "ycsb-gen load [--records 1000] [--insert-start 0] [--insert-count N] [--field-count 10]
               [--field-length 100] [--field-prefix field] [--ordered] [--zero-padding 1]
               [--data-integrity] [--java-seed 0] [--java-thread 1]
-oltp-gen ycsb-run [ycsb flags] [--operations 1000] [--workload a-f]
+ycsb-gen run  [load flags] [--operations 1000] [--workload a-f]
               [--read P] [--update P] [--insert P] [--scan P] [--rmw P]
               [--distribution uniform|zipfian|latest|hotspot] [--hotspot-data 0.2]
               [--hotspot-ops 0.8] [--read-one-field] [--write-all-fields]
@@ -98,9 +95,8 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
     let r = match cmd.as_str() {
-        "tpcc" => tpcc(args),
-        "ycsb" => ycsb(args),
-        "ycsb-run" => ycsb_run(args),
+        "load" => ycsb(args),
+        "run" => ycsb_run(args),
         "-h" | "--help" => {
             println!("{HELP}");
             exit(0);
@@ -166,54 +162,6 @@ fn parse(
         return Err("--batch and --row-group must be > 0".into());
     }
     Ok(c)
-}
-
-fn tpcc(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let mut warehouses = 1u32;
-    let mut names = TpccTableName::ALL.to_vec();
-    let mut seed = 0u64;
-    let mut load_time = None;
-    let c = parse(args, |flag, val| {
-        match flag {
-            "--warehouses" => warehouses = num(flag, val()?)?,
-            "--seed" => seed = num(flag, val()?)?,
-            "--load-time" => load_time = Some(num(flag, val()?)?),
-            "--tables" => {
-                names = val()?
-                    .split(',')
-                    .map(str::parse)
-                    .collect::<Result<_, _>>()?;
-                let mut seen = std::collections::HashSet::new();
-                names.retain(|t| seen.insert(*t));
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    })?;
-    if warehouses == 0 {
-        return Err("--warehouses must be > 0".into());
-    }
-    let mut db = Tpcc::new(warehouses).seed(seed);
-    if let Some(t) = load_time {
-        db = db.load_time(t);
-    }
-    // biggest first, so they start first on the shared pool
-    names.sort_by_key(|&t| std::cmp::Reverse(db.table(t).approx_rows()));
-    let tables: Vec<TpccTable> = names
-        .iter()
-        .map(|&t| {
-            let mut t = db.table(t);
-            if let Some(b) = c.batch {
-                t = t.batch_size(b);
-            }
-            if let Some(r) = c.row_group {
-                t = t.chunk_rows(r);
-            }
-            t
-        })
-        .collect();
-    let files: Vec<String> = names.iter().map(|t| t.to_string()).collect();
-    run(&c, &tables, &files, "csv", "tpcc", tpcc::parquet_props())
 }
 
 fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {

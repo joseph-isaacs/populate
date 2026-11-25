@@ -1,4 +1,4 @@
-//! Delimited text (CSV for TPC-C, TSV for YCSB) straight from Arrow batches.
+//! Delimited text (CSV) straight from Arrow batches.
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Int32Type, Int64Type, TimestampMicrosecondType};

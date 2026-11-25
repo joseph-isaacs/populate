@@ -7,7 +7,7 @@
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use arrow_array::{Array, RecordBatch};
-use populate_oltp::{JavaTlr, RequestDistribution, Ycsb, YcsbRun};
+use populate_ycsb::{JavaTlr, RequestDistribution, Ycsb, YcsbRun};
 
 const THREAD: u64 = 21;
 

@@ -150,7 +150,7 @@ impl FromStr for TpccTableName {
 /// A TPC-C initial database for some number of warehouses.
 ///
 /// ```
-/// use populate_oltp::{Tpcc, TpccTableName};
+/// use populate_tpcc::{Tpcc, TpccTableName};
 ///
 /// let c = Tpcc::new(1);
 /// let customer = c.table(TpccTableName::Customer);

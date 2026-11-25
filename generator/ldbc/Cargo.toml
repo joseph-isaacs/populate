@@ -1,6 +1,6 @@
 [package]
 name = "populate-ldbc"
-description = "LDBC SNB data byte-identical to the LDBC Spark datagen, on all cores: CSV, Arrow or Parquet"
+description = "LDBC SNB data identical to the LDBC Spark datagen, on all cores: CSV, Arrow or Parquet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

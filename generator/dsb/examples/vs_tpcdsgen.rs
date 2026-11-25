@@ -1,7 +1,7 @@
-//! populate-dsb vs dsbgen-arrow (the TPC-DS generator from the
-//! tpchgen-rs project), SF 1, Arrow output only (no files).
+//! populate-dsb vs dsbgen-arrow (the vendored DSB copy of tpcgen-rs's
+//! TPC-DS generator), SF 1, Arrow output only (no files).
 //!
-//! `cargo run -p populate-dsb --release --example vs_dsbgen [-- <threads>]`
+//! `cargo run -p populate-dsb --release --example vs_tpcdsgen [-- <threads>]`
 //!
 //! Both produce the same data (populate-dsb runs dsbgen's generators).
 //! Each table is generated in full, batches of 8192 rows dropped as they

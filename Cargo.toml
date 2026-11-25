@@ -80,15 +80,15 @@ populate-ldbc = { path = "generator/ldbc" }
 [profile.dev.package.populate-ldbc]
 opt-level = 3
 
-# Benchmarks: one codegen unit so inlining/layout is deterministic run to run
-# (populate is generic, so everything is monomorphised into the bench crate
-# anyway). Debug info is for `perf`/flamegraphs and doesn't change codegen.
 # Thin LTO: lets small hot functions of dependencies (tpcdsgen's random
 # streams and decimals) inline into the generators; ~7% off a TPC-DS .dat
 # run, for a little more link time.
 [profile.release]
 lto = "thin"
 
+# Benchmarks: one codegen unit so inlining/layout is deterministic run to run
+# (populate is generic, so everything is monomorphised into the bench crate
+# anyway). Debug info is for `perf`/flamegraphs and doesn't change codegen.
 [profile.bench]
 codegen-units = 1
 debug = true

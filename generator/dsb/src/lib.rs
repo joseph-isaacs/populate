@@ -2,7 +2,7 @@
 //! DSB's `dsdgen`, on all cores.
 //!
 //! The values come from [`dsbgen`]: tpcdsgen (the Apache-2.0 Rust port of
-//! TPC-DS dsdgen from the tpchgen-rs project) with DSB's changes to dsdgen
+//! TPC-DS dsdgen from the tpcgen-rs project) with DSB's changes to dsdgen
 //! ported in: exponentially skewed, permuted values and keys, correlated
 //! attributes, skewed sales dates and joint item/customer draws. This
 //! crate adds the parallel engine:

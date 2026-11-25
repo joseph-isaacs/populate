@@ -6,7 +6,7 @@
 //! twice. Here one loop per channel (store, catalog, web) walks the orders
 //! once and emits both tables. The loops are ports of tpcdsgen's
 //! `{Store,Catalog,Web}{Sales,Returns}RowGenerator` (Apache-2.0, from the
-//! tpchgen-rs project, itself a port of dsdgen). They draw from the same
+//! tpcgen-rs project, itself a port of dsdgen). They draw from the same
 //! random streams in the same order, using tpcdsgen's public helpers, so
 //! the output is identical; the tests compare every channel with
 //! tpcdsgen-arrow, both tables together and each alone.

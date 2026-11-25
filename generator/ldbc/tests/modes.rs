@@ -21,6 +21,7 @@ use populate_table::text::write_text_many;
 use std::env::var_os;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::slice::from_ref;
 
 fn resources() -> Option<PathBuf> {
     let r = default_resources();
@@ -70,9 +71,16 @@ fn split_header(f: &[u8]) -> (&[u8], &[u8]) {
 }
 
 fn with_header(def: &TableDef, rows: &Rows) -> Vec<u8> {
+    parts_with_header(def, from_ref(rows))
+}
+
+/// A header, then the rows of every part.
+fn parts_with_header(def: &TableDef, parts: &[Rows]) -> Vec<u8> {
     let mut f = Vec::new();
     csv::header(def, &mut f);
-    csv::write(def, rows, &mut f);
+    for rows in parts {
+        csv::write(def, rows, &mut f);
+    }
     f
 }
 
@@ -81,9 +89,13 @@ fn batches_csv(tables: &[Batches]) -> Vec<(String, String, Vec<u8>)> {
     tables
         .iter()
         .flat_map(|t| {
-            t.batches
-                .iter()
-                .map(|(id, r)| (t.def.name.to_string(), id.clone(), with_header(t.def, r)))
+            t.batches.iter().map(|(id, r)| {
+                (
+                    t.def.name.to_string(),
+                    id.clone(),
+                    parts_with_header(t.def, r),
+                )
+            })
         })
         .collect()
 }
@@ -192,7 +204,7 @@ fn bi_matches_spark_reference() {
             for (id, r) in &t.batches {
                 let (h, b) = parts(&tdir.join(format!("batch_id={id}")), true);
                 assert!(
-                    with_header(t.def, r) == [h, b].concat(),
+                    parts_with_header(t.def, r) == [h, b].concat(),
                     "{kind} {} batch {id} differs",
                     t.def.name
                 );

@@ -246,6 +246,30 @@ impl StrCol {
         self.offsets = offsets;
     }
 
+    /// Append value `i` of `src` for every `(src, i)` of `picks`, in order:
+    /// a gather from one or more columns. The bytes are counted first, so
+    /// both buffers are allocated once.
+    ///
+    /// # Panics
+    ///
+    /// If the column would pass 2 GiB of string data.
+    pub fn extend_picked<'a>(&mut self, picks: impl Iterator<Item = (&'a StrCol, usize)> + Clone) {
+        let span = |c: &StrCol, i: usize| c.offsets[i] as usize..c.offsets[i + 1] as usize;
+        let (n, bytes) = picks
+            .clone()
+            .fold((0, 0), |(n, b), (c, i)| (n + 1, b + span(c, i).len()));
+        offset(self.data.len() + bytes);
+        self.start();
+        self.offsets.reserve(n);
+        self.data.reserve(bytes);
+        for (c, i) in picks {
+            self.data.extend_from_slice(&c.data[span(c, i)]);
+            // checked again: a clone of `picks` need not yield the same
+            // values, and the offsets are trusted unchecked
+            self.offsets.push(offset(self.data.len()));
+        }
+    }
+
     /// Offsets so far (`len() + 1` entries once anything is written).
     pub fn offsets(&self) -> &[i32] {
         &self.offsets

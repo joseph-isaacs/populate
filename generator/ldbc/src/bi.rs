@@ -20,7 +20,7 @@
 use crate::csv;
 use crate::java::civil_from_days;
 use crate::layout::Layout;
-use crate::rows::{Kind, Rows, TableDef};
+use crate::rows::{Col, Kind, Rows, TableDef};
 use crate::{Ldbc, par_map, to_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -183,10 +183,15 @@ pub struct BiRun<'a> {
 }
 
 /// One table's batches: `(batch id, rows sorted by date)`, by batch id.
+/// A batch is one or more parts (files), each holding at most
+/// [`PART_BYTES`] of any string column.
 pub struct Batches {
     pub def: &'static TableDef,
-    pub batches: Vec<(String, Rows)>,
+    pub batches: Vec<(String, Vec<Rows>)>,
 }
+
+/// String bytes per column after which a batch starts a new part.
+pub const PART_BYTES: usize = 1 << 30;
 
 /// One table's rows to sort and cut into batches, in chunk order.
 type BatchJob = (&'static TableDef, Vec<Rows>);
@@ -209,8 +214,7 @@ impl<'a> BiRun<'a> {
     /// Chunk `i`'s snapshot rows, per dynamic table; its inserts and
     /// deletes are kept for later.
     pub fn chunk_snapshot(&self, i: u64) -> Vec<Rows> {
-        let mut raw = Ldbc::dynamic_rows();
-        self.g.chunk_rows(i, &mut raw);
+        let raw = self.g.chunk_rows(i);
         let rows = Layout::apply(&self.layout.dynamic, &raw);
         drop(raw);
         let t = &self.tables;
@@ -218,7 +222,7 @@ impl<'a> BiRun<'a> {
         let mut snap = Vec::with_capacity(rows.len());
         let mut ins = Vec::with_capacity(rows.len());
         for (p, r) in t.snapshot.iter().zip(&rows) {
-            let created = r.cols[0].i64s();
+            let created = r.cols[0].epoch_ms();
             let before: Vec<u32> = (0..created.len() as u32)
                 .filter(|&j| created[j as usize] < thr)
                 .collect();
@@ -234,7 +238,7 @@ impl<'a> BiRun<'a> {
             .map(|p| {
                 let (r, def) = (&rows[p.src], self.layout.dynamic[p.src].def);
                 let col = |n: &str| def.cols.iter().position(|c| c.0 == n).expect("column");
-                let deleted = r.cols[col("deletionDate")].i64s();
+                let deleted = r.cols[col("deletionDate")].epoch_ms();
                 let explicit = r.cols[col("explicitlyDeleted")].bools();
                 let idx: Vec<u32> = (0..deleted.len() as u32)
                     .filter(|&j| explicit[j as usize] && (thr..end).contains(&deleted[j as usize]))
@@ -256,10 +260,11 @@ impl<'a> BiRun<'a> {
             .enumerate()
             .flat_map(|(k, p)| {
                 p.cols[0]
-                    .i64s()
+                    .epoch_ms()
                     .iter()
                     .enumerate()
                     .map(move |(j, &d)| (k as u32, j as u32, d))
+                    .collect::<Vec<_>>()
             })
             .collect();
         order.sort_by_key(|&(_, _, d)| d);
@@ -270,13 +275,40 @@ impl<'a> BiRun<'a> {
         let batches = by
             .into_iter()
             .map(|(id, idx)| {
-                let mut r = Rows::new(def);
-                for (k, j) in idx {
-                    for (c, src) in r.cols.iter_mut().zip(&parts[k as usize].cols) {
-                        c.push_from(src, j as usize);
+                // cut where a part's string column would pass PART_BYTES
+                let mut cuts = vec![0];
+                let mut bytes = vec![0; def.cols.len()];
+                for (n, &(k, j)) in idx.iter().enumerate() {
+                    let cols = &parts[k as usize].cols;
+                    let len = |c: usize| cols[c].value_bytes(j as usize);
+                    if (0..bytes.len()).any(|c| bytes[c] + len(c) > PART_BYTES) {
+                        cuts.push(n);
+                        bytes.fill(0);
+                    }
+                    for (c, b) in bytes.iter_mut().enumerate() {
+                        *b += len(c);
                     }
                 }
-                (id, r)
+                cuts.push(idx.len());
+                let out = cuts
+                    .windows(2)
+                    .map(|w| {
+                        let part = &idx[w[0]..w[1]];
+                        let cols = def
+                            .cols
+                            .iter()
+                            .enumerate()
+                            .map(|(c, &(_, kind))| {
+                                let picks = part
+                                    .iter()
+                                    .map(|&(k, j)| (&parts[k as usize].cols[c], j as usize));
+                                Col::picked(kind, picks)
+                            })
+                            .collect();
+                        Rows { cols }
+                    })
+                    .collect();
+                (id, out)
             })
             .collect();
         Batches { def, batches }
@@ -340,7 +372,7 @@ impl MultiChunks for BiRun<'_> {
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(usize, RecordBatch)) {
         let snap = self.chunk_snapshot(i);
-        for (k, (p, r)) in self.tables.snapshot.iter().zip(&snap).enumerate() {
+        for (k, (p, r)) in self.tables.snapshot.iter().zip(snap).enumerate() {
             if !r.is_empty() {
                 emit(k, to_batch(p.def, r));
             }

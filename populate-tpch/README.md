@@ -44,7 +44,7 @@ schemas are tpchgen-arrow's: `Int64` keys, `Decimal128(15, 2)` money,
 
 The values are dbgen's, as ported by
 [`tpchgen`](https://crates.io/crates/tpchgen) (Apache-2.0, from
-[tpchgen-rs](https://github.com/datafusion-contrib/tpcgen-rs)): this crate
+[tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs)): this crate
 uses its distributions, word lists and text grammar, and is tested equal to
 it. The generators are this crate's own:
 
@@ -120,7 +120,7 @@ generator whose partitioned output differs from its sequential output.
 ## Performance
 
 On a 4-core cloud VM, `scripts/e2e-bench.sh --suite tpch` against
-`tpcgen-cli tpch` (the CLI of tpchgen-rs). The VM is noisy, so the
+`tpcgen-cli tpch` (the CLI of tpcgen-rs). The VM is noisy, so the
 two tools run interleaved and each keeps its best time: best of 3 at SF 1
 (output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
 not fit in the VM's tmpfs).
@@ -153,6 +153,6 @@ of each column. At SF 1, summed over the tables:
 | Arrow → `.tbl` text         | ~1.5 s  |
 | Arrow → Parquet (snappy)    | ~2.9 s  |
 
-Formatting text and encoding Parquet now cost more than making the data.
+Formatting text and encoding Parquet cost more than making the data.
 In Parquet, `lineitem`'s comment column alone is ~0.6 s: 6M unique
 strings, read from random places in the pool and compressed.

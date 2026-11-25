@@ -2,17 +2,24 @@
 
 ## Build & Test Commands
 
+What CI runs (`.github/workflows/ci.yml`):
+
 ```bash
-cargo build
-cargo test
-cargo fmt --check
-cargo clippy -- -D warnings
+scripts/check-tree.sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo bench --workspace --no-run
 ```
+
+Plain `cargo build` / `cargo test` cover only the workspace
+`default-members`, which leave out `populate-bench` and the `parquet`
+feature.
 
 ## Code Quality
 
 - Run `cargo fmt` before committing
-- Run `cargo clippy -- -D warnings` and fix all warnings
+- Run clippy as CI does (above) and fix all warnings
 - Treat all compiler warnings as errors (`-D warnings`)
 
 ## Import Style
@@ -31,9 +38,10 @@ the history of how it was built.
   commit message and PR description.
 - **No benchmark write-ups or result files in the tree.** Before/after
   tables, run logs, benchmark result files and graphs (`*.png`, `*.svg`)
-  go in the PR description, not the repository. A crate README may keep one
-  short, current performance section with the command that reproduces it
-  and the machine it ran on.
+  go in the PR description, not the repository. A crate README may keep a
+  current performance section with the command that reproduces it and the
+  machine it ran on; replace its numbers rather than adding before/after
+  comparisons.
 - **No planning docs.** Surveys, TODO lists, design proposals and
   "future work" notes go in GitHub issues or the PR. Design docs in the tree
   (`DESIGN.md` in the `populate` crate) describe the code as it is; update them in the

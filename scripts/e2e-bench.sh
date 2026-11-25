@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end generation benchmark: populate-tpch / populate-tpcds against
-# tpcgen-cli (tpchgen-rs), every table of a scale factor to files.
+# tpcgen-cli (tpcgen-rs), every table of a scale factor to files.
 #
 #   scripts/e2e-bench.sh [--suite tpch|tpcds|both] [--sf "1 10"] [--threads "1 4"]
 #                        [--formats "text parquet"] [--runs 3] [--out DIR] [--cli PATH]

@@ -1,5 +1,5 @@
 //! populate-tpcds vs tpcdsgen-arrow (the TPC-DS generator from the
-//! tpchgen-rs project), SF 1, Arrow output only (no files).
+//! tpcgen-rs project), SF 1, Arrow output only (no files).
 //!
 //! `cargo run -p populate-tpcds --release --example vs_tpcdsgen [-- <threads>]`
 //!

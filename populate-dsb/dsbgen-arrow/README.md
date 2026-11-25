@@ -1,3 +1,9 @@
+> **Vendored copy.** This is tpcdsgen-arrow 4.0 from
+> [tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs), modified to
+> run on `dsbgen` (DSB's dsdgen changes). It is not published, and only
+> arrow 60 is supported. The upstream README follows. See
+> [`../NOTICE.md`](../NOTICE.md).
+
 # TPC-DS Data Generator in Arrow format
 
 Generate TPC-DS data directly into [Apache Arrow] format using the [tpcdsgen] and [arrow] crates.

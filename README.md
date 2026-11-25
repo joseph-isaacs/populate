@@ -5,7 +5,7 @@ column by column, straight into Arrow (and optionally Parquet).
 
 ```rust
 use populate::arrow::DistributionArrow;
-use populate::dist::{constant, list, map, range};
+use populate::dist::{list, map, range};
 
 // id: i64, tags: list<i64> with lengths cycling 0..8
 let mut table = (
@@ -40,6 +40,7 @@ let sales = Table::new("sales", 10_000_000)
     .col("note", choose(&["", "gift"])).nullable(0.1);
 
 sales.for_each_batch(64 * 1024, 0, |batch| { /* RecordBatch, in order */ });
+// with the `parquet` feature:
 sales.write_parquet(std::fs::File::create("sales.parquet")?, 64 * 1024, 0, None)?;
 ```
 

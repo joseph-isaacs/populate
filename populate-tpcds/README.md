@@ -42,7 +42,7 @@ several tables on one shared pool (what `tpcds-gen` does).
 
 The values are computed by [`tpcdsgen`](https://crates.io/crates/tpcdsgen),
 the Apache-2.0 Rust port of dsdgen from the
-[tpchgen-rs](https://github.com/datafusion-contrib/tpcgen-rs) project, in its
+[tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs) project, in its
 default `CompatMode::C`, which reproduces C dsdgen bug for bug. This crate
 adds the engine around it:
 
@@ -68,9 +68,7 @@ adds the engine around it:
   bitmap, values are copied 64 rows at a time, and the dictionary is a
   table indexed by value where the values span a small range. The chunks
   are what arrow-rs writes (same encodings, statistics and level
-  histograms, plus page indexes). That cut Parquet encoding from ~2.75 s
-  to ~2.4 s on one thread, and the files from 385 MB to 376 MB. Checked
-  with DuckDB on all 24 SF 1 tables: the same rows as arrow-rs's files and
+  histograms, plus page indexes). Checked with DuckDB on all 24 SF 1 tables: the same rows as arrow-rs's files and
   the same statistics in all 1,515 column chunks.
 - **`.dat` written from Arrow.** Formatting tpcdsgen's rows with `Display`
   costs 10x their generation. `.dat` lines are instead written straight
@@ -184,26 +182,17 @@ Each sales table and its returns (`store_`, `catalog_`, `web_`) come from
 one loop (`src/fused.rs`): ports of tpcdsgen's sales and returns
 generators (Apache-2.0) built on its public stream and key helpers,
 pushing values straight into Arrow columns. tpcdsgen's returns generators
-replay every sales line item, so each pair cost the sales work twice.
+replay every sales line item; the fused loop does the sales work once.
 The loops push each row's values, in schema order, into a `Row`: the
 Arrow `Builder` appends them to columns, and for `.dat` output `Text`
 formats them straight into the chunk's text, so the sales and returns
-tables (~75% of the `.dat` bytes) never become Arrow batches. That cut a
-one-thread `.dat` run's instructions by another 20% (SF 0.2, callgrind).
+tables (~75% of the `.dat` bytes) never become Arrow batches.
 Each channel is tested equal to tpcdsgen-arrow for both tables, together
-and alone, and its text equal to the text of its Arrow batches; when only one table is asked for, the loop skips the other's
-work. Fusing catalog and web took a further ~0.35 s off a one-thread run.
+and alone, and its text equal to the text of its Arrow batches. When
+only one table is asked for, the loop skips the other's work.
 
 The loops also burn dsdgen's end-of-row seeds faster
 (`src/seeds.rs`). Every column gets a fixed budget of random draws per row,
 and tpcdsgen burns the unused ones one draw at a time: ~100 wasted draws per
 ticket. The stream is a Lehmer generator, so burning `k` draws is one
 multiply by `16807^k mod (2^31 - 1)`.
-
-### What's left
-
-- **tpcdsgen's other generators.** They still burn seeds draw by draw.
-- **`.dat` formatting.** Still ~50 instructions per cell for the tables
-  that go through Arrow, of which the per-cell type dispatch is ~10%.
-- **Parquet encoding.** Still the largest stage, mostly Snappy and the
-  text columns' dictionary hashing.

@@ -23,7 +23,7 @@
 use crate::parquet_direct::{
     Rope, encode_strings, encode_values, encode_var_list, rope_sink, slices_ok,
 };
-use crate::sched::par_ordered;
+use crate::sched::{par_ordered, resolve_threads};
 use crate::stream::mix64;
 use bytes::Bytes;
 use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
@@ -38,12 +38,10 @@ use parquet::schema::types::{ColumnDescPtr, Type, TypePtr};
 use populate_core::{Columns, Distribution, ListCol, StrCol};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use std::convert::Infallible;
 use std::io::Write;
 use std::iter::repeat_n;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{Arc, Mutex};
-use std::thread::{available_parallelism, scope};
+use std::sync::Arc;
 
 /// How [`write_dist_parquet`] splits and encodes its rows.
 #[derive(Debug, Clone)]
@@ -291,10 +289,7 @@ where
     let descrs: Vec<ColumnDescPtr> = file.schema_descr().columns().to_vec();
     let per = opts.rows_per_group.max(1) as u64;
     let groups = rows.div_ceil(per);
-    let threads = match opts.threads {
-        0 => available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    };
+    let threads = resolve_threads(opts.threads);
     let work = |g: u64| -> Result<Vec<Chunk>> {
         let start = g * per;
         let len = (rows - start).min(per) as usize;
@@ -330,28 +325,18 @@ where
 
 /// `f(0..n)` on up to `threads` threads, results in order.
 fn par_map<T: Send>(threads: usize, n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let threads = threads.min(n);
-    if threads <= 1 {
-        return (0..n).map(f).collect();
-    }
-    let next = AtomicUsize::new(0);
-    let out: Vec<Mutex<Option<T>>> = (0..n).map(|_| Mutex::new(None)).collect();
-    scope(|s| {
-        for _ in 0..threads {
-            s.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Relaxed);
-                    if i >= n {
-                        break;
-                    }
-                    *out[i].lock().expect("unpoisoned") = Some(f(i));
-                }
-            });
-        }
-    });
-    out.into_iter()
-        .map(|m| m.into_inner().expect("unpoisoned").expect("every job ran"))
-        .collect()
+    let mut out = Vec::with_capacity(n);
+    let r: std::result::Result<(), Infallible> = par_ordered(
+        n as u64,
+        threads.max(1),
+        |i| f(i as usize),
+        |t| {
+            out.push(t);
+            Ok(())
+        },
+    );
+    r.unwrap_or_else(|e| match e {});
+    out
 }
 
 /// Encode one leaf: here when the settings allow, else with the `parquet`

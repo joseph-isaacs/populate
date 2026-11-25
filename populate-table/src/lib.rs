@@ -6,8 +6,9 @@
 //! - [`Stream`]: stateless per-row randomness, for values that several
 //!   tables must agree on (a return and the sale it refers to).
 //! - [`Chunks`]: any generator split into independent chunks gets the same
-//!   multi-core drivers ([`chunks::for_each_batch`], [`par_ordered`], and
-//!   [`par_sources`] for several sources on one pool, biggest work first).
+//!   multi-core drivers ([`chunks::for_each_batch`], and
+//!   [`chunks::for_each_batch_many`] for several sources on one pool,
+//!   biggest work first; both run on [`par_sources`]).
 //! - [`text`]: the TPC `.dat` / `.tbl` text formats from Arrow batches,
 //!   and a parallel writer for them.
 //! - `write_parquet` / `Table::write_parquet` (feature `parquet`): parallel
@@ -33,6 +34,6 @@ pub use chunks::{Chunks, Jobs, MultiChunks};
 pub use direct::{DirectColumns, ParquetOptions, write_dist_parquet};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
-pub use sched::{Schedule, par_ordered, par_sources};
+pub use sched::{Schedule, par_ordered, par_sources, resolve_threads};
 pub use stream::{Stream, hash_str, mix64};
 pub use table::{BatchCtx, DecimalRepr, Table};

@@ -126,13 +126,14 @@ table starts at its first row in `O(log n)`.
 
 - `derive(source, f)` collects `source` column by column, then maps each
   row: a column computed from others, with the source columns as scratch.
+  Rows are read in place (`RowRefs`: a row of a `Vec<T>` is a `&T`).
 - `children(counts, slots)` is a child table column: for every source
   row, the first `count` of the `K` values `slots` makes for it (each line
   stream of an order reserves 7 slots). A tuple of `children` over the
   same counts is the child table.
 - `flat_map(source, count, f)` writes `count(row)` children for each
   source row straight into the child columns, for children whose columns
-  share work. Rows are read in place (`RowRefs`), not copied out.
+  share work, its source rows read in place too.
 
 A distribution of `Children<T>` is a table of `T` rows: its columns are
 the children's, and the source rows only drive them.

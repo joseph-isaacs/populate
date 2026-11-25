@@ -294,6 +294,129 @@ where
 }
 
 // ============================================================================
+// FanOut
+// ============================================================================
+
+/// Several child tables written in one pass over a source. See [`fan_out`].
+#[derive(Debug, Clone)]
+pub struct FanOut<D, F, Out> {
+    pub source: D,
+    pub f: F,
+    _out: PhantomData<fn() -> Out>,
+}
+
+/// Several child tables from one pass over `source`: `Out` is a tuple of
+/// [`Children`], one per table, and `f(row, tables)` appends each source
+/// row's children to any of them (`tables.0.values`, `tables.1.values`,
+/// ...), as many as it likes, none included.
+///
+/// For tables made by the same loop, where generating each alone would
+/// repeat it: a sale and its return (about one line in ten is returned,
+/// decided while making the line), or a graph's nodes and edges. Like
+/// [`flat_map`], `source` is collected column by column first and its rows
+/// are read in place ([`RowRefs`]).
+///
+/// Every table has its own columns and schema; names given with
+/// [`named_all`] cover all tables' columns in order.
+pub fn fan_out<D, Out, F>(source: D, f: F) -> FanOut<D, F, Out>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    Out: Columnar,
+    Columns<Out>: ChildTables<Rows = Out>,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
+{
+    FanOut {
+        source,
+        f,
+        _out: PhantomData,
+    }
+}
+
+impl<D, F, Out> Distribution for FanOut<D, F, Out>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    Out: Columnar,
+    Columns<Out>: ChildTables<Rows = Out>,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
+{
+    type Item = Out;
+
+    fn sample(&mut self, rng: &mut impl Rng) -> Out {
+        let mut out = Columns::<Out>::default();
+        self.collect_into(&mut out, rng, 1);
+        out.into_rows()
+    }
+
+    fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
+        let src = self.source.collect(rng, n);
+        for row in src.row_refs() {
+            (self.f)(row, cols);
+        }
+        cols.add_sources(n);
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.source.skip(n);
+    }
+}
+
+/// The columns of a tuple of [`Children`]: several child tables of the
+/// same source rows ([`fan_out`]).
+pub trait ChildTables: Default {
+    /// The row type collected into these columns.
+    type Rows;
+
+    /// Count `n` more source rows in every table.
+    fn add_sources(&mut self, n: usize);
+
+    /// Every table's children, as one row (for a collect of one source row).
+    fn into_rows(self) -> Self::Rows;
+}
+
+impl<V: ReadRows + Default> ChildTables for ChildCols<V> {
+    type Rows = Children<V::Row>;
+
+    fn add_sources(&mut self, n: usize) {
+        self.sources += n;
+    }
+
+    fn into_rows(self) -> Children<V::Row> {
+        Children(self.values.rows_from(0).collect())
+    }
+}
+
+macro_rules! child_tables {
+    ($($T:ident $i:tt),+) => {
+        impl<$($T: ChildTables),+> ChildTables for ($($T,)+) {
+            type Rows = ($($T::Rows,)+);
+
+            fn add_sources(&mut self, n: usize) {
+                $(self.$i.add_sources(n);)+
+            }
+
+            fn into_rows(self) -> Self::Rows {
+                ($(self.$i.into_rows(),)+)
+            }
+        }
+    };
+}
+
+child_tables!(A 0);
+child_tables!(A 0, B 1);
+child_tables!(A 0, B 1, C 2);
+child_tables!(A 0, B 1, C 2, D 3);
+child_tables!(A 0, B 1, C 2, D 3, E 4);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+// ============================================================================
 // Named
 // ============================================================================
 
@@ -408,6 +531,35 @@ mod tests {
         assert_eq!(c.values, (vec![2, 3, 3], vec![0, 0, 1]));
         g.skip(2);
         assert_eq!(g.sample(&mut rng()).0, [(3, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn fan_out_writes_several_tables() {
+        // per key: `k` lines, and a return for every even line
+        type Out = (Children<(i64, i32)>, Children<i64>);
+        let mut f = fan_out::<_, Out, _>(
+            range(1i64, 1),
+            |k: &i64, (lines, returns): &mut Columns<Out>| {
+                for j in 0..*k as i32 {
+                    lines.values.push((*k, j));
+                    if j % 2 == 0 {
+                        returns.values.push(*k * 10 + j as i64);
+                    }
+                }
+            },
+        );
+        let mut g = f.clone();
+        let (lines, returns) = f.collect(&mut rng(), 3);
+        assert_eq!(
+            lines.values,
+            (vec![1, 2, 2, 3, 3, 3], vec![0, 0, 1, 0, 1, 2])
+        );
+        assert_eq!(returns.values, [10, 20, 30, 32]);
+        assert_eq!((lines.sources, returns.sources), (3, 3));
+        g.skip(2);
+        let (l, r) = g.sample(&mut rng());
+        assert_eq!(l.0, [(3, 0), (3, 1), (3, 2)]);
+        assert_eq!(r.0, [30, 32]);
     }
 
     #[test]

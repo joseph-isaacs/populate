@@ -6,7 +6,6 @@
 //! The file's contents are the same for any thread count.
 
 use crate::chunks::{Chunks, MultiChunks};
-use crate::parquet_direct::{DirectColumn, Rope, eligible};
 use crate::sched::par_sources;
 use crate::table::Table;
 use arrow_array::RecordBatch;
@@ -17,6 +16,7 @@ use parquet::column::writer::ColumnCloseResult;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
+use populate_sink_parquet::encode::{DirectColumn, Rope, eligible};
 use std::io::Write;
 
 /// Write `src` as one Parquet file, one row group per chunk, generating and
@@ -113,7 +113,7 @@ pub fn write_parquet_many<W: Write + Send>(
 }
 
 /// How a schema's fields map to Parquet leaf columns, and which leaves are
-/// encoded by [`parquet_direct`] instead of arrow-rs.
+/// encoded by `populate_sink_parquet::encode` instead of arrow-rs.
 struct Layout {
     /// Leaf column indexes of each field.
     leaves: Vec<Vec<usize>>,

@@ -1,13 +1,16 @@
 [package]
 name = "populate-sink-parquet"
-description = "Zero-copy Parquet output for populate"
+description = "Parquet output for populate: collected columns encoded in place"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 populate-core = { workspace = true }
-populate-sink-arrow = { workspace = true }
 rand = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+bytes = "1"
+snap = "1"
 parquet = { workspace = true, features = ["arrow"] }

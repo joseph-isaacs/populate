@@ -171,7 +171,7 @@ pub fn batch_bytes_60(b: &RecordBatch60) -> usize {
 }
 
 /// Split `n` into `BATCH`-sized chunks.
-fn chunks(n: usize) -> impl Iterator<Item = usize> {
+pub(crate) fn chunks(n: usize) -> impl Iterator<Item = usize> {
     (0..n.div_ceil(BATCH)).map(move |i| BATCH.min(n - i * BATCH))
 }
 

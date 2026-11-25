@@ -132,7 +132,7 @@ fn ints(seed: i64, lo: i32, hi: i32) -> impl Col<i32> {
 
 /// A value of `dist`, one draw per row.
 fn pick(dist: &'static Dist, seed: i64) -> impl Col<Word> {
-    derive(stream::<1>(seed), move |[x]| {
+    derive(stream::<1>(seed), move |&[x]| {
         Word(dist.views[dist.pick_draw(x)])
     })
 }
@@ -140,7 +140,7 @@ fn pick(dist: &'static Dist, seed: i64) -> impl Col<Word> {
 /// A comment of average length `avg`, two draws per row.
 fn comment(seed: i64, avg: f64) -> impl Col<Comment> {
     let c = CommentLen::new(avg);
-    derive(stream::<2>(seed), move |[a, b]| c.make(a, b))
+    derive(stream::<2>(seed), move |&[a, b]| c.make(a, b))
 }
 
 /// The 1-based row number: the key of most tables.
@@ -151,12 +151,12 @@ fn key() -> impl Col<i64> {
 /// A nation, one draw per row (supplier's and customer's `nationkey`, and
 /// the country code of their phone numbers).
 fn nation(seed: i64) -> impl Col<i64> {
-    derive(ints(seed, 0, NATIONS - 1), |n| n as i64)
+    derive(ints(seed, 0, NATIONS - 1), |&n| n as i64)
 }
 
 /// A balance in `-999.99..=9999.99`.
 fn balance(seed: i64) -> impl Col<Dec> {
-    derive(ints(seed, -99_999, 999_999), |b| dec(b as i64))
+    derive(ints(seed, -99_999, 999_999), |&b| dec(b as i64))
 }
 
 /// `p_retailprice` of part `p`, in cents.
@@ -195,7 +195,7 @@ fn padded(out: &mut Vec<u8>, v: u64, width: usize) {
 
 /// `prefix` then `v` zero-padded to 9 digits (`Supplier#000000001`).
 fn numbered(prefix: &'static [u8], keys: impl Col<i64>) -> impl Col<Bytes> {
-    format(keys, move |k, out| {
+    format(keys, move |&k, out| {
         out.extend_from_slice(prefix);
         padded(out, k as u64, 9);
     })
@@ -223,7 +223,7 @@ fn address(seed: i64) -> impl Col<Bytes> {
 fn phone(nation_seed: i64, seed: i64) -> impl Col<Bytes> {
     format(
         (nation(nation_seed), stream::<3>(seed)),
-        |(nation, [a, b, c]), out| {
+        |(&nation, &[a, b, c]), out| {
             padded(out, (10 + nation % 90) as u64, 2);
             out.push(b'-');
             padded(out, bound(a, 100, 999) as u64, 3);
@@ -300,11 +300,11 @@ fn nation_table(rows: u64) -> Arc<dyn TableGen> {
             named("n_nationkey", range(0i64, 1)),
             named(
                 "n_name",
-                derive(range(0usize, 1), |i| Word(d.nations.views[i])),
+                derive(range(0usize, 1), |&i| Word(d.nations.views[i])),
             ),
             named(
                 "n_regionkey",
-                derive(range(0usize, 1), |i| d.nation_regions[i]),
+                derive(range(0usize, 1), |&i| d.nation_regions[i]),
             ),
             named("n_comment", comment(606179079, 72.0)),
         ),
@@ -320,7 +320,7 @@ fn region_table(rows: u64) -> Arc<dyn TableGen> {
             named("r_regionkey", range(0i64, 1)),
             named(
                 "r_name",
-                derive(range(0usize, 1), |i| Word(d.regions.views[i])),
+                derive(range(0usize, 1), |&i| Word(d.regions.views[i])),
             ),
             named("r_comment", comment(1500869201, 72.0)),
         ),
@@ -361,14 +361,14 @@ fn part(rows: u64) -> Arc<dyn TableGen> {
             named("p_name", names),
             named(
                 "p_mfgr",
-                format(mfgr(), |m, out| {
+                format(mfgr(), |&m, out| {
                     out.extend_from_slice(b"Manufacturer#");
                     padded(out, m as u64, 1);
                 }),
             ),
             named(
                 "p_brand",
-                format((mfgr(), ints(46831694, 1, 5)), |(m, b), out| {
+                format((mfgr(), ints(46831694, 1, 5)), |(&m, &b), out| {
                     out.extend_from_slice(b"Brand#");
                     padded(out, (m * 10 + b) as u64, 1);
                 }),
@@ -376,7 +376,7 @@ fn part(rows: u64) -> Arc<dyn TableGen> {
             named("p_type", pick(&d.types, 1841581359)),
             named("p_size", ints(1193163244, 1, 50)),
             named("p_container", pick(&d.containers, 727633698)),
-            named("p_retailprice", derive(key(), |p| dec(part_price(p)))),
+            named("p_retailprice", derive(key(), |&p| dec(part_price(p)))),
             named("p_comment", comment(804159733, 14.0)),
         ),
     )
@@ -396,7 +396,7 @@ fn supplier(rows: u64) -> Arc<dyn TableGen> {
             stream::<1>(715851524),
             stream::<1>(753643799),
         ),
-        move |([a, b], [bbb], [junk], [offset], [kind]), out| {
+        move |(&[a, b], &[bbb], &[junk], &[offset], &[kind]), out| {
             let c = len.make(a, b);
             let pool = Text::get().pool;
             let c = &pool[c.off as usize..(c.off + c.len) as usize];
@@ -469,13 +469,13 @@ fn partsupp(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
         (
             named(
                 "ps_partkey",
-                children(per_part(), derive(key(), |p| [p; PER_PART])),
+                children(per_part(), derive(key(), |&p| [p; PER_PART])),
             ),
             named(
                 "ps_suppkey",
                 children(
                     per_part(),
-                    derive(key(), move |p| {
+                    derive(key(), move |&p| {
                         std::array::from_fn::<_, PER_PART, _>(|n| {
                             part_supplier(p, n as i64, suppliers)
                         })
@@ -522,7 +522,7 @@ fn order_date() -> impl Col<i32> {
 
 /// An order's number of lines.
 fn line_count() -> impl Col<usize> {
-    derive(ints(1434868289, 1, LINES as i32), |n| n as usize)
+    derive(ints(1434868289, 1, LINES as i32), |&n| n as usize)
 }
 
 /// A line stream's values in `lo..=hi`, one per line slot of an order.
@@ -554,7 +554,7 @@ fn date(d: i32) -> Date32 {
 fn orders(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
     let d = Dicts::get();
     let (customers, past) = (s.customers, *PAST);
-    let custkey = derive(stream::<1>(851767375), move |[x]| {
+    let custkey = derive(stream::<1>(851767375), move |&[x]| {
         // skipping every third customer (who has no orders)
         let mut c = bound(x, 1, customers as i32) as i64;
         let mut delta = 1;
@@ -566,7 +566,7 @@ fn orders(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
     });
     let status_and_total = derive(
         (order_date(), line_count(), line_values(s)),
-        move |(date, lines, (qty, disc, tax, part, ship))| {
+        move |(&date, &lines, (qty, disc, tax, part, ship))| {
             let (mut total, mut shipped) = (0i64, 0);
             for j in 0..lines {
                 let (q, d, t) = (qty[j] as i64, disc[j] as i64, tax[j] as i64);
@@ -588,16 +588,16 @@ fn orders(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
         TableName::Orders,
         rows,
         (
-            named("o_orderkey", derive(key(), order_key)),
+            named("o_orderkey", derive(key(), |&i| order_key(i))),
             named("o_custkey", custkey),
             named_all(&["o_orderstatus", "o_totalprice"], status_and_total),
-            named("o_orderdate", derive(order_date(), date)),
+            named("o_orderdate", derive(order_date(), |&d| date(d))),
             named("o_orderpriority", pick(&d.priorities, 591449447)),
             named(
                 "o_clerk",
                 numbered(
                     b"Clerk#",
-                    derive(ints(1171034773, 1, s.clerks), |c| c as i64),
+                    derive(ints(1171034773, 1, s.clerks), |&c| c as i64),
                 ),
             ),
             named("o_shippriority", constant(0i32)),
@@ -620,7 +620,7 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
     let len = CommentLen::new(27.0);
     let (n, f, o) = (Word::lit(b"N"), Word::lit(b"F"), Word::lit(b"O"));
     let per_order = (
-        (derive(key(), order_key), order_date(), line_count()),
+        (derive(key(), |&i| order_key(i)), order_date(), line_count()),
         line_values(s),
         (
             slots(2095021727, 0, 3),

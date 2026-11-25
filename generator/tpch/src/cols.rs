@@ -12,8 +12,8 @@
 use crate::text::{POOL_SIZE, Text, Views, view};
 use arrow_array::ArrayRef;
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
-use populate_core::{Columnar, Distribution, Sink};
+use populate_builtins::{ReadRows, RowRefs};
+use populate_core::{Columnar, Columns, Distribution, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
 use std::sync::Arc;
@@ -200,7 +200,8 @@ pub(crate) struct Format<D, F> {
 pub(crate) fn format<D, F>(source: D, f: F) -> Format<D, F>
 where
     D: Distribution,
-    F: Fn(D::Item, &mut Vec<u8>),
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Vec<u8>),
 {
     Format { source, f }
 }
@@ -208,21 +209,22 @@ where
 impl<D, F> Distribution for Format<D, F>
 where
     D: Distribution,
-    populate_core::Columns<D::Item>: ReadRows<Row = D::Item>,
-    F: Fn(D::Item, &mut Vec<u8>),
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Vec<u8>),
 {
     type Item = Bytes;
 
     fn sample(&mut self, rng: &mut impl Rng) -> Bytes {
+        let src = self.source.collect(rng, 1);
         let mut out = Vec::new();
-        (self.f)(self.source.sample(rng), &mut out);
+        (self.f)(src.row_refs().next().expect("one row"), &mut out);
         Bytes(out)
     }
 
     fn collect_into(&mut self, cols: &mut Views, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
         cols.views.reserve(n);
-        for row in src.rows_from(0) {
+        for row in src.row_refs() {
             let start = cols.data.len();
             (self.f)(row, &mut cols.data);
             cols.end_string(start);

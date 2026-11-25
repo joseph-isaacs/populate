@@ -22,6 +22,7 @@
 //! assert_eq!(rows, 1000);
 //! ```
 
+mod cols;
 mod engine;
 mod rng;
 mod strings;

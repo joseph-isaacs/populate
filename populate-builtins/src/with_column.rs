@@ -29,7 +29,7 @@
 //! Parents must be made of scalar columns (up to 11 before the new one), so
 //! their rows can be read back from the columns.
 
-use populate_core::{Columnar, Columns, Distribution, Sink};
+use populate_core::{Columnar, Columns, Distribution, Nullable, Sink};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::mem::take;
@@ -95,6 +95,34 @@ impl<T> RowRefs for Vec<T> {
 
     fn row_refs(&self) -> impl Iterator<Item = &T> + '_ {
         self.iter()
+    }
+}
+
+/// A row of `Option` columns is an `Option` of the row of its values.
+impl<C: RowRefs> RowRefs for Nullable<C> {
+    type Ref<'a>
+        = Option<C::Ref<'a>>
+    where
+        C: 'a;
+
+    fn row_refs(&self) -> impl Iterator<Item = Self::Ref<'_>> + '_ {
+        self.values
+            .row_refs()
+            .zip(&self.valid)
+            .map(|(v, &ok)| ok.then_some(v))
+    }
+}
+
+impl<C: ReadRows> ReadRows for Nullable<C> {
+    type Row = Option<C::Row>;
+    fn rows(&self) -> usize {
+        self.valid.len()
+    }
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+        self.values
+            .rows_from(start)
+            .zip(&self.valid[start..])
+            .map(|(v, &ok)| ok.then_some(v))
     }
 }
 

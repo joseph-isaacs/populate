@@ -18,6 +18,24 @@ pub struct Date32(pub i32);
 #[repr(transparent)]
 pub struct Decimal<const P: u8, const S: i8>(pub i128);
 
+/// Arrow's time units, as [`Timestamp`]'s `UNIT`.
+pub mod time_unit {
+    pub const SECOND: u8 = 0;
+    pub const MILLISECOND: u8 = 1;
+    pub const MICROSECOND: u8 = 2;
+    pub const NANOSECOND: u8 = 3;
+}
+
+/// A point in time: a count of `UNIT`s ([`time_unit`]) since the epoch
+/// (Arrow `Timestamp(UNIT, None)`, or `Timestamp(UNIT, "UTC")` when `UTC`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct Timestamp<const UNIT: u8, const UTC: bool = false>(pub i64);
+
+impl<const UNIT: u8, const UTC: bool> Columnar for Timestamp<UNIT, UTC> {
+    type Columns = Vec<Timestamp<UNIT, UTC>>;
+}
+
 impl Columnar for Date32 {
     type Columns = Vec<Date32>;
 }

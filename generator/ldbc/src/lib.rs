@@ -53,8 +53,8 @@ use params::Params;
 use person::{Hot, Person, PersonGenerator};
 use populate_builtins::{fan_out, named_all, range};
 use populate_core::{Distribution, Sink};
-use populate_table::DistTables;
 use populate_table::text::TextChunks;
+use populate_table::{DistTables, resolve_threads};
 use rows::{
     DYNAMIC, DYNAMIC_COLUMNS, DYNAMIC_NAMES, Raw, RawCols, Rows, STATIC_TABLES, StaticCols,
     Statics, TableDef, rows_of,
@@ -74,13 +74,12 @@ pub use jrand::JavaRandom;
 pub use params::{SCALE_FACTORS, persons_for_scale_factor};
 
 /// Run `f(i)` for `i in 0..n` on `threads` threads (0 = all cores),
-/// results in order.
+/// results in order. For many small tasks (one per person, say), where
+/// [`populate_table::par_ordered`]'s per-task scheduling would cost more
+/// than the work: workers take indices off one counter and keep their
+/// results until the end.
 fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-    .min(n.max(1));
+    let threads = resolve_threads(threads).min(n.max(1));
     if threads <= 1 {
         return (0..n).map(f).collect();
     }
@@ -251,10 +250,7 @@ impl Ldbc {
     /// With fewer blocks, states are found as chunks need them, which
     /// overlaps one skipping pass with the chunks it unblocks.
     fn with_states(mut self, threads: usize) -> Self {
-        let threads = match threads {
-            0 => thread::available_parallelism().map_or(1, |t| t.get()),
-            t => t,
-        };
+        let threads = resolve_threads(threads);
         if threads > 1 && self.blocks.len() >= threads {
             let t0 = Instant::now();
             let g = &self;

@@ -213,6 +213,29 @@ impl StrCol {
         self.offsets = offsets;
     }
 
+    /// Append value `i` of `src` for every `(src, i)` of `picks`, in order:
+    /// a gather from one or more columns. The bytes are counted first, so
+    /// both buffers are allocated once.
+    ///
+    /// # Panics
+    ///
+    /// If the column would pass 2 GiB of string data.
+    pub fn extend_picked<'a>(&mut self, picks: impl Iterator<Item = (&'a StrCol, usize)> + Clone) {
+        let span = |c: &StrCol, i: usize| c.offsets[i] as usize..c.offsets[i + 1] as usize;
+        let (n, bytes) = picks
+            .clone()
+            .fold((0, 0), |(n, b), (c, i)| (n + 1, b + span(c, i).len()));
+        offset(self.data.len() + bytes);
+        self.start();
+        self.offsets.reserve(n);
+        self.data.reserve(bytes);
+        for (c, i) in picks {
+            self.data.extend_from_slice(&c.data[span(c, i)]);
+            // within 2 GiB, as checked above
+            self.offsets.push(self.data.len() as i32);
+        }
+    }
+
     /// Offsets so far (`len() + 1` entries once anything is written).
     pub fn offsets(&self) -> &[i32] {
         &self.offsets
@@ -240,36 +263,20 @@ impl StrCol {
     }
 }
 
-impl Sink<String> for StrCol {
+/// `String` and `&str` rows.
+impl<S: AsRef<str>> Sink<S> for StrCol {
     #[inline]
-    fn push(&mut self, value: String) {
-        self.push_str(&value);
+    fn push(&mut self, value: S) {
+        self.push_str(value.as_ref());
     }
 
-    fn push_n(&mut self, values: impl Iterator<Item = String>) {
+    fn push_n(&mut self, values: impl Iterator<Item = S>) {
         let (lo, _) = values.size_hint();
         let mut values = values;
-        self.push_n_with(lo, |b| b.push_str(&values.next().expect("size_hint")));
-        values.for_each(|v| self.push_str(&v));
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        self.start();
-        self.offsets.reserve(additional);
-    }
-}
-
-impl<'a> Sink<&'a str> for StrCol {
-    #[inline]
-    fn push(&mut self, value: &'a str) {
-        self.push_str(value);
-    }
-
-    fn push_n(&mut self, values: impl Iterator<Item = &'a str>) {
-        let (lo, _) = values.size_hint();
-        let mut values = values;
-        self.push_n_with(lo, |b| b.push_str(values.next().expect("size_hint")));
-        values.for_each(|v| self.push_str(v));
+        self.push_n_with(lo, |b| {
+            b.push_str(values.next().expect("size_hint").as_ref())
+        });
+        values.for_each(|v| self.push_str(v.as_ref()));
     }
 
     fn reserve(&mut self, additional: usize) {

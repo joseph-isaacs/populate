@@ -20,14 +20,13 @@
 use crate::csv;
 use crate::java::civil_from_days;
 use crate::layout::Layout;
-use crate::rows::{Kind, Rows, TableDef};
+use crate::rows::{Col, Kind, Rows, TableDef};
 use crate::{Ldbc, par_map, to_batch};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use populate_table::MultiChunks;
 use populate_table::text::TextChunks;
 use std::collections::BTreeMap;
-use std::mem::replace;
 use std::sync::Mutex;
 
 /// How inserts and deletes are grouped (`--batch-period`).
@@ -184,7 +183,7 @@ pub struct BiRun<'a> {
 }
 
 /// One table's batches: `(batch id, rows sorted by date)`, by batch id.
-/// A batch is one or more parts (files), each holding at most about
+/// A batch is one or more parts (files), each holding at most
 /// [`PART_BYTES`] of any string column.
 pub struct Batches {
     pub def: &'static TableDef,
@@ -276,19 +275,39 @@ impl<'a> BiRun<'a> {
         let batches = by
             .into_iter()
             .map(|(id, idx)| {
-                let mut out = Vec::new();
-                let mut r = Rows::new(def);
-                for (n, (k, j)) in idx.into_iter().enumerate() {
-                    // a part's strings stay well within a column's 2 GiB
-                    // (checked every 1,024 rows, a few MB of text at most)
-                    if n % 1024 == 0 && r.cols.iter().any(|c| c.str_bytes() > PART_BYTES) {
-                        out.push(replace(&mut r, Rows::new(def)));
+                // cut where a part's string column would pass PART_BYTES
+                let mut cuts = vec![0];
+                let mut bytes = vec![0; def.cols.len()];
+                for (n, &(k, j)) in idx.iter().enumerate() {
+                    let cols = &parts[k as usize].cols;
+                    let len = |c: usize| cols[c].value_bytes(j as usize);
+                    if (0..bytes.len()).any(|c| bytes[c] + len(c) > PART_BYTES) {
+                        cuts.push(n);
+                        bytes.fill(0);
                     }
-                    for (c, src) in r.cols.iter_mut().zip(&parts[k as usize].cols) {
-                        c.push_from(src, j as usize);
+                    for (c, b) in bytes.iter_mut().enumerate() {
+                        *b += len(c);
                     }
                 }
-                out.push(r);
+                cuts.push(idx.len());
+                let out = cuts
+                    .windows(2)
+                    .map(|w| {
+                        let part = &idx[w[0]..w[1]];
+                        let cols = def
+                            .cols
+                            .iter()
+                            .enumerate()
+                            .map(|(c, &(_, kind))| {
+                                let picks = part
+                                    .iter()
+                                    .map(|&(k, j)| (&parts[k as usize].cols[c], j as usize));
+                                Col::picked(kind, picks)
+                            })
+                            .collect();
+                        Rows { cols }
+                    })
+                    .collect();
                 (id, out)
             })
             .collect();

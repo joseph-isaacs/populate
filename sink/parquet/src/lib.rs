@@ -1,43 +1,38 @@
-//! Parquet output (optional `parquet` feature).
+//! Parquet output.
 //!
-//! Two writers:
-//!
-//! - [`write_columns`] / [`DistributionParquet::collect_parquet`]: zero-copy
-//!   path for collected columns: top-level numeric columns and
-//!   `list<numeric>` columns. Value buffers are handed to Parquet's column
-//!   writer as slices of the buffer they were generated into, and the
-//!   definition/repetition levels a list needs are derived from the offsets
-//!   in a small reusable scratch buffer, one chunk of rows at a time. Pages
-//!   stream straight to the `Write`r, so nothing data-sized is ever allocated
-//!   besides the generated buffers themselves.
-//! - [`write_parquet`]: any `RecordBatch` via `ArrowWriter`. Primitive values
-//!   are still read in place, but `ArrowWriter` materialises per-value level
-//!   and index arrays for list columns and buffers a whole row group in
-//!   memory, so it is not zero-copy.
+//! - [`write_columns`] / [`DistributionParquet::collect_parquet`]: collected
+//!   columns (numbers, strings, lists of numbers, and tuples of them) as one
+//!   row group, read in place from the buffers they were generated into,
+//!   with no Arrow in between. Columns are named `c0, c1, ...` like the
+//!   Arrow output (nested tuples are flattened) and are all required.
+//!   `populate-table`'s `write_dist_parquet` builds on the same pieces
+//!   ([`ParquetColumns`], [`encode_leaf`]) to write row groups in parallel.
+//! - [`encode`]: the column chunk encoder behind both. It also encodes
+//!   Arrow arrays, for `populate-table`'s `RecordBatch` writer.
+//! - [`write_parquet`]: any `RecordBatch` via arrow-rs's `ArrowWriter`.
+//!   It materialises per-value level and index arrays for list columns and
+//!   buffers a whole row group in memory.
+
+pub mod encode;
 
 use arrow_array::RecordBatch;
+use bytes::Bytes;
+use encode::{Rope, encode_strings, encode_values, encode_var_list, rope_sink, slices_ok};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
-use parquet::data_type::{DataType, DoubleType, FloatType, Int32Type, Int64Type};
-use parquet::errors::ParquetError;
-use parquet::file::properties::WriterProperties;
-use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
-use parquet::schema::types::{Type, TypePtr};
-use populate_core::{Columns, Distribution, ListCol};
+use parquet::column::writer::{ColumnCloseResult, get_column_writer, get_typed_column_writer};
+use parquet::data_type::{
+    ByteArray, ByteArrayType, DataType, DoubleType, FloatType, Int32Type, Int64Type,
+};
+use parquet::errors::{ParquetError, Result};
+use parquet::file::properties::{WriterProperties, WriterPropertiesPtr};
+use parquet::file::writer::{SerializedFileWriter, SerializedPageWriter};
+use parquet::schema::types::{ColumnDescPtr, Type, TypePtr};
+use populate_core::{Columns, Distribution, ListCol, StrCol};
 use rand::Rng;
 use std::io::Write;
 use std::iter::repeat_n;
 use std::sync::Arc;
-
-type Result<T> = std::result::Result<T, ParquetError>;
-
-/// Max level entries per `write_batch` call on a list column (a single row
-/// longer than this is written in one call of its own length).
-const LEVEL_CHUNK: usize = 4096;
-
-// ============================================================================
-// ArrowWriter path (any RecordBatch)
-// ============================================================================
 
 /// Write one `RecordBatch` as a complete Parquet file and return the writer.
 pub fn write_parquet<W: Write + Send>(
@@ -51,188 +46,164 @@ pub fn write_parquet<W: Write + Send>(
 }
 
 // ============================================================================
-// Zero-copy column writer
+// Collected columns
 // ============================================================================
 
-/// Rust native -> Parquet physical type.
+/// One leaf column of a collected row group, borrowed.
+#[derive(Debug, Clone, Copy)]
+pub enum Leaf<'a> {
+    Num(Num<'a>),
+    /// Arrow `Utf8` layout: `offsets` has one more entry than there are
+    /// rows (or none at all for no rows).
+    Str {
+        offsets: &'a [i32],
+        data: &'a [u8],
+    },
+    /// Arrow `List` layout, of numbers.
+    List {
+        offsets: &'a [i32],
+        values: Num<'a>,
+    },
+}
+
+/// A buffer of numbers.
+#[derive(Debug, Clone, Copy)]
+pub enum Num<'a> {
+    I32(&'a [i32]),
+    I64(&'a [i64]),
+    F32(&'a [f32]),
+    F64(&'a [f64]),
+}
+
+impl Leaf<'_> {
+    /// Number of rows.
+    pub fn rows(&self) -> usize {
+        match self {
+            Leaf::Num(n) => n.len(),
+            Leaf::Str { offsets, .. } | Leaf::List { offsets, .. } => {
+                offsets.len().saturating_sub(1)
+            }
+        }
+    }
+}
+
+impl Num<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Num::I32(v) => v.len(),
+            Num::I64(v) => v.len(),
+            Num::F32(v) => v.len(),
+            Num::F64(v) => v.len(),
+        }
+    }
+}
+
+/// Collected columns that can be written as Parquet: numbers, strings,
+/// lists of numbers, and tuples of them. Implemented for every such
+/// `Columns<T>`, so users never implement it.
+pub trait ParquetColumns {
+    /// Number of leaf columns.
+    const COLUMNS: usize;
+    /// Append the Parquet type of each leaf column, the first named `c{idx}`.
+    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()>;
+    /// Append each leaf column's buffers.
+    fn leaves<'a>(&'a self, out: &mut Vec<Leaf<'a>>);
+}
+
+/// A number type with a Parquet column: its physical type, and its buffer
+/// as a [`Num`].
 pub trait ParquetNative: Copy {
     type Parquet: DataType<T = Self>;
     const PHYSICAL: PhysicalType;
+    fn num(v: &[Self]) -> Num<'_>;
 }
 
-macro_rules! impl_parquet_native {
-    ($($t:ty => $p:ty, $phys:ident);* $(;)?) => {
+macro_rules! parquet_native {
+    ($($t:ty => $p:ty, $phys:ident, $var:ident);* $(;)?) => {
         $(impl ParquetNative for $t {
             type Parquet = $p;
             const PHYSICAL: PhysicalType = PhysicalType::$phys;
+            fn num(v: &[Self]) -> Num<'_> {
+                Num::$var(v)
+            }
         })*
     };
 }
 
-impl_parquet_native!(
-    i32 => Int32Type, INT32;
-    i64 => Int64Type, INT64;
-    f32 => FloatType, FLOAT;
-    f64 => DoubleType, DOUBLE;
+parquet_native!(
+    i32 => Int32Type, INT32, I32;
+    i64 => Int64Type, INT64, I64;
+    f32 => FloatType, FLOAT, F32;
+    f64 => DoubleType, DOUBLE, F64;
 );
 
-/// One column that can be written to Parquet without copying its data.
-pub trait ParquetColumn {
-    fn parquet_type(name: &str) -> Result<TypePtr>;
-    fn write_column<W: Write + Send>(&self, rg: &mut SerializedRowGroupWriter<'_, W>)
-    -> Result<()>;
-    fn num_rows(&self) -> usize;
-}
-
-fn leaf<T: ParquetNative>(name: &str, repetition: Repetition) -> Result<TypePtr> {
+fn primitive(name: &str, phys: PhysicalType, logical: Option<LogicalType>) -> Result<TypePtr> {
     Ok(Arc::new(
-        Type::primitive_type_builder(name, T::PHYSICAL)
-            .with_repetition(repetition)
+        Type::primitive_type_builder(name, phys)
+            .with_repetition(Repetition::REQUIRED)
+            .with_logical_type(logical)
             .build()?,
     ))
 }
 
-fn next_column<'a, W: Write + Send>(
-    rg: &'a mut SerializedRowGroupWriter<'_, W>,
-) -> Result<parquet::file::writer::SerializedColumnWriter<'a>> {
-    rg.next_column()?
-        .ok_or_else(|| ParquetError::General("schema has fewer columns than the sink".into()))
-}
+impl<T: ParquetNative> ParquetColumns for Vec<T> {
+    const COLUMNS: usize = 1;
 
-/// Required numeric column: the whole buffer goes to the encoder as one slice.
-impl<T: ParquetNative> ParquetColumn for Vec<T> {
-    fn parquet_type(name: &str) -> Result<TypePtr> {
-        leaf::<T>(name, Repetition::REQUIRED)
+    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
+        out.push(primitive(&format!("c{idx}"), T::PHYSICAL, None)?);
+        Ok(())
     }
 
-    fn write_column<W: Write + Send>(
-        &self,
-        rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()> {
-        let mut col = next_column(rg)?;
-        col.typed::<T::Parquet>().write_batch(self, None, None)?;
-        col.close()
-    }
-
-    fn num_rows(&self) -> usize {
-        self.len()
+    fn leaves<'a>(&'a self, out: &mut Vec<Leaf<'a>>) {
+        out.push(Leaf::Num(T::num(self)));
     }
 }
 
-/// Required `list<required numeric>`, standard 3-level LIST layout
-/// (`max_def = 1`, `max_rep = 1`). Values are sliced from the generated
-/// buffer; levels come from the offsets, `LEVEL_CHUNK` at a time.
-impl<T: ParquetNative> ParquetColumn for ListCol<Vec<T>> {
-    fn parquet_type(name: &str) -> Result<TypePtr> {
+impl ParquetColumns for StrCol {
+    const COLUMNS: usize = 1;
+
+    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
+        let name = format!("c{idx}");
+        out.push(primitive(
+            &name,
+            PhysicalType::BYTE_ARRAY,
+            Some(LogicalType::String),
+        )?);
+        Ok(())
+    }
+
+    fn leaves<'a>(&'a self, out: &mut Vec<Leaf<'a>>) {
+        out.push(Leaf::Str {
+            offsets: self.offsets(),
+            data: self.data(),
+        });
+    }
+}
+
+/// Required `list<required number>`, the standard 3-level LIST layout.
+impl<T: ParquetNative> ParquetColumns for ListCol<Vec<T>> {
+    const COLUMNS: usize = 1;
+
+    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
         let list = Type::group_type_builder("list")
             .with_repetition(Repetition::REPEATED)
-            .with_fields(vec![leaf::<T>("element", Repetition::REQUIRED)?])
+            .with_fields(vec![primitive("element", T::PHYSICAL, None)?])
             .build()?;
-        Ok(Arc::new(
-            Type::group_type_builder(name)
+        out.push(Arc::new(
+            Type::group_type_builder(&format!("c{idx}"))
                 .with_repetition(Repetition::REQUIRED)
                 .with_logical_type(Some(LogicalType::List))
                 .with_fields(vec![Arc::new(list)])
                 .build()?,
-        ))
-    }
-
-    fn write_column<W: Write + Send>(
-        &self,
-        rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()> {
-        let mut col = next_column(rg)?;
-        let writer = col.typed::<T::Parquet>();
-        let values = &self.values;
-        let offsets = self.offsets();
-        let mut def = Vec::with_capacity(LEVEL_CHUNK);
-        let mut rep = Vec::with_capacity(LEVEL_CHUNK);
-        let mut v_start = 0usize;
-        let mut v_end = 0usize;
-
-        for w in offsets.windows(2) {
-            let (start, end) = (w[0] as usize, w[1] as usize);
-            // levels for this row: an empty list is one (def 0, rep 0) entry
-            let row_levels = (end - start).max(1);
-            if !def.is_empty() && def.len() + row_levels > LEVEL_CHUNK {
-                writer.write_batch(&values[v_start..v_end], Some(&def), Some(&rep))?;
-                def.clear();
-                rep.clear();
-                v_start = v_end;
-            }
-            if start == end {
-                def.push(0);
-                rep.push(0);
-            } else {
-                def.extend(repeat_n(1, end - start));
-                rep.push(0);
-                rep.extend(repeat_n(1, end - start - 1));
-            }
-            v_end = end;
-        }
-        if !def.is_empty() {
-            writer.write_batch(&values[v_start..v_end], Some(&def), Some(&rep))?;
-        }
-        col.close()
-    }
-
-    fn num_rows(&self) -> usize {
-        self.len()
-    }
-}
-
-/// Columns named `c0, c1, ...` like the Arrow output: one column, or a
-/// tuple of them (nested tuples are flattened).
-pub trait ParquetColumns {
-    /// Number of Parquet columns.
-    const COLUMNS: usize;
-    /// Append the type of each column, the first named `c{idx}`.
-    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()>;
-    fn write_columns<W: Write + Send>(
-        &self,
-        rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()>;
-    /// The common row count of every column, or `None` if they differ (or
-    /// there are no columns).
-    fn num_rows(&self) -> Option<usize>;
-}
-
-impl<C: ParquetColumn> ParquetColumns for C {
-    const COLUMNS: usize = 1;
-
-    fn parquet_types(idx: usize, out: &mut Vec<TypePtr>) -> Result<()> {
-        out.push(C::parquet_type(&format!("c{idx}"))?);
+        ));
         Ok(())
     }
 
-    fn write_columns<W: Write + Send>(
-        &self,
-        rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()> {
-        self.write_column(rg)
-    }
-
-    fn num_rows(&self) -> Option<usize> {
-        Some(ParquetColumn::num_rows(self))
-    }
-}
-
-impl ParquetColumns for () {
-    const COLUMNS: usize = 0;
-
-    fn parquet_types(_idx: usize, _out: &mut Vec<TypePtr>) -> Result<()> {
-        Ok(())
-    }
-
-    fn write_columns<W: Write + Send>(
-        &self,
-        _rg: &mut SerializedRowGroupWriter<'_, W>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn num_rows(&self) -> Option<usize> {
-        None
+    fn leaves<'a>(&'a self, out: &mut Vec<Leaf<'a>>) {
+        out.push(Leaf::List {
+            offsets: self.offsets(),
+            values: T::num(&self.values),
+        });
     }
 }
 
@@ -250,18 +221,8 @@ macro_rules! tuple_columns {
                 Ok(())
             }
 
-            fn write_columns<W: Write + Send>(
-                &self,
-                rg: &mut SerializedRowGroupWriter<'_, W>,
-            ) -> Result<()> {
-                $(self.$idx.write_columns(rg)?;)+
-                Ok(())
-            }
-
-            fn num_rows(&self) -> Option<usize> {
-                // every field must agree: a mismatch anywhere is `None`
-                let rows = [$(self.$idx.num_rows()),+];
-                rows[0].filter(|_| rows.iter().all(|r| *r == rows[0]))
+            fn leaves<'a>(&'a self, out: &mut Vec<Leaf<'a>>) {
+                $(self.$idx.leaves(out);)+
             }
         }
     };
@@ -279,8 +240,38 @@ tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
 tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
 tuple_columns!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
-/// Default properties for the zero-copy path: dictionary encoding off (it
-/// would build a hash table over the values; generated data is mostly unique).
+/// One encoded column chunk, offsets relative to its start.
+pub type Chunk = (Rope, ColumnCloseResult);
+
+/// The file schema of `S`'s columns. Errors if there are none.
+pub fn schema<S: ParquetColumns>() -> Result<TypePtr> {
+    if S::COLUMNS == 0 {
+        return Err(ParquetError::General("no columns".into()));
+    }
+    let mut fields = Vec::with_capacity(S::COLUMNS);
+    S::parquet_types(0, &mut fields)?;
+    Ok(Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(fields)
+            .build()?,
+    ))
+}
+
+/// The leaf columns of `cols`, checked to hold `rows` rows each.
+pub fn leaves<S: ParquetColumns>(cols: &S, rows: usize) -> Result<Vec<Leaf<'_>>> {
+    let mut out = Vec::with_capacity(S::COLUMNS);
+    cols.leaves(&mut out);
+    if out.iter().any(|l| l.rows() != rows) {
+        return Err(ParquetError::General(
+            "columns have different row counts".into(),
+        ));
+    }
+    Ok(out)
+}
+
+/// Default properties for [`write_columns`]: dictionary encoding off (it
+/// would build a hash table over the values; generated data is mostly
+/// unique).
 pub fn default_props() -> WriterProperties {
     WriterProperties::builder()
         .set_dictionary_enabled(false)
@@ -290,40 +281,30 @@ pub fn default_props() -> WriterProperties {
 /// Write collected columns as a single-row-group Parquet file, reading
 /// every value buffer in place. Returns the writer.
 pub fn write_columns<S: ParquetColumns, W: Write + Send>(
-    sink: &S,
+    cols: &S,
     writer: W,
     props: Option<WriterProperties>,
 ) -> Result<W> {
-    if S::COLUMNS == 0 {
-        return Err(ParquetError::General("sink has no columns".into()));
-    }
-    if sink.num_rows().is_none() {
-        return Err(ParquetError::General(
-            "columns have different row counts".into(),
-        ));
-    }
-    let mut fields = Vec::new();
-    S::parquet_types(0, &mut fields)?;
-    let schema = Arc::new(
-        Type::group_type_builder("schema")
-            .with_fields(fields)
-            .build()?,
-    );
-    let props = Arc::new(props.unwrap_or_else(default_props));
-    let mut file = SerializedFileWriter::new(writer, schema, props)?;
+    let schema = schema::<S>()?;
+    let props: WriterPropertiesPtr = Arc::new(props.unwrap_or_else(default_props));
+    let mut file = SerializedFileWriter::new(writer, schema, props.clone())?;
+    let mut first = Vec::with_capacity(1);
+    cols.leaves(&mut first);
+    let rows = first.first().map_or(0, Leaf::rows);
+    let leaves = leaves(cols, rows)?;
+    let descrs: Vec<ColumnDescPtr> = file.schema_descr().columns().to_vec();
     let mut rg = file.next_row_group()?;
-    sink.write_columns(&mut rg)?;
+    for (leaf, descr) in leaves.iter().zip(&descrs) {
+        let (chunk, close) = encode_leaf(leaf, descr, &props)?;
+        rg.append_column(&chunk, close)?;
+    }
     rg.close()?;
     file.into_inner()
 }
 
-// ============================================================================
-// DistributionParquet — generate and write
-// ============================================================================
-
 pub trait DistributionParquet: Distribution {
-    /// Generate `n` rows column by column and write them as Parquet without
-    /// copying the values.
+    /// Generate `n` rows column by column and write them as Parquet
+    /// ([`write_columns`]) without copying the values.
     fn collect_parquet<W: Write + Send>(
         &mut self,
         rng: &mut impl Rng,
@@ -340,31 +321,108 @@ pub trait DistributionParquet: Distribution {
 
 impl<D: Distribution> DistributionParquet for D {}
 
+/// Encode one leaf as a column chunk: with [`encode`] when the settings
+/// allow, else with the `parquet` crate's column writer, so every setting
+/// works and only the speed differs.
+pub fn encode_leaf(
+    leaf: &Leaf<'_>,
+    descr: &ColumnDescPtr,
+    props: &WriterPropertiesPtr,
+) -> Result<Chunk> {
+    match *leaf {
+        Leaf::Num(n) if slices_ok(descr, props) => match n {
+            Num::I32(v) => encode_values(descr, props, v),
+            Num::I64(v) => encode_values(descr, props, v),
+            Num::F32(v) => encode_values(descr, props, v),
+            Num::F64(v) => encode_values(descr, props, v),
+        },
+        Leaf::Num(n) => match n {
+            Num::I32(v) => generic::<Int32Type>(descr, props, v, None),
+            Num::I64(v) => generic::<Int64Type>(descr, props, v, None),
+            Num::F32(v) => generic::<FloatType>(descr, props, v, None),
+            Num::F64(v) => generic::<DoubleType>(descr, props, v, None),
+        },
+        Leaf::Str { offsets, data } if slices_ok(descr, props) => {
+            encode_strings(descr, props, offsets, data)
+        }
+        Leaf::Str { offsets, data } => {
+            let data = Bytes::copy_from_slice(data);
+            let v: Vec<ByteArray> = offsets
+                .windows(2)
+                .map(|w| data.slice(w[0] as usize..w[1] as usize).into())
+                .collect();
+            generic::<ByteArrayType>(descr, props, &v, None)
+        }
+        Leaf::List { offsets, values } if slices_ok(descr, props) => match values {
+            Num::I32(v) => encode_var_list(descr, props, offsets, v),
+            Num::I64(v) => encode_var_list(descr, props, offsets, v),
+            Num::F32(v) => encode_var_list(descr, props, offsets, v),
+            Num::F64(v) => encode_var_list(descr, props, offsets, v),
+        },
+        Leaf::List { offsets, values } => {
+            let levels = list_levels(offsets);
+            let lv = Some((&levels.0[..], &levels.1[..]));
+            match values {
+                Num::I32(v) => generic::<Int32Type>(descr, props, v, lv),
+                Num::I64(v) => generic::<Int64Type>(descr, props, v, lv),
+                Num::F32(v) => generic::<FloatType>(descr, props, v, lv),
+                Num::F64(v) => generic::<DoubleType>(descr, props, v, lv),
+            }
+        }
+    }
+}
+
+/// Definition and repetition levels of a required list of required values.
+fn list_levels(offsets: &[i32]) -> (Vec<i16>, Vec<i16>) {
+    let (mut def, mut rep) = (Vec::new(), Vec::new());
+    for w in offsets.windows(2) {
+        let len = (w[1] - w[0]) as usize;
+        if len == 0 {
+            def.push(0);
+            rep.push(0);
+        } else {
+            def.extend(repeat_n(1, len));
+            rep.push(0);
+            rep.extend(repeat_n(1, len - 1));
+        }
+    }
+    (def, rep)
+}
+
+/// One column chunk from the `parquet` crate's column writer, in memory.
+fn generic<T: DataType>(
+    descr: &ColumnDescPtr,
+    props: &WriterPropertiesPtr,
+    values: &[T::T],
+    levels: Option<(&[i16], &[i16])>,
+) -> Result<Chunk> {
+    let mut sink = rope_sink();
+    let close = {
+        let pages = SerializedPageWriter::new(&mut sink);
+        let w = get_column_writer(descr.clone(), props.clone(), Box::new(pages));
+        let mut w = get_typed_column_writer::<T>(w);
+        match levels {
+            Some((def, rep)) => w.write_batch(values, Some(def), Some(rep))?,
+            None => w.write_batch(values, None, None)?,
+        };
+        w.close()?
+    };
+    Ok((sink.into_inner()?.finish(), close))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ParquetColumns, write_columns};
+    use super::*;
 
     #[test]
-    fn num_rows_matching() {
-        let sink = (vec![1i64; 3], vec![2i32; 3]);
-        assert_eq!(sink.num_rows(), Some(3));
-    }
-
-    #[test]
-    fn num_rows_detects_mismatch_past_the_first_pair() {
+    fn mismatched_row_counts_are_rejected() {
         // The 5-row middle column must not be masked by the 10-row first one.
-        let sink = (vec![1i64; 10], vec![1i64; 5], vec![1i64; 10]);
-        assert_eq!(sink.num_rows(), None);
+        let cols = (vec![1i64; 10], vec![1i64; 5], vec![1i64; 10]);
+        assert!(leaves(&cols, 10).is_err());
         // nor by nesting
-        let sink = (vec![1i64; 10], (vec![1i64; 10], vec![1i64; 5]));
-        assert_eq!(sink.num_rows(), None);
-        let err = write_columns(&sink, Vec::new(), None).unwrap_err();
+        let cols = (vec![1i64; 10], (vec![1i64; 10], vec![1i64; 5]));
+        let err = write_columns(&cols, Vec::new(), None).unwrap_err();
         assert!(err.to_string().contains("different row counts"), "{err}");
-    }
-
-    #[test]
-    fn empty_sink_is_rejected() {
-        let err = write_columns(&(), Vec::new(), None).unwrap_err();
-        assert!(err.to_string().contains("no columns"), "{err}");
+        assert_eq!(leaves(&(vec![1i64; 3], vec![2i32; 3]), 3).unwrap().len(), 2);
     }
 }

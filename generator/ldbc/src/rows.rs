@@ -11,8 +11,7 @@ use crate::java::MS_PER_DAY;
 use arrow_array::ArrayRef;
 use arrow_schema::{Field, Schema, SchemaRef};
 use populate_core::{
-    ChildCols, Children, Columns, Date32, Nullable, Sink, StrBuf, StrCol, Timestamp, Validity,
-    time_unit,
+    ChildCols, Children, Columns, Date32, Nullable, StrBuf, StrCol, Timestamp, Validity, time_unit,
 };
 use populate_sink_arrow::IntoArrowArray;
 use std::borrow::Cow;
@@ -381,15 +380,6 @@ impl Col {
         self.len() == 0
     }
 
-    /// Bytes of string data (0 for other columns).
-    pub fn str_bytes(&self) -> usize {
-        match self {
-            Col::Str(v) => v.data().len(),
-            Col::OptStr(v) => v.values.data().len(),
-            _ => 0,
-        }
-    }
-
     /// The Arrow array: the buffers move into it.
     pub fn into_array(self) -> ArrayRef {
         match self {
@@ -459,65 +449,80 @@ impl Col {
         }
     }
 
-    /// Append row `r` of `other` (a column of the same kind).
-    pub fn push_from(&mut self, other: &Col, r: usize) {
-        fn opt<T: Copy + Default>(a: &mut Nullable<Vec<T>>, b: &Nullable<Vec<T>>, r: usize) {
-            a.push(b.valid.get(r).then(|| b.values[r]));
+    /// The values at rows `idx`, in that order.
+    pub fn gather(&self, idx: &[u32]) -> Col {
+        Col::picked(self.kind(), idx.iter().map(|&i| (self, i as usize)))
+    }
+
+    /// Value `r` of column `c` for every `(c, r)` of `picks`, in order: a
+    /// gather from one or more columns of kind `kind`.
+    pub fn picked<'a>(kind: Kind, picks: impl Iterator<Item = (&'a Col, usize)> + Clone) -> Col {
+        macro_rules! pick {
+            ($v:ident) => {
+                picks
+                    .map(|(c, r)| match c {
+                        Col::$v(v) => v[r],
+                        _ => unreachable!("columns of different kinds"),
+                    })
+                    .collect()
+            };
         }
-        match (self, other) {
-            (Col::Ts(a), Col::Ts(b)) => a.push(b[r]),
-            (Col::Date(a), Col::Date(b)) => a.push(b[r]),
-            (Col::I64(a), Col::I64(b)) => a.push(b[r]),
-            (Col::I32(a), Col::I32(b)) => a.push(b[r]),
-            (Col::Bool(a), Col::Bool(b)) => a.push(b[r]),
-            (Col::OptI64(a), Col::OptI64(b)) => opt(a, b, r),
-            (Col::OptI32(a), Col::OptI32(b)) => opt(a, b, r),
-            (Col::Str(a), Col::Str(b)) => a.push_str(b.get(r)),
-            (Col::OptStr(a), Col::OptStr(b)) => a.push(b.valid.get(r).then(|| b.values.get(r))),
+        macro_rules! opt {
+            ($v:ident) => {{
+                let mut valid = Validity::default();
+                valid.reserve(picks.clone().count());
+                let values = picks
+                    .map(|(c, r)| match c {
+                        Col::$v(v) => {
+                            valid.push(v.valid.get(r));
+                            v.values[r]
+                        }
+                        _ => unreachable!("columns of different kinds"),
+                    })
+                    .collect();
+                Nullable { values, valid }
+            }};
+        }
+        let strs = |c: &'a Col| match c {
+            Col::Str(v) => v,
+            Col::OptStr(v) => &v.values,
             _ => unreachable!("columns of different kinds"),
+        };
+        match kind {
+            Kind::Ts => Col::Ts(pick!(Ts)),
+            Kind::Date => Col::Date(pick!(Date)),
+            Kind::I64 => Col::I64(pick!(I64)),
+            Kind::I32 => Col::I32(pick!(I32)),
+            Kind::Bool => Col::Bool(pick!(Bool)),
+            Kind::OptI64 => Col::OptI64(opt!(OptI64)),
+            Kind::OptI32 => Col::OptI32(opt!(OptI32)),
+            Kind::Str => {
+                let mut v = StrCol::new();
+                v.extend_picked(picks.map(|(c, r)| (strs(c), r)));
+                Col::Str(v)
+            }
+            Kind::OptStr => {
+                let mut values = StrCol::new();
+                values.extend_picked(picks.clone().map(|(c, r)| (strs(c), r)));
+                let mut valid = Validity::default();
+                for (c, r) in picks {
+                    match c {
+                        Col::OptStr(v) => valid.push(v.valid.get(r)),
+                        _ => unreachable!("columns of different kinds"),
+                    }
+                }
+                Col::OptStr(Nullable { values, valid })
+            }
         }
     }
 
-    /// The values at rows `idx`, in that order.
-    pub fn gather(&self, idx: &[u32]) -> Col {
-        fn pick<T: Copy>(v: &[T], idx: &[u32]) -> Vec<T> {
-            idx.iter().map(|&i| v[i as usize]).collect()
-        }
-        fn strs(v: &StrCol, idx: &[u32]) -> StrCol {
-            let mut out = StrCol::new();
-            Sink::<&str>::reserve(&mut out, idx.len());
-            for &i in idx {
-                out.push_str(v.get(i as usize));
-            }
-            out
-        }
-        fn valid(v: &Validity, idx: &[u32]) -> Validity {
-            let mut out = Validity::default();
-            out.reserve(idx.len());
-            for &i in idx {
-                out.push(v.get(i as usize));
-            }
-            out
-        }
+    /// Bytes of row `r` of a string column (0 for other columns).
+    pub fn value_bytes(&self, r: usize) -> usize {
+        let len = |v: &StrCol| (v.offsets()[r + 1] - v.offsets()[r]) as usize;
         match self {
-            Col::Ts(v) => Col::Ts(pick(v, idx)),
-            Col::Date(v) => Col::Date(pick(v, idx)),
-            Col::I64(v) => Col::I64(pick(v, idx)),
-            Col::I32(v) => Col::I32(pick(v, idx)),
-            Col::Bool(v) => Col::Bool(pick(v, idx)),
-            Col::Str(v) => Col::Str(strs(v, idx)),
-            Col::OptI64(v) => Col::OptI64(Nullable {
-                values: pick(&v.values, idx),
-                valid: valid(&v.valid, idx),
-            }),
-            Col::OptI32(v) => Col::OptI32(Nullable {
-                values: pick(&v.values, idx),
-                valid: valid(&v.valid, idx),
-            }),
-            Col::OptStr(v) => Col::OptStr(Nullable {
-                values: strs(&v.values, idx),
-                valid: valid(&v.valid, idx),
-            }),
+            Col::Str(v) => len(v),
+            Col::OptStr(v) => len(&v.values),
+            _ => 0,
         }
     }
 }

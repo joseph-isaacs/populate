@@ -150,15 +150,27 @@ pub fn java_chars(s: &[u16]) -> impl Iterator<Item = char> + '_ {
     char::decode_utf16(s.iter().copied()).map(|c| c.unwrap_or('?'))
 }
 
-/// Append a UTF-16 string, as Java encodes it, to a string value.
+/// Append a UTF-16 string, as Java encodes it, to a string value: runs
+/// of ASCII in one go, anything else a character at a time.
 #[inline]
-pub fn push_utf16(out: &mut StrBuf<'_>, s: &[u16]) {
-    for c in java_chars(s) {
-        if c.is_ascii() {
-            out.push_ascii(c as u8);
+pub fn push_utf16(out: &mut StrBuf<'_>, mut s: &[u16]) {
+    while !s.is_empty() {
+        let ascii = s.iter().position(|&u| u >= 0x80).unwrap_or(s.len());
+        out.extend_ascii(s[..ascii].iter().map(|&u| u as u8));
+        s = &s[ascii..];
+        // one character: a surrogate pair takes two units
+        let n = if s.len() > 1
+            && (0xD800..0xDC00).contains(&s[0])
+            && (0xDC00..0xE000).contains(&s[1])
+        {
+            2
         } else {
+            s.len().min(1)
+        };
+        for c in java_chars(&s[..n]) {
             out.push_char(c);
         }
+        s = &s[n..];
     }
 }
 

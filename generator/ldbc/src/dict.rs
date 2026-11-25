@@ -7,11 +7,12 @@ use crate::java::{binary_search_f32, lines, parse_f32, parse_f64, parse_i32, spl
 use crate::jrand::{Aspect, Farm, JavaRandom};
 use crate::params::Params;
 use populate_core::StrBuf;
+use populate_table::resolve_threads;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::thread::{available_parallelism, scope};
+use std::thread::scope;
 use unicode_normalization::UnicodeNormalization;
 
 fn read(dir: &Path, rel: &str) -> io::Result<String> {
@@ -38,7 +39,7 @@ pub fn power_inverse(a: f64, b: f64, c: f64, u: f64) -> f64 {
 /// `f` of every line of `txt` (as [`lines`] splits it), parsed in pieces on
 /// all cores: the pieces' results, in file order.
 fn parallel_lines<T: Send>(txt: &str, f: impl Fn(&str) -> T + Sync) -> Vec<Vec<T>> {
-    let n = available_parallelism().map_or(1, |t| t.get());
+    let n = resolve_threads(0);
     let b = txt.as_bytes();
     let mut cuts = vec![0];
     for k in 1..n {

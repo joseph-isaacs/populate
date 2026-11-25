@@ -14,11 +14,10 @@ arrow-buffer = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"], optional = true }
-bytes = { version = "1", optional = true }
-snap = { version = "1", optional = true }
+populate-sink-parquet = { workspace = true, optional = true }
 
 [features]
-parquet = ["dep:parquet", "dep:bytes", "dep:snap"]
+parquet = ["dep:parquet", "dep:populate-sink-parquet"]
 
 [dev-dependencies]
 populate-builtins = { workspace = true }

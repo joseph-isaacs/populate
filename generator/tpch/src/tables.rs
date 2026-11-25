@@ -25,13 +25,13 @@
 
 use crate::TableName;
 use crate::cols::{Bytes, Comment, CommentLen, Word, format};
-use crate::rng::{INT_RANGE, Int, Ints, Lcg, bounded, scale};
 use crate::text::{Dicts, Dist, Text};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use populate_builtins::{
     Draws, children, constant, derive, draws, draws_reserving, flat_map, named, named_all, range,
 };
+use populate_combinators::lehmer::{INT_RANGE, Int, Ints, Lcg, bounded, scale};
 use populate_core::{Columns, Date32, Decimal, Distribution, Sink};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DistTable;

@@ -6,7 +6,7 @@
 //! `RecordBatch`es, Parquet, or ssb-dbgen's `.tbl` text. The `.tbl` files
 //! are the same bytes `dbgen -s <sf>` (eyalroz/ssb-dbgen, default build)
 //! writes; this crate is a clean reimplementation of its behaviour, on the
-//! dbgen random streams `populate-tpch` uses.
+//! dbgen Lehmer streams of `populate-combinators`.
 //!
 //! - Every table is split into small, independent ranges of source rows
 //!   (orders for `lineorder`). dbgen's streams reserve a fixed number of

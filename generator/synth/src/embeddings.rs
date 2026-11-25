@@ -14,6 +14,7 @@ use populate_builtins::{derive_columns, named, named_all, range};
 use populate_core::{Columnar, Distribution};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;
+use std::array::from_fn;
 use std::slice::from_raw_parts_mut;
 use std::sync::Arc;
 
@@ -50,7 +51,7 @@ impl<const DIM: usize> Embeddings<DIM> {
         let centres = (0..clusters)
             .map(|k| {
                 let row = c.sub(k as u64);
-                let v: [f64; DIM] = std::array::from_fn(|j| normal.sample(row.at(j as u64)));
+                let v: [f64; DIM] = from_fn(|j| normal.sample(row.at(j as u64)));
                 let n = v.iter().map(|x| x * x).sum::<f64>().sqrt();
                 v.map(|x| (x / n) as f32)
             })

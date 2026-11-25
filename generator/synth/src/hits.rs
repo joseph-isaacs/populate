@@ -27,6 +27,7 @@ use populate_builtins::{derive_columns, named_all};
 use populate_core::{Columnar, Date32, Distribution, Timestamp, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::{Stream, mix64};
+use std::iter::repeat_n;
 use std::sync::Arc;
 
 type Secs = Timestamp<{ time_unit::SECOND }>;
@@ -692,7 +693,7 @@ impl Inner {
         put(&mut a.0, watch);
         put(&mut a.1, java);
         self.titles.write(&title, &mut a.2);
-        a.3.extend(std::iter::repeat_n(1, len));
+        a.3.extend(repeat_n(1, len));
         put(&mut a.4, time);
         put(&mut a.5, date);
         a.6.extend(counter.iter().map(|&c| c as i32 + 1));

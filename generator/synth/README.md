@@ -2,8 +2,8 @@
 
 Synthetic tables shaped like data people benchmark on, on
 `populate-table`'s `Chunks` engine: Arrow `RecordBatch`es or Parquet, on all
-cores, deterministic. Each shape is one populate `Distribution` (a
-`DistTable`), its Arrow schema read off the distribution's names and column
+cores, deterministic. Each shape is one populate `Distribution`, made a
+`DistTable`, its Arrow schema read off the distribution's names and column
 types. There is no reference generator to match, so these are
 examples and fixtures, not benchmarks.
 

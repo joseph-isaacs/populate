@@ -327,11 +327,11 @@ impl<C: IntoArrowArray> IntoArrowArray for Nullable<C> {
     fn into_array(self) -> ArrayRef {
         let array = self.values.into_array();
         assert_eq!(array.len(), self.valid.len(), "a validity flag per row");
-        if self.valid.null_count() == 0 {
-            return array;
-        }
         let (words, len) = self.valid.into_parts();
         let nulls = NullBuffer::new(BooleanBuffer::new(Buffer::from_vec(words), 0, len));
+        if nulls.null_count() == 0 {
+            return array;
+        }
         // an `Option<Option<T>>`'s inner nulls stay null
         let nulls = NullBuffer::union(Some(&nulls), array.nulls());
         let data = array.into_data().into_builder().nulls(nulls);

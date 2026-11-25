@@ -264,7 +264,9 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC,
             named(
                 "split",
                 derive_columns::<_, _, View>(row_numbers(), move |rows: &Rows, out: &mut Views| {
-                    let idx: Vec<u32> = (rows.0.clone())
+                    let idx: Vec<u32> = rows
+                        .0
+                        .clone()
                         .map(|r| split.split.sample(split.s_split.at(r)))
                         .collect();
                     split.splits.write(&idx, out);

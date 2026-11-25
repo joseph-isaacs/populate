@@ -304,7 +304,9 @@ impl Columnar for View {
 
 impl Sink<View> for Views {
     fn push(&mut self, v: View) {
-        debug_assert!(v.0 as u32 <= 12, "a long view without its buffer");
+        // a long view names a buffer of the column it came from, which
+        // this column doesn't have
+        assert!(v.0 as u32 <= 12, "a long view without its buffer");
         self.views.push(v.0);
     }
 

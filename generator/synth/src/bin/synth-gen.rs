@@ -24,8 +24,6 @@ use std::time::Instant;
 static GLOBAL: MiMalloc = MiMalloc;
 
 /// The `--dim`s `embeddings` is built for (the dimension is part of its type).
-const DIMS: &str = "16, 32, 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096";
-
 const USAGE: &str = "usage: synth-gen <taxi|hits|features|embeddings> [--rows N] [--seed S] \
 [--threads T] [--batch-size B] [--chunk-rows C] [--dim D] [--out FILE.parquet]
 
@@ -88,7 +86,7 @@ fn parse() -> Args {
             f => fail(&format!("unknown flag {f}")),
         }
     }
-    if a.batch_size == 0 || a.chunk_rows == 0 || a.dim == 0 {
+    if a.batch_size == 0 || a.chunk_rows == 0 {
         fail("--batch-size, --chunk-rows and --dim must be > 0");
     }
     a
@@ -134,7 +132,7 @@ fn main() {
                 ($($d:literal),*) => {
                     match a.dim {
                         $($d => run(Embeddings::<$d>::with_sizes(a.seed, 256, 0.6), &a),)*
-                        d => fail(&format!("--dim {d}: one of {}", DIMS)),
+                        d => fail(&format!("--dim {d}: one of {}", stringify!($($d),*))),
                     }
                 };
             }

@@ -19,7 +19,7 @@ use arrow_schema::DataType;
 use arrow_select::concat::concat as concat_arrays;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use populate_core::{Columns, Distribution};
+use populate_core::{Columnar, Columns, Distribution};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_synth::{Embeddings, Features, Hits, Shape, Synth, Taxi};
 use populate_table::{Chunks, mix64};
@@ -28,10 +28,7 @@ use std::collections::HashMap;
 const ROWS: u64 = 20_011;
 
 /// The distributions behind a [`Synth`].
-trait Table:
-    Distribution<Item: populate_core::Columnar<Columns: IntoArrowColumns>> + Clone + Sync
-{
-}
+trait Table: Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Sync {}
 impl<D> Table for D
 where
     D: Distribution + Clone + Sync,

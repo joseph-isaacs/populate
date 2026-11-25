@@ -26,7 +26,6 @@ use populate_builtins::{derive_columns, named_all};
 use populate_core::{Columnar, Distribution, Nullable, Timestamp, Validity, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;
-use std::iter::repeat_n;
 use std::sync::Arc;
 
 const MICROS_PER_DAY: f64 = 86_400e6;
@@ -273,6 +272,8 @@ impl Inner {
         let present: Validity = is_present.iter().copied().collect();
         let missing = |i: usize| !is_present[i];
 
+        let vendor: Vec<i32> = rows().map(|r| self.vendor.sample(s.vendor.at(r))).collect();
+
         let passengers: Vec<i32> = rows()
             .map(|r| self.passengers.sample(s.passengers.at(r)))
             .collect();
@@ -399,7 +400,7 @@ impl Inner {
 
         let ((vendor_c, pu_t, do_t, pass_c, dist_c, rate_c, flag_c, pu_c, dz_c, pay_c), money) =
             out;
-        vendor_c.extend(rows().map(|r| self.vendor.sample(s.vendor.at(r))));
+        put(vendor_c, vendor);
         put(pu_t, pickup);
         put(do_t, dropoff);
         put_nullable(pass_c, passengers, &present);
@@ -413,10 +414,10 @@ impl Inner {
         let (fare_c, extra_c, mta_c, tip_c, tolls_c, imp_c, total_c, cong_c, air_c) = money;
         put(fare_c, fare);
         put(extra_c, extra);
-        mta_c.extend(repeat_n(0.5, len));
+        put(mta_c, vec![0.5; len]);
         put(tip_c, tip);
         put(tolls_c, tolls);
-        imp_c.extend(repeat_n(1.0, len));
+        put(imp_c, vec![1.0; len]);
         put(total_c, total);
         put_nullable(cong_c, congestion, &present);
         put_nullable(air_c, airport, &present);

@@ -18,15 +18,15 @@
 //! distributions draw a variable number of random values per record, so
 //! records could not be generated independently.
 
+use crate::cols::{Load, Records};
 use crate::engine::{DEFAULT_BATCH_SIZE, Plan};
 use crate::rng::JavaTlr;
-use crate::strings::Views;
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::RecordBatch;
+use arrow_schema::{Schema, SchemaRef};
 use parquet::basic::Compression;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use populate_table::text::TextChunks;
-use populate_table::{Chunks, chunks};
+use populate_table::{Chunks, DistTable, chunks};
 use std::sync::Arc;
 
 /// Default records per chunk (one Parquet row group): about 32 MiB of
@@ -95,13 +95,7 @@ impl Ycsb {
         self.plan = Plan::new(count, 1.0)
             .chunk_source_rows(self.chunk_rows)
             .batch_size(self.batch);
-        let mut fields = vec![Field::new("ycsb_key", DataType::Utf8View, false)];
-        fields.extend(
-            self.field_names()
-                .into_iter()
-                .map(|f| Field::new(f, DataType::Utf8View, false)),
-        );
-        self.schema = Arc::new(Schema::new(fields));
+        self.schema = self.table().schema().clone();
     }
 
     fn set(mut self, f: impl FnOnce(&mut Self)) -> Self {
@@ -215,7 +209,7 @@ impl Ycsb {
         s
     }
 
-    fn push_key(&self, keynum: u64, out: &mut String) {
+    pub(crate) fn push_key(&self, keynum: u64, out: &mut String) {
         // the load takes the sequence number as an `int`
         self.push_key_long(keynum as i32 as i64, out)
     }
@@ -232,53 +226,18 @@ impl Ycsb {
         out.push_str(digits);
     }
 
-    /// Records `first..first + n` of this load as one batch.
-    fn batch(&self, first: u64, n: u64) -> RecordBatch {
-        let len = n as usize;
-        let mut keys = Views::with_capacity(len, len * 24);
-        let mut key_strs = Vec::with_capacity(len);
-        let mut s = String::new();
-        for j in first..first + n {
-            s.clear();
-            self.push_key(self.insert_start + j, &mut s);
-            keys.push(s.as_bytes());
-            key_strs.push(s.clone());
-        }
-        let mut cols: Vec<ArrayRef> = Vec::with_capacity(self.field_count + 1);
-        cols.push(keys.finish());
-        if self.data_integrity {
-            let names = self.field_names();
-            let hashes: Vec<i32> = key_strs
-                .iter()
-                .map(|k| java_hash(0, k.as_bytes()))
-                .collect();
-            let mut buf = Vec::new();
-            for name in &names {
-                let mut v = Views::with_capacity(len, len * self.field_length);
-                for (key, &h) in key_strs.iter().zip(&hashes) {
-                    buf.clear();
-                    deterministic_value(
-                        key.as_bytes(),
-                        h,
-                        name.as_bytes(),
-                        self.field_length,
-                        &mut buf,
-                    );
-                    v.push(&buf);
-                }
-                cols.push(v.finish());
-            }
-        } else {
-            let layout = RandomLayout::new(self);
-            for f in 0..self.field_count {
-                let mut v = Views::with_capacity(len, len * self.field_length);
-                for j in first..first + n {
-                    v.push_with(self.field_length, |b| layout.fill(self.tlr, j, f, b));
-                }
-                cols.push(v.finish());
-            }
-        }
-        RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
+    /// The load as one distribution ([`Records`]).
+    fn table(&self) -> DistTable<Records> {
+        let load = Load {
+            ycsb: self.clone(),
+            names: self.field_names(),
+            layout: (!self.data_integrity).then(|| RandomLayout::new(self)),
+        };
+        let records = Records {
+            load: Arc::new(load),
+            next: 0,
+        };
+        DistTable::new("usertable", self.plan.source_rows, records)
     }
 
     /// Records `first..end` as TSV lines, straight from the generators.
@@ -315,8 +274,8 @@ impl Ycsb {
     }
 
     fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        self.plan
-            .batches(first, end, |at, n| emit(self.batch(at, n)));
+        let t = self.table();
+        self.plan.batches(first, end, |at, n| emit(t.batch(at, n)));
     }
 
     /// Records `first..end` (0-based within this load), on this thread.
@@ -453,7 +412,7 @@ pub(crate) fn deterministic_value(
 /// field in name order, each drawing one int it never uses (its `toArray`
 /// fills from fresh draws); then the database binding reads the values in
 /// the `HashMap`'s iteration order, each drawing one int per 6 bytes.
-struct RandomLayout {
+pub(crate) struct RandomLayout {
     /// Ints per record.
     per_record: u64,
     /// Start of each field's ints within the record.
@@ -461,7 +420,7 @@ struct RandomLayout {
 }
 
 impl RandomLayout {
-    fn new(y: &Ycsb) -> Self {
+    pub(crate) fn new(y: &Ycsb) -> Self {
         let fc = y.field_count as u64;
         let per_field = (y.field_length as u64).div_ceil(6);
         let order = java_hashmap_order(&y.field_names());
@@ -477,7 +436,7 @@ impl RandomLayout {
 
     /// Field `f` of record `j` of the load, into `out`.
     #[inline]
-    fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
+    pub(crate) fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
         let at = j * self.per_record + self.at[f];
         let gamma = tlr.gamma();
         let mut state = tlr.state_at(at);

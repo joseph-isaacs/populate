@@ -20,7 +20,10 @@ random value is a function of its row, so each chunk is generated on its own.
 `history` (30,000w), `orders` (30,000w), `new_order` (9,000w), `order_line`
 (5 to 15 per order, ~300,000w), `item` (100,000), `stock` (100,000w).
 Columns and types follow the spec (`Int32` ids, `Decimal128` money with the
-spec's precision, `Timestamp(µs)` dates, `Utf8View` text). Text output is
+spec's precision, `Timestamp(µs)` dates, `Utf8View` text). Each table is
+one populate `Distribution` (`src/tables.rs`): a tuple of named columns,
+each a function of its row number, with `order_line` a `flat_map` over
+orders. The Arrow schema is read off it (`schema_of`). Text output is
 CSV (`,`, `NULL`, no header), the layout `go-tpc tpcc prepare --output-type
 csv` writes.
 

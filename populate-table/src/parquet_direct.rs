@@ -1,6 +1,7 @@
-//! Parquet column chunks for flat integer, timestamp, float and string
-//! columns, and required `FixedSizeList`s of numbers (PLAIN, in pages of
-//! whole records), encoded here instead of by arrow-rs's column writer.
+//! Parquet column chunks for flat integer, timestamp, float, boolean and
+//! string (`Utf8` and `Utf8View`) columns, required `List`s of numbers,
+//! and required `FixedSizeList`s of numbers (PLAIN, in pages of whole
+//! records), encoded here instead of by arrow-rs's column writer.
 //!
 //! arrow-rs is general: it builds definition levels and a list of non-null
 //! indexes per batch, gathers values through it, and dictionary-encodes
@@ -26,7 +27,7 @@ use arrow_array::types::{
     Int64Type, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
     TimestampSecondType,
 };
-use arrow_array::{Array, ArrayRef};
+use arrow_array::{Array, ArrayRef, ArrowPrimitiveType};
 use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::{DataType, TimeUnit};
 use bytes::{Buf, Bytes};
@@ -51,11 +52,25 @@ use std::ptr::{copy_nonoverlapping, null};
 use std::slice::from_raw_parts;
 use std::sync::{Arc, Mutex};
 
-/// Whether a flat column, or a required `FixedSizeList` of required
-/// numbers with its dictionary off, of type `dt`, stored as `descr`, can be
-/// encoded here under `props` (anything else goes to arrow-rs).
+/// Whether a flat column, a required `List` of required numbers, or a
+/// required `FixedSizeList` of required numbers with its dictionary off, of
+/// type `dt`, stored as `descr`, can be encoded here under `props` (anything else goes to arrow-rs).
 pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterProperties) -> bool {
     let path = descr.path();
+    if let DataType::List(item) = dt {
+        // a required list of required numbers
+        let item_ok = matches!(
+            (item.data_type(), descr.physical_type()),
+            (DataType::Float32, PhysicalType::FLOAT)
+                | (DataType::Float64, PhysicalType::DOUBLE)
+                | (DataType::Int32, PhysicalType::INT32)
+                | (DataType::Int64, PhysicalType::INT64)
+        );
+        return item_ok
+            && descr.max_rep_level() == 1
+            && descr.max_def_level() == 1
+            && common_ok(path, props);
+    }
     if let DataType::FixedSizeList(item, n) = dt {
         // a required list of required values, PLAIN
         let item_ok = matches!(
@@ -82,7 +97,8 @@ pub(crate) fn eligible(dt: &DataType, descr: &ColumnDescriptor, props: &WriterPr
         (DataType::Float64, PhysicalType::DOUBLE) => true,
         (DataType::Decimal128(p, _), PhysicalType::INT32) => *p <= 9,
         (DataType::Decimal128(p, _), PhysicalType::INT64) => *p <= 18,
-        (DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
+        (DataType::Utf8 | DataType::Utf8View, PhysicalType::BYTE_ARRAY) => true,
+        (DataType::Boolean, PhysicalType::BOOLEAN) => true,
         _ => false,
     };
     type_ok && descr.max_rep_level() == 0 && descr.max_def_level() <= 1 && common_ok(path, props)
@@ -119,6 +135,15 @@ impl DirectColumn {
 
     /// The encoded chunk (offsets relative to its start) and its metadata.
     pub(crate) fn close(self, props: &WriterProperties) -> Result<(Rope, ColumnCloseResult)> {
+        if let Some(DataType::List(_)) = self.arrays.first().map(|a| a.data_type()) {
+            let d = &self.descr;
+            return match d.physical_type() {
+                PhysicalType::FLOAT => list_parts::<Float32Type>(&self.arrays, d, props),
+                PhysicalType::DOUBLE => list_parts::<Float64Type>(&self.arrays, d, props),
+                PhysicalType::INT32 => list_parts::<Int32Type>(&self.arrays, d, props),
+                _ => list_parts::<Int64Type>(&self.arrays, d, props),
+            };
+        }
         if let Some(DataType::FixedSizeList(_, n)) = self.arrays.first().map(|a| a.data_type()) {
             let n = *n as usize;
             return match self.descr.physical_type() {
@@ -145,6 +170,16 @@ impl DirectColumn {
             };
         }
         match self.descr.physical_type() {
+            PhysicalType::BOOLEAN => {
+                let v = Values::<bool>::gather(&self.arrays, |a, out| {
+                    let b = a.as_boolean();
+                    match a.logical_nulls().filter(|n| n.null_count() > 0) {
+                        None => out.extend(b.values().iter()),
+                        Some(n) => out.extend(n.valid_indices().map(|i| b.value(i))),
+                    }
+                });
+                encode_bools(&self.descr, props, &v)
+            }
             PhysicalType::INT32 => {
                 let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
                     DataType::Int32 => extend(out, a.as_primitive::<Int32Type>().values(), a),
@@ -168,6 +203,16 @@ impl DirectColumn {
                 let keyed = props.dictionary_enabled(self.descr.path());
                 let mut keys = Vec::new();
                 let v = Values::<&[u8]>::gather(&self.arrays, |a, out| {
+                    if let Some(sa) = a.as_string_opt::<i32>() {
+                        // `Utf8`: offsets into one buffer (no views, so
+                        // the dictionary looks up the bytes)
+                        let get = |i: usize| sa.value(i).as_bytes();
+                        match a.logical_nulls().filter(|n| n.null_count() > 0) {
+                            None => out.extend((0..sa.len()).map(get)),
+                            Some(n) => out.extend(n.valid_indices().map(get)),
+                        }
+                        return;
+                    }
                     let sv = a.as_string_view();
                     let views = sv.views();
                     // the bytes of value `i` without a branch on its length
@@ -960,6 +1005,80 @@ impl ChunkWriter<'_> {
     }
 }
 
+/// A boolean column: PLAIN (bit-packed, as arrow-rs writes v1 pages; there
+/// is no boolean dictionary), pages ending after the mini-batch that
+/// reaches the row or page size limit.
+fn encode_bools(
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+    v: &Values<bool>,
+) -> Result<(Rope, ColumnCloseResult)> {
+    let row_limit = props.data_page_row_count_limit().max(1);
+    let size_limit = props.data_page_size_limit();
+    let batch = props.write_batch_size().max(1);
+    let mut pages: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    let (mut r0, mut v0, mut row, mut val) = (0, 0, 0, 0);
+    for &len in &v.lens {
+        let mut left = len;
+        while left > 0 {
+            let step = left.min(batch);
+            let n = v
+                .valid
+                .as_ref()
+                .map_or(step, |b| b.slice(row, step).count_set_bits());
+            (row, val, left) = (row + step, val + n, left - step);
+            if row - r0 >= row_limit || (val - v0) / 8 >= size_limit {
+                pages.push((r0..row, v0..val));
+                (r0, v0) = (row, val);
+            }
+        }
+    }
+    if row > r0 {
+        pages.push((r0..row, v0..val));
+    }
+    let mut sink = rope_sink();
+    let mut w = ChunkWriter::new(descr, props, &mut sink);
+    let mut page_ranges = Vec::with_capacity(pages.len());
+    for (rows, vals) in pages {
+        let vals = &v.vals[vals];
+        let mm = vals
+            .iter()
+            .fold(None, |acc: Option<(bool, bool)>, &x| match acc {
+                None => Some((x, x)),
+                Some((lo, hi)) => Some((lo & x, hi | x)),
+            });
+        page_ranges.push(mm);
+        w.data_page(
+            rows,
+            vals.len(),
+            v.valid.as_ref(),
+            Encoding::PLAIN,
+            None,
+            |body| {
+                let start = body.len();
+                body.resize(start + vals.len().div_ceil(8), 0);
+                for (i, &x) in vals.iter().enumerate() {
+                    body[start + i / 8] |= (x as u8) << (i % 8);
+                }
+                mm.map(|(lo, hi)| (vec![lo as u8], vec![hi as u8]))
+            },
+        )?;
+    }
+    let chunk = page_ranges
+        .iter()
+        .flatten()
+        .fold(None, |acc: Option<(bool, bool)>, &(a, b)| match acc {
+            None => Some((a, b)),
+            Some((lo, hi)) => Some((lo & a, hi | b)),
+        });
+    let order = boundary_order(page_ranges.into_iter());
+    let nulls = (v.rows - v.vals.len()) as u64;
+    let (lo, hi) = chunk.unzip();
+    let stats = Statistics::boolean(lo, hi, None, Some(nulls), false);
+    let close = w.finish(v.rows, v.vals.len(), stats, order)?;
+    Ok((sink.into_inner()?.finish(), close))
+}
+
 /// Pages' boundary order, from each page's `(min, max)` in order (`None`
 /// for all-null pages), as arrow-rs computes it.
 fn boundary_order<K: PartialOrd>(pages: impl Iterator<Item = Option<(K, K)>>) -> BoundaryOrder {
@@ -1094,6 +1213,39 @@ fn list_slices<'a, T: 'a>(
             Ok(&values(child)[start..start + l.len() * l.value_length() as usize])
         })
         .collect()
+}
+
+/// A chunk's `List` arrays as one list column: offsets rebased and values
+/// copied end to end (an error if any list or value is null: the column is
+/// declared required), then [`encode_var_list`].
+fn list_parts<A>(
+    arrays: &[ArrayRef],
+    descr: &ColumnDescPtr,
+    props: &WriterProperties,
+) -> Result<(Rope, ColumnCloseResult)>
+where
+    A: ArrowPrimitiveType,
+    A::Native: Plain,
+{
+    let rows: usize = arrays.iter().map(|a| a.len()).sum();
+    let mut offsets = Vec::with_capacity(rows + 1);
+    offsets.push(0i32);
+    let mut values: Vec<A::Native> = Vec::new();
+    for a in arrays {
+        let l = a.as_list::<i32>();
+        let child = l.values();
+        if l.null_count() > 0 || child.null_count() > 0 {
+            return Err(ParquetError::General(
+                "null in a required list column".into(),
+            ));
+        }
+        let o = l.value_offsets();
+        let (first, last) = (o[0] as usize, o[o.len() - 1] as usize);
+        let base = values.len() as i32 - o[0];
+        offsets.extend(o[1..].iter().map(|&x| x + base));
+        values.extend_from_slice(&child.as_primitive::<A>().values()[first..last]);
+    }
+    encode_var_list(descr, props, &offsets, &values)
 }
 
 /// `f32`s as [`F32`]s, in place.

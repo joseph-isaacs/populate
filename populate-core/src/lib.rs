@@ -85,7 +85,7 @@ pub use local::in_local;
 pub use logical::{Date32, Decimal, Timestamp, time_unit};
 pub use nullable::{Nullable, Validity};
 use rand::Rng;
-pub use rows::RowCount;
+pub use rows::{Append, RowCount};
 pub use seek::SeekRng;
 pub use sink::Sink;
 pub use spread::{Spread, SpreadCols};

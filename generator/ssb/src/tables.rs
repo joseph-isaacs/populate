@@ -494,11 +494,11 @@ pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> {
 
 fn party_name(p: Party) -> impl Col<Bytes> {
     let prefix = p.prefix();
-    format(key(), move |k, out| name(prefix, k as u64, out))
+    format(key(), move |&k, out| name(prefix, k as u64, out))
 }
 
 fn party_address(p: Party) -> impl Col<Bytes> {
-    format(stream::<ADDR_DRAWS>(p.seeds().0), |x, out| address(&x, out))
+    format(stream::<ADDR_DRAWS>(p.seeds().0), address)
 }
 
 fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
@@ -507,7 +507,7 @@ fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
             ints(p.seeds().1, 0, NATIONS as i32 - 1),
             at(stream::<3>(C_PHNE), p.shared(s)),
         ),
-        |(n, x), out| phone(n, x, out),
+        |(&n, &x), out| phone(n, x, out),
     )
 }
 

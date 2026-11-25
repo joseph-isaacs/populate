@@ -20,8 +20,8 @@ use crate::tables::{
     LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, TableGen, at,
     lines, orders, part_codes, party_codes, party_text, segment_codes, table,
 };
-use populate_builtins::{ReadRows, named_all};
-use populate_core::{ChildCols, Children, Columns, Distribution, Sink};
+use populate_builtins::named_all;
+use populate_core::{Append, ChildCols, Children, Columns, Distribution, Sink};
 use populate_table::par_ordered;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -123,13 +123,6 @@ fn whole<D: Distribution + Clone + Sync>(
     r.unwrap_or_else(|e| match e {});
 }
 
-/// The rows of `from` pushed onto `to`.
-fn extend<T, C: Sink<T>>(to: &mut C, from: &impl ReadRows<Row = T>) {
-    for row in from.rows_from(0) {
-        to.push(row);
-    }
-}
-
 /// A whole supplier or customer table. Each job writes its rows' names,
 /// addresses and phones into its own buffers, so every buffer stays far
 /// below the 4 GiB a view's offset can reach.
@@ -140,7 +133,7 @@ fn party(d: &'static Dict, s: &Scale, p: Party, rows: u64, threads: usize) -> Di
         Party::Supplier => 0,
     };
     whole(&party_codes(p, s), rows, threads, |c| {
-        extend(&mut dim.codes, &c)
+        dim.codes.append_rows(c)
     });
     whole(&segment_codes(d), segments, threads, |c| {
         dim.segment.extend(c)
@@ -159,7 +152,7 @@ impl Dims {
     pub(crate) fn build(s: &Scale, threads: usize) -> Dims {
         let d = Dict::get();
         let mut part = Columns::<PartCode>::default();
-        whole(&part_codes(d), s.parts, threads, |c| extend(&mut part, &c));
+        whole(&part_codes(d), s.parts, threads, |c| part.append_rows(c));
         Dims {
             customer: party(d, s, Party::Customer, s.customers, threads),
             supplier: party(d, s, Party::Supplier, s.suppliers, threads),
@@ -223,11 +216,6 @@ struct Join<D> {
 impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
     type Item = Children<FlatRow>;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> Children<FlatRow> {
-        let cols = self.collect(rng, 1);
-        Children(cols.values.rows_from(0).collect())
-    }
-
     /// The lines, then each dimension column gathered from them in a pass
     /// of its own: the lookups of one column are independent, so their
     /// cache misses overlap.
@@ -258,13 +246,7 @@ impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
             (&mut s.0, &mut s.1, &mut s.2, &mut s.3, &mut s.4, &mut s.5),
         );
         dims.gather_part(d, part, p);
-        if lo.rows() == 0 {
-            *lo = lines;
-        } else {
-            for l in lines.rows_from(0) {
-                lo.push(l);
-            }
-        }
+        lo.append_rows(lines);
         cols.sources += n;
     }
 

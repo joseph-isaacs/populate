@@ -1,4 +1,5 @@
-//! [`RowCount`]: how many rows a set of columns holds.
+//! [`RowCount`]: how many rows a set of columns holds, and [`Append`]:
+//! moving one set of columns onto the end of another.
 
 use crate::children::{ChildCols, TableCols};
 use crate::list::ListCol;
@@ -59,5 +60,29 @@ impl<V> RowCount for ChildCols<V> {
 impl<C: RowCount> RowCount for TableCols<C> {
     fn rows(&self) -> usize {
         self.tables.rows()
+    }
+}
+
+/// Columns another set of the same columns can be moved onto the end of:
+/// its rows after this one's, column by column. Moving onto empty columns
+/// takes the other's buffers as they are.
+pub trait Append {
+    fn append_rows(&mut self, other: Self);
+}
+
+impl<T> Append for Vec<T> {
+    fn append_rows(&mut self, mut other: Self) {
+        if self.is_empty() {
+            *self = other;
+        } else {
+            Vec::append(self, &mut other);
+        }
+    }
+}
+
+impl<C: Append> Append for Nullable<C> {
+    fn append_rows(&mut self, other: Self) {
+        self.values.append_rows(other.values);
+        self.valid.append(&other.valid);
     }
 }

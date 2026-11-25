@@ -15,8 +15,8 @@ use crate::dict::{DATA, Dict, Views};
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
-use populate_core::{ChildCols, Children, Columnar, Columns, Distribution, Sink};
+use populate_builtins::RowRefs;
+use populate_core::{Append, ChildCols, Children, Columnar, Columns, Distribution, RowCount, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
 use std::marker::PhantomData;
@@ -49,15 +49,15 @@ impl Sink<Word> for Words {
     }
 }
 
-impl ReadRows for Words {
-    type Row = Word;
-
+impl RowCount for Words {
     fn rows(&self) -> usize {
         self.0.len()
     }
+}
 
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Word> + '_ {
-        self.0[start..].iter().map(|&v| Word(v))
+impl Append for Words {
+    fn append_rows(&mut self, other: Words) {
+        self.0.append_rows(other.0);
     }
 }
 
@@ -108,12 +108,16 @@ pub(crate) struct Format<D, F> {
     f: F,
 }
 
+/// The row of `D`'s columns that `format`'s closure reads in place.
+type Ref<'a, D> = <Columns<<D as Distribution>::Item> as RowRefs>::Ref<'a>;
+
 /// `f(row, out)` appends each row's string to `out`. Collected, it writes
 /// straight into the column's bytes.
 pub(crate) fn format<D, F>(source: D, f: F) -> Format<D, F>
 where
     D: Distribution,
-    F: Fn(D::Item, &mut Vec<u8>),
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(Ref<'a, D>, &mut Vec<u8>),
 {
     Format { source, f }
 }
@@ -121,21 +125,15 @@ where
 impl<D, F> Distribution for Format<D, F>
 where
     D: Distribution,
-    Columns<D::Item>: ReadRows<Row = D::Item>,
-    F: Fn(D::Item, &mut Vec<u8>),
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(Ref<'a, D>, &mut Vec<u8>),
 {
     type Item = Bytes;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Bytes {
-        let mut out = Vec::new();
-        (self.f)(self.source.sample(rng), &mut out);
-        Bytes(out)
-    }
 
     fn collect_into(&mut self, cols: &mut Views, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
         cols.views.reserve(n);
-        for row in src.rows_from(0) {
+        for row in src.row_refs() {
             let start = cols.data.len();
             (self.f)(row, &mut cols.data);
             cols.end_string(start);
@@ -249,15 +247,9 @@ impl Sink<Shared> for SharedCols {
     }
 }
 
-impl ReadRows for SharedCols {
-    type Row = Shared;
-
+impl RowCount for SharedCols {
     fn rows(&self) -> usize {
         self.views.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Shared> + '_ {
-        self.views[start..].iter().map(|&v| Shared(v))
     }
 }
 
@@ -308,18 +300,9 @@ impl<D, F, Out> Distribution for ChildrenOf<D, F, Out>
 where
     D: Distribution,
     Out: Columnar,
-    Columns<Out>: ReadRows<Row = Out>,
     F: Fn(&Columns<D::Item>, &mut Columns<Out>),
 {
     type Item = Children<Out>;
-
-    /// One source row, collected (so read the way `collect` reads it).
-    fn sample(&mut self, rng: &mut impl Rng) -> Children<Out> {
-        let src = self.source.collect(rng, 1);
-        let mut out = Columns::<Out>::default();
-        (self.f)(&src, &mut out);
-        Children(out.rows_from(0).collect())
-    }
 
     fn collect_into(&mut self, cols: &mut ChildCols<Columns<Out>>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);

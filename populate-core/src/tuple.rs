@@ -13,7 +13,7 @@
 //! These impls live in this crate because only the crate that defines a
 //! trait may implement it for tuples (the orphan rule).
 
-use crate::{Columnar, Columns, Distribution, RowCount, Sink};
+use crate::{Append, Columnar, Columns, Distribution, RowCount, Sink};
 use rand::Rng;
 
 macro_rules! tuple_impls {
@@ -42,6 +42,12 @@ macro_rules! tuple_impls {
                     "tuple columns of different lengths: {rows:?}"
                 );
                 rows[0]
+            }
+        }
+
+        impl<$($S: Append),+> Append for ($($S,)+) {
+            fn append_rows(&mut self, other: Self) {
+                $(self.$idx.append_rows(other.$idx);)+
             }
         }
 

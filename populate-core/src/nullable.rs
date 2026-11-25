@@ -88,7 +88,7 @@ impl Validity {
         }
         let rest = n - head;
         self.words.extend(repeat_n(u64::MAX, rest / 64));
-        if rest % 64 > 0 {
+        if !rest.is_multiple_of(64) {
             self.words.push(u64::MAX >> (64 - rest % 64));
         }
         self.len += n;

@@ -261,6 +261,15 @@ fn eight(x: u32) -> u64 {
     v + ZEROS
 }
 
+/// The 4 decimal digits of `x < 10^4`, as [`eight`] makes 8.
+#[inline(always)]
+fn four(x: u32) -> u32 {
+    let v = (x / 100) | ((x % 100) << 16);
+    let hi = ((v * 103) >> 10) & 0x000F_000F; // lane / 10
+    let v = hi | ((v - hi * 10) << 8);
+    v + ZEROS as u32
+}
+
 /// `"00000000"` as a `u64`.
 const ZEROS: u64 = 0x3030_3030_3030_3030;
 
@@ -269,6 +278,9 @@ const ZEROS: u64 = 0x3030_3030_3030_3030;
 pub struct Cursor(*mut u8);
 
 impl Cursor {
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn byte(&mut self, b: u8) {
         unsafe {
@@ -277,6 +289,9 @@ impl Cursor {
         }
     }
 
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn bytes(&mut self, b: &[u8]) {
         unsafe {
@@ -299,7 +314,17 @@ impl Cursor {
     #[inline]
     unsafe fn uint(&mut self, v: u64) {
         unsafe {
-            if v < 100_000_000 {
+            if v < 10_000 {
+                // most keys and prices: half the lanes ([`four`]); each
+                // field's call site has its own branch, which predicts
+                // well, as a column's values are of one size
+                let d = four(v as u32);
+                let zeros = ((d - ZEROS as u32) | (1 << 24)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 4]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(4 - zeros as usize);
+            } else if v < 100_000_000 {
                 // leading zero digits are the low zero bytes (at most 7)
                 let d = eight(v as u32);
                 let zeros = ((d - ZEROS) | (1 << 56)).trailing_zeros() / 8;
@@ -328,6 +353,9 @@ impl Cursor {
         }
     }
 
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn int(&mut self, v: i64) {
         unsafe {
@@ -340,6 +368,9 @@ impl Cursor {
 
     /// `%.{scale}f` of `v / 10^scale` (what dsdgen's `print_decimal`
     /// prints; `-0.05` keeps its sign).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     pub unsafe fn decimal(&mut self, v: i64, scale: u32) {
         unsafe {
             if scale == 0 {
@@ -401,6 +432,9 @@ impl Cursor {
     }
 
     /// [`Self::decimal`] at scale 2, with constant divisors.
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn decimal2(&mut self, v: i64) {
         unsafe {
@@ -408,14 +442,43 @@ impl Cursor {
                 self.byte(b'-');
             }
             let a = v.unsigned_abs();
-            self.uint(a / 100);
-            self.byte(b'.');
-            self.pair((a % 100) as usize);
+            if a < 10_000 {
+                // as below, in 4 digits
+                let d = four(a as u32);
+                let zeros = ((d - ZEROS as u32) | (1 << 8)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 4]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(2 - zeros as usize);
+                let frac = b'.' as u32 | (d >> 16) << 8;
+                self.0.cast::<[u8; 4]>().write_unaligned(frac.to_le_bytes());
+                self.0 = self.0.add(3);
+            } else if a < 100_000_000 {
+                // all 8 digits at once: the 6 whole ones without their
+                // leading zeros (keeping the units), then `.` and the
+                // other 2, stored over the digits' tail
+                let d = eight(a as u32);
+                let zeros = ((d - ZEROS) | (1 << 40)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 8]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(6 - zeros as usize);
+                let frac = b'.' as u32 | ((d >> 48) as u32) << 8;
+                self.0.cast::<[u8; 4]>().write_unaligned(frac.to_le_bytes());
+                self.0 = self.0.add(3);
+            } else {
+                self.uint(a / 100);
+                self.byte(b'.');
+                self.pair((a % 100) as usize);
+            }
         }
     }
 
     /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in [`DATES`] for
     /// the years 1900 to 2099.
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn day(&mut self, days: i32) {
         unsafe {
@@ -478,6 +541,9 @@ impl Cursor {
 
     /// The first `len <= 12` of 12 bytes: one 12-byte store (the
     /// reservation has 12 bytes of slack per string for this).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
     pub unsafe fn short(&mut self, b: &[u8; 12], len: usize) {
         unsafe {
@@ -487,6 +553,9 @@ impl Cursor {
     }
 
     /// `s` in `encoding` (Latin-1 is never longer than UTF-8).
+    ///
+    /// # Safety
+    /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
     pub unsafe fn text(&mut self, s: &str, encoding: Encoding) {
         unsafe {
@@ -1028,10 +1097,17 @@ mod tests {
         {
             assert_eq!(eight(x).to_le_bytes(), *format!("{x:08}").as_bytes(), "{x}");
         }
+        for x in 0..10_000u32 {
+            assert_eq!(four(x).to_le_bytes(), *format!("{x:04}").as_bytes(), "{x}");
+        }
         for v in [
             0u64,
             7,
             10,
+            100,
+            1_234,
+            9_999,
+            10_000,
             99_999_999,
             100_000_000,
             123_456_789_012,
@@ -1053,8 +1129,25 @@ mod tests {
             assert_eq!(fmt(|o| o.decimal(-77973, 2)), "-779.73");
             assert_eq!(fmt(|o| o.decimal(-77973, 3)), "-77.973");
             assert_eq!(fmt(|o| o.decimal(-500, 0)), "-500");
-            for v in [-100_001, -77973, -5, 0, 7, 99, 100, 123_456_789] {
-                assert_eq!(fmt(|o| o.decimal2(v)), fmt(|o| o.decimal(v, 2)));
+            let edges = [
+                -100_001,
+                -77973,
+                -5,
+                0,
+                7,
+                99,
+                100,
+                9_999,
+                10_000,
+                99_999_999,
+                100_000_000,
+            ];
+            for v in (-1_000_000..1_000_000)
+                .step_by(997)
+                .chain(edges)
+                .chain([123_456_789])
+            {
+                assert_eq!(fmt(|o| o.decimal2(v)), fmt(|o| o.decimal(v, 2)), "{v}");
             }
             assert_eq!(fmt(|o| o.date(0)), "1970-01-01");
             assert_eq!(fmt(|o| o.date(-25567)), "1900-01-01");

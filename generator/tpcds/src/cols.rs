@@ -138,7 +138,12 @@ impl TextField for StrViews {
     }
 
     fn text_bytes(&self) -> usize {
-        self.data.len() + 12 * self.views.len()
+        // per row, as a view may share another's bytes; 12 for the store
+        // of a short one
+        self.views
+            .iter()
+            .map(|&v| (v as u32 as usize).max(12))
+            .sum()
     }
 
     #[inline(always)]

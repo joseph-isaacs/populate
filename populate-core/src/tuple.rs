@@ -56,6 +56,10 @@ macro_rules! tuple_impls {
             fn column_names(&self, out: &mut Vec<String>) {
                 $(self.$idx.column_names(out);)+
             }
+
+            fn columns(&self) -> Columns<Self::Item> {
+                ($(self.$idx.columns(),)+)
+            }
         }
     };
 }

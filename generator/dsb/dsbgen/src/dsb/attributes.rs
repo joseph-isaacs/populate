@@ -1,5 +1,5 @@
 // Ported from Microsoft DSB's dsdgen (MIT; Copyright (c) Microsoft
-// Corporation), joint_distribution.c. See populate-dsb/NOTICE.md.
+// Corporation), joint_distribution.c. See generator/dsb/NOTICE.md.
 
 //! DSB's attribute key maps: for each value of an attribute of a
 //! dimension (an item's category, an address's state, ...), the keys of the

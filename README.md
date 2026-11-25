@@ -58,16 +58,16 @@ its flags, how it was verified and its performance.
 
 | benchmark | crate | CLI | matches |
 |---|---|---|---|
-| TPC-H | [`populate-tpch`](populate-tpch/README.md) | `tpch-gen` | `dbgen` / `tpchgen-cli`, byte for byte |
-| TPC-DS | [`populate-tpcds`](populate-tpcds/README.md) | `tpcds-gen` | `dsdgen`, byte for byte |
-| DSB | [`populate-dsb`](populate-dsb/README.md) | `dsb-gen` | DSB's `dsdgen`, byte for byte |
-| SSB (and SSB-flat) | [`populate-ssb`](populate-ssb/README.md) | `ssb-gen` | `ssb-dbgen`, byte for byte |
-| H2O db-benchmark | [`populate-h2o`](populate-h2o/README.md) | `h2o-gen` | its R datagen, byte for byte |
-| TSBS devops / IoT | [`populate-tsbs`](populate-tsbs/README.md) | `tsbs-gen` | `tsbs_generate_data`, byte for byte |
-| LDBC SNB | [`populate-ldbc`](populate-ldbc/README.md) | `ldbc-gen` | the LDBC Spark datagen |
-| YCSB | [`populate-ycsb`](populate-ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
-| TPC-C | [`populate-tpcc`](populate-tpcc/README.md) | `tpcc-gen` | the spec's population rules |
-| synthetic shapes | [`populate-synth`](populate-synth/README.md) | `synth-gen` | (no reference) |
+| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `tpch-gen` | `dbgen` / `tpchgen-cli`, byte for byte |
+| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `tpcds-gen` | `dsdgen`, byte for byte |
+| DSB | [`populate-dsb`](generator/dsb/README.md) | `dsb-gen` | DSB's `dsdgen`, byte for byte |
+| SSB (and SSB-flat) | [`populate-ssb`](generator/ssb/README.md) | `ssb-gen` | `ssb-dbgen`, byte for byte |
+| H2O db-benchmark | [`populate-h2o`](generator/h2o/README.md) | `h2o-gen` | its R datagen, byte for byte |
+| TSBS devops / IoT | [`populate-tsbs`](generator/tsbs/README.md) | `tsbs-gen` | `tsbs_generate_data`, byte for byte |
+| LDBC SNB | [`populate-ldbc`](generator/ldbc/README.md) | `ldbc-gen` | the LDBC Spark datagen |
+| YCSB | [`populate-ycsb`](generator/ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
+| TPC-C | [`populate-tpcc`](generator/tpcc/README.md) | `tpcc-gen` | the spec's population rules |
+| synthetic shapes | [`populate-synth`](generator/synth/README.md) | `synth-gen` | (no reference) |
 
 ```sh
 cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet
@@ -79,6 +79,9 @@ Performance Council. Data generated here is not valid for TPC result
 publication.
 
 ## Crates
+
+The core crates live at the top level; the output sinks are under `sink/`
+and the data-set generators under `generator/`.
 
 | crate                   | contents                                            |
 |-------------------------|-----------------------------------------------------|
@@ -96,4 +99,4 @@ The generator crates are listed [above](#benchmark-generators). See
 ## Licence
 
 MIT (see [`LICENSE`](LICENSE)). `populate-dsb` vendors code under
-Apache-2.0 and MIT; see [`populate-dsb/NOTICE.md`](populate-dsb/NOTICE.md).
+Apache-2.0 and MIT; see [`generator/dsb/NOTICE.md`](generator/dsb/NOTICE.md).

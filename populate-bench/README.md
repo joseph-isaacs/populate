@@ -46,7 +46,7 @@ benchmark-only dependencies), so root `cargo build` / `cargo test` skip it.
 - The vectorised TPC-H RNG in `lanes.rs` produces tpchgen's exact output
   about 1.8x faster than tpchgen's serial RNG and row logic at the default
   target, and 2.5 to 3x faster with AVX2. This is the approach
-  [`populate-tpch`](../populate-tpch/README.md) is built on.
+  [`populate-tpch`](../generator/tpch/README.md) is built on.
 - populate is about 7% slower than a hand-written column loop and about 30%
   slower than a hand-written row loop into Arrow builders, on the same RNG.
 - The direct Parquet writer is about 1.1 to 1.3x faster than

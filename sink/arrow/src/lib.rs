@@ -542,6 +542,11 @@ where
     if names.is_empty() {
         names = (0..types.len()).map(|i| format!("c{i}")).collect();
     }
+    schema_from(names, types, nullable)
+}
+
+/// Fields `names` typed `types`, nullable where `nullable` says.
+fn schema_from(names: Vec<String>, types: Vec<DataType>, nullable: Vec<bool>) -> Schema {
     assert_eq!(
         names.len(),
         types.len(),
@@ -556,6 +561,101 @@ where
             .map(|(n, (t, null))| Field::new(n, t, null))
             .collect::<Vec<_>>(),
     )
+}
+
+/// The columns of several tables made together: a tuple of
+/// [`ChildCols`], one per table (`populate_builtins::fan_out` makes them).
+pub trait IntoArrowTables {
+    /// The number of tables.
+    const TABLES: usize;
+
+    /// Each table's column types and nullability, one entry per table, in
+    /// order.
+    fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>);
+
+    /// Each table's arrays, one `Vec` per table, in order.
+    fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>);
+}
+
+impl<V: IntoArrowColumns> IntoArrowTables for ChildCols<V> {
+    const TABLES: usize = 1;
+    fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>) {
+        let (mut t, mut n) = (Vec::with_capacity(V::LEN), Vec::with_capacity(V::LEN));
+        V::data_types(&mut t);
+        V::nullables(&mut n);
+        out.push((t, n));
+    }
+    fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>) {
+        let mut a = Vec::with_capacity(V::LEN);
+        self.values.into_arrays(&mut a);
+        out.push(a);
+    }
+}
+
+macro_rules! tuple_tables {
+    ($($C:ident $idx:tt),+) => {
+        impl<$($C: IntoArrowTables),+> IntoArrowTables for ($($C,)+) {
+            const TABLES: usize = 0 $(+ $C::TABLES)+;
+            fn table_types(out: &mut Vec<(Vec<DataType>, Vec<bool>)>) {
+                $($C::table_types(out);)+
+            }
+            fn into_tables(self, out: &mut Vec<Vec<ArrayRef>>) {
+                $(self.$idx.into_tables(out);)+
+            }
+        }
+    };
+}
+
+tuple_tables!(A 0);
+tuple_tables!(A 0, B 1);
+tuple_tables!(A 0, B 1, C 2);
+tuple_tables!(A 0, B 1, C 2, D 3);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+/// The schema of each table `dist` makes ([`IntoArrowTables`]), as
+/// [`schema_of`] for one: the names the distribution gives, every table's
+/// columns in order, are split by the tables' column counts. Unnamed
+/// columns are `c0, c1, ...` within each table.
+///
+/// # Panics
+///
+/// If `dist` names some of its columns but not all.
+pub fn schemas_of<D: Distribution>(dist: &D) -> Vec<Schema>
+where
+    Columns<D::Item>: IntoArrowTables,
+{
+    let mut types = Vec::with_capacity(<Columns<D::Item>>::TABLES);
+    <Columns<D::Item>>::table_types(&mut types);
+    let mut names = Vec::new();
+    dist.column_names(&mut names);
+    let total: usize = types.iter().map(|(t, _)| t.len()).sum();
+    if !names.is_empty() {
+        assert_eq!(
+            names.len(),
+            total,
+            "the distribution names {} of its {total} columns: {names:?}",
+            names.len()
+        );
+    }
+    let mut names = names.into_iter();
+    types
+        .into_iter()
+        .map(|(t, null)| {
+            let n = if names.len() == 0 {
+                (0..t.len()).map(|i| format!("c{i}")).collect()
+            } else {
+                names.by_ref().take(t.len()).collect()
+            };
+            schema_from(n, t, null)
+        })
+        .collect()
 }
 
 // ============================================================================

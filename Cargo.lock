@@ -810,10 +810,12 @@ name = "populate-ldbc"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-buffer",
  "arrow-schema",
- "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
  "unicode-normalization",
 ]
 

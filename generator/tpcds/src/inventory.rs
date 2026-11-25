@@ -61,10 +61,16 @@ impl Distribution for InventoryKeys {
         self.runs(n as u64, |d, warehouse, first, len| {
             date.extend(std::iter::repeat_n(d as i32, len));
             wh.extend(std::iter::repeat_n(warehouse as i32 + 1, len));
-            item.extend(
-                (first..first + len as u64)
-                    .map(|i| match_surrogate_key(i as i64 + 1, d, Ds::Item, scaling) as i32),
-            );
+            // match_surrogate_key(u, d) is (u / 3) * 6 plus an offset that
+            // depends on u % 3 and the date, capped at the row count: the
+            // offsets, once per run
+            let at = |u: i64| match_surrogate_key(u, d, Ds::Item, scaling) - u / 3 * 6;
+            let offset = [at(3), at(1), at(2)];
+            let cap = scaling.get_row_count(Ds::Item) as i64;
+            item.extend((first..first + len as u64).map(|i| {
+                let u = i as i64 + 1;
+                (u / 3 * 6 + offset[(u % 3) as usize]).min(cap) as i32
+            }));
         });
         self.row += n as u64;
     }
@@ -164,6 +170,24 @@ pub(crate) fn customer_demographics() -> impl Distribution<
         purchase.len() as u64,
         credit.len() as u64,
     ];
+    let block: u32 = radix.iter().product::<u64>() as u32;
+    let first: Vec<(Word, Word, Word, i32, Word)> = (0..block as u64)
+        .map(|i| {
+            let mut d = i;
+            let mut digit = |r: u64| {
+                let x = d % r;
+                d /= r;
+                x as usize
+            };
+            (
+                gender[digit(radix[0])],
+                marital[digit(radix[1])],
+                education[digit(radix[2])],
+                purchase[digit(radix[3])],
+                credit[digit(radix[4])],
+            )
+        })
+        .collect();
     named_all(
         &[
             "cd_demo_sk",
@@ -176,19 +200,11 @@ pub(crate) fn customer_demographics() -> impl Distribution<
             "cd_dep_employed_count",
             "cd_dep_college_count",
         ],
-        derive(range(0u64, 1), move |&i| {
-            let mut d = i;
-            let mut digit = |r: u64| {
-                let x = d % r;
-                d /= r;
-                x as usize
-            };
-            let g = gender[digit(radix[0])];
-            let m = marital[digit(radix[1])];
-            let e = education[digit(radix[2])];
-            let p = purchase[digit(radix[3])];
-            let c = credit[digit(radix[4])];
-            let (d1, d2, d3) = (digit(7) as i32, digit(7) as i32, digit(7) as i32);
+        // the first five digits of every index below their radices'
+        // product, so a row costs one division by it and three by 7
+        derive(range(0u32, 1), move |&i| {
+            let (low, high) = ((i % block) as usize, i / block);
+            let (g, m, e, p, c) = first[low];
             (
                 i as i32 + 1,
                 Some(g),
@@ -196,9 +212,9 @@ pub(crate) fn customer_demographics() -> impl Distribution<
                 Some(e),
                 Some(p),
                 Some(c),
-                Some(d1),
-                Some(d2),
-                Some(d3),
+                Some((high % 7) as i32),
+                Some((high / 7 % 7) as i32),
+                Some((high / 49 % 7) as i32),
             )
         }),
     )

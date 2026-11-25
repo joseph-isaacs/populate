@@ -129,8 +129,8 @@ impl<C: GeneratorColumn, const N: usize> Streams<C, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tpcdsgen::row::AbstractRowGenerator;
     use tpcdsgen::generator::StoreSalesGeneratorColumn as S;
+    use tpcdsgen::row::AbstractRowGenerator;
 
     #[test]
     fn row_seeds_match_the_generator() {

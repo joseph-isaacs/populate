@@ -586,7 +586,11 @@ impl MultiChunks for Unit<'_> {
                 });
             });
         };
-        let align = if t.batch_size % w == 0 { w } else { t.batch_size };
+        let align = if t.batch_size % w == 0 {
+            w
+        } else {
+            t.batch_size
+        };
         let mut cut: Vec<Rebatch> = (0..t.source.schemas().len())
             .map(|_| Rebatch::new(align))
             .collect();

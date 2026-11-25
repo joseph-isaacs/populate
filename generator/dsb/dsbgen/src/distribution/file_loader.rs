@@ -1,3 +1,6 @@
+// Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 use crate::distribution::embedded_data::get_embedded_distribution;
 use crate::error::{Result, TpcdsError};
 

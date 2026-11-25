@@ -1,3 +1,8 @@
+// Copyright 2009 The Go Authors. All rights reserved.
+// Copyright 2010 The Go Authors. All rights reserved.
+// Use of the Go-derived code is governed by the BSD-3-Clause licence in
+// ../LICENSE-Go.txt. Rust adaptations are described in ../NOTICE.md.
+
 //! Go's `math/rand` (v1), bit for bit: the additive lagged Fibonacci source
 //! that `rand.Seed` installs, the `Rand` methods TSBS calls, `NormFloat64`'s
 //! ziggurat and `Zipf`. Plus `math.Exp` and `math.Log` as Go's amd64

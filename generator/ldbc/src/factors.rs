@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! The datagen's factor tables (`--generate-factors`): 34 summary tables
 //! of the raw graph (counts per country, day, tag, person, ...; friends of
 //! friends; 2- and 4-hop person pairs; connected components), as

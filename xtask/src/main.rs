@@ -22,10 +22,14 @@ use std::process::{Command, ExitCode, Stdio};
 use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
+mod report;
+
+use report::Report;
+
 const USAGE: &str = "\
 usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--formats text,parquet,arrow]
                          [--runs 3] [--out DIR] [--tpcgen-cli PATH] [--tsbs-generate-data PATH]
-                         [--no-reference] [--list]
+                         [--no-reference] [--json PATH] [--list]
 
   --scale       comma-separated scale factors; each generator maps one to its own size (see --list)
   --threads     comma-separated thread counts (default: 1 and every core)
@@ -35,6 +39,7 @@ usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--forma
   --out         where output goes while a run lasts (default /dev/shm, else the temp dir);
                 it is written to DIR/populate-bench and deleted after every run. Against a
                 reference, one output of each is kept to compare: allow twice the output size
+  --json        save a versioned JSON report, checkpointed after each configuration
   --no-reference  skip reference tools even when they are installed";
 
 fn main() -> ExitCode {
@@ -134,6 +139,7 @@ struct Opts {
     tpcgen_cli: Option<PathBuf>,
     tsbs_ref: Option<PathBuf>,
     list: bool,
+    json: Option<PathBuf>,
 }
 
 fn list(s: &str) -> impl Iterator<Item = &str> {
@@ -161,6 +167,7 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         tpcgen_cli: which("tpcgen-cli"),
         tsbs_ref: which("tsbs_generate_data"),
         list: false,
+        json: None,
     };
     let mut it = a.iter();
     while let Some(flag) = it.next() {
@@ -198,6 +205,7 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             "--formats" => o.formats = list(val()?).map(Format::parse).collect::<Result<_, _>>()?,
             "--runs" => o.runs = num(flag, val()?)?,
             "--out" => o.out = PathBuf::from(val()?),
+            "--json" => o.json = Some(PathBuf::from(val()?)),
             "--tpcgen-cli" => o.tpcgen_cli = Some(PathBuf::from(val()?)),
             "--tsbs-generate-data" => o.tsbs_ref = Some(PathBuf::from(val()?)),
             "--no-reference" => {
@@ -209,8 +217,15 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             _ => return Err(format!("unknown flag {flag}\n{USAGE}")),
         }
     }
-    if o.scales.iter().any(|s| s.is_nan() || *s <= 0.0) || o.threads.contains(&0) || o.runs == 0 {
-        return Err("--scale, --threads and --runs must be > 0".into());
+    if o.scales.is_empty()
+        || o.threads.is_empty()
+        || o.formats.is_empty()
+        || o.generators.is_empty()
+        || o.scales.iter().any(|s| !s.is_finite() || *s <= 0.0)
+        || o.threads.contains(&0)
+        || o.runs == 0
+    {
+        return Err("selections must be nonempty; --scale must be finite; --scale, --threads and --runs must be > 0".into());
     }
     o.out = o.out.join("populate-bench");
     Ok(o)
@@ -622,6 +637,7 @@ fn bench(o: Opts) -> Result<(), String> {
         None => root.join("target"),
     };
     let bin = target.join("release");
+    let mut report = Report::new(root, &o)?;
 
     let mut wanted: Vec<&(&str, &str, &str, &str)> = GENERATORS
         .iter()
@@ -636,8 +652,10 @@ fn bench(o: Opts) -> Result<(), String> {
              or set LDBC_DATAGEN_RESOURCES)"
         );
         wanted.retain(|g| g.0 != "ldbc");
+        report.skip("populate", Some("ldbc"), "datagen resources unavailable");
     }
     if wanted.is_empty() {
+        report.save(false)?;
         return Err("no generators to run".into());
     }
 
@@ -665,12 +683,15 @@ fn bench(o: Opts) -> Result<(), String> {
     ] {
         match p {
             Some(p) => eprintln!("reference: {tool} at {}", p.display()),
-            None => eprintln!("reference: {tool} not found, skipped"),
+            None => {
+                eprintln!("reference: {tool} not found, skipped");
+                report.skip(tool, None, "reference not installed or disabled");
+            }
         }
     }
 
     // a reference tool without a thread flag runs once per configuration
-    let mut ref_cache: HashMap<String, Result<(Duration, u64), String>> = HashMap::new();
+    let mut ref_cache = HashMap::new();
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     let mut notes = Vec::new();
@@ -680,6 +701,7 @@ fn bench(o: Opts) -> Result<(), String> {
             for &f in &o.formats {
                 for &t in &o.threads {
                     let Some(c) = case(&o, &bin, g.0, scale, f, t) else {
+                        report.skip("populate", Some(g.0), "requested format unsupported");
                         continue;
                     };
                     eprintln!("{} {} {} {} threads", g.0, c.size, c.format, t);
@@ -724,10 +746,15 @@ fn bench(o: Opts) -> Result<(), String> {
                         let _ = remove_dir_all(&ours_dir);
                         ours.push(run(&ours_cmd, &o.out, false));
                     }
+                    report.measurement("populate", (g.0, scale, t), (&size, format), &ours_cmd, &ours);
                     let ours = best(&ours);
                     let theirs = match (&reference, cached) {
                         (Some(_), Some(r)) => Some(r),
-                        (Some((_, r)), None) => {
+                        (Some((name, r)), None) => {
+                            // The Go reference has no thread flag: cache its actual
+                            // single-threaded measurement, not a copy for each t.
+                            let threads = if *name == "tsbs_generate_data" { 1 } else { t };
+                            report.measurement(name, (g.0, scale, threads), (&size, format), r, &theirs);
                             let b = best(&theirs);
                             ref_cache.insert(r.key(), b.clone());
                             Some(b)
@@ -779,11 +806,13 @@ fn bench(o: Opts) -> Result<(), String> {
                         _ => row.extend(std::iter::repeat_n(String::new(), 5)),
                     }
                     rows.push(row);
+                    report.save(false)?;
                 }
             }
         }
     }
     let _ = remove_dir_all(&o.out);
+    report.save(true)?;
 
     println!();
     println!(
@@ -815,4 +844,29 @@ fn bench(o: Opts) -> Result<(), String> {
         return Err(format!("{} run(s) failed", errors.len()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_nonfinite_scales_and_empty_selections() {
+        for (flag, value) in [
+            ("--scale", "inf"),
+            ("--scale", "NaN"),
+            ("--scale", "0"),
+            ("--scale", ""),
+            ("--threads", ""),
+            ("--generators", ""),
+            ("--formats", ""),
+            ("--threads", "0"),
+            ("--runs", "0"),
+        ] {
+            assert!(
+                parse(&[flag.into(), value.into()]).is_err(),
+                "{flag} {value}"
+            );
+        }
+    }
 }

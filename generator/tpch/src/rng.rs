@@ -9,6 +9,8 @@
 //! would be ([`Rng::at`]), and what lets [`draws`] generate a stream with
 //! independent lanes.
 
+use populate_core::{Distribution, SeekRng};
+
 /// The LCG multiplier.
 pub const A: u64 = 16807;
 /// The LCG modulus, `2^31 - 1`.
@@ -80,25 +82,42 @@ pub fn scale(x: u32, range: u32) -> u32 {
 /// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
 /// so the multiply chain vectorises.
 pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
+    fill_after(mulmod(seed as u64, powmod(A, start)), out)
+}
+
+/// The `out.len()` draws after state `x` (a seed, or the last draw made).
+fn fill_after(x: u64, out: &mut [u32]) {
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: the CPU has AVX2
-        return unsafe { draws_avx2(seed, start, out) };
+        return unsafe { fill_avx2(x, out) };
     }
-    draws_any(seed, start, out)
+    fill_any(x, out)
 }
 
-/// [`draws`] compiled for AVX2: 4 lanes per multiply instead of 2.
+/// [`fill_after`] compiled for AVX2: 4 lanes per multiply instead of 2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn draws_avx2(seed: i64, start: u64, out: &mut [u32]) {
-    draws_any(seed, start, out)
+unsafe fn fill_avx2(x: u64, out: &mut [u32]) {
+    fill_any(x, out)
+}
+
+#[cfg(test)]
+fn draws_any(seed: i64, start: u64, out: &mut [u32]) {
+    fill_any(mulmod(seed as u64, powmod(A, start)), out)
 }
 
 #[inline(always)]
-fn draws_any(seed: i64, start: u64, out: &mut [u32]) {
+fn fill_any(mut x: u64, out: &mut [u32]) {
+    if out.len() < LANES {
+        // too few for the lanes to pay for their start
+        for o in out {
+            x = mulmod(x, A);
+            *o = x as u32;
+        }
+        return;
+    }
     let mut lanes = [0u64; LANES];
-    let mut x = mulmod(seed as u64, powmod(A, start));
     for l in &mut lanes {
         x = mulmod(x, A);
         *l = x;
@@ -149,6 +168,117 @@ fn bound_all_any(v: &mut [u32], lo: i32, hi: i32) {
         for x in v {
             *x = bounded(*x, lo, hi) as u32;
         }
+    }
+}
+
+/// One dbgen stream as a [`SeekRng`]: the draws after a state, made in
+/// lanes by [`fill`](SeekRng::fill), jumped over in `O(log n)` by
+/// [`advance`](SeekRng::advance). `populate_builtins::draws` makes it a
+/// column that reserves a fixed number of draws per row.
+#[derive(Debug, Clone, Copy)]
+pub struct Lcg {
+    /// The last draw made (the seed before the first).
+    x: u64,
+}
+
+impl Lcg {
+    /// The stream seeded `seed`, before its first draw.
+    pub fn new(seed: i64) -> Self {
+        Lcg { x: seed as u64 }
+    }
+}
+
+impl SeekRng for Lcg {
+    type Draw = u32;
+
+    #[inline(always)]
+    fn next_draw(&mut self) -> u32 {
+        self.x = mulmod(self.x, A);
+        self.x as u32
+    }
+
+    #[inline]
+    fn advance(&mut self, n: u64) {
+        if n > 0 {
+            self.x = mulmod(self.x, powmod(A, n));
+        }
+    }
+
+    fn fill(&mut self, out: &mut [u32]) {
+        fill_after(self.x, out);
+        if let Some(&last) = out.last() {
+            self.x = last as u64;
+        }
+    }
+}
+
+/// `K` bounded values of a stream per row, dbgen's `lo..=hi` of each draw:
+/// the column most streams make. Collected, the draws are filled and
+/// bounded in place, both vectorised ([`draws`], [`bound_all`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Ints<const K: usize> {
+    stream: Lcg,
+    lo: i32,
+    hi: i32,
+}
+
+impl<const K: usize> Ints<K> {
+    /// The stream seeded `seed`, mapped to `lo..=hi`.
+    pub fn new(seed: i64, lo: i32, hi: i32) -> Self {
+        Ints {
+            stream: Lcg::new(seed),
+            lo,
+            hi,
+        }
+    }
+
+    /// `out.len()` values.
+    fn fill(&mut self, out: &mut [i32]) {
+        // SAFETY: `i32` and `u32` have the same size, alignment and valid
+        // bit patterns
+        let raw = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
+        self.stream.fill(raw);
+        bound_all(raw, self.lo, self.hi);
+    }
+}
+
+impl<const K: usize> Distribution for Ints<K> {
+    type Item = [i32; K];
+
+    fn sample(&mut self, _rng: &mut impl rand::Rng) -> [i32; K] {
+        std::array::from_fn(|_| bounded(self.stream.next_draw(), self.lo, self.hi))
+    }
+
+    fn collect_into(&mut self, cols: &mut Vec<[i32; K]>, _rng: &mut impl rand::Rng, n: usize) {
+        let start = cols.len();
+        cols.resize(start + n, [0; K]);
+        self.fill(cols[start..].as_flattened_mut());
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.stream.advance(n * K as u64);
+    }
+}
+
+/// One bounded value per row: [`Ints<1>`] as a plain `i32` column.
+#[derive(Debug, Clone, Copy)]
+pub struct Int(pub Ints<1>);
+
+impl Distribution for Int {
+    type Item = i32;
+
+    fn sample(&mut self, rng: &mut impl rand::Rng) -> i32 {
+        self.0.sample(rng)[0]
+    }
+
+    fn collect_into(&mut self, cols: &mut Vec<i32>, _rng: &mut impl rand::Rng, n: usize) {
+        let start = cols.len();
+        cols.resize(start + n, 0);
+        self.0.fill(&mut cols[start..]);
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.0.skip(n);
     }
 }
 

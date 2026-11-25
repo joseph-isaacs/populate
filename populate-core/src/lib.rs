@@ -13,6 +13,9 @@
 //! | `i32`, `f64`, `bool`, ...   | `Vec<T>`                                      |
 //! | `String`, `&'static str`    | [`StrCol`]: offsets and bytes, as Arrow `Utf8` |
 //! | `Vec<T>`                    | [`ListCol`]: offsets and `T`'s columns        |
+//! | [`Date32`], [`Decimal`]     | `Vec` of them: the storage values             |
+//! | `[T; N]`                    | `Vec<[T; N]>`: `N` values per row, end to end |
+//! | [`Children<T>`](Children)   | [`ChildCols`]: `T`'s columns, children end to end |
 //! | `(A, B, ...)`               | `(A`'s columns`, B`'s columns`, ...)`         |
 //!
 //! A tuple of distributions is a distribution of tuples (see [`tuple`]), so
@@ -51,18 +54,24 @@
 //! assert_eq!(flips.len(), 4);
 //! ```
 
+mod children;
 mod columnar;
 mod list;
 mod local;
+mod logical;
+mod seek;
 mod sink;
 pub mod string;
 pub mod tuple;
 
+pub use children::{ChildCols, Children};
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
+pub use logical::{Date32, Decimal};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+pub use seek::SeekRng;
 pub use sink::Sink;
 pub use string::{StrBuf, StrCol};
 
@@ -117,6 +126,16 @@ pub trait Distribution: Sized {
             }
         });
     }
+
+    /// Append the names of this distribution's columns to `out`, one per
+    /// top-level column of [`Item`](Self::Item), if it names them.
+    ///
+    /// With the column types, which come from the
+    /// [`Columns`](Columnar::Columns) the rows are collected into, this is
+    /// a table's schema, read off the distribution without generating a
+    /// row. Leaves name nothing; `populate_builtins::named` names what it
+    /// wraps, and a tuple gives its fields' names in order.
+    fn column_names(&self, _out: &mut Vec<String>) {}
 
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item> {

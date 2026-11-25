@@ -833,10 +833,13 @@ name = "populate-sink-parquet"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
  "parquet",
  "populate-core",
- "populate-sink-arrow",
  "rand",
+ "snap",
 ]
 
 [[package]]
@@ -884,8 +887,8 @@ dependencies = [
  "populate-builtins",
  "populate-core",
  "populate-sink-arrow",
+ "populate-sink-parquet",
  "rand",
- "snap",
 ]
 
 [[package]]

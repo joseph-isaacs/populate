@@ -23,7 +23,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use crate::sched::Schedule;
+use crate::sched::{Schedule, resolve_threads};
 
 /// Text encoding of `.dat` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -516,10 +516,7 @@ pub fn write_text_many<W: Write + Send>(
         outputs += s.outputs();
     }
     assert_eq!(outputs, writers.len(), "one writer per output");
-    let threads = match threads {
-        0 => thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    };
+    let threads = resolve_threads(threads);
     let chunks: Vec<u64> = srcs.iter().map(|s| s.num_chunks()).collect();
     let jobs: u64 = chunks.iter().sum();
     // biggest remaining work first, as in [`par_sources`]

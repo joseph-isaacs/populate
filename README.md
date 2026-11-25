@@ -97,7 +97,7 @@ and the data-set generators under `generator/`.
 | `populate-core`         | `Distribution`, `Columnar`, `Sink`, `StrCol`, `ListCol`, tuples |
 | `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `uniform`, `choose`, `weighted`, `text`, `chars` |
 | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
-| `populate-sink-parquet` | zero-copy Parquet writer (`parquet` feature)        |
+| `populate-sink-parquet` | Parquet encoder for collected columns and Arrow arrays (`parquet` feature) |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-bench`        | [benchmarks](populate-bench/README.md) against tpchgen and arrow-rs |
 | `populate-combinators`  | distributions the generators share: dbgen's and dsdgen's skip-ahead Lehmer streams ([README](generator/combinators/README.md)) |

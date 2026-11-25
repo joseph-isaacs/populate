@@ -32,6 +32,7 @@
 use populate_core::{Columnar, Columns, Distribution, Nullable, Sink, Spread, SpreadCols};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use std::array::from_fn;
 use std::mem::take;
 
 // ============================================================================
@@ -113,6 +114,23 @@ impl<C: RowRefs> RowRefs for Nullable<C> {
     }
 }
 
+/// A row of spread columns is a [`Spread`] of one row of each.
+impl<C: ReadRows, const N: usize> ReadRows for SpreadCols<C, N> {
+    type Row = Spread<C::Row, N>;
+    fn rows(&self) -> usize {
+        self.0.first().map_or(0, ReadRows::rows)
+    }
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
+        let mut cols: [_; N] = from_fn(|k| self.0[k].rows_from(start));
+        (start..self.rows()).map(move |_| {
+            Spread(
+                cols.each_mut()
+                    .map(|c| c.next().expect("columns of one length")),
+            )
+        })
+    }
+}
+
 impl<C: ReadRows> ReadRows for Nullable<C> {
     type Row = Option<C::Row>;
     fn rows(&self) -> usize {
@@ -123,23 +141,6 @@ impl<C: ReadRows> ReadRows for Nullable<C> {
             .rows_from(start)
             .zip(self.valid.iter().skip(start))
             .map(|(v, ok)| ok.then_some(v))
-    }
-}
-
-/// A row of `N` spread columns is the `N` values of that row.
-impl<C: ReadRows, const N: usize> ReadRows for SpreadCols<C, N> {
-    type Row = Spread<C::Row, N>;
-    fn rows(&self) -> usize {
-        self.0.first().map_or(0, ReadRows::rows)
-    }
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-        let mut cols = self.0.each_ref().map(|c| c.rows_from(start));
-        (start..self.rows()).map(move |_| {
-            Spread(
-                cols.each_mut()
-                    .map(|c| c.next().expect("columns of one length")),
-            )
-        })
     }
 }
 

@@ -10,6 +10,8 @@
 
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
+use populate_core::{Columns, Distribution};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_synth::{Embeddings, Features, Hits, Shape, ShapeName, Synth, Taxi};
 
 fn main() {
@@ -20,10 +22,10 @@ const ROWS: u64 = 256 * 1024;
 
 fn with<R>(name: ShapeName, f: impl FnOnce(&(dyn Run + Sync)) -> R) -> R {
     match name {
-        ShapeName::Taxi => f(&Synth::new(Taxi::new(1), ROWS)),
-        ShapeName::Hits => f(&Synth::new(Hits::new(1), ROWS)),
-        ShapeName::Features => f(&Synth::new(Features::new(1), ROWS)),
-        ShapeName::Embeddings => f(&Synth::new(Embeddings::new(1), ROWS / 4)),
+        ShapeName::Taxi => f(&Taxi::new(1).table(ROWS)),
+        ShapeName::Hits => f(&Hits::new(1).table(ROWS)),
+        ShapeName::Features => f(&Features::new(1).table(ROWS)),
+        ShapeName::Embeddings => f(&Embeddings::new(1).table(ROWS / 4)),
     }
 }
 
@@ -34,7 +36,11 @@ trait Run {
     fn parquet(&self, threads: usize) -> usize;
 }
 
-impl<S: Shape + Clone> Run for Synth<S> {
+impl<D> Run for Synth<D>
+where
+    D: Distribution + Clone + Sync,
+    Columns<D::Item>: IntoArrowColumns,
+{
     fn rows(&self) -> u64 {
         Synth::rows(self)
     }

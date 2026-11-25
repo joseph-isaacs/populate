@@ -9,8 +9,7 @@
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use populate_synth::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Synth,
-    Taxi,
+    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi,
 };
 use std::env::args;
 use std::fs::{File, metadata};
@@ -23,6 +22,9 @@ use std::time::Instant;
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+/// The `--dim`s `embeddings` is built for (the dimension is part of its type).
+const DIMS: &str = "16, 32, 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096";
 
 const USAGE: &str = "usage: synth-gen <taxi|hits|features|embeddings> [--rows N] [--seed S] \
 [--threads T] [--batch-size B] [--chunk-rows C] [--dim D] [--out FILE.parquet]
@@ -92,8 +94,9 @@ fn parse() -> Args {
     a
 }
 
-fn run<S: Shape>(shape: S, a: &Args) {
-    let t = Synth::new(shape, a.rows)
+fn run(shape: impl Shape, a: &Args) {
+    let t = shape
+        .table(a.rows)
         .batch_size(a.batch_size)
         .chunk_rows(a.chunk_rows);
     let start = Instant::now();
@@ -126,6 +129,18 @@ fn main() {
         ShapeName::Taxi => run(Taxi::new(a.seed), &a),
         ShapeName::Hits => run(Hits::new(a.seed), &a),
         ShapeName::Features => run(Features::new(a.seed), &a),
-        ShapeName::Embeddings => run(Embeddings::with_sizes(a.seed, a.dim, 256, 0.6), &a),
+        ShapeName::Embeddings => {
+            macro_rules! dims {
+                ($($d:literal),*) => {
+                    match a.dim {
+                        $($d => run(Embeddings::<$d>::with_sizes(a.seed, 256, 0.6), &a),)*
+                        d => fail(&format!("--dim {d}: one of {}", DIMS)),
+                    }
+                };
+            }
+            dims!(
+                16, 32, 64, 128, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096
+            )
+        }
     }
 }

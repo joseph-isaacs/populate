@@ -9,9 +9,12 @@
 //! quantiles ([`Quantiles`]): one hash, one lookup and one lerp per value,
 //! with no `exp`/`ln` in the hot loop.
 
-use arrow_array::types::ArrowPrimitiveType;
-use arrow_array::{ArrayRef, PrimitiveArray, StringViewArray};
-use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use arrow_array::{ArrayRef, StringViewArray};
+use arrow_buffer::{Buffer, ScalarBuffer};
+use arrow_schema::DataType;
+use populate_builtins::{Range, ReadRows, range};
+use populate_core::{Columnar, Nullable, Sink, Validity};
+use populate_sink_arrow::IntoArrowArray;
 use populate_table::Stream;
 use std::sync::Arc;
 
@@ -264,16 +267,78 @@ pub fn threshold(p: f64) -> u64 {
     }
 }
 
-/// Same, as an `ArrayRef`, with optional nulls.
-pub fn prim_ref<T: ArrowPrimitiveType>(v: Vec<T::Native>, nulls: Option<NullBuffer>) -> ArrayRef {
-    Arc::new(PrimitiveArray::<T>::new(ScalarBuffer::from(v), nulls))
+/// A `Utf8View` string as its 16-byte view: inline (up to 12 bytes) or
+/// pointing into a buffer of the [`Views`] column it is written to. Only
+/// [`Pool::write`] and [`ViewWriter::write_to`] make long ones, together
+/// with the buffers they point into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct View(pub u128);
+
+/// A `Utf8View` column: views and the buffers their long strings are in.
+#[derive(Debug, Clone, Default)]
+pub struct Views {
+    views: Vec<u128>,
+    buffers: Vec<Buffer>,
 }
 
-/// Validity: valid where `valid(row)` (all-valid gives `None`).
-pub fn validity(start: u64, len: usize, valid: impl Fn(u64) -> bool) -> Option<NullBuffer> {
-    let bits = BooleanBuffer::collect_bool(len, |i| valid(start + i as u64));
-    let n = NullBuffer::new(bits);
-    (n.null_count() > 0).then_some(n)
+impl Views {
+    /// Append `views` whose long strings are in `buffers`, renumbering
+    /// their buffer indexes past the buffers already here.
+    fn append(&mut self, views: impl Iterator<Item = u128>, buffers: &[Buffer]) {
+        let first = self.buffers.len() as u128;
+        if first == 0 {
+            self.views.extend(views);
+        } else {
+            self.views
+                .extend(views.map(|v| if v as u32 > 12 { v + (first << 64) } else { v }));
+        }
+        self.buffers.extend_from_slice(buffers);
+    }
+}
+
+impl Columnar for View {
+    type Columns = Views;
+}
+
+impl Sink<View> for Views {
+    fn push(&mut self, v: View) {
+        debug_assert!(v.0 as u32 <= 12, "a long view without its buffer");
+        self.views.push(v.0);
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.views.reserve(n);
+    }
+}
+
+impl ReadRows for Views {
+    type Row = View;
+
+    fn rows(&self) -> usize {
+        self.views.len()
+    }
+
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = View> + '_ {
+        self.views[start..].iter().map(|&v| View(v))
+    }
+}
+
+impl IntoArrowArray for Views {
+    fn data_type() -> DataType {
+        DataType::Utf8View
+    }
+
+    fn into_array(self) -> ArrayRef {
+        // SAFETY: every view is inline, or a pool's view or a written
+        // string's, renumbered to its buffer here (`append`)
+        Arc::new(unsafe {
+            StringViewArray::new_unchecked(
+                ScalarBuffer::from(self.views),
+                self.buffers.into(),
+                None,
+            )
+        })
+    }
 }
 
 /// A fixed set of strings stored once; a column of them is a vector of
@@ -302,33 +367,26 @@ impl Pool {
         self.views.is_empty()
     }
 
-    /// The index of the empty string in [`column`](Self::column).
+    /// The index of the empty string in [`write`](Self::write).
     pub const EMPTY: u32 = u32::MAX;
 
-    /// A column of entries `idx` ([`EMPTY`](Self::EMPTY) for `""`), with
-    /// optional nulls. Panics on an index past the end.
-    pub fn column(&self, idx: &[u32], nulls: Option<NullBuffer>) -> ArrayRef {
-        let views: Vec<u128> = idx
-            .iter()
-            .map(|&i| {
-                if i == Self::EMPTY {
-                    0
-                } else {
-                    self.views[i as usize]
-                }
-            })
-            .collect();
-        // SAFETY: every view is a copy of one of `self.views`, which are
-        // valid views into `self.buffers` (or the empty string)
-        Arc::new(unsafe {
-            StringViewArray::new_unchecked(ScalarBuffer::from(views), self.buffers.clone(), nulls)
-        })
+    /// Append entries `idx` ([`EMPTY`](Self::EMPTY) for `""`) to `out`.
+    /// Panics on an index past the end.
+    pub fn write(&self, idx: &[u32], out: &mut Views) {
+        let views = idx.iter().map(|&i| {
+            if i == Self::EMPTY {
+                0
+            } else {
+                self.views[i as usize]
+            }
+        });
+        out.append(views, &self.buffers);
     }
 }
 
-/// Builds a `Utf8View` column of freshly written strings: bytes go into one
-/// buffer, and each row's view is computed as it is written. One column
-/// holds at most 4 GiB of (non-inline) string bytes.
+/// Writes `Utf8View` strings: bytes go into one buffer, and each row's
+/// view is computed as it is written. One writer holds at most 4 GiB of
+/// (non-inline) string bytes.
 #[derive(Debug, Default)]
 pub struct ViewWriter {
     bytes: Vec<u8>,
@@ -375,7 +433,8 @@ impl ViewWriter {
         self.views.push(0);
     }
 
-    pub fn finish(self, nulls: Option<NullBuffer>) -> ArrayRef {
+    /// Append the strings written to `out`.
+    pub fn write_to(self, out: &mut Views) {
         assert!(
             self.bytes.len() <= u32::MAX as usize,
             "string buffer over 4 GiB"
@@ -385,12 +444,42 @@ impl ViewWriter {
         } else {
             vec![Buffer::from_vec(self.bytes)]
         };
-        Arc::new(StringViewArray::new(
-            ScalarBuffer::from(self.views),
-            buffers,
-            nulls,
-        ))
+        out.append(self.views.into_iter(), &buffers);
     }
+}
+
+/// Append `values` to `out`: moved in if `out` is empty (as it is when a
+/// block is collected into new columns), copied otherwise.
+pub fn put<T>(out: &mut Vec<T>, values: Vec<T>) {
+    if out.is_empty() {
+        *out = values;
+    } else {
+        out.extend(values);
+    }
+}
+
+/// `values` as an `Option` column, present where `present` says.
+pub fn put_nullable<T>(out: &mut Nullable<Vec<T>>, values: Vec<T>, present: &Validity) {
+    put(&mut out.values, values);
+    out.valid.append(present);
+}
+
+/// Row numbers, for writers that work a block at a time: a block is the
+/// rows [`span`] of its numbers.
+pub fn row_numbers() -> Range<u64> {
+    range(0u64, 1)
+}
+
+/// A block of [`row_numbers`] as the range it is, so loops over it count
+/// in a register instead of reading the numbers back.
+pub fn span(rows: &[u64]) -> std::ops::Range<u64> {
+    let start = rows.first().copied().unwrap_or(0);
+    let end = start + rows.len() as u64;
+    debug_assert!(
+        rows.last().is_none_or(|&l| l + 1 == end),
+        "rows not consecutive"
+    );
+    start..end
 }
 
 /// Round to cents (non-negative inputs; `+ 0.5` then truncate, which
@@ -460,9 +549,21 @@ mod tests {
             w.buf().extend_from_slice(s.as_bytes());
             w.finish_value(start);
         }
-        let a = w.finish(None);
+        let mut col = Views::default();
+        Pool::new(["pooled, and long enough"]).write(&[0, Pool::EMPTY], &mut col);
+        w.write_to(&mut col);
+        let a = col.into_array();
         let a = a.as_any().downcast_ref::<StringViewArray>().unwrap();
         let got: Vec<&str> = a.iter().map(|v| v.unwrap()).collect();
-        assert_eq!(got, ["short", "a value longer than twelve", ""]);
+        assert_eq!(
+            got,
+            [
+                "pooled, and long enough",
+                "",
+                "short",
+                "a value longer than twelve",
+                ""
+            ]
+        );
     }
 }

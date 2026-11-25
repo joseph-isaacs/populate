@@ -19,18 +19,40 @@ use arrow_schema::DataType;
 use arrow_select::concat::concat as concat_arrays;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use populate_core::{Columns, Distribution};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_synth::{Embeddings, Features, Hits, Shape, Synth, Taxi};
 use populate_table::{Chunks, mix64};
 use std::collections::HashMap;
 
 const ROWS: u64 = 20_011;
 
+/// The distributions behind a [`Synth`].
+trait Table:
+    Distribution<Item: populate_core::Columnar<Columns: IntoArrowColumns>> + Clone + Sync
+{
+}
+impl<D> Table for D
+where
+    D: Distribution + Clone + Sync,
+    Columns<D::Item>: IntoArrowColumns,
+{
+}
+
 fn shapes(seed: u64) -> Vec<Box<dyn Fn(u64, usize) -> RecordBatch>> {
     vec![
-        Box::new(move |s, n| Taxi::new(seed).batch(s, n)),
-        Box::new(move |s, n| Hits::with_sizes(seed, 500, 5_000).batch(s, n)),
-        Box::new(move |s, n| Features::new(seed).batch(s, n)),
-        Box::new(move |s, n| Embeddings::with_sizes(seed, 64, 16, 0.6).batch(s, n)),
+        Box::new(move |s, n| Taxi::new(seed).table(s + n as u64).slice(s, n)),
+        Box::new(move |s, n| {
+            Hits::with_sizes(seed, 500, 5_000)
+                .table(s + n as u64)
+                .slice(s, n)
+        }),
+        Box::new(move |s, n| Features::new(seed).table(s + n as u64).slice(s, n)),
+        Box::new(move |s, n| {
+            Embeddings::<64>::with_sizes(seed, 16, 0.6)
+                .table(s + n as u64)
+                .slice(s, n)
+        }),
     ]
 }
 
@@ -46,8 +68,8 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
 }
 
 /// Every way of cutting the table gives the same rows.
-fn check_chunking<S: Shape + Clone>(shape: S) {
-    let whole = Synth::new(shape.clone(), ROWS).collect();
+fn check_chunking<S: Shape>(shape: S) {
+    let whole = shape.table(ROWS).collect();
     assert_eq!(whole.num_rows() as u64, ROWS);
     for (batch, chunk) in [
         (1000, 1000),
@@ -56,9 +78,7 @@ fn check_chunking<S: Shape + Clone>(shape: S) {
         (ROWS as usize, ROWS),
     ] {
         for threads in [1, 3] {
-            let t = Synth::new(shape.clone(), ROWS)
-                .batch_size(batch)
-                .chunk_rows(chunk);
+            let t = shape.table(ROWS).batch_size(batch).chunk_rows(chunk);
             let mut got = Vec::new();
             t.for_each_batch(threads, |b| got.push(b));
             assert!(got.iter().all(|b| b.num_rows() <= batch));
@@ -72,7 +92,7 @@ fn check_chunking<S: Shape + Clone>(shape: S) {
     }
     // a single row and an odd slice, generated on their own
     for (s, n) in [(0, 1), (ROWS - 1, 1), (12_345, 321)] {
-        assert_eq!(shape.batch(s, n), whole.slice(s as usize, n));
+        assert_eq!(shape.table(ROWS).slice(s, n), whole.slice(s as usize, n));
     }
 }
 
@@ -93,10 +113,10 @@ fn features_chunked_equals_sequential() {
 
 #[test]
 fn embeddings_chunked_equals_sequential() {
-    check_chunking(Embeddings::with_sizes(1, 64, 16, 0.6));
+    check_chunking(Embeddings::<64>::with_sizes(1, 16, 0.6));
 }
 
-fn parquet<S: Shape>(t: &Synth<S>, threads: usize) -> Vec<u8> {
+fn parquet<D: Table>(t: &Synth<D>, threads: usize) -> Vec<u8> {
     t.write_parquet(Vec::new(), threads, None).unwrap()
 }
 
@@ -138,7 +158,7 @@ fn fingerprint(b: &RecordBatch) -> u64 {
         .fold(0xcbf2_9ce4_8422_2325, |h, c| data(h, &c.to_data()))
 }
 
-fn check_parquet<S: Shape>(t: Synth<S>) -> u64 {
+fn check_parquet<D: Table>(t: Synth<D>) -> u64 {
     let one = parquet(&t, 1);
     for threads in [2, 4, 0] {
         assert_eq!(one, parquet(&t, threads), "parquet bytes vary with threads");
@@ -163,20 +183,20 @@ fn parquet_bytes_identical_for_any_thread_count_and_pinned() {
     let mut got = Vec::new();
     let (r, c) = small(ROWS);
     got.push(check_parquet(
-        Synth::new(Taxi::new(7), r).batch_size(1024).chunk_rows(c),
+        Taxi::new(7).table(r).batch_size(1024).chunk_rows(c),
     ));
     got.push(check_parquet(
-        Synth::new(Hits::with_sizes(7, 500, 5_000), r)
+        Hits::with_sizes(7, 500, 5_000)
+            .table(r)
             .batch_size(1024)
             .chunk_rows(c),
     ));
     got.push(check_parquet(
-        Synth::new(Features::new(7), r)
-            .batch_size(1024)
-            .chunk_rows(c),
+        Features::new(7).table(r).batch_size(1024).chunk_rows(c),
     ));
     got.push(check_parquet(
-        Synth::new(Embeddings::with_sizes(7, 64, 16, 0.6), r)
+        Embeddings::<64>::with_sizes(7, 16, 0.6)
+            .table(r)
             .batch_size(1024)
             .chunk_rows(c),
     ));
@@ -226,7 +246,7 @@ fn col<'a, T: ArrowPrimitiveType>(b: &'a RecordBatch, name: &str) -> &'a [T::Nat
 
 #[test]
 fn taxi_invariants() {
-    let b = Synth::new(Taxi::new(3).trips_per_day(50_000), 120_000).collect();
+    let b = Taxi::new(3).trips_per_day(50_000).table(120_000).collect();
     let pickup = col::<TimestampMicrosecondType>(&b, "tpep_pickup_datetime");
     let dropoff = col::<TimestampMicrosecondType>(&b, "tpep_dropoff_datetime");
     assert!(pickup.windows(2).all(|w| w[0] <= w[1]), "pickups sorted");
@@ -299,7 +319,7 @@ fn taxi_invariants() {
 
 #[test]
 fn hits_invariants() {
-    let b = Synth::new(Hits::with_sizes(3, 1_000, 20_000), 100_000).collect();
+    let b = Hits::with_sizes(3, 1_000, 20_000).table(100_000).collect();
     let time = col::<TimestampSecondType>(&b, "EventTime");
     let date = col::<Date32Type>(&b, "EventDate");
     assert!(time.windows(2).all(|w| w[0] <= w[1]));
@@ -363,7 +383,7 @@ fn hits_invariants() {
 #[test]
 fn features_invariants() {
     let f = Features::new(3);
-    let b = Synth::new(f, 50_000).collect();
+    let b = f.table(50_000).collect();
     assert_eq!(b.num_columns(), 3 + 32 + 8 + 2);
     let split = b.column_by_name("split").unwrap().as_string_view();
     let train = (0..b.num_rows())
@@ -419,7 +439,9 @@ fn features_invariants() {
 
 #[test]
 fn embeddings_invariants() {
-    let b = Synth::new(Embeddings::with_sizes(3, 128, 32, 0.6), 2_000).collect();
+    let b = Embeddings::<128>::with_sizes(3, 32, 0.6)
+        .table(2_000)
+        .collect();
     let e = b.column_by_name("embedding").unwrap().as_fixed_size_list();
     assert_eq!(e.value_length(), 128);
     let v = e.values().as_primitive::<Float32Type>().values();

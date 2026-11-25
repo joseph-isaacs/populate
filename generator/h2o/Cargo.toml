@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
+rand = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

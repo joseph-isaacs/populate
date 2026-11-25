@@ -806,7 +806,11 @@ dependencies = [
  "arrow-schema",
  "divan",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]

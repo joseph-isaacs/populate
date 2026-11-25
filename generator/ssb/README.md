@@ -78,7 +78,7 @@ reproduces ssb-dbgen's quirks, because they are in the data:
 
 ## How it is generated
 
-On `populate`'s combinators, `populate-tpch`'s streams and
+On `populate`'s combinators, `populate-combinators`' Lehmer streams and
 `populate-table`'s engine:
 
 - **Each table is one `Distribution`**: a tuple of named columns, each
@@ -93,7 +93,7 @@ On `populate`'s combinators, `populate-tpch`'s streams and
   independent and concatenate to the sequential output for any chunk size
   and thread count.
 - **Columns, not rows.** Each stream's draws for a block of rows are made
-  at once by 16 LCG lanes (`populate_tpch::rng::Lcg`) and mapped to
+  at once by 16 LCG lanes (`populate_combinators::lehmer::Lcg`) and mapped to
   ranges with integer arithmetic.
 - **A shared dictionary.** SSB has no comments: apart from names,
   addresses and phone numbers, every string is from a small set

@@ -188,6 +188,12 @@ where
         self.elements.collect_into(&mut cols.values, rng, total);
     }
 
+    fn columns(&self) -> ListCol<Columns<E::Item>> {
+        let mut cols = ListCol::default();
+        cols.values = self.elements.columns();
+        cols
+    }
+
     /// Skips `n` lengths. The elements stay where they are: how many of
     /// them `n` rows hold is random, so there is no row `n` to land on.
     fn skip(&mut self, n: u64) {

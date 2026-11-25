@@ -19,12 +19,18 @@
 //!   daily profile), and `EventDate` is its day.
 
 use crate::Shape;
-use crate::kernel::{Pool, Quantiles, ViewWriter, Weighted, Zipf, prim_ref, threshold, unit};
-use arrow_array::types::{Date32Type, Int16Type, Int32Type, Int64Type, TimestampSecondType};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use crate::kernel::{
+    Pool, Quantiles, Rows, View, ViewWriter, Views, Weighted, Zipf, put, row_numbers, threshold,
+    unit,
+};
+use populate_builtins::{derive_columns, named_all};
+use populate_core::{Columnar, Date32, Distribution, Timestamp, time_unit};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_table::{Stream, mix64};
+use std::iter::repeat_n;
 use std::sync::Arc;
+
+type Secs = Timestamp<{ time_unit::SECOND }>;
 
 /// 2013-07-01T00:00:00Z.
 const DEFAULT_START_SECS: i64 = 1_372_636_800;
@@ -210,10 +216,14 @@ const HOURLY: [f64; 24] = [
 /// Web hits. See the [module docs](self).
 #[derive(Debug, Clone)]
 pub struct Hits {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug, Clone)]
+struct Inner {
     seed: u64,
     hits_per_day: u64,
     start_secs: i64,
-    schema: SchemaRef,
     s: Streams,
     tod: Quantiles,
     counter: Zipf,
@@ -343,11 +353,10 @@ impl Hits {
             .iter()
             .map(|p| p.replace(' ', "+").into_bytes())
             .collect();
-        Hits {
+        let inner = Inner {
             seed,
             hits_per_day: 3_000_000,
             start_secs: DEFAULT_START_SECS,
-            schema: schema(),
             s,
             tod: Quantiles::histogram(0.0, 86_400.0, &HOURLY),
             counter: Zipf::new(sites, 1.3),
@@ -391,20 +400,25 @@ impl Hits {
             phrases: Pool::new(&phrases),
             queries,
             phones: Pool::new(PHONES),
+        };
+        Hits {
+            inner: Arc::new(inner),
         }
     }
 
     /// Hits per day (sets how many days the rows span).
     pub fn hits_per_day(mut self, n: u64) -> Self {
         assert!(n > 0, "hits_per_day must be > 0");
-        self.hits_per_day = n;
+        Arc::make_mut(&mut self.inner).hits_per_day = n;
         self
     }
 
     pub fn seed(&self) -> u64 {
-        self.seed
+        self.inner.seed
     }
+}
 
+impl Inner {
     /// `https://<domain>/<word>/<word>/<page>.html` of `(counter, page)`:
     /// four copies (site prefix, two words with their slashes, then the
     /// page number and suffix formatted on the stack).
@@ -432,78 +446,105 @@ fn url_hash(counter: u64, page: u64) -> i64 {
     (mix64(counter << 20 ^ page ^ 0x5552_4c00) >> 1) as i64
 }
 
-fn schema() -> SchemaRef {
-    use DataType::*;
-    let cols: [(&str, DataType); 30] = [
-        ("WatchID", Int64),
-        ("JavaEnable", Int16),
-        ("Title", Utf8View),
-        ("GoodEvent", Int16),
-        ("EventTime", Timestamp(TimeUnit::Second, None)),
-        ("EventDate", Date32),
-        ("CounterID", Int32),
-        ("ClientIP", Int32),
-        ("RegionID", Int32),
-        ("UserID", Int64),
-        ("OS", Int16),
-        ("UserAgent", Int16),
-        ("URL", Utf8View),
-        ("Referer", Utf8View),
-        ("IsRefresh", Int16),
-        ("ResolutionWidth", Int16),
-        ("ResolutionHeight", Int16),
-        ("IsMobile", Int16),
-        ("MobilePhoneModel", Utf8View),
-        ("TraficSourceID", Int16),
-        ("SearchEngineID", Int16),
-        ("SearchPhrase", Utf8View),
-        ("AdvEngineID", Int16),
-        ("WindowClientWidth", Int16),
-        ("WindowClientHeight", Int16),
-        ("IsLink", Int16),
-        ("IsDownload", Int16),
-        ("DontCountHits", Int16),
-        ("URLHash", Int64),
-        ("RefererHash", Int64),
-    ];
-    Arc::new(Schema::new(
-        cols.into_iter()
-            .map(|(n, t)| Field::new(n, t, false))
-            .collect::<Vec<_>>(),
-    ))
-}
+/// The columns, in schema order (nested: a tuple has at most 12 fields,
+/// and is read back at up to 11).
+type Hit = (
+    (i64, i16, View, i16, Secs, Date32, i32, i32, i32, i64),
+    (i16, i16, View, View, i16, i16, i16, i16, View, i16),
+    (i16, View, i16, i16, i16, i16, i16, i16, i64, i64),
+);
+type HitCols = (
+    (
+        Vec<i64>,
+        Vec<i16>,
+        Views,
+        Vec<i16>,
+        Vec<Secs>,
+        Vec<Date32>,
+        Vec<i32>,
+        Vec<i32>,
+        Vec<i32>,
+        Vec<i64>,
+    ),
+    (
+        Vec<i16>,
+        Vec<i16>,
+        Views,
+        Views,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Views,
+        Vec<i16>,
+    ),
+    (
+        Vec<i16>,
+        Views,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i64>,
+        Vec<i64>,
+    ),
+);
 
-fn i16s(v: Vec<i16>) -> ArrayRef {
-    prim_ref::<Int16Type>(v, None)
-}
+const COLUMNS: [&str; 30] = [
+    "WatchID",
+    "JavaEnable",
+    "Title",
+    "GoodEvent",
+    "EventTime",
+    "EventDate",
+    "CounterID",
+    "ClientIP",
+    "RegionID",
+    "UserID",
+    "OS",
+    "UserAgent",
+    "URL",
+    "Referer",
+    "IsRefresh",
+    "ResolutionWidth",
+    "ResolutionHeight",
+    "IsMobile",
+    "MobilePhoneModel",
+    "TraficSourceID",
+    "SearchEngineID",
+    "SearchPhrase",
+    "AdvEngineID",
+    "WindowClientWidth",
+    "WindowClientHeight",
+    "IsLink",
+    "IsDownload",
+    "DontCountHits",
+    "URLHash",
+    "RefererHash",
+];
 
-impl Shape for Hits {
-    fn name(&self) -> &'static str {
-        "hits"
-    }
-
-    fn is_plain(&self, column: &str) -> bool {
-        matches!(column, "WatchID" | "ClientIP" | "UserID" | "URLHash")
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn batch(&self, start: u64, len: usize) -> RecordBatch {
+impl Inner {
+    fn write(&self, rows: &Rows, out: &mut HitCols) {
         let s = &self.s;
-        let rows = || start..start + len as u64;
+        let len = rows.len();
+        let span = rows.0.clone();
+        let rows = || span.clone();
         let per_day = self.hits_per_day;
 
         let watch: Vec<i64> = rows().map(|r| (s.watch.at(r) >> 1) as i64).collect();
-        let time: Vec<i64> = rows()
+        let time: Vec<Secs> = rows()
             .map(|r| {
                 let (day, k) = (r / per_day, r % per_day);
                 let p = (k as f64 + unit(s.time.at(r))) / per_day as f64;
-                self.start_secs + day as i64 * 86_400 + self.tod.at(p) as i64
+                Timestamp(self.start_secs + day as i64 * 86_400 + self.tod.at(p) as i64)
             })
             .collect();
-        let date: Vec<i32> = time.iter().map(|t| t.div_euclid(86_400) as i32).collect();
+        let date: Vec<Date32> = time
+            .iter()
+            .map(|t| Date32(t.0.div_euclid(86_400) as i32))
+            .collect();
 
         let counter: Vec<u64> = rows()
             .map(|r| self.counter.sample(s.counter.at(r)))
@@ -648,38 +689,57 @@ impl Shape for Hits {
             flags.iter().map(|&b| ((b << shift) < t) as i16).collect()
         };
 
-        let cols: Vec<ArrayRef> = vec![
-            prim_ref::<Int64Type>(watch, None),
-            i16s(java),
-            self.titles.column(&title, None),
-            i16s(vec![1; len]),
-            prim_ref::<TimestampSecondType>(time, None),
-            prim_ref::<Date32Type>(date, None),
-            prim_ref::<Int32Type>(counter.iter().map(|&c| c as i32 + 1).collect(), None),
-            prim_ref::<Int32Type>(ip, None),
-            prim_ref::<Int32Type>(region, None),
-            prim_ref::<Int64Type>(user_id, None),
-            i16s(os),
-            i16s(agent),
-            url.finish(None),
-            referer.finish(None),
-            i16s(flag(0, 0.08)),
-            i16s(res_w),
-            i16s(res_h),
-            i16s(is_mobile),
-            self.phones.column(&phone_view, None),
-            i16s(source),
-            i16s(engine),
-            self.phrases.column(&phrase, None),
-            i16s(adv),
-            i16s(win_w),
-            i16s(win_h),
-            i16s(flag(16, 0.01)),
-            i16s(flag(32, 0.005)),
-            i16s(flag(48, 0.03)),
-            prim_ref::<Int64Type>(url_hashes, None),
-            prim_ref::<Int64Type>(referer_hash, None),
-        ];
-        RecordBatch::try_new(self.schema.clone(), cols).expect("columns match schema")
+        let (a, b, c) = out;
+        put(&mut a.0, watch);
+        put(&mut a.1, java);
+        self.titles.write(&title, &mut a.2);
+        a.3.extend(repeat_n(1, len));
+        put(&mut a.4, time);
+        put(&mut a.5, date);
+        a.6.extend(counter.iter().map(|&c| c as i32 + 1));
+        put(&mut a.7, ip);
+        put(&mut a.8, region);
+        put(&mut a.9, user_id);
+        put(&mut b.0, os);
+        put(&mut b.1, agent);
+        url.write_to(&mut b.2);
+        referer.write_to(&mut b.3);
+        put(&mut b.4, flag(0, 0.08));
+        put(&mut b.5, res_w);
+        put(&mut b.6, res_h);
+        put(&mut b.7, is_mobile);
+        self.phones.write(&phone_view, &mut b.8);
+        put(&mut b.9, source);
+        put(&mut c.0, engine);
+        self.phrases.write(&phrase, &mut c.1);
+        put(&mut c.2, adv);
+        put(&mut c.3, win_w);
+        put(&mut c.4, win_h);
+        put(&mut c.5, flag(16, 0.01));
+        put(&mut c.6, flag(32, 0.005));
+        put(&mut c.7, flag(48, 0.03));
+        put(&mut c.8, url_hashes);
+        put(&mut c.9, referer_hash);
+    }
+}
+
+impl Shape for Hits {
+    fn name(&self) -> &'static str {
+        "hits"
+    }
+
+    fn is_plain(&self, column: &str) -> bool {
+        matches!(column, "WatchID" | "ClientIP" | "UserID" | "URLHash")
+    }
+
+    fn dist(
+        &self,
+    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<>
+    {
+        let h = self.inner.clone();
+        named_all(
+            &COLUMNS,
+            derive_columns::<_, _, Hit>(row_numbers(), move |rows, out| h.write(rows, out)),
+        )
     }
 }

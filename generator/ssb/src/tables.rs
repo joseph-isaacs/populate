@@ -41,7 +41,7 @@ use populate_builtins::{Draws, derive, draws, named, named_all, range};
 use populate_core::{Columnar, Columns, Distribution, Sink};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DistTable;
-use populate_tpch::rng::{Int, Ints, Lcg, M, scale};
+use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
 use std::fmt;
 use std::sync::Arc;
 

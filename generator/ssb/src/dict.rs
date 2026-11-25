@@ -11,7 +11,7 @@
 
 use arrow_array::StringViewArray;
 use arrow_buffer::{Buffer, ScalarBuffer};
-use populate_tpch::rng::scale;
+use populate_combinators::lehmer::scale;
 use std::iter::repeat_n;
 use std::sync::{Arc, LazyLock};
 use tpchgen::distribution::{Distribution, Distributions};

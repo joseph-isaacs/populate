@@ -1,10 +1,14 @@
 //! A column type particular to dsdgen's tables (TPC-DS, DSB). Their text
 //! columns are [`views`](crate::views) columns.
 
+#[cfg(feature = "formats")]
 use arrow_array::ArrayRef;
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_core::{Columnar, Decimal as Fixed, RowCount, Sink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
+#[cfg(feature = "formats")]
 use populate_table::text::{Cursor, Encoding, TextField};
 
 /// A GMT offset in whole hours, kept as `decimal(5,2)` and printed in
@@ -14,7 +18,7 @@ pub struct Gmt(pub i32);
 
 /// The column of [`Gmt`]: the offsets as `decimal(5,2)` units.
 #[derive(Debug, Clone, Default)]
-pub struct GmtCol(Vec<Fixed<5, 2>>);
+pub struct GmtCol(pub Vec<Fixed<5, 2>>);
 
 impl Columnar for Gmt {
     type Columns = GmtCol;
@@ -37,6 +41,7 @@ impl RowCount for GmtCol {
     }
 }
 
+#[cfg(feature = "formats")]
 impl IntoArrowArray for GmtCol {
     fn data_type() -> DataType {
         <Vec<Fixed<5, 2>>>::data_type()
@@ -47,6 +52,7 @@ impl IntoArrowArray for GmtCol {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextField for GmtCol {
     fn text_rows(&self) -> usize {
         self.0.len()

@@ -8,13 +8,14 @@
 //!   (a ticket, an order, a customer). tpcdsgen's random streams skip
 //!   exactly to any row, so the chunks concatenate to the sequential output
 //!   for any chunk size and thread count;
-//! - chunks run on all cores through [`populate_table`]'s ordered drivers,
+//! - chunks run on all cores through `populate_table`'s ordered drivers,
 //!   whatever the scale factor (dsdgen and tpcgen-cli only split tables
 //!   above 1M source rows, so at SF 1 `store_sales` runs on one core);
 //! - Parquet row groups are generated *and* encoded on the worker threads;
 //! - `.dat` output is the exact dsdgen text format, for diffing.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_tpcds::{Encoding, TableName, Tpcds};
 //!
 //! let ds = Tpcds::new(1.0);
@@ -29,6 +30,7 @@
 //! // dsdgen's `ship_mode.dat`, byte for byte
 //! let dat = ship_mode.write_dat(Vec::new(), 0, Encoding::Latin1).unwrap();
 //! assert!(dat.starts_with(b"1|AAAAAAAABAAAAAAA|"));
+//! # }
 //! ```
 
 mod channels;

@@ -26,13 +26,14 @@ use std::time::{Duration, Instant};
 mod report;
 mod stats;
 
-use report::Report;
+use report::{Report, ValidationStatus};
 use stats::{Sample, needs_more, summarize};
 
 const USAGE: &str = "\
 usage: cargo xtask bench [--scale 1] [--threads 1,N] [--generators all] [--formats text,parquet,arrow]
                          [--runs 3] [--max-runs 5] [--noise-threshold 0.10] [--sync-output] [--out DIR] [--tpcgen-cli PATH] [--tsbs-generate-data PATH]
                          [--ssb-dbgen PATH] [--ssb-dists PATH] [--no-reference] [--json PATH] [--list]
+       cargo xtask bench-schema   print the JSON Schema of the --json report
 
   --scale       comma-separated scale factors; each generator maps one to its own size (see --list)
   --threads     comma-separated thread counts (default: 1 and every core)
@@ -54,6 +55,10 @@ fn main() -> ExitCode {
     let a: Vec<String> = args().skip(1).collect();
     let r = match a.first().map(String::as_str) {
         Some("bench") => parse(&a[1..]).and_then(bench),
+        Some("bench-schema") if a.len() == 1 => {
+            println!("{}", report::schema());
+            Ok(())
+        }
         _ => Err(USAGE.to_string()),
     };
     match r {
@@ -849,9 +854,9 @@ fn bench(o: Opts) -> Result<(), String> {
                         }
                     }
                     let validation = match output.as_str() {
-                        "same" => "passed",
-                        "differs" => "mismatch",
-                        _ => "not_run",
+                        "same" => ValidationStatus::Passed,
+                        "differs" => ValidationStatus::Mismatch,
+                        _ => ValidationStatus::NotRun,
                     };
                     report.measurement(
                         "populate",

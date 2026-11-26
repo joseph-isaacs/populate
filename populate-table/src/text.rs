@@ -261,6 +261,15 @@ fn eight(x: u32) -> u64 {
     v + ZEROS
 }
 
+/// The 4 decimal digits of `x < 10^4`, as [`eight`] makes 8.
+#[inline(always)]
+fn four(x: u32) -> u32 {
+    let v = (x / 100) | ((x % 100) << 16);
+    let hi = ((v * 103) >> 10) & 0x000F_000F; // lane / 10
+    let v = hi | ((v - hi * 10) << 8);
+    v + ZEROS as u32
+}
+
 /// `"00000000"` as a `u64`.
 const ZEROS: u64 = 0x3030_3030_3030_3030;
 
@@ -269,6 +278,7 @@ const ZEROS: u64 = 0x3030_3030_3030_3030;
 pub struct Cursor(*mut u8);
 
 impl Cursor {
+    ///
     /// # Safety
     /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
@@ -279,6 +289,7 @@ impl Cursor {
         }
     }
 
+    ///
     /// # Safety
     /// The cursor has room for what this writes ([`Cursor`]).
     #[inline(always)]
@@ -303,7 +314,17 @@ impl Cursor {
     #[inline]
     unsafe fn uint(&mut self, v: u64) {
         unsafe {
-            if v < 100_000_000 {
+            if v < 10_000 {
+                // most keys and prices: half the lanes ([`four`]); each
+                // field's call site has its own branch, which predicts
+                // well, as a column's values are of one size
+                let d = four(v as u32);
+                let zeros = ((d - ZEROS as u32) | (1 << 24)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 4]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(4 - zeros as usize);
+            } else if v < 100_000_000 {
                 // leading zero digits are the low zero bytes (at most 7)
                 let d = eight(v as u32);
                 let zeros = ((d - ZEROS) | (1 << 56)).trailing_zeros() / 8;
@@ -312,23 +333,27 @@ impl Cursor {
                     .write_unaligned((d >> (8 * zeros)).to_le_bytes());
                 self.0 = self.0.add(8 - zeros as usize);
             } else {
-                self.big(v);
+                self.0 = Self::big(self.0, v);
             }
         }
     }
 
-    /// [`Self::uint`] of `v >= 10^8`: the high digits, then the low 8.
+    /// [`Self::uint`] of `v >= 10^8` at `at`: the high digits, then the
+    /// low 8; returns the end. It takes and returns the position, not
+    /// `&mut self`, so a caller's cursor can stay in a register.
     #[cold]
     #[inline(never)]
-    unsafe fn big(&mut self, v: u64) {
+    unsafe fn big(at: *mut u8, v: u64) -> *mut u8 {
+        let mut w = Cursor(at);
         unsafe {
-            self.uint(v / 100_000_000);
+            w.uint(v / 100_000_000);
             let d = eight((v % 100_000_000) as u32);
-            self.0.cast::<[u8; 8]>().write_unaligned(d.to_le_bytes());
-            self.0 = self.0.add(8);
+            w.0.cast::<[u8; 8]>().write_unaligned(d.to_le_bytes());
+            w.0.add(8)
         }
     }
 
+    ///
     /// # Safety
     /// The cursor has room for what this writes ([`Cursor`]).
     #[inline]
@@ -377,15 +402,17 @@ impl Cursor {
             match i64::try_from(v) {
                 Ok(v) if scale == 2 && print == 2 => self.decimal2(v),
                 Ok(v) if scale <= 18 => self.decimal(v / 10i64.pow(scale - print), print),
-                _ => self.wide_decimal(v / 10i128.pow(scale - print), print),
+                _ => self.0 = Self::wide_decimal(self.0, v / 10i128.pow(scale - print), print),
             }
         }
     }
 
-    /// [`Self::decimal`] for any `i128` (up to 39 digits).
+    /// [`Self::decimal`] for any `i128` (up to 39 digits) at `at`; returns
+    /// the end (as [`Self::big`]).
     #[cold]
     #[inline(never)]
-    unsafe fn wide_decimal(&mut self, v: i128, scale: u32) {
+    unsafe fn wide_decimal(at: *mut u8, v: i128, scale: u32) -> *mut u8 {
+        let mut w = Cursor(at);
         let a = v.unsigned_abs();
         let p = 10u128.pow(scale);
         let mut text = (a / p).to_string();
@@ -397,10 +424,11 @@ impl Cursor {
         }
         unsafe {
             if v < 0 {
-                self.byte(b'-');
+                w.byte(b'-');
             }
-            self.bytes(text.as_bytes());
+            w.bytes(text.as_bytes());
         }
+        w.0
     }
 
     /// [`Self::decimal`] at scale 2, with constant divisors.
@@ -414,9 +442,35 @@ impl Cursor {
                 self.byte(b'-');
             }
             let a = v.unsigned_abs();
-            self.uint(a / 100);
-            self.byte(b'.');
-            self.pair((a % 100) as usize);
+            if a < 10_000 {
+                // as below, in 4 digits
+                let d = four(a as u32);
+                let zeros = ((d - ZEROS as u32) | (1 << 8)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 4]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(2 - zeros as usize);
+                let frac = b'.' as u32 | (d >> 16) << 8;
+                self.0.cast::<[u8; 4]>().write_unaligned(frac.to_le_bytes());
+                self.0 = self.0.add(3);
+            } else if a < 100_000_000 {
+                // all 8 digits at once: the 6 whole ones without their
+                // leading zeros (keeping the units), then `.` and the
+                // other 2, stored over the digits' tail
+                let d = eight(a as u32);
+                let zeros = ((d - ZEROS) | (1 << 40)).trailing_zeros() / 8;
+                self.0
+                    .cast::<[u8; 8]>()
+                    .write_unaligned((d >> (8 * zeros)).to_le_bytes());
+                self.0 = self.0.add(6 - zeros as usize);
+                let frac = b'.' as u32 | ((d >> 48) as u32) << 8;
+                self.0.cast::<[u8; 4]>().write_unaligned(frac.to_le_bytes());
+                self.0 = self.0.add(3);
+            } else {
+                self.uint(a / 100);
+                self.byte(b'.');
+                self.pair((a % 100) as usize);
+            }
         }
     }
 
@@ -701,7 +755,8 @@ pub trait TextField {
 }
 
 /// Columns that print a row as fields, each followed by `|`: a
-/// [`TextField`], or a tuple or [`SpreadCols`] of them.
+/// [`TextField`], a tuple or [`SpreadCols`] of them, or a child table's
+/// [`ChildCols`].
 pub trait TextColumns {
     fn text_rows(&self) -> usize;
 
@@ -713,9 +768,46 @@ pub trait TextColumns {
     /// # Safety
     /// As [`TextField::write_field`].
     unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding);
+
+    /// Fields in a row.
+    const WIDTH: usize;
+
+    /// As [`write_row`](Self::write_row), but field `j` (counted from
+    /// `first`) is left empty, NULL, where `null(j)`: for columns whose
+    /// NULLs are kept once per row rather than per column.
+    ///
+    /// # Safety
+    /// As [`TextField::write_field`].
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    );
 }
 
 impl<T: TextField> TextColumns for T {
+    const WIDTH: usize = 1;
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        unsafe {
+            if !null(first) {
+                self.write_field(r, w, encoding);
+            }
+            w.byte(b'|');
+        }
+    }
+
     #[inline]
     fn text_rows(&self) -> usize {
         TextField::text_rows(self)
@@ -881,6 +973,22 @@ impl<C: TextField, const N: usize> TextColumns for SpreadCols<C, N> {
             unsafe { c.write_row(r, w, encoding) }
         }
     }
+
+    const WIDTH: usize = N;
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        for (i, c) in self.0.iter().enumerate() {
+            unsafe { c.write_row_masked(r, w, encoding, first + i, null) }
+        }
+    }
 }
 
 macro_rules! tuple_text {
@@ -897,6 +1005,25 @@ macro_rules! tuple_text {
             #[inline(always)]
             unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
                 unsafe { $(self.$i.write_row(r, w, encoding);)+ }
+            }
+
+            const WIDTH: usize = 0 $(+ $t::WIDTH)+;
+
+            #[inline(always)]
+            unsafe fn write_row_masked(
+                &self,
+                r: usize,
+                w: &mut Cursor,
+                encoding: Encoding,
+                first: usize,
+                null: &impl Fn(usize) -> bool,
+            ) {
+                let mut at = first;
+                $(
+                    unsafe { self.$i.write_row_masked(r, w, encoding, at, null) };
+                    at += $t::WIDTH;
+                )+
+                let _ = at;
             }
         }
     };
@@ -926,6 +1053,8 @@ pub trait TextTables {
 
 /// A child table's rows: the children's columns.
 impl<V: TextColumns> TextColumns for ChildCols<V> {
+    const WIDTH: usize = V::WIDTH;
+
     fn text_rows(&self) -> usize {
         self.values.text_rows()
     }
@@ -938,6 +1067,19 @@ impl<V: TextColumns> TextColumns for ChildCols<V> {
     unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
         // SAFETY: as the caller's
         unsafe { self.values.write_row(r, w, encoding) }
+    }
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        // SAFETY: as the caller's
+        unsafe { self.values.write_row_masked(r, w, encoding, first, null) }
     }
 }
 
@@ -988,10 +1130,17 @@ mod tests {
         {
             assert_eq!(eight(x).to_le_bytes(), *format!("{x:08}").as_bytes(), "{x}");
         }
+        for x in 0..10_000u32 {
+            assert_eq!(four(x).to_le_bytes(), *format!("{x:04}").as_bytes(), "{x}");
+        }
         for v in [
             0u64,
             7,
             10,
+            100,
+            1_234,
+            9_999,
+            10_000,
             99_999_999,
             100_000_000,
             123_456_789_012,
@@ -1013,8 +1162,25 @@ mod tests {
             assert_eq!(fmt(|o| o.decimal(-77973, 2)), "-779.73");
             assert_eq!(fmt(|o| o.decimal(-77973, 3)), "-77.973");
             assert_eq!(fmt(|o| o.decimal(-500, 0)), "-500");
-            for v in [-100_001, -77973, -5, 0, 7, 99, 100, 123_456_789] {
-                assert_eq!(fmt(|o| o.decimal2(v)), fmt(|o| o.decimal(v, 2)));
+            let edges = [
+                -100_001,
+                -77973,
+                -5,
+                0,
+                7,
+                99,
+                100,
+                9_999,
+                10_000,
+                99_999_999,
+                100_000_000,
+            ];
+            for v in (-1_000_000..1_000_000)
+                .step_by(997)
+                .chain(edges)
+                .chain([123_456_789])
+            {
+                assert_eq!(fmt(|o| o.decimal2(v)), fmt(|o| o.decimal(v, 2)), "{v}");
             }
             assert_eq!(fmt(|o| o.date(0)), "1970-01-01");
             assert_eq!(fmt(|o| o.date(-25567)), "1900-01-01");

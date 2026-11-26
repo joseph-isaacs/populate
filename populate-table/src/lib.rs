@@ -38,9 +38,9 @@ mod parquet;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use direct::{ParquetOptions, write_dist_parquet};
-pub use dist::{DistTable, DistTables, DynTable};
+pub use dist::{DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS, DistTable, DistTables, DynTable};
 #[cfg(feature = "parquet")]
-pub use parquet::{write_parquet, write_parquet_many};
-pub use sched::{Schedule, par_ordered, par_sources, resolve_threads};
-pub use stream::{Stream, hash_str, mix64};
+pub use parquet::{write_parquet, write_parquet_many, write_parquet_many_in_batches};
+pub use sched::{Schedule, par_map, par_ordered, par_sources, resolve_threads};
+pub use stream::{Stream, fnv1a64, hash_str, mix64};
 pub use table::{BatchCtx, DecimalRepr, Table};

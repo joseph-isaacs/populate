@@ -117,6 +117,18 @@ pub trait Buffers: Debug + Clone + Copy + PartialEq + Default + Send + Sync + 's
     fn shared() -> &'static Shared;
 }
 
+/// The buffers of a generator whose strings are all written per row:
+/// none shared, so every view is inline or into the batch's own [`DATA`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Unshared;
+
+impl Buffers for Unshared {
+    fn shared() -> &'static Shared {
+        static NONE: std::sync::LazyLock<Shared> = std::sync::LazyLock::new(|| Shared::new(vec![]));
+        &NONE
+    }
+}
+
 /// Bytes of a shared dictionary being built: values longer than 12 bytes
 /// (shorter ones live in their views).
 #[derive(Debug)]
@@ -255,6 +267,7 @@ impl<B> Sink<Word<B>> for Words<B> {
         self.0.reserve(n);
     }
 
+    #[inline(always)]
     fn push_n(&mut self, values: impl Iterator<Item = Word<B>>) {
         self.0.extend(values.map(|w| w.0));
     }
@@ -306,6 +319,40 @@ pub struct Views<B> {
 }
 
 impl<B> Views<B> {
+    /// Room for `n` more strings of `bytes` more bytes in all (strings of
+    /// up to 12 bytes need none: they live in their views).
+    pub fn reserve_bytes(&mut self, n: usize, bytes: usize) {
+        self.views.reserve(n);
+        self.data.reserve(bytes);
+    }
+
+    /// Strings so far.
+    pub fn len(&self) -> usize {
+        self.views.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.views.is_empty()
+    }
+
+    /// The views and the batch's own bytes they point into.
+    pub fn into_parts(self) -> (Vec<u128>, Vec<u8>) {
+        (self.views, self.data)
+    }
+
+    /// A copy of string `i`.
+    pub fn get(&self, i: usize) -> String {
+        let v = self.views[i];
+        let len = v as u32 as usize;
+        let bytes = if len <= 12 {
+            v.to_le_bytes()[4..4 + len].to_vec()
+        } else {
+            let at = (v >> 96) as usize;
+            self.data[at..at + len].to_vec()
+        };
+        String::from_utf8(bytes).expect("views hold UTF-8")
+    }
+
     /// Append the bytes `data[start..]` (just written) as the next string.
     #[inline(always)]
     fn end_string(&mut self, start: usize) {
@@ -335,6 +382,18 @@ impl<B> Sink<Str<B>> for Views<B> {
 
     fn reserve(&mut self, n: usize) {
         self.views.reserve(n);
+    }
+}
+
+impl<B> ReadRows for Views<B> {
+    type Row = Str<B>;
+
+    fn rows(&self) -> usize {
+        self.len()
+    }
+
+    fn rows_from(&self, start: usize) -> impl Iterator<Item = Str<B>> + '_ {
+        (start..self.len()).map(|i| Str::from(self.get(i)))
     }
 }
 

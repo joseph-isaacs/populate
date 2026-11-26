@@ -25,6 +25,11 @@ use rand::rngs::SmallRng;
 use std::fmt;
 use std::sync::Arc;
 
+/// Default rows per chunk (one Parquet row group).
+pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
+/// Default rows per Arrow batch.
+pub const DEFAULT_BATCH_ROWS: usize = 8 * 1024;
+
 /// `rows` source rows of `dist`, as Arrow batches.
 ///
 /// Rows `first..first + n` are `dist`, cloned, skipped `first` rows and
@@ -60,8 +65,8 @@ where
             rows,
             dist,
             schema,
-            chunk_rows: 256 * 1024,
-            batch_rows: 8 * 1024,
+            chunk_rows: DEFAULT_CHUNK_ROWS,
+            batch_rows: DEFAULT_BATCH_ROWS as u64,
         }
     }
 
@@ -215,8 +220,8 @@ where
             rows,
             dist,
             schemas,
-            chunk_rows: 256 * 1024,
-            batch_rows: 8 * 1024,
+            chunk_rows: DEFAULT_CHUNK_ROWS,
+            batch_rows: DEFAULT_BATCH_ROWS as u64,
         }
     }
 

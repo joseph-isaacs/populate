@@ -24,7 +24,7 @@ use dsbgen::types::Date;
 use dsbgen::types::{Address, Decimal as DsDecimal};
 use populate_builtins::{derive_columns, named_all, range};
 use populate_combinators::lehmer::{A, M, mulmod};
-use populate_combinators::text::{Gmt, Interned, Str, StrViews};
+use populate_combinators::text::{Gmt, Str, StrViews, Word};
 use populate_core::{Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, into_record_batch_with};
 use populate_table::text::{TextColumns, TextTables, write_columns};
@@ -834,8 +834,8 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
     if NullTable::CustomerDemographics.get_null_basis_points() != 0 {
         return customer_demographics_rows(s);
     }
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[&'static str]> {
-        (0..n as i64).map(f).collect()
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
+        (0..n as i64).map(|i| Word::new(f(i))).collect()
     };
     let gender = list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size);
     let marital = list(
@@ -903,11 +903,9 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
                 let i = first - 1;
                 out.0.extend(rows.iter().map(|&r| r as i32));
                 // each word's bytes once per block, not once per row
-                let words = |col: &mut Nullable<StrViews>, list: &[&str], d: usize| {
-                    let views: Vec<Interned> = list.iter().map(|w| col.values.intern(w)).collect();
+                let words = |col: &mut Nullable<StrViews>, list: &[Word], d: usize| {
                     Sink::<Str>::reserve(&mut col.values, n);
-                    // SAFETY: the views were interned in this column just above
-                    digits(i, n, d).for_each(|v| unsafe { col.values.push_interned(views[v]) });
+                    col.values.push_indexed(list, digits(i, n, d));
                     col.valid.push_valid(n);
                 };
                 words(&mut out.1, &gender, 0);

@@ -928,6 +928,7 @@ dependencies = [
  "mimalloc",
  "parquet",
  "populate-builtins",
+ "populate-combinators",
  "populate-core",
  "populate-sink-arrow",
  "populate-table",
@@ -1003,15 +1004,13 @@ name = "populate-ycsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-buffer",
  "arrow-schema",
  "divan",
  "itoa",
  "mimalloc",
  "parquet",
- "populate-builtins",
+ "populate-combinators",
  "populate-core",
- "populate-sink-arrow",
  "populate-table",
  "rand",
 ]

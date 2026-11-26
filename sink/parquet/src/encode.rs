@@ -119,6 +119,7 @@ fn common_ok(path: &ColumnPath, props: &WriterProperties) -> bool {
 pub struct DirectColumn {
     descr: ColumnDescPtr,
     arrays: Vec<ArrayRef>,
+    batch_rows: Option<usize>,
 }
 
 impl DirectColumn {
@@ -126,7 +127,30 @@ impl DirectColumn {
         Self {
             descr,
             arrays: Vec::new(),
+            batch_rows: None,
         }
+    }
+
+    /// Encode a flat column as if its rows had been written in arrays of
+    /// `rows` each (the last shorter), whatever arrays they come in: pages
+    /// end where they would then, and no array is re-cut or copied. A
+    /// `List` or `FixedSizeList` column is encoded by its arrays as given.
+    pub fn with_batch_rows(mut self, rows: usize) -> Self {
+        self.batch_rows = Some(rows.max(1));
+        self
+    }
+
+    /// The chunk's values ([`Values::gather`]), in arrays of
+    /// [`with_batch_rows`](Self::with_batch_rows) rows if set.
+    fn gather<'a, T: Clone>(
+        &'a self,
+        push: impl FnMut(&'a ArrayRef, &mut Vec<T>),
+    ) -> Values<'a, T> {
+        let mut v = Values::gather(&self.arrays, push);
+        if let Some(n) = self.batch_rows {
+            v.lens = (0..v.rows).step_by(n).map(|r| n.min(v.rows - r)).collect();
+        }
+        v
     }
 
     pub fn write(&mut self, array: &ArrayRef) {
@@ -171,7 +195,7 @@ impl DirectColumn {
         }
         match self.descr.physical_type() {
             PhysicalType::BOOLEAN => {
-                let v = Values::<bool>::gather(&self.arrays, |a, out| {
+                let v = self.gather::<bool>(|a, out| {
                     let b = a.as_boolean();
                     match a.logical_nulls().filter(|n| n.null_count() > 0) {
                         None => out.extend(b.values().iter()),
@@ -181,7 +205,7 @@ impl DirectColumn {
                 encode_bools(&self.descr, props, &v)
             }
             PhysicalType::INT32 => {
-                let v = Values::<i32>::gather(&self.arrays, |a, out| match a.data_type() {
+                let v = self.gather::<i32>(|a, out| match a.data_type() {
                     DataType::Int32 => extend(out, a.as_primitive::<Int32Type>().values(), a),
                     DataType::Date32 => extend(out, a.as_primitive::<Date32Type>().values(), a),
                     DataType::Int16 => {
@@ -202,7 +226,7 @@ impl DirectColumn {
                 // entries by one 16-byte key instead of by the bytes
                 let keyed = props.dictionary_enabled(self.descr.path());
                 let mut keys = Vec::new();
-                let v = Values::<&[u8]>::gather(&self.arrays, |a, out| {
+                let v = self.gather::<&[u8]>(|a, out| {
                     if let Some(sa) = a.as_string_opt::<i32>() {
                         // `Utf8`: offsets into one buffer (no views, so
                         // the dictionary looks up the bytes)
@@ -257,7 +281,7 @@ impl DirectColumn {
                 encode_bytes(&self.descr, props, &v, &keys)
             }
             PhysicalType::FLOAT => {
-                let v = Values::<F32>::gather(&self.arrays, |a, out| {
+                let v = self.gather::<F32>(|a, out| {
                     extend_map(out, a.as_primitive::<Float32Type>().values(), a, |x| {
                         F32(x.to_bits())
                     })
@@ -265,7 +289,7 @@ impl DirectColumn {
                 encode(&self.descr, props, &v)
             }
             PhysicalType::DOUBLE => {
-                let v = Values::<F64>::gather(&self.arrays, |a, out| {
+                let v = self.gather::<F64>(|a, out| {
                     extend_map(out, a.as_primitive::<Float64Type>().values(), a, |x| {
                         F64(x.to_bits())
                     })
@@ -273,7 +297,7 @@ impl DirectColumn {
                 encode(&self.descr, props, &v)
             }
             _ => {
-                let v = Values::<i64>::gather(&self.arrays, |a, out| match a.data_type() {
+                let v = self.gather::<i64>(|a, out| match a.data_type() {
                     DataType::Int64 => extend(out, a.as_primitive::<Int64Type>().values(), a),
                     DataType::Timestamp(unit, _) => {
                         let values = match unit {

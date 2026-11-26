@@ -27,7 +27,7 @@ use arrow_schema::SchemaRef;
 use populate_builtins::{Checkpointed, checkpointed, named, named_all};
 use populate_core::{Columns, Distribution};
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, resolve_threads};
+use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, resolve_threads};
 use rand::Rng;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Write};
@@ -44,8 +44,6 @@ use crate::values::{
 };
 use crate::{SEED, pretty_sci};
 
-/// Default rows per chunk (= Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
 /// Default rows per Arrow batch.
 pub const DEFAULT_BATCH_SIZE: usize = 64 * 1024;
 

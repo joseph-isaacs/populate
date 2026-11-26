@@ -60,27 +60,6 @@ impl StrViews {
         }
     }
 
-    /// The view of `s`, its bytes stored once, to append as many rows as
-    /// needed with [`push_interned`](Self::push_interned): for columns of a
-    /// few distinct values, whose long ones are then not copied per row.
-    pub fn intern(&mut self, s: &str) -> Interned {
-        let views = self.views.len();
-        self.push_str(s);
-        let v = self.views.pop().expect("just pushed");
-        debug_assert_eq!(self.views.len(), views);
-        Interned(v)
-    }
-
-    /// Append a row of a string [`intern`](Self::intern)ed in this column.
-    ///
-    /// # Safety
-    /// `s` comes from `intern` on this column: its view points into this
-    /// column's data.
-    #[inline]
-    pub unsafe fn push_interned(&mut self, s: Interned) {
-        self.views.push(s.0);
-    }
-
     /// The string of row `i`.
     fn get(&self, i: usize) -> String {
         let v = self.views[i];
@@ -96,11 +75,6 @@ impl StrViews {
     }
 }
 
-/// A string's view in one [`StrViews`] column, from
-/// [`StrViews::intern`].
-#[derive(Debug, Clone, Copy)]
-pub struct Interned(u128);
-
 impl Columnar for Str {
     type Columns = StrViews;
 }
@@ -112,18 +86,65 @@ impl From<&str> for Str {
 }
 
 /// A string from a fixed list (a distribution's values), collected into
-/// the same columns as [`Str`].
+/// the same columns as [`Str`]. Its view is made once, with the list, so
+/// a row costs a copy of it (and of the bytes, past 12).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Word(pub &'static str);
+pub struct Word {
+    s: &'static str,
+    /// The view, with buffer offset 0.
+    view: u128,
+}
+
+impl Word {
+    /// `s`, its view made once here.
+    pub fn new(s: &'static str) -> Self {
+        Word {
+            s,
+            view: make_view(s.as_bytes(), 0, 0),
+        }
+    }
+}
 
 impl Columnar for Word {
     type Columns = StrViews;
 }
 
+impl Word {
+    /// Its view in a column whose data buffer is `data`, its bytes
+    /// appended there past 12.
+    #[inline(always)]
+    fn view_in(self, data: &mut Vec<u8>) -> u128 {
+        if self.s.len() <= 12 {
+            self.view
+        } else {
+            let offset = u32::try_from(data.len()).expect("string data exceeds 4GiB");
+            data.extend_from_slice(self.s.as_bytes());
+            self.view | (offset as u128) << 96
+        }
+    }
+}
+
+impl StrViews {
+    /// Append `list[i]` for each `i`: the list's long words are copied
+    /// once, and every row shares them, as a row of a fixed list costs a
+    /// view rather than its bytes.
+    pub fn push_indexed(&mut self, list: &[Word], idx: impl Iterator<Item = usize>) {
+        let data = &mut self.data;
+        let views: Vec<u128> = list.iter().map(|w| w.view_in(data)).collect();
+        self.views.extend(idx.map(|i| views[i]));
+    }
+}
+
 impl Sink<Word> for StrViews {
     #[inline]
-    fn push(&mut self, s: Word) {
-        self.push_str(s.0);
+    fn push(&mut self, w: Word) {
+        let v = w.view_in(&mut self.data);
+        self.views.push(v);
+    }
+
+    fn push_n(&mut self, words: impl Iterator<Item = Word>) {
+        let data = &mut self.data;
+        self.views.extend(words.map(|w| w.view_in(data)));
     }
 
     fn reserve(&mut self, n: usize) {
@@ -137,8 +158,8 @@ impl TextField for StrViews {
     }
 
     fn text_bytes(&self) -> usize {
-        // a short string is written with one 12-byte store; a long one is
-        // counted per row, as an interned one is written once per row
+        // per row, as a view may share another's bytes; 12 for the store
+        // of a short one
         self.views
             .iter()
             .map(|&v| (v as u32 as usize).max(12))

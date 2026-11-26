@@ -17,7 +17,8 @@
 //! change only the speed.
 
 use populate_table::MultiChunks;
-use populate_table::sched::par_sources;
+use populate_table::chunks::for_each_batch_many;
+use populate_table::cli::create;
 use populate_tsbs::config::{parse_duration, parse_rfc3339};
 use populate_tsbs::{Config, Format, Tsbs};
 use std::fs::File;
@@ -153,12 +154,11 @@ fn run(a: Args) -> Result<(), String> {
         Out::Parquet => {
             std::fs::create_dir_all(&a.dir).map_err(|e| e.to_string())?;
             let names = t.arrow(cp).table_names();
-            let mut ws = Vec::new();
-            for n in &names {
-                let p = a.dir.join(format!("{n}.parquet"));
-                ws.push(BufWriter::new(File::create(&p).map_err(|e| e.to_string())?));
-            }
-            t.write_parquet(ws, a.threads, cp, None)
+            let paths: Vec<PathBuf> = names
+                .iter()
+                .map(|n| a.dir.join(format!("{n}.parquet")))
+                .collect();
+            t.write_parquet(create(&paths), a.threads, cp, None)
                 .map_err(|e| e.to_string())?;
             eprintln!(
                 "wrote {} tables to {} in {:.2?}",
@@ -170,20 +170,9 @@ fn run(a: Args) -> Result<(), String> {
         Out::Arrow => {
             let src = t.arrow(cp);
             let mut rows = 0usize;
-            let r: Result<(), ()> = par_sources(
-                &[src.num_chunks()],
-                a.threads,
-                |_, i| {
-                    let mut v = Vec::new();
-                    src.chunk(i, &mut |k, b| v.push((k, b)));
-                    v
-                },
-                |_, v| {
-                    rows += v.iter().map(|(_, b)| b.num_rows()).sum::<usize>();
-                    Ok(())
-                },
-            );
-            r.ok();
+            for_each_batch_many(&[&src as &dyn MultiChunks], a.threads, |_, b| {
+                rows += b.num_rows()
+            });
             eprintln!("{rows} rows in {:.2?}", t0.elapsed());
         }
     }

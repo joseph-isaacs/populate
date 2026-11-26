@@ -19,6 +19,8 @@ env:
   RUSTFLAGS: -D warnings
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   check:
@@ -34,12 +36,17 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
       - run: cargo fmt --all --check
       # `--all-targets` type-checks the benches, so they must keep
       # compiling. CI doesn't build them in the `bench` profile (thin LTO,
       # one codegen unit): that optimised build was most of the job's time.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+        env:
+          RUSTC_WRAPPER: sccache
 
   msrv:
     name: MSRV (rust-version)
@@ -62,5 +69,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
       - run: pip install ./python pyarrow pytest
+        env:
+          RUSTC_WRAPPER: sccache
       - run: pytest python/tests

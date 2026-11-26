@@ -23,6 +23,13 @@ CI disables debug symbols for development and test builds with
 code generation and artifact size. Tests retain debug assertions and
 overflow checks. Local builds keep their normal debug symbols.
 
+CI uses `rust-cache` for Cargo dependencies and `sccache` with GitHub's
+cache storage for Rust compilation during tests and Python extension
+builds. Compiler results are keyed by their inputs; unchanged library
+compiles can be reused across checkouts. Linking and test execution still
+run. Incremental compilation is disabled for compatibility with sccache,
+and the action reports cache statistics in each build job.
+
 Plain `cargo build` / `cargo test` cover only the workspace
 `default-members`, which leave out `populate-bench` and the `parquet`
 feature.

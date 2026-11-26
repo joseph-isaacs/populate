@@ -23,9 +23,11 @@
 //!   several of them read (a line's ship date decides its status, return
 //!   flag and receipt date).
 
+#[cfg(feature = "formats")]
 use crate::TableName;
 use crate::cols::{Bytes, Comment, CommentLen, Word};
 use crate::text::{Dicts, Text};
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
 use populate_builtins::{
     Draws, children, constant, derive, draws, draws_reserving, flat_map, format, named, named_all,
@@ -33,9 +35,14 @@ use populate_builtins::{
 };
 use populate_combinators::lehmer::{Int, Ints, Lcg, bound, bounded};
 use populate_combinators::views::Picks;
-use populate_core::{Children, Columns, Date32, Decimal, Dist, Distribution, Padded, Sink};
+use populate_core::{Children, Date32, Decimal, Dist, Padded, Sink};
+#[cfg(feature = "formats")]
+use populate_core::{Columns, Distribution};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowColumns;
+#[cfg(feature = "formats")]
 use populate_table::DynTable;
+use std::iter::repeat_n;
 use std::sync::LazyLock;
 use tpchgen::dates::{MIN_GENERATE_DATE, TOTAL_DATE_RANGE, TPCHDate};
 
@@ -50,7 +57,7 @@ const EPOCH: i32 = TPCHDate::UNIX_EPOCH_OFFSET;
 const NATIONS: i32 = 25;
 
 /// TPC-H's decimals: `Decimal128(15, 2)`, in cents.
-type Dec = Decimal<15, 2>;
+pub type Dec = Decimal<15, 2>;
 
 /// `v` cents.
 #[inline(always)]
@@ -206,6 +213,7 @@ fn phone(nation_seed: i64, seed: i64) -> impl Dist<Bytes> {
 // ---------------------------------------------------------------------------
 // Tables
 
+#[cfg(feature = "formats")]
 fn table<D>(t: TableName, rows: u64, dist: D) -> DynTable
 where
     D: Distribution + Clone + Send + Sync + 'static,
@@ -215,6 +223,7 @@ where
 }
 
 /// Table `t` at scale `s`, `rows` source rows.
+#[cfg(feature = "formats")]
 pub(crate) fn generator(t: TableName, s: &Scale, rows: u64) -> DynTable {
     match t {
         TableName::Nation => nation_table(rows),
@@ -229,6 +238,7 @@ pub(crate) fn generator(t: TableName, s: &Scale, rows: u64) -> DynTable {
 }
 
 /// Every table's schema, read off its distribution (no rows generated).
+#[cfg(feature = "formats")]
 pub(crate) static SCHEMAS: LazyLock<Vec<SchemaRef>> = LazyLock::new(|| {
     let s = Scale::new(1.0);
     TableName::ALL
@@ -237,39 +247,31 @@ pub(crate) static SCHEMAS: LazyLock<Vec<SchemaRef>> = LazyLock::new(|| {
         .collect()
 });
 
-fn nation_table(rows: u64) -> DynTable {
+pub(crate) fn nation_table_dist() -> impl Dist<Nation> + use<> {
     let d = Dicts::get();
-    table(
-        TableName::Nation,
-        rows,
-        (
-            named("n_nationkey", range(0i64, 1)),
-            named(
-                "n_name",
-                derive(range(0usize, 1), |&i| Word::new(d.nations.views[i])),
-            ),
-            named(
-                "n_regionkey",
-                derive(range(0usize, 1), |&i| d.nation_regions[i]),
-            ),
-            named("n_comment", comment(606179079, 72.0)),
+    (
+        named("n_nationkey", range(0i64, 1)),
+        named(
+            "n_name",
+            derive(range(0usize, 1), |&i| Word::new(d.nations.views[i])),
         ),
+        named(
+            "n_regionkey",
+            derive(range(0usize, 1), |&i| d.nation_regions[i]),
+        ),
+        named("n_comment", comment(606179079, 72.0)),
     )
 }
 
-fn region_table(rows: u64) -> DynTable {
+pub(crate) fn region_table_dist() -> impl Dist<Region> + use<> {
     let d = Dicts::get();
-    table(
-        TableName::Region,
-        rows,
-        (
-            named("r_regionkey", range(0i64, 1)),
-            named(
-                "r_name",
-                derive(range(0usize, 1), |&i| Word::new(d.regions.views[i])),
-            ),
-            named("r_comment", comment(1500869201, 72.0)),
+    (
+        named("r_regionkey", range(0i64, 1)),
+        named(
+            "r_name",
+            derive(range(0usize, 1), |&i| Word::new(d.regions.views[i])),
         ),
+        named("r_comment", comment(1500869201, 72.0)),
     )
 }
 
@@ -300,39 +302,35 @@ fn part_name() -> impl Dist<Bytes> {
     )
 }
 
-fn part(rows: u64) -> DynTable {
+pub(crate) fn part_dist() -> impl Dist<Part> + use<> {
     let d = Dicts::get();
     let mfgr = || ints(1, 1, 5);
-    table(
-        TableName::Part,
-        rows,
-        (
-            named("p_partkey", key()),
-            named("p_name", part_name()),
-            named(
-                "p_mfgr",
-                format::<_, Bytes, _>(mfgr(), |&m, out| {
-                    out.push_str("Manufacturer#");
-                    out.push_u64_padded(m as u64, 1);
-                }),
-            ),
-            named(
-                "p_brand",
-                format::<_, Bytes, _>((mfgr(), ints(46831694, 1, 5)), |(&m, &b), out| {
-                    out.push_str("Brand#");
-                    out.push_u64_padded((m * 10 + b) as u64, 1);
-                }),
-            ),
-            named("p_type", pick(&d.types, 1841581359)),
-            named("p_size", ints(1193163244, 1, 50)),
-            named("p_container", pick(&d.containers, 727633698)),
-            named("p_retailprice", derive(key(), |&p| dec(part_price(p)))),
-            named("p_comment", comment(804159733, 14.0)),
+    (
+        named("p_partkey", key()),
+        named("p_name", part_name()),
+        named(
+            "p_mfgr",
+            format::<_, Bytes, _>(mfgr(), |&m, out| {
+                out.push_str("Manufacturer#");
+                out.push_u64_padded(m as u64, 1);
+            }),
         ),
+        named(
+            "p_brand",
+            format::<_, Bytes, _>((mfgr(), ints(46831694, 1, 5)), |(&m, &b), out| {
+                out.push_str("Brand#");
+                out.push_u64_padded((m * 10 + b) as u64, 1);
+            }),
+        ),
+        named("p_type", pick(&d.types, 1841581359)),
+        named("p_size", ints(1193163244, 1, 50)),
+        named("p_container", pick(&d.containers, 727633698)),
+        named("p_retailprice", derive(key(), |&p| dec(part_price(p)))),
+        named("p_comment", comment(804159733, 14.0)),
     )
 }
 
-fn supplier(rows: u64) -> DynTable {
+pub(crate) fn supplier_dist() -> impl Dist<Supplier> + use<> {
     const BBB_BASE: &str = "Customer ";
     const COMPLAINTS: &str = "Complaints";
     const RECOMMENDS: &str = "Recommends";
@@ -370,36 +368,28 @@ fn supplier(rows: u64) -> DynTable {
             out.push_str(&c[off + BBB_BASE.len() + noise + kind.len()..]);
         },
     );
-    table(
-        TableName::Supplier,
-        rows,
-        (
-            named("s_suppkey", key()),
-            named("s_name", numbered("Supplier#", key())),
-            named("s_address", address(706178559)),
-            named("s_nationkey", nation(110356601)),
-            named("s_phone", phone(110356601, 884434366)),
-            named("s_acctbal", balance(962338209)),
-            named("s_comment", comments),
-        ),
+    (
+        named("s_suppkey", key()),
+        named("s_name", numbered("Supplier#", key())),
+        named("s_address", address(706178559)),
+        named("s_nationkey", nation(110356601)),
+        named("s_phone", phone(110356601, 884434366)),
+        named("s_acctbal", balance(962338209)),
+        named("s_comment", comments),
     )
 }
 
-fn customer(rows: u64) -> DynTable {
+pub(crate) fn customer_dist() -> impl Dist<Customer> + use<> {
     let d = Dicts::get();
-    table(
-        TableName::Customer,
-        rows,
-        (
-            named("c_custkey", key()),
-            named("c_name", numbered("Customer#", key())),
-            named("c_address", address(881155353)),
-            named("c_nationkey", nation(1489529863)),
-            named("c_phone", phone(1489529863, 1521138112)),
-            named("c_acctbal", balance(298370230)),
-            named("c_mktsegment", pick(&d.segments, 1140279430)),
-            named("c_comment", comment(1335826707, 73.0)),
-        ),
+    (
+        named("c_custkey", key()),
+        named("c_name", numbered("Customer#", key())),
+        named("c_address", address(881155353)),
+        named("c_nationkey", nation(1489529863)),
+        named("c_phone", phone(1489529863, 1521138112)),
+        named("c_acctbal", balance(298370230)),
+        named("c_mktsegment", pick(&d.segments, 1140279430)),
+        named("c_comment", comment(1335826707, 73.0)),
     )
 }
 
@@ -409,50 +399,44 @@ const PER_PART: usize = SUPPLIERS_PER_PART as usize;
 
 /// `partsupp`, 4 rows per part: every column is [`children`] of the parts,
 /// its stream reserving 4 draws per part (8 for the comment).
-fn partsupp(s: &Scale, rows: u64) -> DynTable {
+pub(crate) fn partsupp_dist(s: &Scale) -> impl Dist<PartSupp> + use<> {
     let suppliers = s.suppliers;
     let per_part = || constant(PER_PART);
     let len = CommentLen::new(124.0);
-    table(
-        TableName::PartSupp,
-        rows,
-        (
-            named(
-                "ps_partkey",
-                children(per_part(), derive(key(), |&p| [p; PER_PART])),
+    (
+        named(
+            "ps_partkey",
+            children(per_part(), derive(key(), |&p| [p; PER_PART])),
+        ),
+        named(
+            "ps_suppkey",
+            children(
+                per_part(),
+                derive(key(), move |&p| {
+                    std::array::from_fn::<_, PER_PART, _>(|n| part_supplier(p, n as i64, suppliers))
+                }),
             ),
-            named(
-                "ps_suppkey",
-                children(
-                    per_part(),
-                    derive(key(), move |&p| {
-                        std::array::from_fn::<_, PER_PART, _>(|n| {
-                            part_supplier(p, n as i64, suppliers)
-                        })
-                    }),
-                ),
+        ),
+        named(
+            "ps_availqty",
+            children(per_part(), Ints::<PER_PART>::new(1671059989, 1, 9999)),
+        ),
+        named(
+            "ps_supplycost",
+            children(
+                per_part(),
+                derive(Ints::<PER_PART>::new(1051288424, 100, 100_000), |x| {
+                    x.map(|x| dec(x as i64))
+                }),
             ),
-            named(
-                "ps_availqty",
-                children(per_part(), Ints::<PER_PART>::new(1671059989, 1, 9999)),
-            ),
-            named(
-                "ps_supplycost",
-                children(
-                    per_part(),
-                    derive(Ints::<PER_PART>::new(1051288424, 100, 100_000), |x| {
-                        x.map(|x| dec(x as i64))
-                    }),
-                ),
-            ),
-            named(
-                "ps_comment",
-                children(
-                    per_part(),
-                    derive(stream::<{ 2 * PER_PART }>(1961692154), move |x| {
-                        std::array::from_fn::<_, PER_PART, _>(|i| len.make(x[2 * i], x[2 * i + 1]))
-                    }),
-                ),
+        ),
+        named(
+            "ps_comment",
+            children(
+                per_part(),
+                derive(stream::<{ 2 * PER_PART }>(1961692154), move |x| {
+                    std::array::from_fn::<_, PER_PART, _>(|i| len.make(x[2 * i], x[2 * i + 1]))
+                }),
             ),
         ),
     )
@@ -485,7 +469,7 @@ type LineValues = (Slots<i32>, Slots<i32>, Slots<i32>, Slots<i32>, Slots<i32>);
 
 /// The line streams `orders` and `lineitem` both read: quantity, discount,
 /// tax, part and ship delay.
-fn line_values(s: &Scale) -> impl Dist<LineValues> {
+fn line_values(s: &Scale) -> impl Dist<LineValues> + use<> {
     (
         slots(209208115, 1, 50),
         slots(554590007, 0, 10),
@@ -501,7 +485,7 @@ fn date(d: i32) -> Date32 {
     Date32(d - MIN_GENERATE_DATE + EPOCH)
 }
 
-fn orders(s: &Scale, rows: u64) -> DynTable {
+pub(crate) fn orders_dist(s: &Scale) -> impl Dist<Orders> + use<> {
     let d = Dicts::get();
     let (customers, past) = (s.customers, *PAST);
     let custkey = derive(stream::<1>(851767375), move |&[x]| {
@@ -534,37 +518,33 @@ fn orders(s: &Scale, rows: u64) -> DynTable {
             (Word::lit(status), dec(total))
         },
     );
-    table(
-        TableName::Orders,
-        rows,
-        (
-            named("o_orderkey", derive(key(), |&i| order_key(i))),
-            named("o_custkey", custkey),
-            named_all(&["o_orderstatus", "o_totalprice"], status_and_total),
-            named("o_orderdate", derive(order_date(), |&d| date(d))),
-            named("o_orderpriority", pick(&d.priorities, 591449447)),
-            named(
-                "o_clerk",
-                numbered(
-                    "Clerk#",
-                    derive(ints(1171034773, 1, s.clerks), |&c| c as i64),
-                ),
+    (
+        named("o_orderkey", derive(key(), |&i| order_key(i))),
+        named("o_custkey", custkey),
+        named_all(&["o_orderstatus", "o_totalprice"], status_and_total),
+        named("o_orderdate", derive(order_date(), |&d| date(d))),
+        named("o_orderpriority", pick(&d.priorities, 591449447)),
+        named(
+            "o_clerk",
+            numbered(
+                "Clerk#",
+                derive(ints(1171034773, 1, s.clerks), |&c| c as i64),
             ),
-            named("o_shippriority", constant(0i32)),
-            named("o_comment", comment(276090261, 49.0)),
         ),
+        named("o_shippriority", constant(0i32)),
+        named("o_comment", comment(276090261, 49.0)),
     )
 }
 
 /// One `lineitem` row.
-type Line = (
+pub type Line = (
     (i64, i64, i64, i32, Dec, Dec, Dec, Dec),
     (Word, Word, Date32, Date32, Date32, Word, Word, Comment),
 );
 
 /// `lineitem`: the lines of each order, from streams that reserve 7 draws
 /// per order.
-fn lineitem(s: &Scale, rows: u64) -> DynTable {
+pub(crate) fn lineitem_dist(s: &Scale) -> impl Dist<LineItem> + use<> {
     let d = Dicts::get();
     let (suppliers, past) = (s.suppliers, *PAST);
     let len = CommentLen::new(27.0);
@@ -593,74 +573,151 @@ fn lineitem(s: &Scale, rows: u64) -> DynTable {
             (flag_x, instr_x, mode_x, cx),
         ),
               out| {
-            let (key, od) = (*key, *od);
-            // the return flag stream is drawn only for lines already received
+            let (key, od, lines) = (*key, *od, *lines);
+            let shipped = ship.map(|delay| delay + od);
+            let received: Slots<i32> = std::array::from_fn(|j| receipt[j] + shipped[j]);
+            let (numbers, other) = &mut out.values;
+            // Each append has an exact length, so capacity is checked once
+            // per order and the column's line slots form one tight loop.
+            numbers.0.extend(repeat_n(key, lines));
+            numbers.1.extend(part[..lines].iter().map(|&p| p as i64));
+            numbers.2.extend(
+                (0..lines).map(|j| part_supplier(part[j] as i64, supp[j] as i64, suppliers)),
+            );
+            numbers.3.extend((1..=lines).map(|j| j as i32));
+            numbers
+                .4
+                .extend(qty[..lines].iter().map(|&q| dec(q as i64 * 100)));
+            numbers
+                .5
+                .extend((0..lines).map(|j| dec(part_price(part[j] as i64) * qty[j] as i64)));
+            numbers
+                .6
+                .extend(disc[..lines].iter().map(|&v| dec(v as i64)));
+            numbers
+                .7
+                .extend(tax[..lines].iter().map(|&v| dec(v as i64)));
+            // Only received lines consume a return-flag draw.
             let mut returned = 0;
-            for j in 0..*lines {
-                let p = part[j] as i64;
-                let q = qty[j] as i64;
-                let shipped = ship[j] + od;
-                let received = receipt[j] + shipped;
-                let flag = if received <= past {
+            other.0.push_n(received[..lines].iter().map(|&received| {
+                if received <= past {
                     let x = flag_x[returned];
                     returned += 1;
                     Word::new(d.return_flags.view(x))
                 } else {
                     n
-                };
-                out.values.push((
-                    (
-                        key,
-                        p,
-                        part_supplier(p, supp[j] as i64, suppliers),
-                        j as i32 + 1,
-                        dec(q * 100),
-                        dec(part_price(p) * q),
-                        dec(disc[j] as i64),
-                        dec(tax[j] as i64),
-                    ),
-                    (
-                        flag,
-                        if shipped <= past { f } else { o },
-                        date(shipped),
-                        date(commit[j] + od),
-                        date(received),
-                        Word::new(d.instructions.view(instr_x[j])),
-                        Word::new(d.modes.view(mode_x[j])),
-                        len.make(cx[2 * j], cx[2 * j + 1]),
-                    ),
-                ));
-            }
+                }
+            }));
+            other.1.push_n(
+                shipped[..lines]
+                    .iter()
+                    .map(|&s| if s <= past { f } else { o }),
+            );
+            other.2.extend(shipped[..lines].iter().map(|&s| date(s)));
+            other
+                .3
+                .extend(commit[..lines].iter().map(|&c| date(c + od)));
+            other.4.extend(received[..lines].iter().map(|&r| date(r)));
+            other.5.push_n(
+                instr_x[..lines]
+                    .iter()
+                    .map(|&x| Word::new(d.instructions.view(x))),
+            );
+            other
+                .6
+                .push_n(mode_x[..lines].iter().map(|&x| Word::new(d.modes.view(x))));
+            other
+                .7
+                .push_n((0..lines).map(|j| len.make(cx[2 * j], cx[2 * j + 1])));
         },
     )
     // 1 to 7 lines an order, 4 on average; a batch of 8Ki orders is within
     // 1% of the mean, so the line columns are allocated once
     .reserving(&[4.1]);
-    table(
-        TableName::LineItem,
-        rows,
-        named_all(
-            &[
-                "l_orderkey",
-                "l_partkey",
-                "l_suppkey",
-                "l_linenumber",
-                "l_quantity",
-                "l_extendedprice",
-                "l_discount",
-                "l_tax",
-                "l_returnflag",
-                "l_linestatus",
-                "l_shipdate",
-                "l_commitdate",
-                "l_receiptdate",
-                "l_shipinstruct",
-                "l_shipmode",
-                "l_comment",
-            ],
-            lines,
-        ),
+    named_all(
+        &[
+            "l_orderkey",
+            "l_partkey",
+            "l_suppkey",
+            "l_linenumber",
+            "l_quantity",
+            "l_extendedprice",
+            "l_discount",
+            "l_tax",
+            "l_returnflag",
+            "l_linestatus",
+            "l_shipdate",
+            "l_commitdate",
+            "l_receiptdate",
+            "l_shipinstruct",
+            "l_shipmode",
+            "l_comment",
+        ],
+        lines,
     )
+}
+
+/// Native row shape for `Nation`.
+pub type Nation = (i64, Word, i64, Comment);
+
+/// Native row shape for `Region`.
+pub type Region = (i64, Word, Comment);
+
+/// Native row shape for `Part`.
+pub type Part = (i64, Bytes, Bytes, Bytes, Word, i32, Word, Dec, Comment);
+
+/// Native row shape for `Supplier`.
+pub type Supplier = (i64, Bytes, Bytes, i64, Bytes, Dec, Bytes);
+
+/// Native row shape for `Customer`.
+pub type Customer = (i64, Bytes, Bytes, i64, Bytes, Dec, Word, Comment);
+
+/// Native row shape for `PartSupp`.
+pub type PartSupp = (
+    Children<i64>,
+    Children<i64>,
+    Children<i32>,
+    Children<Dec>,
+    Children<Comment>,
+);
+
+/// Native row shape for `Orders`.
+pub type Orders = (i64, i64, (Word, Dec), Date32, Word, Bytes, i32, Comment);
+
+/// Native row shape for `LineItem`.
+pub type LineItem = Children<Line>;
+
+#[cfg(feature = "formats")]
+fn nation_table(rows: u64) -> DynTable {
+    table(TableName::Nation, rows, nation_table_dist())
+}
+#[cfg(feature = "formats")]
+fn region_table(rows: u64) -> DynTable {
+    table(TableName::Region, rows, region_table_dist())
+}
+#[cfg(feature = "formats")]
+fn part(rows: u64) -> DynTable {
+    table(TableName::Part, rows, part_dist())
+}
+#[cfg(feature = "formats")]
+fn supplier(rows: u64) -> DynTable {
+    table(TableName::Supplier, rows, supplier_dist())
+}
+#[cfg(feature = "formats")]
+fn customer(rows: u64) -> DynTable {
+    table(TableName::Customer, rows, customer_dist())
+}
+#[cfg(feature = "formats")]
+fn partsupp(s: &Scale, rows: u64) -> DynTable {
+    table(TableName::PartSupp, rows, partsupp_dist(s))
+}
+#[cfg(feature = "formats")]
+fn orders(s: &Scale, rows: u64) -> DynTable {
+    table(TableName::Orders, rows, orders_dist(s))
+}
+#[cfg(feature = "formats")]
+fn lineitem(s: &Scale, rows: u64) -> DynTable {
+    table(TableName::LineItem, rows, lineitem_dist(s))
 }
 
 #[cfg(test)]

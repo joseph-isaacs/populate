@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! The core of `populate`: three small traits.
 //!
 //! - A [`Distribution`] is a stream of rows. It hands them out a block at
@@ -65,12 +66,14 @@
 //! ```
 
 mod children;
+pub mod chunks;
 mod columnar;
 mod list;
 mod local;
 mod logical;
 mod nullable;
 mod rows;
+pub mod sched;
 mod seek;
 mod sink;
 mod spread;
@@ -79,6 +82,7 @@ pub mod tuple;
 mod wide;
 
 pub use children::{ChildCols, Children, TableCols, Tables};
+pub use chunks::DistChunks;
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
@@ -100,6 +104,29 @@ pub use wide::{Wide, WideCols};
 /// what comes next may depend on what came before (a counter, or random
 /// bits left over from the last draw). Clone it to start again from the
 /// same point, and [`skip`](Self::skip) to start further on.
+///
+/// # Implementing
+///
+/// Write [`collect_into`](Self::collect_into) and [`skip`](Self::skip); the
+/// rest have defaults. `collect_into` appends exactly `n` rows to every
+/// column of `cols` and must not touch rows already there. `skip(n)` must
+/// leave the distribution where `n` rows of collecting would, as far as
+/// later rows can tell, and should take constant time: a table starts each
+/// batch by cloning its distribution and skipping to the batch's first row.
+/// Combinators that wrap one distribution (`named`, `list`, `derive`, ...)
+/// pass `skip` on, so a table is only as cheap to start as its slowest leaf.
+///
+/// The leaf in the [crate docs](crate) is a minimal example; [`in_local`]
+/// keeps a per-value loop fast.
+///
+/// # Determinism
+///
+/// For the same starting state and the same `rng` state, collecting `n`
+/// rows gives the same rows. Collecting `a` rows and then `b` need not give
+/// the same rows as collecting `a + b` at once (a list draws all its
+/// lengths before its elements), so a driver that wants output independent
+/// of how it is split seeds each batch from its index and skips the
+/// distribution to the batch's first row, as `populate-table` does.
 pub trait Distribution: Sized {
     /// One row.
     type Item: Columnar;
@@ -136,6 +163,12 @@ pub trait Distribution: Sized {
         Columns::<Self::Item>::default()
     }
 
+    /// Split `rows` source rows into independent chunks of raw columns.
+    /// No output backend or Arrow schema is required.
+    fn chunks(self, rows: u64) -> DistChunks<Self> {
+        DistChunks::new(rows, self)
+    }
+
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item> {
         let mut cols = self.columns();
@@ -150,3 +183,7 @@ pub trait Distribution: Sized {
 pub trait Dist<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
 
 impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Dist<T> for D {}
+
+/// Stateless per-row random streams.
+pub mod stream;
+pub use stream::Stream;

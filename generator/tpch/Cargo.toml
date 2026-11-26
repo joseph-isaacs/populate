@@ -15,14 +15,14 @@ license.workspace = true
 mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-combinators = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-combinators = { path = "../combinators", version = "0.1.0", default-features = false }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 # dbgen's distributions and text grammar, and the reference generator the
 # tests compare against (Apache-2.0, tpcgen-rs project)
 tpchgen = "4.0"
@@ -32,7 +32,8 @@ tpchgen = "4.0"
 libc = "0.2"
 
 [features]
-default = ["mimalloc"]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-buffer", "dep:parquet", "populate-combinators/formats"]
+default = ["formats", "mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
@@ -42,9 +43,27 @@ tpchgen-arrow = "4.0"
 bytes = "1"
 
 [[bin]]
+required-features = ["formats"]
 name = "tpch-gen"
 path = "src/bin/tpch-gen.rs"
 
 [[bench]]
+required-features = ["formats"]
 name = "tpch"
 harness = false
+
+[[test]]
+name = "tables"
+required-features = ["formats"]
+
+[[example]]
+name = "tpch_stages"
+required-features = ["formats"]
+
+[[example]]
+name = "tpch_columns"
+required-features = ["formats"]
+
+[[example]]
+name = "tpch_compare"
+required-features = ["formats"]

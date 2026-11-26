@@ -16,7 +16,7 @@ cargo run -p populate-gen-dsb --release --bin dsb-gen -- --sf 1 --out dsb --form
 Flags as `tpcds-gen` (see [`populate-gen-tpcds`](../tpcds/README.md)):
 `--sf` (a whole number, at least 1, as dsdgen takes it), `--out`,
 `--format parquet|dat|none`, `--tables`, `--threads`, `--batch`,
-`--row-group`, `--compression snappy|none`, `--no-dictionary`,
+`--row-group` or `--row-group-bytes`, `--compression snappy|none`, `--no-dictionary`,
 `--encoding utf8|latin1`. `.dat` output is UTF-8 by default, as dsdgen
 writes it.
 
@@ -30,6 +30,13 @@ let sales = ds.table(TableName::StoreSales);
 sales.for_each_batch(0, |batch| { /* RecordBatch, in table order */ });
 sales.write_dat(std::fs::File::create("store_sales.dat")?, 0, Encoding::Utf8)?;
 ```
+
+Parallel Arrow iteration subdivides chunks to spread smaller tables over
+workers and reduce buffered data. It aims for four jobs per worker, with
+up to 32 batches of work per job; tables of four batches or fewer keep
+their configured chunks. Sales and returns retain their configured chunks
+to amortize generator setup and preserve paired generation. Parquet row
+groups and text writer chunks retain their configured size.
 
 ## Where the data comes from
 
@@ -84,3 +91,19 @@ one core.
   64Ki orders or rows.
 
 See [NOTICE.md](NOTICE.md) for licences.
+
+## Native distributions
+
+`Dsb` exposes a typed method for every table (`customer()`, `inventory()`,
+`store_sales()`, and so on), returning `populate_core::DistChunks`.
+`store_sales_returns()`, `catalog_sales_returns()`, and `web_sales_returns()`
+emit paired channels from one pass. Sales/return source counts refer to
+tickets or orders, each producing child rows.
+
+Use `batch`, `chunk`, or `for_each_batch` for native columns and `into_dist()`
+for the underlying distribution. Public aliases and constructors in `raw`
+preserve integer/date/decimal types, nullable values, and string buffers.
+Native inventory and demographics retain their specialized column generators.
+
+Set `default-features = false` to exclude Arrow, Parquet, and `populate-table`.
+The default `formats` feature enables existing output adapters and CLI.

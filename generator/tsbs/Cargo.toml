@@ -13,12 +13,12 @@ license = "MIT AND BSD-3-Clause AND Apache-2.0"
 [dependencies]
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 # shortest round-trip float digits with ties to even, as Go's strconv
 itoa = "1"
 ryu = "1"
@@ -28,5 +28,18 @@ bytes = "1"
 arrow-select = "60"
 
 [[bin]]
+required-features = ["formats"]
 name = "tsbs-gen"
 path = "src/bin/tsbs-gen.rs"
+
+[features]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:parquet"]
+default = ["formats"]
+
+[[test]]
+name = "golden"
+required-features = ["formats"]
+
+[[test]]
+name = "chunks"
+required-features = ["formats"]

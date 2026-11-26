@@ -2,16 +2,20 @@
 //!
 //! Each table is one [`Distribution`]: a [`Rows`] leaf runs dsbgen's row
 //! generator for the table and maps every row to a tuple of typed values,
-//! and [`named_all`] names them. The Arrow schema is [`schema_of`] that
+//! and [`named_all`] names them. The Arrow schema is `schema_of` that
 //! distribution: the types come from the values (`Option<_>` is a nullable
 //! column, [`Str`] is `Utf8View`, [`Decimal<P, S>`] is `Decimal128(P, S)`,
 //! [`Date32`] is `Date32`), the names from [`named_all`].
 //!
-//! [`schema_of`]: populate_sink_arrow::schema_of
+//! The optional Arrow adapter derives its schema from these types.
 
+#[cfg(feature = "formats")]
 use crate::TableName;
+#[cfg(feature = "formats")]
 use crate::dat::Encoding;
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
 use dsbgen::config::{Session, Table as Ds};
 use dsbgen::distribution::DemographicsDistributions as Demo;
@@ -22,21 +26,31 @@ use dsbgen::slowly_changing_dimension_utils::match_surrogate_key;
 use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
 use dsbgen::types::{Address, Decimal as DsDecimal};
-use populate_builtins::{derive_columns, named_all, range};
+use populate_builtins::named_all;
+use populate_builtins::{derive_columns, range};
+use populate_combinators::dsdgen::Gmt;
 use populate_combinators::lehmer::{A, M, mulmod};
-use populate_combinators::text::{Gmt, Str, StrViews, Word};
-use populate_core::{
-    Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink, Tables,
-};
+use populate_combinators::views::{self, Unshared};
+use populate_combinators::views::{Listed, Views};
+use populate_core::Nullable;
+use populate_core::{Children, Columnar, Columns, Date32, Decimal, Distribution, Sink, Tables};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, into_record_batch_with};
+#[cfg(feature = "formats")]
 use populate_table::text::{TextColumns, TextTables, write_columns};
+#[cfg(feature = "formats")]
 use populate_table::{DistTable, DistTables};
+#[cfg(feature = "formats")]
 use rand::SeedableRng;
+#[cfg(feature = "formats")]
 use rand::rngs::SmallRng;
 use std::fmt::Write as _;
 use std::iter::repeat_n;
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+/// A text value, written per row.
+pub type Str = views::Str<Unshared>;
 
 // ============================================================================
 // Values: dsbgen's fields and null bitmap, as dsbgen-arrow reads them
@@ -103,13 +117,13 @@ mod addr {
     use super::*;
 
     pub(super) fn street_number(n: i64, base: u32, a: &Address) -> Option<Str> {
-        (!null(n, base)).then(|| Str(a.get_street_number().to_string()))
+        (!null(n, base)).then(|| Str::from(a.get_street_number().to_string()))
     }
     pub(super) fn street_name(n: i64, base: u32, a: &Address) -> Option<Str> {
         (!null(n, base + 1)).then(|| {
             let mut s = String::new();
             write!(s, "{} {}", a.get_street_name1(), a.get_street_name2()).expect("a String");
-            Str(s)
+            Str::from(s)
         })
     }
     pub(super) fn street_type(n: i64, base: u32, a: &Address) -> Option<Str> {
@@ -128,7 +142,7 @@ mod addr {
         text(n, base + 6, a.get_state())
     }
     pub(super) fn zip(n: i64, base: u32, a: &Address) -> Option<Str> {
-        (!null(n, base + 7)).then(|| Str(format!("{:05}", a.get_zip())))
+        (!null(n, base + 7)).then(|| Str::from(format!("{:05}", a.get_zip())))
     }
     pub(super) fn country(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 8, a.get_country())
@@ -264,26 +278,26 @@ macro_rules! table {
     // one group: the row is that tuple
     ($session:expr, $gen:ident, |$r:ident, $n:ident| $nbm:expr;
         [ $($name:ident = $e:expr),+ $(,)? ]) => {
-        boxed(named_all(
+        named_all(
             &[$(stringify!($name)),+],
             Rows::<$gen, _, _>::new($session, |$r: &<$gen as Iterator>::Item| {
                 let $n: i64 = $nbm;
                 let _ = $n;
                 ($($e,)+)
             }),
-        ))
+        )
     };
     // several: a tuple of the groups' tuples
     ($session:expr, $gen:ident, |$r:ident, $n:ident| $nbm:expr;
         $([ $($name:ident = $e:expr),+ $(,)? ])+) => {
-        boxed(named_all(
+        named_all(
             &[$($(stringify!($name)),+),+],
             Rows::<$gen, _, _>::new($session, |$r: &<$gen as Iterator>::Item| {
                 let $n: i64 = $nbm;
                 let _ = $n;
                 ($(($($e,)+),)+)
             }),
-        ))
+        )
     };
 }
 
@@ -292,6 +306,7 @@ macro_rules! table {
 // ============================================================================
 
 /// A table, type-erased: its schema and any range of its rows as batches.
+#[cfg(feature = "formats")]
 pub(crate) trait Gen: Send + Sync {
     fn schema(&self) -> SchemaRef;
 
@@ -303,6 +318,7 @@ pub(crate) trait Gen: Send + Sync {
     fn range_dat(&self, first: u64, last: u64, batch: usize, encoding: Encoding, out: &mut Vec<u8>);
 }
 
+#[cfg(feature = "formats")]
 impl<D> Gen for DistTable<D>
 where
     D: Distribution + Clone + Send + Sync,
@@ -341,6 +357,7 @@ where
 /// each block of up to `block` of them. One stream from `first` on, not a
 /// skip per block (as `DistTable::range` makes): DSB's generators are
 /// cheap to step and dear to open.
+#[cfg(feature = "formats")]
 fn blocks<D: Distribution + Clone>(
     dist: &D,
     first: u64,
@@ -360,6 +377,7 @@ fn blocks<D: Distribution + Clone>(
     }
 }
 
+#[cfg(feature = "formats")]
 fn boxed<D>(dist: D) -> Box<dyn Gen>
 where
     D: Distribution + Clone + Send + Sync + 'static,
@@ -369,6 +387,7 @@ where
 }
 
 /// Dimension table `t`, or `None` for a fact table.
+#[cfg(feature = "formats")]
 pub(crate) fn dimension(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
     Some(match t {
         TableName::CallCenter => call_center(s),
@@ -393,7 +412,9 @@ pub(crate) fn dimension(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
     })
 }
 
-fn call_center(s: &Session) -> Box<dyn Gen> {
+pub fn raw_call_center(
+    s: &Session,
+) -> impl Distribution<Item = CallCenter> + Clone + Send + Sync + use<> {
     table!(s, CallCenterRowGenerator, |r, n| r.get_null_bit_map();
     [
         cc_call_center_sk = r.get_cc_call_center_sk() as i32,
@@ -434,7 +455,9 @@ fn call_center(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn catalog_page(s: &Session) -> Box<dyn Gen> {
+pub fn raw_catalog_page(
+    s: &Session,
+) -> impl Distribution<Item = CatalogPage> + Clone + Send + Sync + use<> {
     table!(s, CatalogPageRowGenerator, |r, n| r.null_bit_map();
     [
         cp_catalog_page_sk = r.get_cp_catalog_page_sk() as i32,
@@ -452,7 +475,9 @@ fn catalog_page(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn customer(s: &Session) -> Box<dyn Gen> {
+pub fn raw_customer(
+    s: &Session,
+) -> impl Distribution<Item = Customer> + Clone + Send + Sync + use<> {
     table!(s, CustomerRowGenerator, |r, n| r.null_bit_map();
     [
         c_customer_sk = r.get_c_customer_sk() as i32,
@@ -479,7 +504,9 @@ fn customer(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn customer_address(s: &Session) -> Box<dyn Gen> {
+pub fn raw_customer_address(
+    s: &Session,
+) -> impl Distribution<Item = CustomerAddress> + Clone + Send + Sync + use<> {
     table!(s, CustomerAddressRowGenerator, |r, n| r.null_bit_map();
     [
         ca_address_sk = r.get_ca_addr_sk() as i32,
@@ -500,15 +527,15 @@ fn customer_address(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn customer_demographics_rows(s: &Session) -> Box<dyn Gen> {
+pub fn raw_customer_demographics_rows(
+    s: &Session,
+) -> impl Distribution<Item = CustomerDemographicsRows> + Clone + Send + Sync + use<> {
     table!(s, CustomerDemographicsRowGenerator, |r, n| r.null_bit_map();
     [
         cd_demo_sk = r.get_cd_demo_sk() as i32,
         cd_gender = text(n, 1, r.get_cd_gender()),
         cd_marital_status = text(n, 2, r.get_cd_marital_status()),
         cd_education_status = text(n, 3, r.get_cd_education_status()),
-    ]
-    [
         cd_purchase_estimate = int(n, 4, r.get_cd_purchase_estimate()),
         cd_credit_rating = text(n, 5, r.get_cd_credit_rating()),
         cd_dep_count = int(n, 6, r.get_cd_dep_count()),
@@ -517,7 +544,9 @@ fn customer_demographics_rows(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn date_dim(s: &Session) -> Box<dyn Gen> {
+pub fn raw_date_dim(
+    s: &Session,
+) -> impl Distribution<Item = DateDim> + Clone + Send + Sync + use<> {
     // only the key reads the null bitmap; the other columns are never NULL
     table!(s, DateDimRowGenerator, |r, n| 0;
     [
@@ -558,7 +587,9 @@ fn date_dim(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn household_demographics(s: &Session) -> Box<dyn Gen> {
+pub fn raw_household_demographics(
+    s: &Session,
+) -> impl Distribution<Item = HouseholdDemographics> + Clone + Send + Sync + use<> {
     table!(s, HouseholdDemographicsRowGenerator, |r, n| r.null_bit_map();
     [
         hd_demo_sk = r.get_hd_demo_sk() as i32,
@@ -571,7 +602,9 @@ fn household_demographics(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn income_band(s: &Session) -> Box<dyn Gen> {
+pub fn raw_income_band(
+    s: &Session,
+) -> impl Distribution<Item = IncomeBand> + Clone + Send + Sync + use<> {
     table!(s, IncomeBandRowGenerator, |r, n| r.null_bit_map();
     [
         ib_income_band_sk = r.get_ib_income_band_sk(),
@@ -580,7 +613,7 @@ fn income_band(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn item(s: &Session) -> Box<dyn Gen> {
+pub fn raw_item(s: &Session) -> impl Distribution<Item = Item> + Clone + Send + Sync + use<> {
     table!(s, ItemRowGenerator, |r, n| r.null_bit_map();
     [
         i_item_sk = r.get_i_item_sk() as i32,
@@ -611,7 +644,9 @@ fn item(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn promotion(s: &Session) -> Box<dyn Gen> {
+pub fn raw_promotion(
+    s: &Session,
+) -> impl Distribution<Item = Promotion> + Clone + Send + Sync + use<> {
     table!(s, PromotionRowGenerator, |r, n| r.null_bit_map();
     [
         p_promo_sk = r.get_p_promo_sk() as i32,
@@ -638,7 +673,7 @@ fn promotion(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn reason(s: &Session) -> Box<dyn Gen> {
+pub fn raw_reason(s: &Session) -> impl Distribution<Item = Reason> + Clone + Send + Sync + use<> {
     table!(s, ReasonRowGenerator, |r, n| r.null_bit_map();
     [
         r_reason_sk = r.get_r_reason_sk() as i32,
@@ -647,7 +682,9 @@ fn reason(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn ship_mode(s: &Session) -> Box<dyn Gen> {
+pub fn raw_ship_mode(
+    s: &Session,
+) -> impl Distribution<Item = ShipMode> + Clone + Send + Sync + use<> {
     table!(s, ShipModeRowGenerator, |r, n| r.null_bit_map();
     [
         sm_ship_mode_sk = r.get_sm_ship_mode_sk() as i32,
@@ -661,7 +698,7 @@ fn ship_mode(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn store(s: &Session) -> Box<dyn Gen> {
+pub fn raw_store(s: &Session) -> impl Distribution<Item = Store> + Clone + Send + Sync + use<> {
     table!(s, StoreRowGenerator, |r, n| r.null_bit_map();
     [
         s_store_sk = r.get_store_sk() as i32,
@@ -702,7 +739,9 @@ fn store(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn time_dim(s: &Session) -> Box<dyn Gen> {
+pub fn raw_time_dim(
+    s: &Session,
+) -> impl Distribution<Item = TimeDim> + Clone + Send + Sync + use<> {
     table!(s, TimeDimRowGenerator, |r, n| r.null_bit_map();
     [
         t_time_sk = r.t_time_sk as i32,
@@ -721,7 +760,9 @@ fn time_dim(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn warehouse(s: &Session) -> Box<dyn Gen> {
+pub fn raw_warehouse(
+    s: &Session,
+) -> impl Distribution<Item = Warehouse> + Clone + Send + Sync + use<> {
     table!(s, WarehouseRowGenerator, |r, n| r.null_bit_map();
     [
         w_warehouse_sk = r.get_w_warehouse_sk() as i32,
@@ -743,7 +784,9 @@ fn warehouse(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn web_page(s: &Session) -> Box<dyn Gen> {
+pub fn raw_web_page(
+    s: &Session,
+) -> impl Distribution<Item = WebPage> + Clone + Send + Sync + use<> {
     table!(s, WebPageRowGenerator, |r, n| r.null_bit_map();
     [
         wp_web_page_sk = r.get_wp_page_sk() as i32,
@@ -766,7 +809,9 @@ fn web_page(s: &Session) -> Box<dyn Gen> {
     ])
 }
 
-fn web_site(s: &Session) -> Box<dyn Gen> {
+pub fn raw_web_site(
+    s: &Session,
+) -> impl Distribution<Item = WebSite> + Clone + Send + Sync + use<> {
     table!(s, WebSiteRowGenerator, |r, n| r.null_bit_map();
     [
         web_site_sk = r.get_web_site_sk() as i32,
@@ -807,7 +852,7 @@ fn web_site(s: &Session) -> Box<dyn Gen> {
 // inventory and customer_demographics: computed columns, not row structs
 // ============================================================================
 
-type DemoRow = (
+pub type DemoRow = (
     i32,
     Option<Str>,
     Option<Str>,
@@ -823,12 +868,14 @@ type DemoRow = (
 /// are its digits in a mixed radix, gender fastest. Exact only while the
 /// table has no nulls (no random draw reaches the output); otherwise the
 /// row generator runs.
-fn customer_demographics(s: &Session) -> Box<dyn Gen> {
+pub fn raw_customer_demographics(
+    s: &Session,
+) -> impl Distribution<Item = DemoRow> + Clone + Send + Sync + use<> {
     if NullTable::CustomerDemographics.get_null_basis_points() != 0 {
-        return customer_demographics_rows(s);
+        return Choice::Left(raw_customer_demographics_rows(s));
     }
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
-        (0..n as i64).map(|i| Word::new(f(i))).collect()
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Listed]> {
+        (0..n as i64).map(|i| Listed::new(f(i))).collect()
     };
     let gender = list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size);
     let marital = list(
@@ -874,7 +921,7 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
             v
         })
     };
-    boxed(named_all(
+    Choice::Right(named_all(
         &[
             "cd_demo_sk",
             "cd_gender",
@@ -896,7 +943,7 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
                 let i = first - 1;
                 out.0.extend(rows.iter().map(|&r| r as i32));
                 // each word's bytes once per block, not once per row
-                let words = |col: &mut Nullable<StrViews>, list: &[Word], d: usize| {
+                let words = |col: &mut Nullable<Views<Unshared>>, list: &[Listed], d: usize| {
                     Sink::<Str>::reserve(&mut col.values, n);
                     col.values.push_indexed(list, digits(i, n, d));
                     col.valid.push_valid(n);
@@ -984,7 +1031,7 @@ impl Inventory {
     }
 }
 
-type InventoryRow = (i32, i32, i32, Option<i32>);
+pub type InventoryRow = (i32, i32, i32, Option<i32>);
 
 impl Distribution for Inventory {
     type Item = InventoryRow;
@@ -1065,8 +1112,10 @@ impl Distribution for Inventory {
     }
 }
 
-fn inventory(s: &Session) -> Box<dyn Gen> {
-    boxed(named_all(
+pub fn raw_inventory(
+    s: &Session,
+) -> impl Distribution<Item = InventoryRow> + Clone + Send + Sync + use<> {
+    named_all(
         &[
             "inv_date_sk",
             "inv_item_sk",
@@ -1078,7 +1127,7 @@ fn inventory(s: &Session) -> Box<dyn Gen> {
             next: 0,
             at: None,
         },
-    ))
+    )
 }
 
 // ============================================================================
@@ -1106,7 +1155,7 @@ macro_rules! fact {
     ($names:ident, $cols:ident, $row:ty, $per:expr, |$r:ident, $n:ident|
         $([ $(($g:tt, $i:tt) $name:ident: $t:ty = $e:expr),+ $(,)? ])+) => {
         const $names: &[&str] = &[$($(stringify!($name)),+),+];
-        type $cols = ($(($($t,)+),)+);
+        pub type $cols = ($(($($t,)+),)+);
         impl Fact for $row {
             const NAMES: &[&str] = $names;
             type Cols = $cols;
@@ -1560,6 +1609,7 @@ where
 
 /// Sales and returns tables, type-erased: their schemas, and any range of
 /// source rows as batches of both.
+#[cfg(feature = "formats")]
 pub(crate) trait PairGen: Send + Sync {
     /// Source rows `first..=last` (1-based), in blocks of `per_batch`
     /// source rows; `emit(k, batch)` for table `k` (0 sales, 1 returns).
@@ -1584,6 +1634,7 @@ pub(crate) trait PairGen: Send + Sync {
     );
 }
 
+#[cfg(feature = "formats")]
 impl<D, T> PairGen for DistTables<D>
 where
     D: Distribution<Item = Tables<T>> + Clone + Send + Sync,
@@ -1626,6 +1677,7 @@ where
 }
 
 /// Sales or returns table `t` alone, or `None` for a dimension.
+#[cfg(feature = "formats")]
 pub(crate) fn fact(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
     fn lines<G>(s: &Session) -> Box<dyn Gen>
     where
@@ -1651,6 +1703,7 @@ pub(crate) fn fact(t: TableName, s: &Session) -> Option<Box<dyn Gen>> {
 }
 
 /// A channel's sales and returns from one pass: `t` is either of them.
+#[cfg(feature = "formats")]
 pub(crate) fn pair(t: TableName, s: &Session) -> Option<Box<dyn PairGen>> {
     fn pairs<G>(s: &Session, sales: Ds) -> Box<dyn PairGen>
     where
@@ -1684,7 +1737,558 @@ pub(crate) fn pair(t: TableName, s: &Session) -> Option<Box<dyn PairGen>> {
     })
 }
 
-#[cfg(test)]
+/// Native `call_center` row.
+pub type CallCenter = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<Date32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+    ),
+    (
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Gmt>,
+        Option<Decimal<5, 2>>,
+    ),
+);
+
+/// Native `catalog_page` row.
+pub type CatalogPage = (
+    (i32, Str, Option<i32>, Option<i32>),
+    (
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+    ),
+);
+
+/// Native `customer` row.
+pub type Customer = (
+    (
+        i32,
+        Str,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+    ),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+    ),
+);
+
+/// Native `customer_address` row.
+pub type CustomerAddress = (
+    (i32, Str),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Gmt>,
+        Option<Str>,
+    ),
+);
+
+/// Native `customer_demographics_rows` row.
+pub type CustomerDemographicsRows = DemoRow;
+
+/// Native `date_dim` row.
+pub type DateDim = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+    ),
+    (
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (Option<Str>, Option<Str>, Option<Str>, Option<Str>),
+);
+
+/// Native `household_demographics` row.
+pub type HouseholdDemographics = ((i32, Option<i32>), (Option<Str>, Option<i32>, Option<i32>));
+
+/// Native `income_band` row.
+pub type IncomeBand = (i32, Option<i32>, Option<i32>);
+
+/// Native `item` row.
+pub type Item = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<Date32>,
+        Option<Str>,
+        Option<Decimal<7, 2>>,
+        Option<Decimal<7, 2>>,
+        Option<i32>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (
+        Option<i32>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+    ),
+);
+
+/// Native `promotion` row.
+pub type Promotion = (
+    (
+        i32,
+        Str,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Decimal<15, 2>>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+    ),
+);
+
+/// Native `reason` row.
+pub type Reason = (i32, Str, Option<Str>);
+
+/// Native `ship_mode` row.
+pub type ShipMode = (
+    (i32, Str, Option<Str>),
+    (Option<Str>, Option<Str>, Option<Str>),
+);
+
+/// Native `store` row.
+pub type Store = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<Date32>,
+        Option<i32>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+    ),
+    (
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Gmt>,
+        Option<Decimal<5, 2>>,
+    ),
+);
+
+/// Native `time_dim` row.
+pub type TimeDim = (
+    (i32, Str, Option<i32>, Option<i32>, Option<i32>),
+    (
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+    ),
+);
+
+/// Native `warehouse` row.
+pub type Warehouse = (
+    (i32, Str, Option<Str>, Option<i32>),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Gmt>,
+    ),
+);
+
+/// Native `web_page` row.
+pub type WebPage = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<Date32>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+    ),
+);
+
+/// Native `web_site` row.
+pub type WebSite = (
+    (
+        i32,
+        Str,
+        Option<Date32>,
+        Option<Date32>,
+        Option<Str>,
+        Option<i32>,
+        Option<i32>,
+        Option<Str>,
+        Option<Str>,
+        Option<i32>,
+        Option<Str>,
+    ),
+    (Option<Str>, Option<Str>, Option<i32>, Option<Str>),
+    (
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Str>,
+        Option<Gmt>,
+        Option<Decimal<5, 2>>,
+    ),
+);
+
+#[cfg(feature = "formats")]
+fn call_center(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_call_center(s))
+}
+
+#[cfg(feature = "formats")]
+fn catalog_page(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_catalog_page(s))
+}
+
+#[cfg(feature = "formats")]
+fn customer(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_customer(s))
+}
+
+#[cfg(feature = "formats")]
+fn customer_address(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_customer_address(s))
+}
+
+#[cfg(feature = "formats")]
+fn date_dim(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_date_dim(s))
+}
+
+#[cfg(feature = "formats")]
+fn household_demographics(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_household_demographics(s))
+}
+
+#[cfg(feature = "formats")]
+fn income_band(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_income_band(s))
+}
+
+#[cfg(feature = "formats")]
+fn item(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_item(s))
+}
+
+#[cfg(feature = "formats")]
+fn promotion(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_promotion(s))
+}
+
+#[cfg(feature = "formats")]
+fn reason(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_reason(s))
+}
+
+#[cfg(feature = "formats")]
+fn ship_mode(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_ship_mode(s))
+}
+
+#[cfg(feature = "formats")]
+fn store(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_store(s))
+}
+
+#[cfg(feature = "formats")]
+fn time_dim(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_time_dim(s))
+}
+
+#[cfg(feature = "formats")]
+fn warehouse(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_warehouse(s))
+}
+
+#[cfg(feature = "formats")]
+fn web_page(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_web_page(s))
+}
+
+#[cfg(feature = "formats")]
+fn web_site(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_web_site(s))
+}
+
+#[cfg(feature = "formats")]
+fn inventory(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_inventory(s))
+}
+
+pub fn raw_store_sales(
+    s: &Session,
+) -> impl Distribution<Item = Children<StoreSalesCols>> + Clone + Send + Sync + use<> {
+    Lines::<StoreSalesRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_store_returns(
+    s: &Session,
+) -> impl Distribution<Item = Children<StoreReturnsCols>> + Clone + Send + Sync + use<> {
+    Lines::<StoreReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_store_sales_returns(
+    s: &Session,
+) -> impl Distribution<Item = Tables<(Children<StoreSalesCols>, Children<StoreReturnsCols>)>>
++ Clone
++ Send
++ Sync
++ use<> {
+    Pairs::<StoreReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_catalog_sales(
+    s: &Session,
+) -> impl Distribution<Item = Children<CatalogSalesCols>> + Clone + Send + Sync + use<> {
+    Lines::<CatalogSalesRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_catalog_returns(
+    s: &Session,
+) -> impl Distribution<Item = Children<CatalogReturnsCols>> + Clone + Send + Sync + use<> {
+    Lines::<CatalogReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_catalog_sales_returns(
+    s: &Session,
+) -> impl Distribution<Item = Tables<(Children<CatalogSalesCols>, Children<CatalogReturnsCols>)>>
++ Clone
++ Send
++ Sync
++ use<> {
+    Pairs::<CatalogReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_web_sales(
+    s: &Session,
+) -> impl Distribution<Item = Children<WebSalesCols>> + Clone + Send + Sync + use<> {
+    Lines::<WebSalesRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_web_returns(
+    s: &Session,
+) -> impl Distribution<Item = Children<WebReturnsCols>> + Clone + Send + Sync + use<> {
+    Lines::<WebReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+pub fn raw_web_sales_returns(
+    s: &Session,
+) -> impl Distribution<Item = Tables<(Children<WebSalesCols>, Children<WebReturnsCols>)>>
++ Clone
++ Send
++ Sync
++ use<> {
+    Pairs::<WebReturnsRowGenerator> {
+        session: s.clone(),
+        next: 1,
+        open: None,
+    }
+}
+
+#[cfg(feature = "formats")]
+fn customer_demographics(s: &Session) -> Box<dyn Gen> {
+    boxed(raw_customer_demographics(s))
+}
+
+#[derive(Clone)]
+enum Choice<A, B> {
+    Left(A),
+    Right(B),
+}
+impl<A: Distribution, B: Distribution<Item = A::Item>> Distribution for Choice<A, B> {
+    type Item = A::Item;
+    fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl rand::Rng, n: usize) {
+        match self {
+            Self::Left(d) => d.collect_into(cols, rng, n),
+            Self::Right(d) => d.collect_into(cols, rng, n),
+        }
+    }
+    fn skip(&mut self, n: u64) {
+        match self {
+            Self::Left(d) => d.skip(n),
+            Self::Right(d) => d.skip(n),
+        }
+    }
+    fn column_names(&self, out: &mut Vec<String>) {
+        match self {
+            Self::Left(d) => d.column_names(out),
+            Self::Right(d) => d.column_names(out),
+        }
+    }
+    fn columns(&self) -> Columns<Self::Item> {
+        match self {
+            Self::Left(d) => d.columns(),
+            Self::Right(d) => d.columns(),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_select::concat::concat_batches;

@@ -24,18 +24,34 @@
 //! - "current date/time" is one fixed load time ([`Tpcc::load_time`]), so
 //!   the data is reproducible.
 
+use crate::raw;
 use crate::rng::Draws;
+use crate::tables::Gen;
+#[cfg(feature = "formats")]
 use crate::tables::{SCHEMAS, generator};
+#[cfg(feature = "formats")]
 use crate::text::Delimited;
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::{DataType, SchemaRef};
+#[cfg(feature = "formats")]
 use parquet::basic::Compression;
+#[cfg(feature = "formats")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "formats")]
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
+#[cfg(feature = "formats")]
 use parquet::schema::types::ColumnPath;
+#[cfg(feature = "formats")]
+use populate_core::chunks::DEFAULT_BATCH_ROWS;
+use populate_core::{DistChunks, Distribution, Stream};
+#[cfg(feature = "formats")]
 use populate_table::text::{self, TextChunks};
-use populate_table::{Chunks, DEFAULT_BATCH_ROWS, DynTable, MultiChunks, Stream, chunks};
+#[cfg(feature = "formats")]
+use populate_table::{Chunks, DynTable, MultiChunks, chunks};
 use std::fmt;
+#[cfg(feature = "formats")]
 use std::io::{self, Write};
 use std::str::FromStr;
 
@@ -105,6 +121,7 @@ impl TpccTableName {
     /// with the spec's precision, `Timestamp(µs)` dates, `Utf8View` text.
     ///
     /// Read off the table's distribution, without generating a row.
+    #[cfg(feature = "formats")]
     pub fn schema(self) -> SchemaRef {
         SCHEMAS[self as usize].clone()
     }
@@ -139,6 +156,7 @@ impl FromStr for TpccTableName {
 /// A TPC-C initial database for some number of warehouses.
 ///
 /// ```
+/// # #[cfg(feature = "formats")] {
 /// use populate_gen_tpcc::{Tpcc, TpccTableName};
 ///
 /// let c = Tpcc::new(1);
@@ -148,6 +166,7 @@ impl FromStr for TpccTableName {
 /// let mut lines = 0;
 /// c.table(TpccTableName::OrderLine).for_each_batch(0, |b| lines += b.num_rows());
 /// assert!((290_000..310_000).contains(&lines));
+/// # }
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Tpcc {
@@ -216,6 +235,7 @@ impl Tpcc {
     }
 
     /// Table `t`, ready to generate.
+    #[cfg(feature = "formats")]
     pub fn table(&self, t: TpccTableName) -> TpccTable {
         TpccTable {
             name: t,
@@ -226,8 +246,98 @@ impl Tpcc {
     }
 
     /// Every table, in [`TpccTableName::ALL`] order.
+    #[cfg(feature = "formats")]
     pub fn tables(&self) -> impl Iterator<Item = TpccTable> + '_ {
         TpccTableName::ALL.into_iter().map(|t| self.table(t))
+    }
+    /// Native `warehouse` columns in independently addressable source chunks.
+    pub fn warehouse(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Warehouse> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .warehouse()
+            .chunks(self.source_rows(TpccTableName::Warehouse))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `district` columns in independently addressable source chunks.
+    pub fn district(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::District> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .district()
+            .chunks(self.source_rows(TpccTableName::District))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `customer` columns in independently addressable source chunks.
+    pub fn customer(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Customer> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .customer()
+            .chunks(self.source_rows(TpccTableName::Customer))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `history` columns in independently addressable source chunks.
+    pub fn history(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::History> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .history()
+            .chunks(self.source_rows(TpccTableName::History))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `new_order` columns in independently addressable source chunks.
+    pub fn new_order(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::NewOrder> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .new_order()
+            .chunks(self.source_rows(TpccTableName::NewOrder))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `orders` columns in independently addressable source chunks.
+    pub fn orders(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Orders> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .orders()
+            .chunks(self.source_rows(TpccTableName::Orders))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `order_line` columns in independently addressable source chunks.
+    pub fn order_line(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::OrderLine> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .order_line()
+            .chunks(self.source_rows(TpccTableName::OrderLine))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `item` columns in independently addressable source chunks.
+    pub fn item(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Item> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .item()
+            .chunks(self.source_rows(TpccTableName::Item))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
+
+    /// Native `stock` columns in independently addressable source chunks.
+    pub fn stock(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Stock> + Clone + Send + Sync + use<>> {
+        Gen::new(self)
+            .stock()
+            .chunks(self.source_rows(TpccTableName::Stock))
+            .chunk_rows(DEFAULT_CHUNK_ROWS)
     }
 }
 
@@ -236,12 +346,14 @@ pub const DEFAULT_CHUNK_ROWS: u64 = 128 * 1024;
 
 /// One table of a [`Tpcc`] database, split into chunks of source rows.
 #[derive(Debug, Clone)]
+#[cfg(feature = "formats")]
 pub struct TpccTable {
     name: TpccTableName,
     /// The table's distribution, over its source rows.
     table: DynTable,
 }
 
+#[cfg(feature = "formats")]
 impl TpccTable {
     pub fn name(&self) -> TpccTableName {
         self.name
@@ -341,6 +453,7 @@ impl TpccTable {
 /// ids and random amounts, which have too many distinct values for a
 /// dictionary to pay (the writer would build one and fall back). Snappy.
 /// Used when `write_parquet` gets no properties.
+#[cfg(feature = "formats")]
 pub fn parquet_props() -> WriterPropertiesBuilder {
     const DICT_TEXT: [&str; 6] = [
         "c_middle", "c_credit", "c_last", "w_state", "d_state", "c_state",
@@ -367,11 +480,13 @@ pub fn parquet_props() -> WriterPropertiesBuilder {
     p
 }
 
+#[cfg(feature = "formats")]
 const CSV: Delimited = Delimited {
     sep: b',',
     null: b"NULL",
 };
 
+#[cfg(feature = "formats")]
 impl Chunks for TpccTable {
     fn schema(&self) -> SchemaRef {
         TpccTable::schema(self)
@@ -386,6 +501,7 @@ impl Chunks for TpccTable {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for TpccTable {
     fn outputs(&self) -> usize {
         1
@@ -404,6 +520,7 @@ impl TextChunks for TpccTable {
 /// `writers[i]`, on one shared pool of `threads` threads (0 = all cores):
 /// every chunk of every table is one job and one row group. `props: None`
 /// means [`parquet_props`].
+#[cfg(feature = "formats")]
 pub fn write_parquet_many<W: Write + Send>(
     tables: &[TpccTable],
     writers: Vec<W>,
@@ -418,6 +535,7 @@ pub fn write_parquet_many<W: Write + Send>(
 
 /// [`TpccTable::write_csv`] for several tables on one shared pool, like
 /// [`write_parquet_many`]. The workers write the files themselves.
+#[cfg(feature = "formats")]
 pub fn write_text_many<W: Write + Send>(
     tables: &[TpccTable],
     writers: Vec<W>,
@@ -430,6 +548,7 @@ pub fn write_text_many<W: Write + Send>(
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
+#[cfg(feature = "formats")]
 pub fn for_each_batch_many(
     tables: &[TpccTable],
     threads: usize,

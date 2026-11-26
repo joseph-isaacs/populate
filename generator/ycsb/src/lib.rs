@@ -11,15 +11,17 @@
 //! Each table is split into chunks of rows that are generated independently
 //! (every random value is a function of its row), so output is the same
 //! for any chunk size and thread count; chunks run on one pool through
-//! [`populate_table`]'s drivers.
+//! `populate_table`'s drivers.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_ycsb::Ycsb;
 //!
 //! let load = Ycsb::new(1000).data_integrity(true);
 //! let mut rows = 0;
 //! load.for_each_batch(0, |b| rows += b.num_rows());
 //! assert_eq!(rows, 1000);
+//! # }
 //! ```
 
 mod cols;
@@ -30,3 +32,9 @@ mod ycsb_run;
 pub use rng::JavaTlr;
 pub use ycsb::Ycsb;
 pub use ycsb_run::{RequestDistribution, YcsbRun};
+
+/// Native load strings and operation row shapes.
+pub mod raw {
+    pub use crate::cols::{Text, TextCol};
+    pub use crate::ycsb_run::CallRow;
+}

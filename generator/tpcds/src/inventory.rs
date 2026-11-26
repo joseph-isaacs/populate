@@ -5,7 +5,7 @@
 
 use crate::seeds::stream;
 use populate_builtins::{derive, draws, named_all};
-use populate_combinators::text::{StrViews, Word};
+use populate_combinators::views::{Listed, Unshared, Views};
 use populate_core::{Columns, Distribution, Sink};
 use rand::Rng;
 use std::sync::Arc;
@@ -76,7 +76,7 @@ impl Distribution for InventoryKeys {
 }
 
 /// `inventory`: one row per item, warehouse and week.
-pub(crate) fn inventory(
+pub fn inventory(
     session: &Session,
 ) -> impl Distribution<Item = ((i32, i32, i32), Option<i32>)> + Clone + Sync + use<> {
     let scaling = session.get_scaling();
@@ -122,13 +122,13 @@ pub(crate) fn inventory(
 type Opt<T> = Option<T>;
 
 /// A row of `customer_demographics`.
-type DemoRow = (
+pub type DemoRow = (
     i32,
-    Opt<Word>,
-    Opt<Word>,
-    Opt<Word>,
+    Opt<Listed>,
+    Opt<Listed>,
+    Opt<Listed>,
     Opt<i32>,
-    Opt<Word>,
+    Opt<Listed>,
     Opt<i32>,
     Opt<i32>,
     Opt<i32>,
@@ -140,11 +140,11 @@ type DemoRow = (
 /// dependent counts (radix 7 each).
 #[derive(Debug, Clone)]
 struct Demographics {
-    gender: Arc<[Word]>,
-    marital: Arc<[Word]>,
-    education: Arc<[Word]>,
+    gender: Arc<[Listed]>,
+    marital: Arc<[Listed]>,
+    education: Arc<[Listed]>,
     purchase: Arc<[i32]>,
-    credit: Arc<[Word]>,
+    credit: Arc<[Listed]>,
     /// 0-based row of the next sample.
     row: u32,
 }
@@ -188,8 +188,8 @@ impl Distribution for Demographics {
     type Item = DemoRow;
 
     fn collect_into(&mut self, c: &mut Columns<DemoRow>, _: &mut impl Rng, n: usize) {
-        let words = |list: &[Word], v: &mut StrViews, d| {
-            Sink::<Word>::reserve(v, n);
+        let words = |list: &[Listed], v: &mut Views<Unshared>, d| {
+            Sink::<Listed>::reserve(v, n);
             v.push_indexed(list, self.digits(d, n));
         };
         words(&self.gender, &mut c.1.values, 0);
@@ -227,10 +227,10 @@ impl Distribution for Demographics {
 }
 
 /// `customer_demographics`. The table has no nulls
-/// ([`demographics_have_nulls`]), so no random draw reaches it.
-pub(crate) fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
-        (0..n as i64).map(|i| Word::new(f(i))).collect()
+/// (`demographics_have_nulls` in the tests), so no random draw reaches it.
+pub fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Listed]> {
+        (0..n as i64).map(|i| Listed::new(f(i))).collect()
     };
     let demographics = Demographics {
         gender: list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size),
@@ -269,12 +269,12 @@ pub(crate) fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clo
 
 /// Whether `customer_demographics` has nulls: dsdgen's configuration has
 /// none, which [`customer_demographics`] relies on.
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 fn demographics_have_nulls() -> bool {
     NullTable::CustomerDemographics.get_null_basis_points() != 0
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_array::RecordBatch;

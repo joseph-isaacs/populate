@@ -4,7 +4,7 @@
 [![Rust 1.92+](https://img.shields.io/badge/rust-1.92%2B-blue)](https://www.rust-lang.org/tools/install)
 
 Composable distribution combinators for generating tabular test data,
-column by column, straight into Arrow (and optionally Parquet).
+column by column, into native buffers for custom backends, Arrow, or Parquet.
 
 ## Install and use
 
@@ -47,6 +47,48 @@ Run it from a checkout:
 ```sh
 cargo run -p populate --example realistic
 ```
+
+## Raw distributions and chunking
+
+For a backend that consumes native column buffers, disable the default
+features; Arrow and the table layer are optional:
+
+```toml
+populate = { git = "https://github.com/joseph-isaacs/populate.git", default-features = false }
+```
+
+`Distribution::chunks` returns a `DistChunks` source. Each callback receives
+`Columns<D::Item>` directly: tuples of `Vec`s, string/list buffers, or your
+own `Columnar` implementation. No Arrow schema or conversion is required.
+
+```rust
+use populate::Distribution;
+use populate::dist::range;
+
+let source = (range(0i64, 1), range(100i64, 2))
+    .chunks(1_000_000)
+    .chunk_rows(64 * 1024)
+    .batch_rows(8 * 1024)
+    .seed(42);
+
+source.for_each_batch(0, |(ids, values)| {
+    // Give these Vec<i64> buffers to your backend, in source order.
+    assert_eq!(values[0], 100 + 2 * ids[0]);
+});
+```
+
+`source.chunk(i, callback)` generates just one chunk; `source.batch(first,
+count)` collects one source range. `try_for_each_batch` and `try_chunk`
+propagate backend errors. `dist()` borrows the original distribution and
+`into_dist()` returns it. An existing typed `DistTable` exposes the same
+chunk boundaries and raw buffers through `.raw()`.
+
+Parallel callbacks run on the calling thread in source order, with at most
+twice the worker count of chunks buffered. Thread count and chunk order do
+not change values. For distributions using the caller RNG, the seed and
+chunk/batch sizes are part of the output's identity: changing the sizes can
+change random values. Sizes count source rows, so `Children` and `Tables`
+can produce different numbers of output rows per batch.
 
 ## Tables
 
@@ -147,7 +189,9 @@ and the data-set generators under `generator/`.
 | `populate-py`           | [Python bindings](python/README.md) (feature `python`): distributions, `table`, TPC-H and SSB as Arrow streams |
 
 The generator crates are listed [above](#benchmark-generators). See
-[`populate/DESIGN.md`](populate/DESIGN.md) for the design.
+[`populate/DESIGN.md`](populate/DESIGN.md) for the design, and the
+[book](book/src/introduction.md) (`mdbook serve book`) for a guide to
+writing tables with the library.
 
 ## Licence
 

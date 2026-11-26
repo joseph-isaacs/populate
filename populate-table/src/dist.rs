@@ -6,29 +6,61 @@
 //! ```
 //! use populate_builtins::{named, range, uniform};
 //! use populate_table::DistTable;
+//! use populate_table::text::Encoding;
 //!
 //! let t = DistTable::new("t", 10, (named("id", range(1i64, 1)), named("x", uniform(0i32, 9))));
 //! assert_eq!(t.schema().field(1).name(), "x");
 //! let b = t.batch(4, 3);
 //! assert_eq!(b.num_rows(), 3);
+//! // the same range is the same rows, on any thread, in any order
+//! assert_eq!(b, t.batch(4, 3));
+//! // a batch's RNG is seeded by its first row, so random columns depend on
+//! // where batches start; position-only columns (`range`) don't
+//! assert_eq!(b.column(0), &t.batch(0, 10).slice(4, 3).column(0).clone());
+//!
+//! // as text lines, every field followed by `|`
+//! let mut out = Vec::new();
+//! t.text(0, 2, Encoding::Utf8, &mut out);
+//! assert!(String::from_utf8(out).unwrap().starts_with("1|"));
+//! ```
+//!
+//! Several tables from one pass, here a sale for every row and a return
+//! for every third:
+//!
+//! ```
+//! use populate_builtins::{flat_map, named_all, range};
+//! use populate_core::{Children, Sink, Tables};
+//! use populate_table::DistTables;
+//!
+//! let sales = flat_map::<Tables<(Children<i64>, Children<i64>)>, _, _>(
+//!     range(0i64, 1),
+//!     |&id, out| {
+//!         out.0.values.push(id);
+//!         if id % 3 == 0 {
+//!             out.1.values.push(id);
+//!         }
+//!     },
+//! );
+//! let t = DistTables::new(&["sales", "returns"], 9, named_all(&["sale_id", "returned_id"], sales));
+//! assert_eq!(t.schemas()[1].field(0).name(), "returned_id");
+//! let [s, r] = t.batches(0, 9).try_into().unwrap();
+//! assert_eq!((s.num_rows(), r.num_rows()), (9, 3));
 //! ```
 
 use crate::chunks::{Chunks, MultiChunks};
+use crate::sched::resolve_threads;
 use crate::stream::mix64;
 use crate::text::{Encoding, TextColumns, TextTables, write_columns};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use populate_core::{Columnar, Columns, Distribution, Tables};
+use populate_core::{Columnar, Columns, DistChunks, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, schema_of, schemas_of};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::fmt;
 use std::sync::Arc;
 
-/// Default rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
-/// Default rows per Arrow batch.
-pub const DEFAULT_BATCH_ROWS: usize = 8 * 1024;
+pub use populate_core::chunks::{DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS};
 
 /// `rows` source rows of `dist`, as Arrow batches.
 ///
@@ -38,6 +70,11 @@ pub const DEFAULT_BATCH_ROWS: usize = 8 * 1024;
 /// whichever order and thread they are made on. A distribution of
 /// [`Children`](populate_core::Children) makes a child table: its rows are
 /// the children of the source rows.
+///
+/// Each batch's RNG is seeded by its first row, so the output is fixed by
+/// the distribution, `rows`, [`chunk_rows`](Self::chunk_rows) and
+/// [`batch_rows`](Self::batch_rows), and not by the number of threads. Change
+/// where batches start and the random columns change with it.
 ///
 /// The schema is [`schema_of`] the distribution, worked out once, from
 /// its names and its column types, without generating a row.
@@ -70,6 +107,7 @@ where
         }
     }
 
+    /// The table's name.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -79,12 +117,22 @@ where
         self.rows
     }
 
+    /// The table's schema, read off the distribution.
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
     }
 
+    /// The distribution, at row 0.
     pub fn dist(&self) -> &D {
         &self.dist
+    }
+
+    /// The same distribution and chunk boundaries, producing raw columns
+    /// for a custom backend. No Arrow arrays are constructed by this source.
+    pub fn raw(&self) -> DistChunks<D> {
+        DistChunks::new(self.rows, self.dist.clone())
+            .chunk_rows(self.chunk_rows)
+            .batch_rows(self.batch_rows)
     }
 
     /// Source rows per chunk (a chunk is one Parquet row group).
@@ -226,6 +274,7 @@ where
         }
     }
 
+    /// Each table's name, in the order of the distribution's tables.
     pub fn names(&self) -> &[String] {
         &self.names
     }
@@ -235,10 +284,12 @@ where
         self.rows
     }
 
+    /// Each table's schema, in the same order.
     pub fn schemas(&self) -> &[SchemaRef] {
         &self.schemas
     }
 
+    /// The distribution, at row 0.
     pub fn dist(&self) -> &D {
         &self.dist
     }
@@ -382,6 +433,7 @@ impl DynTable {
         }
     }
 
+    /// The table's name.
     pub fn name(&self) -> &str {
         self.table.name()
     }
@@ -391,6 +443,7 @@ impl DynTable {
         self.rows
     }
 
+    /// The table's schema, read off the distribution.
     pub fn schema(&self) -> &SchemaRef {
         self.table.schema()
     }
@@ -412,6 +465,25 @@ impl DynTable {
     pub fn batch_rows(mut self, n: u64) -> Self {
         assert!(n > 0, "batch_rows must be > 0");
         self.batch_rows = n;
+        self
+    }
+
+    /// Subdivide chunks for parallel Arrow generation: aim for four jobs
+    /// per worker, with at most eight batches per job. Never enlarge the
+    /// configured chunk size. With one worker, keep the existing chunks.
+    ///
+    /// Apply this to a clone when Parquet row groups should keep their
+    /// configured size. `threads: 0` uses every available core.
+    pub fn parallel_chunks(mut self, threads: usize) -> Self {
+        let threads = resolve_threads(threads);
+        if threads > 1 {
+            let target = self.rows.div_ceil((threads as u64).saturating_mul(4));
+            let size = target
+                .div_ceil(self.batch_rows)
+                .clamp(1, 8)
+                .saturating_mul(self.batch_rows);
+            self.chunk_rows = self.chunk_rows.min(size);
+        }
         self
     }
 
@@ -465,10 +537,37 @@ mod tests {
     use arrow_array::Int64Array;
     use arrow_array::cast::AsArray;
     use arrow_array::types::Int64Type;
-    use populate_builtins::{flat_map, named_all, range};
+    use populate_builtins::{flat_map, named, named_all, range};
     use populate_core::{Children, Sink};
 
     type Two = Tables<(Children<i64>, Children<(i64, i64)>)>;
+
+    fn ids() -> impl Distribution<Item = i64> + Clone + Send + Sync {
+        named("id", range(0i64, 1))
+    }
+
+    #[test]
+    fn parallel_chunks_preserve_values_and_configured_limits() {
+        for rows in [0, 5, 117] {
+            for (chunk, batch) in [(3, 7), (1_000, 7), (1_000, 1)] {
+                let table = DynTable::new("ids", rows, ids())
+                    .chunk_rows(chunk)
+                    .batch_rows(batch);
+                for threads in [1, 4, 0] {
+                    let parallel = table.clone().parallel_chunks(threads);
+                    assert!(parallel.chunk_rows <= table.chunk_rows);
+                    if threads == 1 {
+                        assert_eq!(parallel.chunk_rows, table.chunk_rows);
+                    }
+                    let mut values = Vec::new();
+                    crate::chunks::for_each_batch(&parallel, threads, |b| {
+                        values.extend_from_slice(b.column(0).as_primitive::<Int64Type>().values());
+                    });
+                    assert_eq!(values, (0..rows as i64).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
 
     /// Per key `k`: `k % 3` lines of `k`, and a return `(k, 10k)` for odd `k`.
     fn tables() -> DistTables<impl Distribution<Item = Two> + Clone + Sync> {

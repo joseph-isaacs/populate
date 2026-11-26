@@ -22,14 +22,23 @@
 //! sorted by a stable parallel bucket sort (data.table's order, NA first),
 //! and read back row by row in that order as batches are collected.
 
+use crate::raw::Native;
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
 use populate_builtins::{Checkpointed, checkpointed, named, named_all};
+use populate_core::DistChunks;
+use populate_core::chunks::DEFAULT_CHUNK_ROWS;
+use populate_core::sched::resolve_threads;
 use populate_core::{Columns, Distribution};
+#[cfg(feature = "formats")]
+use populate_table::Chunks;
+#[cfg(feature = "formats")]
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, resolve_threads};
 use rand::Rng;
 use std::fmt::{self, Debug, Formatter};
+#[cfg(feature = "formats")]
 use std::io::{self, Write};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -155,9 +164,20 @@ impl GroupBy {
         (s, (s + self.chunk_rows).min(self.n))
     }
 
+    /// Native distribution of encoded columns with names, logical types and nullability.
+    pub fn dist(&self) -> Native {
+        Native::new(self.table.clone())
+    }
+
+    /// Native columns with this table's chunk size.
+    pub fn raw(&self) -> DistChunks<Native> {
+        DistChunks::new(self.rows(), self.dist()).chunk_rows(self.chunk_rows)
+    }
+
     /// Arrow schema, read off the table's distribution: ids 1-3
     /// `Utf8View`, 4-6 and v1-v2 `Int32`, v3 `Float64`; every column
     /// nullable when `nas > 0`.
+    #[cfg(feature = "formats")]
     pub fn schema(&self) -> SchemaRef {
         self.table.schema()
     }
@@ -165,13 +185,14 @@ impl GroupBy {
     /// Append chunk `j`'s CSV text (with the header for chunk 0).
     pub fn chunk_csv(&self, j: u64, out: &mut Vec<u8>) {
         if j == 0 {
-            header(&self.schema(), out);
+            header(&self.table.names(), out);
         }
         let (s, e) = self.chunk_range(j);
         self.table.csv(s, e, out);
     }
 
     /// Write the CSV `fwrite` writes, on `threads` threads (0 = all cores).
+    #[cfg(feature = "formats")]
     pub fn write_csv<W: Write + Send>(&self, w: W, threads: usize) -> io::Result<W> {
         let mut v = write_text_many(&[self], vec![w], threads)?;
         Ok(v.pop().expect("one writer"))
@@ -494,6 +515,7 @@ fn colon_len(x: f64) -> u64 {
     }
 }
 
+#[cfg(feature = "formats")]
 impl Chunks for GroupBy {
     fn schema(&self) -> SchemaRef {
         GroupBy::schema(self)
@@ -509,6 +531,7 @@ impl Chunks for GroupBy {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for GroupBy {
     fn outputs(&self) -> usize {
         1

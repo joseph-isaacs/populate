@@ -32,13 +32,16 @@
 //! codes ([`part_codes`], [`party_codes`]) and a [`derive()`] of those into
 //! dictionary views ([`part_words`], [`party_words`]).
 
+#[cfg(feature = "formats")]
 use crate::TableName;
 use crate::cols::{Bytes, Word, children_of};
 use crate::dict::{COLORS, DAYS, Dict, NATIONS, days_in_month, holiday, season};
-use populate_builtins::{Draws, derive, draws, format, named, named_all, range};
+use populate_builtins::{Col, Draws, derive, draws, format, named, named_all, range, row_numbers};
 use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
-use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf};
+use populate_core::{Children, Columnar, Columns, Distribution, Padded, Sink, StrBuf};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowColumns;
+#[cfg(feature = "formats")]
 use populate_table::DynTable;
 
 /// Most lines an order has, and the draws per order of the line streams.
@@ -143,12 +146,6 @@ fn part_price(p: i64) -> i64 {
 // ---------------------------------------------------------------------------
 // Leaves
 
-/// Trait bounds every column distribution meets, so helpers can return
-/// one as `impl Col<T>`.
-pub(crate) trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
-
-impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
-
 /// `d` from its row `row` on: for a stream another table used first.
 pub(crate) fn at<D: Distribution>(mut d: D, row: u64) -> D {
     d.skip(row);
@@ -166,7 +163,7 @@ fn ints(seed: i64, lo: i32, hi: i32) -> Int {
 }
 
 /// The 1-based row number: every dimension's key.
-fn key() -> impl Col<i32> {
+fn key() -> impl Col<i32> + use<> {
     range(1i32, 1)
 }
 
@@ -174,12 +171,13 @@ fn key() -> impl Col<i32> {
 fn day<T: Columnar + Clone + 'static>(
     f: impl Fn(usize) -> T + Clone + Send + Sync + 'static,
 ) -> impl Col<T> {
-    derive(range(0usize, 1), move |&i| f(i))
+    derive(row_numbers(), move |r: u64| f(r as usize))
 }
 
 // ---------------------------------------------------------------------------
 // Tables
 
+#[cfg(feature = "formats")]
 pub(crate) fn table<D>(t: TableName, rows: u64, dist: D) -> DynTable
 where
     D: Distribution + Clone + Send + Sync + 'static,
@@ -189,13 +187,14 @@ where
 }
 
 /// Base table `t` (not `lineorder_flat`) at scale `s`.
+#[cfg(feature = "formats")]
 pub(crate) fn generator(t: TableName, s: &Scale) -> DynTable {
     let d = Dict::get();
     match t {
-        TableName::Part => part(d, s),
-        TableName::Supplier => party(d, s, Party::Supplier),
-        TableName::Customer => party(d, s, Party::Customer),
-        TableName::Date => date(d, s),
+        TableName::Part => table(t, s.parts, part(d)),
+        TableName::Supplier => table(t, s.suppliers, supplier(d, s)),
+        TableName::Customer => table(t, s.customers, customer(d, s)),
+        TableName::Date => table(t, s.dates, date(d)),
         TableName::LineOrder => table(
             t,
             s.orders,
@@ -215,7 +214,7 @@ pub(crate) fn generator(t: TableName, s: &Scale) -> DynTable {
 pub(crate) type PartCode = ((u16, u8), u8, u8, u8, u8, i32);
 
 /// The codes of every part.
-pub(crate) fn part_codes(d: &'static Dict) -> impl Col<PartCode> {
+pub(crate) fn part_codes(d: &'static Dict) -> impl Col<PartCode> + use<> {
     (
         // p_name: dbgen shuffles all 92 colours (92 draws) and joins the
         // first three; ssb-dbgen then moves the first to p_color
@@ -246,7 +245,7 @@ pub(crate) const PART_COLUMNS: [&str; 8] = [
 ];
 
 /// The columns after `p_partkey` of a part's codes.
-pub(crate) type PartWords = (Word, Word, Word, Word, Word, Word, i32, Word);
+pub type PartWords = (Word, Word, Word, Word, Word, Word, i32, Word);
 
 #[inline(always)]
 pub(crate) fn part_words(d: &Dict, code: PartCode) -> PartWords {
@@ -264,18 +263,14 @@ pub(crate) fn part_words(d: &Dict, code: PartCode) -> PartWords {
     )
 }
 
-fn part(d: &'static Dict, s: &Scale) -> DynTable {
-    table(
-        TableName::Part,
-        s.parts,
-        (
-            named("p_partkey", key()),
-            named_all(
-                &PART_COLUMNS,
-                derive(part_codes(d), move |((&n, &c), &cat, &b, &k, &ct, &sz)| {
-                    part_words(d, ((n, c), cat, b, k, ct, sz))
-                }),
-            ),
+pub(crate) fn part(d: &'static Dict) -> impl Col<Part> + use<> {
+    (
+        named("p_partkey", key()),
+        named_all(
+            &PART_COLUMNS,
+            derive(part_codes(d), move |((&n, &c), &cat, &b, &k, &ct, &sz)| {
+                part_words(d, ((n, c), cat, b, k, ct, sz))
+            }),
         ),
     )
 }
@@ -371,20 +366,6 @@ pub(crate) enum Party {
 }
 
 impl Party {
-    fn table(self) -> TableName {
-        match self {
-            Party::Supplier => TableName::Supplier,
-            Party::Customer => TableName::Customer,
-        }
-    }
-
-    fn rows(self, s: &Scale) -> u64 {
-        match self {
-            Party::Supplier => s.suppliers,
-            Party::Customer => s.customers,
-        }
-    }
-
     fn prefix(self) -> &'static [u8; 9] {
         match self {
             Party::Supplier => b"Supplier#",
@@ -440,7 +421,7 @@ impl Party {
 pub(crate) type PartyCode = (i32, i32);
 
 /// The codes of every supplier or customer.
-pub(crate) fn party_codes(p: Party, s: &Scale) -> impl Col<PartyCode> {
+pub(crate) fn party_codes(p: Party, s: &Scale) -> impl Col<PartyCode> + use<> {
     (
         ints(p.seeds().1, 0, NATIONS as i32 - 1),
         at(ints(CITY, 0, 9), p.shared(s)),
@@ -459,20 +440,20 @@ pub(crate) fn party_words(d: &Dict, (nation, city): PartyCode) -> (Word, Word, W
 }
 
 /// A customer's market segment (an index into the distribution).
-pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> {
+pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> + use<> {
     derive(stream::<1>(C_MSEG), |&[x]| d.segments.index(x) as u8)
 }
 
-fn party_name(p: Party) -> impl Col<Bytes> {
+fn party_name(p: Party) -> impl Col<Bytes> + use<> {
     let prefix = p.prefix();
     format(key(), move |&k, out| name(prefix, k as u64, out))
 }
 
-fn party_address(p: Party) -> impl Col<Bytes> {
+fn party_address(p: Party) -> impl Col<Bytes> + use<> {
     format(stream::<ADDR_DRAWS>(p.seeds().0), address)
 }
 
-fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
+fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> + use<> {
     format(
         (
             ints(p.seeds().1, 0, NATIONS as i32 - 1),
@@ -483,96 +464,92 @@ fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
 }
 
 /// The name, address and phone number of every supplier or customer.
-pub(crate) fn party_text(p: Party, s: &Scale) -> impl Col<(Bytes, Bytes, Bytes)> {
+pub(crate) fn party_text(p: Party, s: &Scale) -> impl Col<(Bytes, Bytes, Bytes)> + use<> {
     (party_name(p), party_address(p), party_phone(p, s))
 }
 
-fn party(d: &'static Dict, s: &Scale, p: Party) -> DynTable {
+fn party(d: &'static Dict, s: &Scale, p: Party) -> impl Col<Supplier> + use<> {
     let c = p.columns();
     let words = derive(party_codes(p, s), move |(&n, &c)| party_words(d, (n, c)));
-    let row = (
+    (
         named(c[0], key()),
         named(c[1], party_name(p)),
         named(c[2], party_address(p)),
         named_all(&c[3..6], words),
         named(c[6], party_phone(p, s)),
-    );
-    match p {
-        Party::Supplier => table(p.table(), p.rows(s), row),
-        Party::Customer => table(
-            p.table(),
-            p.rows(s),
-            (
-                row,
-                named(
-                    c[7],
-                    derive(segment_codes(d), |&i| {
-                        Word::new(d.segments.views[i as usize])
-                    }),
-                ),
-            ),
+    )
+}
+
+pub(crate) fn supplier(d: &'static Dict, s: &Scale) -> impl Col<Supplier> + use<> {
+    party(d, s, Party::Supplier)
+}
+
+pub(crate) fn customer(d: &'static Dict, s: &Scale) -> impl Col<Customer> + use<> {
+    (
+        party(d, s, Party::Customer),
+        named(
+            "c_mktsegment",
+            derive(segment_codes(d), move |&i| {
+                Word::new(d.segments.views[i as usize])
+            }),
         ),
-    }
+    )
 }
 
 // ---------------------------------------------------------------------------
 // date
 
-fn date(d: &'static Dict, s: &Scale) -> DynTable {
+pub(crate) fn date(d: &'static Dict) -> impl Col<Date> + use<> {
     let t = |i: usize| d.days[i];
     // ssb-dbgen numbers weekdays from Sunday = 1, but computes the number
     // as `(tm_wday + 1) % 7 + 1` and names the day from it: Wednesday is 5,
     // "Thursday"
     let dnw = move |i: usize| (t(i).wday + 1) % 7 + 1;
     let flag = move |b: bool| Word::new(d.flags[b as usize]);
-    table(
-        TableName::Date,
-        s.dates,
+    (
         (
-            (
-                named("d_datekey", day(move |i| t(i).key())),
-                named("d_date", day(|i| Word::new(d.day_names[i]))),
-                named(
-                    "d_dayofweek",
-                    day(move |i| Word::new(d.weekdays[dnw(i) as usize - 1])),
-                ),
-                named(
-                    "d_month",
-                    day(move |i| Word::new(d.months[t(i).month as usize - 1])),
-                ),
-                named("d_year", day(move |i| t(i).year)),
-                named("d_yearmonthnum", day(move |i| t(i).year * 100 + t(i).month)),
-                named(
-                    "d_yearmonth",
-                    day(move |i| {
-                        let t = t(i);
-                        Word::new(d.year_months[((t.year - 1992) * 12 + t.month - 1) as usize])
-                    }),
-                ),
-                named("d_daynuminweek", day(dnw)),
-                named("d_daynuminmonth", day(move |i| t(i).mday)),
+            named("d_datekey", day(move |i| t(i).key())),
+            named("d_date", day(|i| Word::new(d.day_names[i]))),
+            named(
+                "d_dayofweek",
+                day(move |i| Word::new(d.weekdays[dnw(i) as usize - 1])),
             ),
-            (
-                named("d_daynuminyear", day(move |i| t(i).yday)),
-                named("d_monthnuminyear", day(move |i| t(i).month)),
-                named("d_weeknuminyear", day(move |i| t(i).yday / 7 + 1)),
-                named(
-                    "d_sellingseason",
-                    day(move |i| Word::new(d.seasons[season(t(i).month, t(i).mday)])),
-                ),
-                named("d_lastdayinweekfl", day(move |i| flag(dnw(i) == 7))),
-                named(
-                    "d_lastdayinmonthfl",
-                    day(move |i| flag(t(i).mday == days_in_month(t(i).year, t(i).month))),
-                ),
-                named(
-                    "d_holidayfl",
-                    day(move |i| flag(holiday(t(i).month, t(i).mday))),
-                ),
-                named(
-                    "d_weekdayfl",
-                    day(move |i| flag(dnw(i) != 1 && dnw(i) != 7)),
-                ),
+            named(
+                "d_month",
+                day(move |i| Word::new(d.months[t(i).month as usize - 1])),
+            ),
+            named("d_year", day(move |i| t(i).year)),
+            named("d_yearmonthnum", day(move |i| t(i).year * 100 + t(i).month)),
+            named(
+                "d_yearmonth",
+                day(move |i| {
+                    let t = t(i);
+                    Word::new(d.year_months[((t.year - 1992) * 12 + t.month - 1) as usize])
+                }),
+            ),
+            named("d_daynuminweek", day(dnw)),
+            named("d_daynuminmonth", day(move |i| t(i).mday)),
+        ),
+        (
+            named("d_daynuminyear", day(move |i| t(i).yday)),
+            named("d_monthnuminyear", day(move |i| t(i).month)),
+            named("d_weeknuminyear", day(move |i| t(i).yday / 7 + 1)),
+            named(
+                "d_sellingseason",
+                day(move |i| Word::new(d.seasons[season(t(i).month, t(i).mday)])),
+            ),
+            named("d_lastdayinweekfl", day(move |i| flag(dnw(i) == 7))),
+            named(
+                "d_lastdayinmonthfl",
+                day(move |i| flag(t(i).mday == days_in_month(t(i).year, t(i).month))),
+            ),
+            named(
+                "d_holidayfl",
+                day(move |i| flag(holiday(t(i).month, t(i).mday))),
+            ),
+            named(
+                "d_weekdayfl",
+                day(move |i| flag(dnw(i) != 1 && dnw(i) != 7)),
             ),
         ),
     )
@@ -605,7 +582,7 @@ pub(crate) const LINEORDER: [&str; 17] = [
 /// One `lineorder` row. Integers are `Int32` (`lo_orderkey`, which passes
 /// 2^31 from SF 358, is `Int64`), dates `Int32` `YYYYMMDD` as dbgen prints
 /// them.
-pub(crate) type Line = (
+pub type Line = (
     (i64, i32, i32, i32, i32, i32, Word, i32),
     (i32, i32, i32, i32, i32, i32, i32, i32, Word),
 );
@@ -627,7 +604,7 @@ pub(crate) type Order = (
 );
 
 /// Every order's streams. The order streams start at row `dates`.
-pub(crate) fn orders(s: &Scale) -> impl Col<Order> {
+pub(crate) fn orders(s: &Scale) -> impl Col<Order> + use<> {
     let cmax = s.customers as i32;
     let custkey = derive(ints(O_CKEY, 1, cmax), move |&c| {
         let mut c = c;
@@ -759,4 +736,23 @@ fn append<T>(col: &mut Vec<T>, v: Vec<T>) {
     } else {
         col.extend(v);
     }
+}
+
+/// Native part row.
+pub type Part = (i32, PartWords);
+/// Native supplier row: key, name, address, location, phone.
+pub type Supplier = (i32, Bytes, Bytes, (Word, Word, Word), Bytes);
+/// Native customer row, including market segment.
+pub type Customer = (Supplier, Word);
+/// Native date row, with dates encoded as YYYYMMDD integers.
+pub type Date = (
+    (i32, Word, Word, Word, i32, i32, Word, i32, i32),
+    (i32, i32, i32, Word, Word, Word, Word, Word),
+);
+
+pub(crate) fn lineorder(s: &Scale) -> impl Col<Children<Line>> + use<> {
+    named_all(
+        &LINEORDER,
+        children_of::<_, Line, _>(orders(s), lines(Dict::get())),
+    )
 }

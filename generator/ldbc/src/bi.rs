@@ -25,10 +25,16 @@ use crate::csv;
 use crate::java::civil_from_days;
 use crate::layout::Layout;
 use crate::rows::{Col, Kind, Rows, TableDef};
-use crate::{Ldbc, par_map, to_batch};
+#[cfg(feature = "formats")]
+use crate::to_batch;
+use crate::{Ldbc, par_map};
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
+#[cfg(feature = "formats")]
 use populate_table::MultiChunks;
+#[cfg(feature = "formats")]
 use populate_table::text::TextChunks;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -361,6 +367,7 @@ impl<'a> BiRun<'a> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl MultiChunks for BiRun<'_> {
     fn schemas(&self) -> Vec<SchemaRef> {
         self.tables
@@ -384,6 +391,7 @@ impl MultiChunks for BiRun<'_> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for BiRun<'_> {
     fn outputs(&self) -> usize {
         self.tables.snapshot.len()

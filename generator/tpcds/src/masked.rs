@@ -8,24 +8,29 @@
 //! bitmaps when the columns become Arrow arrays, and each field's when a
 //! row is printed.
 
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, make_array};
+#[cfg(feature = "formats")]
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer};
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_core::RowCount;
 use populate_core::{Columnar, Columns, Sink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowColumns;
+#[cfg(feature = "formats")]
 use populate_table::text::{Cursor, Encoding, TextColumns};
 use std::marker::PhantomData;
 
 /// The null bitmap bit of each column of a table, in column order: the bit
 /// that makes it NULL, or [`NOT_NULL`]. A bit may NULL several columns
 /// (`store_sales` prints its coupon amount twice).
-pub(crate) trait NullBits {
+pub trait NullBits {
     const BITS: &'static [i8];
 }
 
 /// A column no bit makes NULL (a NOT NULL field).
-pub(crate) const NOT_NULL: i8 = -1;
+pub const NOT_NULL: i8 = -1;
 
 /// Whether bit `bit` of `nbm` makes its column NULL.
 #[inline(always)]
@@ -36,7 +41,7 @@ fn is_null(nbm: i64, bit: i8) -> bool {
 /// A row of values `T` and its null bitmap; a column's value is ignored
 /// where [`NullBits::BITS`] of `M` says the bitmap makes it NULL.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Masked<T, M> {
+pub struct Masked<T, M> {
     pub nbm: i64,
     pub row: T,
     bits: PhantomData<M>,
@@ -48,7 +53,7 @@ impl<T: Columnar, M: NullBits> Columnar for Masked<T, M> {
 
 /// The columns of [`Masked`] rows: the values, and a bitmap per row.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MaskedCols<C, M> {
+pub struct MaskedCols<C, M> {
     pub nbm: Vec<i64>,
     pub values: C,
     bits: PhantomData<M>,
@@ -82,6 +87,7 @@ impl<C, M> RowCount for MaskedCols<C, M> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<C: IntoArrowColumns, M: NullBits> IntoArrowColumns for MaskedCols<C, M> {
     const LEN: usize = C::LEN;
 
@@ -116,6 +122,7 @@ impl<C: IntoArrowColumns, M: NullBits> IntoArrowColumns for MaskedCols<C, M> {
 /// For each bit `b` some column uses, whether it leaves each row present:
 /// the bitmaps transposed 64 rows at a time, so every bit's validity costs
 /// a few operations per 64 rows rather than a few per row.
+#[cfg(feature = "formats")]
 fn validity(nbm: &[i64], bits: &[i8]) -> Vec<Option<BooleanBuffer>> {
     let used = bits
         .iter()
@@ -152,6 +159,7 @@ fn validity(nbm: &[i64], bits: &[i8]) -> Vec<Option<BooleanBuffer>> {
 /// Transpose a 64 by 64 bit matrix: bit `k` of `m[b]` becomes bit `b` of
 /// `m[k]`. Swaps ever smaller blocks across the diagonal (Hacker's
 /// Delight, 7-3).
+#[cfg(feature = "formats")]
 fn transpose(m: &mut [u64; 64]) {
     const MASKS: [u64; 6] = [
         0x0000_0000_FFFF_FFFF,
@@ -173,6 +181,7 @@ fn transpose(m: &mut [u64; 64]) {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<C: TextColumns, M: NullBits> TextColumns for MaskedCols<C, M> {
     const WIDTH: usize = C::WIDTH;
 
@@ -212,7 +221,7 @@ impl<C: TextColumns, M: NullBits> TextColumns for MaskedCols<C, M> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
 
@@ -239,5 +248,12 @@ mod tests {
                 None => assert!(b != 0 && b != 5),
             }
         }
+    }
+}
+
+impl<C, M: NullBits> MaskedCols<C, M> {
+    /// Whether output column `column` is NULL at row `row`.
+    pub fn is_null(&self, row: usize, column: usize) -> bool {
+        is_null(self.nbm[row], M::BITS[column])
     }
 }

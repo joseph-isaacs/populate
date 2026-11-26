@@ -199,6 +199,58 @@ fn bound_all_any(v: &mut [u32], lo: i32, hi: i32) {
     }
 }
 
+/// Fill and bound each block before writing it, keeping the stream state
+/// in raw draws so a following fill or skip starts at the same position.
+#[cfg(any(target_arch = "aarch64", test))]
+fn fill_bounded(x: u64, out: &mut [i32], lo: i32, hi: i32) -> u64 {
+    fill_bounded_any(x, out, lo, hi)
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+#[inline(always)]
+fn fill_bounded_any(x: u64, out: &mut [i32], lo: i32, hi: i32) -> u64 {
+    let range = (hi as i64 - lo as i64 + 1) as u64;
+    if range < INT_RANGE as u64 {
+        fill_mapped(x, out, |x| lo + scale(x, range as u32) as i32)
+    } else {
+        fill_mapped(x, out, |x| bounded(x, lo, hi))
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+#[inline(always)]
+fn fill_mapped(mut x: u64, out: &mut [i32], map: impl Fn(u32) -> i32) -> u64 {
+    if out.len() < LANES {
+        for value in out {
+            x = mulmod(x, A);
+            *value = map(x as u32);
+        }
+        return x;
+    }
+    let mut lanes = [0u32; LANES];
+    for lane in &mut lanes {
+        x = mulmod(x, A);
+        *lane = x as u32;
+    }
+    let step = pow(LANES as u64);
+    let (blocks, rest) = out.as_chunks_mut::<LANES>();
+    let mut last = x;
+    for block in blocks {
+        for (value, &raw) in block.iter_mut().zip(&lanes) {
+            *value = map(raw);
+        }
+        last = lanes[LANES - 1] as u64;
+        for lane in &mut lanes {
+            *lane = mulmod(*lane as u64, step) as u32;
+        }
+    }
+    for (value, &raw) in rest.iter_mut().zip(&lanes) {
+        *value = map(raw);
+        last = raw as u64;
+    }
+    last
+}
+
 /// One dbgen stream as a [`SeekRng`]: the draws after a state, made in
 /// lanes by [`fill`](SeekRng::fill), jumped over in `O(log n)` by
 /// [`advance`](SeekRng::advance). `populate_builtins::draws` makes it a
@@ -241,8 +293,8 @@ impl SeekRng for Lcg {
 }
 
 /// `K` bounded values of a stream per row, dbgen's `lo..=hi` of each draw:
-/// the column most streams make. Collected, the draws are filled and
-/// bounded in place, both vectorised ([`draws`], [`bound_all`]).
+/// the column most streams make. AArch64 bounds each block's independent
+/// draws before writing them; other targets fill and bound in two passes.
 #[derive(Debug, Clone, Copy)]
 pub struct Ints<const K: usize> {
     stream: Lcg,
@@ -262,11 +314,17 @@ impl<const K: usize> Ints<K> {
 
     /// `out.len()` values.
     fn fill(&mut self, out: &mut [i32]) {
-        // SAFETY: `i32` and `u32` have the same size, alignment and valid
-        // bit patterns
-        let raw = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
-        self.stream.fill(raw);
-        bound_all(raw, self.lo, self.hi);
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.stream.x = fill_bounded(self.stream.x, out, self.lo, self.hi);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            // SAFETY: i32 and u32 have the same layout and valid bit patterns.
+            let raw = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) };
+            self.stream.fill(raw);
+            bound_all(raw, self.lo, self.hi);
+        }
     }
 }
 
@@ -437,6 +495,34 @@ mod tests {
             bound_all(&mut a, lo, hi);
             bound_all_any(&mut b, lo, hi);
             assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn fused_bounds_preserve_draws_and_continuation() {
+        for seed in [0, 1, 1095462486, M as i64 - 1, M as i64 + 17] {
+            for (lo, hi) in [
+                (1, 7),
+                (-99_999, 999_999),
+                (1, 2_097_151),
+                (1, 2_097_152),
+                (0, i32::MAX),
+            ] {
+                let mut expected = Lcg::new(seed);
+                let mut actual = Ints::<7>::new(seed, lo, hi);
+                for n in [0, 1, 15, 16, 17, 31, 32, 33, 127, 8193, 0, 1] {
+                    let mut raw = vec![0; n];
+                    expected.fill(&mut raw);
+                    bound_all(&mut raw, lo, hi);
+                    let want: Vec<i32> = raw.into_iter().map(|x| x as i32).collect();
+                    let mut got = vec![0; n];
+                    actual.stream.x = fill_bounded(actual.stream.x, &mut got, lo, hi);
+                    assert_eq!(got, want, "seed {seed}, range {lo}..={hi}, n {n}");
+                    assert_eq!(actual.stream.x, expected.x);
+                    expected.advance(1_000_003 * 7);
+                    actual.skip(1_000_003);
+                }
+            }
         }
     }
 

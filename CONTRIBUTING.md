@@ -17,12 +17,26 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo doc --workspace --all-features --no-deps
 cargo test --workspace --all-features
-cargo bench --workspace --no-run
 ```
 
 Run these checks with current stable Rust; the MSRV check alone does not
 include newer Clippy lints. Python binding tests use
 `pytest -W error python/tests` so warnings fail the test run.
+
+Clippy's `--all-targets` checks that the benches compile; CI does not
+build or run them in the optimised `bench` profile.
+
+CI disables debug symbols for development and test builds with
+`CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0` to reduce
+code generation and artifact size. Tests retain debug assertions and
+overflow checks. Local builds keep their normal debug symbols.
+
+CI uses `rust-cache` for Cargo dependencies and `sccache` with GitHub's
+cache storage for Rust compilation during tests and Python extension
+builds. Compiler results are keyed by their inputs; unchanged library
+compiles can be reused across checkouts. Linking and test execution still
+run. Incremental compilation is disabled for compatibility with sccache,
+and the action reports cache statistics in each build job.
 
 Plain `cargo build` / `cargo test` cover only the workspace
 `default-members`, which leave out `populate-bench` and the `parquet`

@@ -5,7 +5,7 @@
 //! LDBC SNB data, byte-identical to the LDBC Spark datagen, on all cores.
 //!
 //! A port of the generator of [ldbc_snb_datagen_spark] (Apache-2.0) to
-//! `populate-table`'s [`Chunks`](populate_table::Chunks) model. It reads
+//! `populate-table`'s chunked generation model. It reads
 //! the datagen's own dictionaries (its `src/main/resources` directory) and
 //! produces its `--mode raw` output: the 14 dynamic tables (persons,
 //! friendships, forums, posts, comments, likes, ...) and the 4 static ones.
@@ -23,7 +23,7 @@
 //!    one seed per block.
 //!
 //! Steps 1 and 2 are a global pre-pass ([`Ldbc::new`], blocks in
-//! parallel). Step 3 is [`Ldbc::raw`], one distribution of all 14 tables
+//! parallel). Step 3 is [`Ldbc::raw_chunks`], one distribution of all 14 tables
 //! (a `flat_map` over chunks, its schemas read off its row types). A chunk
 //! is [`SEGMENT`] persons of an activity block, generated from the state
 //! the block reaches at its first person, so it is a pure function of its
@@ -48,6 +48,7 @@ mod person;
 pub mod rows;
 
 use activity::{BlockGen, Resume, World};
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
 use dates::Dates;
 use dict::{Dictionaries, PlaceType};
@@ -55,16 +56,19 @@ use factors::{FACTOR, FACTOR_TABLES, Factor, FactorCols, FactorInput, Factors};
 use knows::Knows;
 use params::Params;
 use person::{Hot, Person, PersonGenerator};
-use populate_builtins::{flat_map, named_all, range};
+use populate_builtins::{flat_map, named_all, row_numbers};
+use populate_core::DistChunks;
+use populate_core::sched::{par_map, resolve_threads};
 use populate_core::{Distribution, Sink};
+#[cfg(feature = "formats")]
+use populate_table::DistTables;
+#[cfg(feature = "formats")]
 use populate_table::text::TextChunks;
-use populate_table::{DistTables, par_map, resolve_threads};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use rows::{
-    DYNAMIC, DYNAMIC_COLUMNS, DYNAMIC_NAMES, Raw, RawCols, Rows, STATIC_TABLES, StaticCols,
-    Statics, TableDef, rows_of,
-};
+#[cfg(feature = "formats")]
+use rows::{DYNAMIC, DYNAMIC_NAMES, TableDef};
+use rows::{DYNAMIC_COLUMNS, Raw, RawCols, Rows, STATIC_TABLES, StaticCols, Statics, rows_of};
 use std::collections::HashSet;
 use std::env::var_os;
 use std::fs::read_to_string;
@@ -335,19 +339,46 @@ impl Ldbc {
     /// The 14 dynamic tables as one distribution: a source row is a chunk,
     /// and its children are the chunk's rows of each table. With
     /// [`Self::collect_factors`] on, collect one source row at a time (as
-    /// [`Self::raw`] does).
+    /// [`Self::raw_chunks`] does).
     pub fn raw_dist(&self) -> impl Distribution<Item = Raw> + Clone + Sync + '_ {
         let names: Vec<&str> = DYNAMIC_COLUMNS.concat();
         named_all(
             &names,
-            flat_map::<Raw, _, _>(range(0u64, 1), |&i: &u64, out: &mut RawCols| {
+            flat_map::<Raw, _, _>(row_numbers(), |i: u64, out: &mut RawCols| {
                 self.chunk_into(i, out)
             }),
         )
     }
 
+    /// Native dynamic tables, one network segment per source chunk.
+    pub fn raw_chunks(&self) -> DistChunks<impl Distribution<Item = Raw> + Clone + Sync + '_> {
+        self.raw_dist()
+            .chunks(self.num_chunks())
+            .chunk_rows(1)
+            .batch_rows(1)
+    }
+
+    /// Native static tables, as a single source chunk.
+    pub fn static_chunks(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = Statics> + Clone + Sync + '_> {
+        self.static_dist().chunks(1).chunk_rows(1).batch_rows(1)
+    }
+
+    /// Native factor tables, after factor collection has completed.
+    pub fn factor_chunks(
+        &self,
+        threads: usize,
+    ) -> DistChunks<impl Distribution<Item = Factors> + Clone + '_> {
+        self.factor_dist(threads)
+            .chunks(1)
+            .chunk_rows(1)
+            .batch_rows(1)
+    }
+
     /// The dynamic tables, a chunk (one Parquet row group per table) per
     /// chunk of the network.
+    #[cfg(feature = "formats")]
     pub fn raw(&self) -> DistTables<impl Distribution<Item = Raw> + Clone + Sync + '_> {
         DistTables::new(&DYNAMIC_NAMES, self.num_chunks(), self.raw_dist())
             .chunk_rows(1)
@@ -385,7 +416,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            flat_map::<Factors, _, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
+            flat_map::<Factors, _, _>(row_numbers(), move |_: u64, out: &mut FactorCols| {
                 let f = self.factor_input.as_ref().expect("collect_factors first");
                 let mut statics = StaticCols::default();
                 self.static_into(&mut statics);
@@ -416,7 +447,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            flat_map::<Statics, _, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
+            flat_map::<Statics, _, _>(row_numbers(), |_: u64, out: &mut StaticCols| {
                 self.static_into(out)
             }),
         )
@@ -487,6 +518,7 @@ impl Ldbc {
 
     /// CSV text of the dynamic tables, for
     /// [`write_text_many`](populate_table::text::write_text_many).
+    #[cfg(feature = "formats")]
     pub fn csv(&self) -> DynamicCsv<'_> {
         DynamicCsv { g: self }
     }
@@ -494,10 +526,12 @@ impl Ldbc {
 
 /// The dynamic tables as CSV chunks (one output per [`rows::DYNAMIC`]
 /// table; chunk 0 starts with the header).
+#[cfg(feature = "formats")]
 pub struct DynamicCsv<'a> {
     g: &'a Ldbc,
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for DynamicCsv<'_> {
     fn outputs(&self) -> usize {
         DYNAMIC.len()
@@ -519,6 +553,7 @@ impl TextChunks for DynamicCsv<'_> {
 }
 
 /// An Arrow batch of `rows`, a table of `def`.
+#[cfg(feature = "formats")]
 pub fn to_batch(def: &TableDef, rows: Rows) -> RecordBatch {
     let cols = rows.cols.into_iter().map(|c| c.into_array()).collect();
     RecordBatch::try_new(def.schema(), cols).expect("schema matches")

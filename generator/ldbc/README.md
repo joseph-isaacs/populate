@@ -189,3 +189,21 @@ run, against 85 s without factors.
 
 `generator/ldbc/scripts/compare-parquet.py REF_OUT MINE_DIR` (needs `pyarrow`) is the
 value-by-value comparison with a datagen run's raw Parquet.
+
+## Native distributions and chunks
+
+`raw_dist()`, `static_dist()`, and `factor_dist(threads)` expose typed
+`Distribution`s containing every native dynamic, static, and factor table.
+Their `raw_chunks()`, `static_chunks()`, and `factor_chunks(threads)` wrappers
+provide `populate_core::DistChunks` without choosing an output backend.
+Dynamic source rows are network segments; static and factor sources each
+contain one source row. Factor chunks are collected after enabling factor
+collection and generating every dynamic segment once.
+
+Row aliases, column buffers, table names, and native `Kind` metadata are
+public in `rows`. `LayoutRun::rows` exposes each transformed native chunk;
+BI snapshot and update batches also retain native `Rows`.
+
+Set `default-features = false` to exclude Arrow and `populate-table` (and
+its Parquet dependency). The default `formats` feature enables adapters and
+CLI; native metadata and generation remain available without it.

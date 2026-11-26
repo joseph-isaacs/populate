@@ -33,6 +33,12 @@ lo.write_parquet(std::fs::File::create("lineorder.parquet")?, 0, None)?;
 lo.write_tbl(std::fs::File::create("lineorder.tbl")?, 0)?;
 ```
 
+Parallel Arrow iteration subdivides work into at most eight batches per
+job, aiming for four jobs per worker on smaller tables. This reduces
+buffered data while preserving each table's row order, including
+`lineorder_flat`. Parquet row groups and text writer chunks retain their
+configured size.
+
 Column names are ssb-dbgen's `ssb.ddl`. Integers are `Int32`
 (`lo_orderkey` is `Int64`), dates are `Int32` `YYYYMMDD` as ssb-dbgen
 prints them, and text is `Utf8View`. `lineorder_flat` has `lineorder`'s 17
@@ -118,3 +124,19 @@ orders); ssb-dbgen is single-threaded.
 | `.tbl`            | 4       | —         | 0.61 s       |
 | Parquet (snappy)  | 4       | —         | 0.54 s       |
 | Arrow only        | 4       | —         | 0.20 s       |
+
+## Native columns
+
+`Ssb` exposes typed `part()`, `supplier()`, `customer()`, `date()`,
+`lineorder()`, and `lineorder_flat()` sources as `populate_core::DistChunks`.
+Use `batch`, `chunk`, or `for_each_batch` to receive native columns, and
+`into_dist()` for the underlying distribution. Both line-order sources
+count source orders and emit child lines. Row aliases are public in `raw`.
+
+Dictionary and joined dimension strings expose `with_str`; owned strings
+expose `get` and `into_parts`. Joined dimension buffers are shared and remain
+alive with their columns. Native flat dimensions are initialized once per
+`Ssb` data set.
+
+Set `default-features = false` for a library without Arrow, Parquet, or
+`populate-table`. The default `formats` feature enables adapters and CLI.

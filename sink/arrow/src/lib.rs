@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Arrow output: collected columns become Arrow arrays.
 //!
 //! Collection is unchanged: data is generated column by column into plain
@@ -18,6 +19,10 @@
 //! | `ListCol<V>`             | `ListArray`, offsets moved, with V's columns |
 //! |                          | as its values; several columns become a      |
 //! |                          | `StructArray`                                |
+//! | `WideCols<C>`            | one group of arrays per element (top level   |
+//! |                          | and in tuples, not as a list's values)       |
+//! | `ChildCols<V>` (`Children`) | `V`'s arrays: the children are the rows   |
+//! | `TableCols<C>` (`Tables`) | one `RecordBatch` per table ([`IntoArrowTables`]) |
 //! | a tuple of columns       | each field's arrays, in order (nested tuples |
 //! |                          | are flattened)                               |
 //! | top level                | `RecordBatch` (columns `c0`, `c1`, ...)      |
@@ -28,6 +33,40 @@
 //! allocations (offsets and values) and both are moved into the `ListArray`
 //! as they are. `Vec<bool>` and `Vec<usize>` columns are converted
 //! (bit-packing / widening).
+//!
+//! # Schemas
+//!
+//! [`schema_of`] is a distribution's schema without generating a row: the
+//! names from [`Distribution::column_names`] (`populate_builtins::named`),
+//! the types from the columns its rows are collected into.
+//! [`schemas_of`] does the same for the several tables of a
+//! [`Tables`] distribution.
+//!
+//! ```
+//! use arrow_schema::DataType;
+//! use std::sync::Arc;
+//! use populate_builtins::{derive, named, range, uniform};
+//! use populate_core::{Date32, Decimal};
+//! use populate_sink_arrow::{DistributionArrow, schema_of};
+//!
+//! let mut sales = (
+//!     named("id", range(0i64, 1)),
+//!     named("day", derive(uniform(19_000i32, 19_365), |&d: &i32| Date32(d))),
+//!     named("price", derive(uniform(100i64, 9_999), |&c: &i64| Decimal::<9, 2>(c.into()))),
+//!     named("qty", uniform(1i32, 10)),
+//! );
+//! let schema = Arc::new(schema_of(&sales));
+//! assert_eq!(schema.field(1).data_type(), &DataType::Date32);
+//! assert_eq!(schema.field(2).data_type(), &DataType::Decimal128(9, 2));
+//!
+//! // `collect_record_batch` names its columns `c0, c1, ...`; with the
+//! // schema, a batch has the distribution's names
+//! let batch = sales
+//!     .collect_record_batch_with(&schema, &mut rand::rng(), 1_000)
+//!     .unwrap();
+//! assert_eq!(batch.schema().field(0).name(), "id");
+//! assert_eq!(batch.num_rows(), 1_000);
+//! ```
 
 use arrow_array::types::{
     Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
@@ -66,11 +105,14 @@ pub trait IntoArrowArray {
         false
     }
 
+    /// The array, its buffers moved out of the column where the layouts
+    /// agree.
     fn into_array(self) -> ArrayRef;
 }
 
 /// Rust native type -> Arrow primitive type (zero-copy buffer move).
 pub trait ArrowNative: ArrowNativeType {
+    /// The Arrow type whose arrays hold `Self` values.
     type Arrow: ArrowPrimitiveType<Native = Self>;
 }
 
@@ -382,6 +424,7 @@ pub trait IntoArrowColumns {
         out.extend(types.into_iter().zip(nullable));
     }
 
+    /// Append this column set's arrays to `out`, in order.
     fn into_arrays(self, out: &mut Vec<ArrayRef>);
 }
 
@@ -564,8 +607,8 @@ fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
 }
 
 /// The columns of several tables made together: a tuple of
-/// [`ChildCols`], one per table, inside the [`TableCols`] of a
-/// [`Tables`](populate_core::Tables) row (`populate_builtins::flat_map`
+/// [`ChildCols`], one per table, inside the [`TableCols`](populate_core::TableCols) of a
+/// [`Tables`] row (`populate_builtins::flat_map`
 /// makes them).
 pub trait IntoArrowTables {
     /// The number of tables.
@@ -665,6 +708,8 @@ where
 // DistributionArrow — collect straight to a RecordBatch
 // ============================================================================
 
+/// Collecting straight to a `RecordBatch`, for every [`Distribution`] whose
+/// columns become Arrow arrays.
 pub trait DistributionArrow: Distribution {
     /// Collect `n` rows column by column and return them as a `RecordBatch`.
     fn collect_record_batch(

@@ -13,12 +13,18 @@
 //! at every `;` (empty pieces kept), a number is one value and a null
 //! none. `--epoch-millis` keeps dates as milliseconds since the epoch.
 
+use crate::Ldbc;
 use crate::rows::{Col, DYNAMIC, Kind, Rows, STATIC, TableDef};
-use crate::{Ldbc, csv, to_batch};
+#[cfg(feature = "formats")]
+use crate::{csv, to_batch};
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
 use populate_core::StrCol;
+#[cfg(feature = "formats")]
 use populate_table::MultiChunks;
+#[cfg(feature = "formats")]
 use populate_table::text::TextChunks;
 
 /// How one output table is made from a raw one.
@@ -392,7 +398,7 @@ pub struct LayoutRun<'a> {
 }
 
 impl LayoutRun<'_> {
-    fn rows(&self, i: u64) -> Vec<Rows> {
+    pub fn rows(&self, i: u64) -> Vec<Rows> {
         Layout::apply(&self.layout.dynamic, &self.g.chunk_rows(i))
     }
 
@@ -402,6 +408,7 @@ impl LayoutRun<'_> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl MultiChunks for LayoutRun<'_> {
     fn schemas(&self) -> Vec<SchemaRef> {
         self.layout.dynamic.iter().map(|t| t.def.schema()).collect()
@@ -420,6 +427,7 @@ impl MultiChunks for LayoutRun<'_> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for LayoutRun<'_> {
     fn outputs(&self) -> usize {
         self.layout.dynamic.len()

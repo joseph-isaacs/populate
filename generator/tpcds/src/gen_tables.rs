@@ -13,7 +13,8 @@ use populate_core::{Columnar, Columns, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables};
 use populate_table::text::{TextChunks, TextColumns, TextTables, write_text_many};
 use populate_table::{
-    Chunks, DistTable, DistTables, MultiChunks, chunks, par_sources, write_parquet_many_in_batches,
+    Chunks, DEFAULT_CHUNK_ROWS, DistTable, DistTables, MultiChunks, chunks, par_sources,
+    resolve_threads, write_parquet_many_in_batches,
 };
 use std::convert::Infallible;
 use std::fmt;
@@ -22,8 +23,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use tpcdsgen::config::Session;
 
-/// Default output rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
 /// Default Arrow batch size, in output rows: small enough that a batch's
 /// columns stay in cache while they are made and written out.
 pub const DEFAULT_BATCH_SIZE: usize = 2048;
@@ -279,10 +278,37 @@ impl DsTable {
         }
     }
 
+    /// Balance Arrow work without retaining a whole Parquet row group.
+    /// Sales and returns use the same work estimate so they stay paired.
+    fn arrow_chunks(&self, threads: usize) -> Self {
+        let mut table = self.clone();
+        let threads = resolve_threads(threads);
+        if threads > 1 {
+            // Keep already well-partitioned channels together to amortize scheduling.
+            if channel_of(self.name).is_some()
+                && self.num_chunks() >= (threads as u64).saturating_mul(4)
+            {
+                return table;
+            }
+            let batch = self.batch_source_rows();
+            // A few cheap batches do not amortize starting extra workers.
+            if self.source_rows <= batch.saturating_mul(4) {
+                return table;
+            }
+            let target = self
+                .source_rows
+                .div_ceil((threads as u64).saturating_mul(4));
+            let size = target.div_ceil(batch).clamp(1, 32).saturating_mul(batch);
+            table.chunk_source_rows = table.chunk_source_rows.min(size);
+        }
+        table
+    }
+
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
-    /// batch, in table order, on the calling thread.
+    /// batch, in table order, on the calling thread. Parallel generation
+    /// may subdivide chunks to balance work and limit buffered Arrow data.
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
-        chunks::for_each_batch(self, threads, f)
+        chunks::for_each_batch(&self.arrow_chunks(threads), threads, f)
     }
 
     /// The whole table, in order.
@@ -438,12 +464,14 @@ impl TextChunks for DatUnit<'_> {
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
+/// Parallel generation may subdivide chunks, as in [`DsTable::for_each_batch`].
 pub fn for_each_batch_many(
     tables: &[DsTable],
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let units = plan(tables);
+    let tables: Vec<_> = tables.iter().map(|t| t.arrow_chunks(threads)).collect();
+    let units = plan(&tables);
     let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
     let r: Result<(), Infallible> = par_sources(
         &chunks,

@@ -51,6 +51,7 @@ use std::marker::PhantomData;
 /// `K` draws of `stream` per row, as a `[Draw; K]`. See [`draws`].
 #[derive(Debug, Clone)]
 pub struct Draws<S, const K: usize> {
+    /// The stream, at the next row's first draw.
     pub stream: S,
     /// Draws reserved per row: `K`, or more for a row that uses only its
     /// first `K`.
@@ -123,7 +124,9 @@ impl<C> std::fmt::Debug for Scratch<C> {
 /// `f` of every row of `source`, collected columnar. See [`derive()`].
 #[derive(Debug, Clone)]
 pub struct Derive<D: Distribution, F, Out> {
+    /// The rows `f` reads.
     pub source: D,
+    /// Writes the output from them.
     pub f: F,
     scratch: Scratch<Columns<D::Item>>,
     /// Fixed here rather than read off `F`, so a source's `Item` is a
@@ -139,6 +142,18 @@ pub struct Derive<D: Distribution, F, Out> {
 /// scratch: only `f`'s output is kept. Rows are read in place
 /// ([`RowRefs`]): a row of a `Vec<T>` column is a `&T`, so a wide row
 /// (blocks of draws from several streams) is never copied out.
+///
+/// ```
+/// use populate_builtins::{derive, range, uniform};
+/// use populate_core::Distribution;
+///
+/// // a price, and its total for a quantity: one row of two columns in
+/// let mut total = derive(
+///     (uniform(1i64, 9), range(1i64, 1)),
+///     |(&price, &qty): (&i64, &i64)| price * qty,
+/// );
+/// assert_eq!(total.collect(&mut rand::rng(), 3).len(), 3);
+/// ```
 pub fn derive<D, F, Out>(source: D, f: F) -> Derive<D, F, Out>
 where
     D: Distribution,
@@ -179,7 +194,9 @@ where
 /// [`derive_columns`].
 #[derive(Debug, Clone)]
 pub struct DeriveColumns<D, F, Out> {
+    /// The rows `f` reads.
     pub source: D,
+    /// Writes the output from them.
     pub f: F,
     _out: PhantomData<fn() -> Out>,
 }
@@ -192,6 +209,27 @@ pub struct DeriveColumns<D, F, Out> {
 /// with plain loops over whole columns, and for column types a writer
 /// fills in place (strings into a shared buffer). `Out` is usually a
 /// tuple, each field one or more output columns.
+///
+/// # Panics
+///
+/// If `f` writes other than one row per source row.
+///
+/// ```
+/// use populate_builtins::{derive_columns, range};
+/// use populate_core::Distribution;
+///
+/// // a distance, and the fare and tip it sets, a block at a time
+/// let mut trip = derive_columns::<_, _, (f64, f64, f64)>(
+///     range(1.0f64, 1.0),
+///     |miles: &Vec<f64>, (d, fare, tip)| {
+///         d.extend(miles);
+///         fare.extend(miles.iter().map(|m| 2.5 + 1.5 * m));
+///         tip.extend(fare[fare.len() - miles.len()..].iter().map(|f| f * 0.2));
+///     },
+/// );
+/// let (d, fare, tip) = trip.collect(&mut rand::rng(), 2);
+/// assert_eq!((d, fare, tip), (vec![1.0, 2.0], vec![4.0, 5.5], vec![0.8, 1.1]));
+/// ```
 pub fn derive_columns<D, F, Out>(source: D, f: F) -> DeriveColumns<D, F, Out>
 where
     D: Distribution,
@@ -237,7 +275,9 @@ where
 /// The first `count` of each source row's `K` slots. See [`children`].
 #[derive(Debug, Clone)]
 pub struct ChildSlots<C, E> {
+    /// Each source row's number of children.
     pub counts: C,
+    /// Each source row's `K` candidate children, as a `[T; K]`.
     pub slots: E,
 }
 
@@ -248,6 +288,18 @@ pub struct ChildSlots<C, E> {
 /// draws per order and an order with 4 lines uses the first 4. Each
 /// column of a child table is one `children` over the same counts, so a
 /// tuple of them is the child table, its rows the children.
+///
+/// ```
+/// use populate_builtins::{children, constant, derive, range};
+/// use populate_core::Distribution;
+///
+/// // 2 children per row, from 3 slots of 10 * row + slot
+/// let slots = derive(range(0i64, 1), |&r: &i64| [10 * r, 10 * r + 1, 10 * r + 2]);
+/// let mut kids = children(constant(2usize), slots);
+/// let c = kids.collect(&mut rand::rng(), 2);
+/// assert_eq!(c.values, [0, 1, 10, 11]);
+/// assert_eq!(c.sources, 2);
+/// ```
 pub fn children<C, E>(counts: C, slots: E) -> ChildSlots<C, E> {
     ChildSlots { counts, slots }
 }
@@ -287,7 +339,9 @@ where
 /// Child rows that `f` writes for each source row. See [`flat_map`].
 #[derive(Debug, Clone)]
 pub struct FlatMap<D: Distribution, F, Out> {
+    /// The rows `f` reads.
     pub source: D,
+    /// Writes the output from them.
     pub f: F,
     scratch: Scratch<Columns<D::Item>>,
     /// Children to reserve per source row, per table ([`FlatMap::reserving`]).
@@ -322,6 +376,36 @@ impl<D: Distribution, F, Out> FlatMap<D, F, Out> {
 /// source row, writing straight into the child columns. Rows are read in
 /// place ([`RowRefs`]): a row of a `Vec<T>` column is a `&T`. Names given
 /// with [`named_all`] cover every table's columns in order.
+///
+/// ```
+/// use populate_builtins::{flat_map, range};
+/// use populate_core::{Children, Distribution, Sink, Tables};
+///
+/// // order `o` has `o % 3` lines: one child table of (order, line)
+/// let mut lines = flat_map::<Children<(i64, i64)>, _, _>(range(0i64, 1), |&o, out| {
+///     for l in 0..o % 3 {
+///         out.values.push((o, l));
+///     }
+/// })
+/// .reserving(&[1.0]);
+/// let c = lines.collect(&mut rand::rng(), 4);
+/// assert_eq!(c.values.0, [1, 2, 2]);
+/// assert_eq!(c.values.1, [0, 0, 1]);
+///
+/// // a sale for every row, a return for every third: two tables
+/// let mut sales = flat_map::<Tables<(Children<i64>, Children<i64>)>, _, _>(
+///     range(0i64, 1),
+///     |&id, out| {
+///         out.0.values.push(id);
+///         if id % 3 == 0 {
+///             out.1.values.push(id);
+///         }
+///     },
+/// );
+/// let t = sales.collect(&mut rand::rng(), 4);
+/// assert_eq!(t.0.values, [0, 1, 2, 3]);
+/// assert_eq!(t.1.values, [0, 3]);
+/// ```
 pub fn flat_map<Out, D, F>(source: D, f: F) -> FlatMap<D, F, Out>
 where
     D: Distribution,
@@ -447,7 +531,9 @@ impl<T: ChildTables> ChildTables for Tables<T> {
 /// A string per row, written by `f`. See [`format()`].
 #[derive(Debug, Clone)]
 pub struct Format<D, F, T> {
+    /// The rows `f` reads.
     pub source: D,
+    /// Writes the output from them.
     pub f: F,
     _item: PhantomData<fn() -> T>,
 }
@@ -458,6 +544,18 @@ pub struct Format<D, F, T> {
 /// `T` is the row type, whose columns take strings written in place
 /// ([`StrSink`]): `String` for [`StrCol`](populate_core::StrCol), or a
 /// generator's own string column. Rows are read in place ([`RowRefs`]).
+///
+/// ```
+/// use populate_builtins::{format, range};
+/// use populate_core::Distribution;
+///
+/// let mut keys = format::<_, String, _>(range(7i64, 1), |&k, out| {
+///     out.push_str("Customer#");
+///     out.push_str(&k.to_string());
+/// });
+/// let c = keys.collect(&mut rand::rng(), 2);
+/// assert_eq!((c.get(0), c.get(1)), ("Customer#7", "Customer#8"));
+/// ```
 pub fn format<D, T, F>(source: D, f: F) -> Format<D, F, T>
 where
     D: Distribution,
@@ -501,7 +599,9 @@ where
 /// `inner`, with its columns named. See [`named`].
 #[derive(Debug, Clone)]
 pub struct Named<D> {
+    /// One name per top-level column of `inner`.
     pub names: Vec<String>,
+    /// The distribution named.
     pub inner: D,
 }
 
@@ -509,6 +609,16 @@ pub struct Named<D> {
 /// Names are how a distribution carries its schema: with the column types
 /// its rows are collected as, they are the schema
 /// (`populate_sink_arrow::schema_of`).
+///
+/// ```
+/// use populate_builtins::{named, named_all, range};
+/// use populate_core::Distribution;
+///
+/// let rows = (named("id", range(0i64, 1)), named_all(&["a", "b"], (range(0i32, 1), range(0i32, 2))));
+/// let mut names = Vec::new();
+/// rows.column_names(&mut names);
+/// assert_eq!(names, ["id", "a", "b"]);
+/// ```
 pub fn named<D: Distribution>(name: &str, inner: D) -> Named<D> {
     Named {
         names: vec![name.to_owned()],

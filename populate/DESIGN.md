@@ -46,9 +46,13 @@ pub trait Sink<T> {
 | `String`, `&'static str`  | `StrCol`: `i32` offsets and bytes (Arrow `Utf8`) |
 | `Vec<T>`                  | `ListCol<Columns<T>>`: `i32` offsets and `T`'s columns (Arrow `List`) |
 | `(A, B, ...)`             | `(Columns<A>, Columns<B>, ...)`                  |
-| `Date32`, `Decimal<P, S>` | `Vec` of them: `i32` days, `i128` units (Arrow `Date32`, `Decimal128(P, S)`) |
-| `[T; N]`                  | `Vec<[T; N]>`: `N` values per row, end to end    |
+| `Date32`, `Decimal<P, S>`, `Timestamp<U>` | `Vec` of them: `i32` days, `i128` units, `i64` counts (Arrow `Date32`, `Decimal128(P, S)`, `Timestamp`) |
+| `Option<T>`               | `Nullable<Columns<T>>`: `T`'s columns and a validity bitmap |
+| `[T; N]`                  | `Vec<[T; N]>`: `N` values per row, end to end (Arrow `FixedSizeList`) |
+| `Spread<T, N>`            | `SpreadCols`: `N` sets of `T`'s columns          |
+| `Wide<T>`                 | `WideCols`: one set of `T`'s columns per value, the width chosen at run time |
 | `Children<T>`             | `ChildCols`: `T`'s columns, every child end to end |
+| `Tables<T>`               | `TableCols`: one `ChildCols` per table           |
 
 The columns nest the way the rows do, and they are already in Arrow's
 memory layout. `populate-sink-arrow` moves the buffers into Arrow arrays
@@ -172,21 +176,19 @@ read one stored column.
   allocates the child columns once from a mean per source row.
 
 A distribution of `Children<T>` is a table of `T` rows: its columns are
-the children's, and the source rows only drive them. `Tables<T>`, with
-`T` a tuple of `Children`, is several such tables made in one pass (a
-sale and its return): `flat_map` writes each, and `schemas_of` and
-`DistTables` give one schema and one batch per table. A plain tuple of
-`Children` stays one table whose columns are its fields.
+the children's, and the source rows only drive them.
 
 ## Several tables from one pass
 
 `flat_map::<Tables<(..)>, _, _>(source, f)` makes several child tables at
 once: its rows are `Tables` of a tuple of `Children`, one per table, and
 `f` appends each source row's children to any of them (a sale and its
-occasional return; a graph's nodes and edges). `schemas_of(&dist)` splits the names and types into one
-schema per table, and `DistTables` (`populate-table`) runs it like
-`DistTable`, one batch per table per range of source rows (`text` writes
-each table's lines to its own buffer).
+occasional return; a graph's nodes and edges). A plain tuple of
+`Children` stays one table whose columns are its fields; `Tables` is what
+makes each field its own table. `schemas_of(&dist)` splits the names and
+types into one schema per table, and `DistTables` (`populate-table`) runs
+it like `DistTable`, one batch per table per range of source rows (`text`
+writes each table's lines to its own buffer).
 
 ## Writing a leaf
 
@@ -208,9 +210,9 @@ straight into the `StrCol` buffer.
 
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
-| `populate-core`         | the three traits, `RowCount`, `Append`, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, `Tables`, tuple impls |
+| `populate-core`         | the three traits, `RowCount`, `Append`, `SeekRng`, the row types and their columns (`StrCol`, `ListCol`, `Nullable`, `Date32`, `Decimal`, `Timestamp`, `Spread`, `Wide`, `Children`, `Tables`), tuple impls |
 | `populate-builtins`     | `constant`, `range`, `list`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `format`, `named`, `checkpointed`, `column`, random leaves |
-| `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
+| `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of`, `schemas_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
 | `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable` / `DynTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on; `cli`: the generators' shared command-line flags and report |
 | `populate`              | facade re-exporting the above                         |

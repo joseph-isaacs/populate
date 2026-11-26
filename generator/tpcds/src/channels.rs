@@ -61,13 +61,13 @@ use tpcdsgen::types::{
 };
 
 /// A `Decimal(7, 2)`.
-type Dec = Fixed<7, 2>;
+pub type Dec = Fixed<7, 2>;
 
 /// The [`NullBits`] of a table.
 macro_rules! null_bits {
     ($name:ident = $bits:expr) => {
         #[derive(Debug, Clone, PartialEq)]
-        pub(crate) struct $name;
+        pub struct $name;
 
         impl NullBits for $name {
             const BITS: &'static [i8] = &$bits;
@@ -96,7 +96,7 @@ fn sk(nbm: &mut i64, pos: u32, v: i64) -> i32 {
 }
 
 /// The columns of `N` keys.
-type Sks<const N: usize> = SpreadCols<Vec<i32>, N>;
+pub type Sks<const N: usize> = SpreadCols<Vec<i32>, N>;
 
 /// Push key `keys[i]` to column `i`, at bit `first + i` of `nbm`.
 #[inline(always)]
@@ -107,7 +107,7 @@ fn push_sks<const N: usize>(cols: &mut Sks<N>, nbm: &mut i64, first: u32, keys: 
 }
 
 /// The columns of `N` decimals.
-type Decs<const N: usize> = SpreadCols<Vec<Dec>, N>;
+pub type Decs<const N: usize> = SpreadCols<Vec<Dec>, N>;
 
 /// Push decimal `v[i]` to column `i`. Written in place: a row of them
 /// built first and pushed would be moved through `memcpy`.
@@ -247,9 +247,9 @@ fn uniform_int(lo: i32, hi: i32, s: &mut RandomNumberStream) -> i32 {
 
 /// date, time, item, customer, cdemo, hdemo, addr, store, promo (or
 /// reason), ticket, quantity.
-type StoreKeys = (i32, i32, i32, i32, i32, i32, i32, i32, i32, i64, i32);
-type StoreSale = Masked<(StoreKeys, Spread<Dec, 12>), StoreSaleBits>;
-type StoreReturn = Masked<(StoreKeys, Spread<Dec, 9>), StoreReturnBits>;
+pub type StoreKeys = (i32, i32, i32, i32, i32, i32, i32, i32, i32, i64, i32);
+pub type StoreSale = Masked<(StoreKeys, Spread<Dec, 12>), StoreSaleBits>;
+pub type StoreReturn = Masked<(StoreKeys, Spread<Dec, 9>), StoreReturnBits>;
 
 // dsdgen prints the coupon amount as ss_ext_discount_amt (a bug kept for
 // compatibility), and again as ss_coupon_amt: both are bit 14
@@ -263,7 +263,7 @@ null_bits!(
         0, 1, N, 3, 4, 5, 6, 7, 8, N, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
     ]
 );
-pub(crate) type StoreTables = Tables<(Children<StoreSale>, Children<StoreReturn>)>;
+pub type StoreTables = Tables<(Children<StoreSale>, Children<StoreReturn>)>;
 
 const STORE_NAMES: &[&str] = &[
     "ss_sold_date_sk",
@@ -324,9 +324,7 @@ struct Ticket {
 }
 
 /// `store_sales` and `store_returns`, one ticket per source row.
-pub(crate) fn store(
-    session: &Session,
-) -> impl Distribution<Item = StoreTables> + Clone + Sync + use<> {
+pub fn store(session: &Session) -> impl Distribution<Item = StoreTables> + Clone + Sync + use<> {
     let tickets = session.get_scaling().get_row_count(Ds::StoreSales);
     let cx = Ctx::new(
         session,
@@ -532,12 +530,13 @@ fn push_return_decimals(cols: &mut Decs<9>, p: &Pricing) {
 
 /// date, time, ship date, bill (4), ship (4), call center, catalog page,
 /// ship mode, warehouse; item; promo; order number; quantity; decimals.
-type CatalogSale = Masked<(Spread<i32, 15>, i32, i32, i64, i32, Spread<Dec, 15>), CatalogSaleBits>;
+pub type CatalogSale =
+    Masked<(Spread<i32, 15>, i32, i32, i64, i32, Spread<Dec, 15>), CatalogSaleBits>;
 /// date, time; item; refunded (4), returning (4), call center, page, ship
 /// mode, warehouse, reason; order number; quantity; decimals.
-type CatalogReturn =
+pub type CatalogReturn =
     Masked<(i32, i32, i32, Spread<i32, 13>, i64, i32, Spread<Dec, 9>), CatalogReturnBits>;
-pub(crate) type CatalogTables = Tables<(Children<CatalogSale>, Children<CatalogReturn>)>;
+pub type CatalogTables = Tables<(Children<CatalogSale>, Children<CatalogReturn>)>;
 
 null_bits!(
     CatalogSaleBits = [
@@ -643,7 +642,7 @@ impl SoldDates {
 }
 
 /// `catalog_sales` and `catalog_returns`, one order per source row.
-pub(crate) fn catalog(
+pub fn catalog(
     session: &Session,
 ) -> impl Distribution<Item = CatalogTables> + Clone + Sync + use<> {
     let orders = session.get_scaling().get_row_count(Ds::CatalogSales);
@@ -853,7 +852,7 @@ fn catalog_return(
 
 /// date, time, ship date; item; bill (4), ship (4), web page, web site,
 /// ship mode, warehouse, promo; order number; quantity; decimals.
-type WebSale = Masked<
+pub type WebSale = Masked<
     (
         Spread<i32, 3>,
         i32,
@@ -866,8 +865,9 @@ type WebSale = Masked<
 >;
 /// date, time; item; refunded (4), returning (4), web page, reason; order
 /// number; quantity; decimals.
-type WebReturn = Masked<(i32, i32, i32, Spread<i32, 10>, i64, i32, Spread<Dec, 9>), WebReturnBits>;
-pub(crate) type WebTables = Tables<(Children<WebSale>, Children<WebReturn>)>;
+pub type WebReturn =
+    Masked<(i32, i32, i32, Spread<i32, 10>, i64, i32, Spread<Dec, 9>), WebReturnBits>;
+pub type WebTables = Tables<(Children<WebSale>, Children<WebReturn>)>;
 
 null_bits!(
     WebSaleBits = [
@@ -943,7 +943,7 @@ const WEB_NAMES: &[&str] = &[
 ];
 
 /// `web_sales` and `web_returns`, one order per source row.
-pub(crate) fn web(session: &Session) -> impl Distribution<Item = WebTables> + Clone + Sync + use<> {
+pub fn web(session: &Session) -> impl Distribution<Item = WebTables> + Clone + Sync + use<> {
     let orders = session.get_scaling().get_row_count(Ds::WebSales);
     let cx = Ctx::new(
         session,
@@ -1097,7 +1097,7 @@ fn web_return(
     out.nbm.push(nbm);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_array::RecordBatch;

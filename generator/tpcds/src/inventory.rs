@@ -76,7 +76,7 @@ impl Distribution for InventoryKeys {
 }
 
 /// `inventory`: one row per item, warehouse and week.
-pub(crate) fn inventory(
+pub fn inventory(
     session: &Session,
 ) -> impl Distribution<Item = ((i32, i32, i32), Option<i32>)> + Clone + Sync + use<> {
     let scaling = session.get_scaling();
@@ -122,7 +122,7 @@ pub(crate) fn inventory(
 type Opt<T> = Option<T>;
 
 /// A row of `customer_demographics`.
-type DemoRow = (
+pub type DemoRow = (
     i32,
     Opt<Listed>,
     Opt<Listed>,
@@ -228,7 +228,7 @@ impl Distribution for Demographics {
 
 /// `customer_demographics`. The table has no nulls
 /// ([`demographics_have_nulls`]), so no random draw reaches it.
-pub(crate) fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
+pub fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
     let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Listed]> {
         (0..n as i64).map(|i| Listed::new(f(i))).collect()
     };
@@ -269,12 +269,12 @@ pub(crate) fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clo
 
 /// Whether `customer_demographics` has nulls: dsdgen's configuration has
 /// none, which [`customer_demographics`] relies on.
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 fn demographics_have_nulls() -> bool {
     NullTable::CustomerDemographics.get_null_basis_points() != 0
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_array::RecordBatch;

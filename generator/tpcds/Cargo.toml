@@ -16,20 +16,21 @@ license = "MIT AND Apache-2.0"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-combinators = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-combinators = { path = "../combinators", version = "0.1.0", default-features = false }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
-arrow-select = "60"
-parquet = { workspace = true, features = ["arrow", "snap"] }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+arrow-select = { version = "60", optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 # dsdgen's logic, ported to Rust (Apache-2.0, tpcgen-rs project)
 tpcdsgen = "4.0"
 
 [features]
-default = ["mimalloc"]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-buffer", "dep:arrow-select", "dep:parquet", "populate-combinators/formats"]
+default = ["formats", "mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
@@ -41,9 +42,31 @@ arrow-cast = { workspace = true }
 bytes = "1"
 
 [[bin]]
+required-features = ["formats"]
 name = "tpcds-gen"
 path = "src/bin/tpcds-gen.rs"
 
 [[bench]]
+required-features = ["formats"]
 name = "tpcds"
 harness = false
+
+[[test]]
+name = "tables"
+required-features = ["formats"]
+
+[[example]]
+name = "ds_columns"
+required-features = ["formats"]
+
+[[example]]
+name = "datbench"
+required-features = ["formats"]
+
+[[example]]
+name = "vs_tpcdsgen"
+required-features = ["formats"]
+
+[[example]]
+name = "stages"
+required-features = ["formats"]

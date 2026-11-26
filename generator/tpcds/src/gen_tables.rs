@@ -21,7 +21,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::sync::Arc;
-use tpcdsgen::config::{Session, Table as Ds};
+use tpcdsgen::config::Session;
 
 /// Default Arrow batch size, in output rows: small enough that a batch's
 /// columns stay in cache while they are made and written out.
@@ -159,50 +159,6 @@ fn source(t: TableName, s: &Session) -> (Arc<dyn Source>, usize) {
         WebPage => one(t, n, dims::web_page(s)),
         WebSite => one(t, n, dims::web_site(s)),
     }
-}
-
-macro_rules! tables {
-    ($($t:ident, $per_source:expr;)*) => {
-        impl TableName {
-            /// The tpcdsgen table.
-            pub(crate) fn ds(self) -> Ds {
-                match self { $(TableName::$t => Ds::$t,)* }
-            }
-
-            /// Average output rows per source row (line items per ticket or
-            /// order; returned share of them; 1 otherwise).
-            pub fn rows_per_source_row(self) -> f64 {
-                match self { $(TableName::$t => $per_source,)* }
-            }
-        }
-    };
-}
-
-tables! {
-    CallCenter, 1.0;
-    CatalogPage, 1.0;
-    CatalogReturns, 0.9;
-    CatalogSales, 9.0;
-    Customer, 1.0;
-    CustomerAddress, 1.0;
-    CustomerDemographics, 1.0;
-    DateDim, 1.0;
-    HouseholdDemographics, 1.0;
-    IncomeBand, 1.0;
-    Inventory, 1.0;
-    Item, 1.0;
-    Promotion, 1.0;
-    Reason, 1.0;
-    ShipMode, 1.0;
-    Store, 1.0;
-    StoreReturns, 1.2;
-    StoreSales, 12.0;
-    TimeDim, 1.0;
-    Warehouse, 1.0;
-    WebPage, 1.0;
-    WebReturns, 1.2;
-    WebSales, 12.0;
-    WebSite, 1.0;
 }
 
 /// Source rows whose generation costs about as much as producing a sales

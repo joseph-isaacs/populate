@@ -16,7 +16,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
   RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   check:
@@ -60,4 +62,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install ./python pyarrow pytest
-      - run: pytest python/tests
+      - run: pytest -W error python/tests

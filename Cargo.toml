@@ -74,15 +74,7 @@ populate-sink-arrow = { path = "sink/arrow", version = "0.1.0" }
 populate-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
 populate-table = { path = "populate-table", version = "0.1.0" }
 populate-combinators = { path = "generator/combinators", version = "0.1.0" }
-populate-gen-tpcds = { path = "generator/tpcds", version = "0.1.0" }
-populate-gen-tpch = { path = "generator/tpch", version = "0.1.0" }
-populate-gen-tsbs = { path = "generator/tsbs", version = "0.1.0" }
 populate-gen-ssb = { path = "generator/ssb", version = "0.1.0" }
-populate-gen-h2o = { path = "generator/h2o", version = "0.1.0" }
-populate-gen-tpcc = { path = "generator/tpcc", version = "0.1.0" }
-populate-gen-ycsb = { path = "generator/ycsb", version = "0.1.0" }
-populate-gen-synth = { path = "generator/synth", version = "0.1.0" }
-populate-gen-ldbc = { path = "generator/ldbc", version = "0.1.0" }
 
 # populate-gen-ldbc's tests generate ~2 GB of data: optimise the crate itself
 # in test builds too (its dependencies stay as they are)

@@ -17,7 +17,10 @@ cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|dat|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`,
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table; a returns table is chunked as its sales table, so the two
+are generated in one pass), `--compression snappy|none`, `--no-dictionary`,
 `--encoding latin1|utf8` (`.dat` only).
 
 From Rust:
@@ -37,13 +40,6 @@ let head = sales.limit_source_rows(1000).collect(0);
 
 `write_parquet_many`, `write_dat_many` and `for_each_batch_many` run
 several tables on one shared pool (what `tpcds-gen` does).
-
-Parallel Arrow iteration subdivides chunks to spread smaller tables over
-workers and reduce the data buffered for ordered delivery. It aims for
-four jobs per worker, capped at 32 batches of work per job. Sales and
-returns use the same work estimate and remain paired when requested
-together. Parquet row groups and text writer chunks use the configured
-chunk size.
 
 ## Where the data comes from
 
@@ -139,25 +135,33 @@ command line.
 
 SF 1 (19.6M rows, 24 tables) and SF 10 (192M rows) on a 4-core cloud VM,
 `cargo xtask bench --generators tpcds --scale 1,10` (see
-[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds`. The
-VM is noisy (±10% run to run, and it drifts), so both tools run
-interleaved and each keeps its best time: best of 3 at SF 1 (output to
-tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
-`--encoding utf8`, so the files are `cmp`-identical to tpcgen-cli's.
+[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds` 4.0,
+both with the same thread count, and for Parquet with tpcgen-cli given
+our settings (below). The VM is noisy (±10%
+run to run, and it drifts), so both tools run interleaved and each keeps
+its best time: best of 3 at SF 1 (output to tmpfs), best of 2 at SF 10
+(output to disk). `.dat` runs use `--encoding utf8`, so the files are the
+same bytes as tpcgen-cli's (the bench checks them).
 
 | SF | output           | threads | tpcgen-cli | populate-gen-tpcds | speedup |
 |---:|------------------|--------:|-----------:|---------------:|--------:|
 | 1  | `.dat`           | 1       | 9.51 s     | 3.04 s         | 3.1x    |
 | 1  | `.dat`           | 4       | 3.05 s     | 0.92 s         | 3.3x    |
-| 1  | Parquet (snappy) | 1       | 10.50 s    | 4.47 s         | 2.3x    |
-| 1  | Parquet (snappy) | 4       | 3.38 s     | 1.21 s         | 2.8x    |
+| 1  | Parquet (snappy) | 1       | 8.94 s     | 4.49 s         | 2.0x    |
+| 1  | Parquet (snappy) | 4       | 2.92 s     | 1.45 s         | 2.0x    |
 | 10 | `.dat`           | 1       | 92.4 s     | 30.1 s         | 3.1x    |
 | 10 | `.dat`           | 4       | 28.6 s     | 11.5 s         | 2.5x    |
-| 10 | Parquet (snappy) | 1       | 102.0 s    | 43.5 s         | 2.3x    |
-| 10 | Parquet (snappy) | 4       | 27.9 s     | 11.6 s         | 2.4x    |
+| 10 | Parquet (snappy) | 1       | 75.5 s     | 32.8 s         | 2.3x    |
+| 10 | Parquet (snappy) | 4       | 22.5 s     | 8.86 s         | 2.5x    |
 
-Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
-4,199 MB at SF 10.
+For Parquet, tpcgen-cli is given our codec, our dictionary settings and
+our `store_sales` row-group size (see [BENCHMARKS.md](../../BENCHMARKS.md)),
+and the files hold the same values: 393 MB vs tpcgen-cli's 394 MB at SF 1,
+4,088 MB vs 3,944 MB at SF 10. The returns tables, `inventory` and
+`customer_demographics` still have several times more row groups here,
+since our row groups count rows and tpcgen-cli's count bytes. The Parquet
+rows were measured on a later, slower day of the same VM than the `.dat`
+rows.
 
 ### Where the time goes
 
@@ -182,9 +186,9 @@ rest:
 
 - **`.dat`:** tpcgen-cli formats each row with `Display`, ~10x the cost of
   generating it.
-- **Parquet:** its 8Ki-row batches fall out of cache during conversion,
-  and it dictionary-encodes decimals and ids (~40% of encoding time, no
-  smaller files).
+- **Parquet:** its 8Ki-row batches fall out of cache during conversion.
+  By default it also dictionary-encodes decimals and ids (~40% of encoding
+  time, no smaller files); the benchmark turns that off to match ours.
 - **Cores:** it doesn't split tables under 1M source rows.
 
 ### The sales channels

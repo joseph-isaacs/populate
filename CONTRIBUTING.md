@@ -13,8 +13,10 @@ scripts/check-tree.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo bench --workspace --no-run
 ```
+
+Clippy's `--all-targets` checks that the benches compile; CI does not
+build or run them in the optimised `bench` profile.
 
 Plain `cargo build` / `cargo test` cover only the workspace
 `default-members`, which leave out `populate-bench` and the `parquet`

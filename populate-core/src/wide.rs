@@ -10,7 +10,7 @@
 //!
 //! A wrapper whose rows are its inner distribution's (`named`, tuples,
 //! lists) forwards `columns`. One whose rows a closure makes (`derive`,
-//! `map`, `flat_map`) can't know a `Wide` width before it runs, so put the
+//! `derive_columns`, `flat_map`) can't know a `Wide` width before it runs, so put the
 //! `Vec` outside it, not inside.
 
 use crate::{Columnar, Columns, Distribution, Sink};

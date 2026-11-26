@@ -32,6 +32,7 @@ use std::str::FromStr;
 /// What to write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
+    /// One Parquet file per table.
     Parquet,
     /// The reference tool's text format (`.tbl`, `.dat`).
     Text,
@@ -104,15 +105,24 @@ pub fn no_flags(_: &str, _: &mut dyn FnMut() -> Result<String, String>) -> Resul
 /// `--row-group`, `--compression snappy|none` and `--no-dictionary`.
 #[derive(Debug, Clone)]
 pub struct Args<T> {
+    /// Scale factor (`--sf`).
     pub sf: f64,
+    /// Output directory (`--out`).
     pub out: PathBuf,
+    /// What to write (`--format`).
     pub format: Format,
     /// The tables asked for, each once, in the order given.
     pub tables: Vec<T>,
+    /// Worker threads, 0 for all cores (`--threads`).
     pub threads: usize,
+    /// Rows per Arrow batch (`--batch`).
     pub batch: usize,
+    /// Rows per Parquet row group, if set (`--row-group`).
     pub row_group: Option<u64>,
+    /// Parquet compression (`--compression`).
     pub compression: Compression,
+    /// Whether Parquet columns are dictionary-encoded (off with
+    /// `--no-dictionary`).
     pub dictionary: bool,
     /// The text files' extension.
     pub ext: &'static str,
@@ -436,6 +446,7 @@ fn newlines(buf: &[u8]) -> u64 {
 pub struct Lines<W>(W, u64);
 
 impl<W> Lines<W> {
+    /// `w`, with no lines counted yet.
     pub fn new(w: W) -> Self {
         Lines(w, 0)
     }

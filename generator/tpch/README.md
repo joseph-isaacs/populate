@@ -18,7 +18,9 @@ cargo run -p populate-tpch --release --bin tpch-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|tbl|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`.
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table), `--compression snappy|none`, `--no-dictionary`.
 
 From Rust:
 

@@ -34,7 +34,22 @@ format at `--scale 1` on 1 thread and on every core, and prints a Markdown
 table of wall time and output size. Where a reference tool is on `PATH` it
 runs alternately with ours and the table gets a speedup column:
 `tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
-`tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
+`tsbs_generate_data` for TSBS. Missing tools are skipped.
+
+Both sides of a comparison get the same settings:
+
+- the same thread count (`--threads` / `--num-threads`), except Go's
+  `tsbs_generate_data`, which is single-threaded: its one time is the
+  reference for every thread count, and the table says so;
+- text output in the reference's own format, checked to be the same bytes
+  (the `same bytes` column; TPC-DS `.dat` runs use `--encoding utf8`, as
+  `tpcgen-cli` writes);
+- Parquet with Snappy and row groups of about 7 MiB uncompressed,
+  `tpcgen-cli`'s default, passed to both (`--compression`,
+  `--row-group-bytes`). The schemas and row counts are the same; the
+  dictionary choices are each tool's own (`tpcgen-cli` tries a dictionary
+  on every column, populate only where it pays), so file sizes differ a
+  little. The default run
 takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
 minute.
 

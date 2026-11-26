@@ -23,16 +23,10 @@
 //! ```
 
 mod cols;
-mod engine;
 mod rng;
-mod strings;
 pub mod ycsb;
 mod ycsb_run;
 
-pub use engine::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, for_each_batch_many, write_parquet_many,
-    write_text_many,
-};
 pub use rng::JavaTlr;
 pub use ycsb::Ycsb;
 pub use ycsb_run::{RequestDistribution, YcsbRun};

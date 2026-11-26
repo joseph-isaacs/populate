@@ -53,6 +53,19 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     v.truncate(start + n);
 }
 
+/// Whether every byte of `b` is ASCII: an OR of its 8-byte words, which
+/// vectorises. `<[u8]>::is_ascii` made YCSB's load (100-byte values) 40%
+/// slower; this costs it a few percent.
+#[inline(always)]
+fn is_ascii(b: &[u8]) -> bool {
+    let (words, rest) = b.as_chunks::<8>();
+    let w = words
+        .iter()
+        .fold(0u64, |acc, w| acc | u64::from_ne_bytes(*w));
+    let r = rest.iter().fold(0u8, |acc, &x| acc | x);
+    w & 0x8080_8080_8080_8080 == 0 && r < 0x80
+}
+
 /// Write access to the value being appended by [`StrCol::push_with`].
 pub struct StrBuf<'a>(&'a mut Vec<u8>, usize);
 
@@ -103,7 +116,7 @@ impl StrBuf<'_> {
     /// Append ASCII bytes. Panics if any byte is not ASCII.
     #[inline]
     pub fn push_ascii_bytes(&mut self, bytes: &[u8]) {
-        assert!(bytes.is_ascii(), "push_ascii_bytes: input is not ASCII");
+        assert!(is_ascii(bytes), "push_ascii_bytes: input is not ASCII");
         self.0.extend_from_slice(bytes);
     }
 
@@ -115,9 +128,51 @@ impl StrBuf<'_> {
     pub fn extend_ascii(&mut self, bytes: impl Iterator<Item = u8>) {
         let start = self.0.len();
         self.0.extend(bytes);
-        if !self.0[start..].is_ascii() {
+        if !is_ascii(&self.0[start..]) {
             self.0.truncate(start);
             panic!("extend_ascii: input is not ASCII");
+        }
+    }
+
+    /// Append `len` ASCII bytes that `fill` writes into place (a random
+    /// string drawn from a character set, say), then check them in one
+    /// vectorised pass. Panics, with the buffer as it was, if any byte is
+    /// not ASCII.
+    #[inline]
+    pub fn push_ascii_with(&mut self, len: usize, fill: impl FnOnce(&mut [u8])) {
+        let start = self.0.len();
+        self.0.resize(start + len, 0);
+        fill(&mut self.0[start..]);
+        if !is_ascii(&self.0[start..]) {
+            self.0.truncate(start);
+            panic!("push_ascii_with: input is not ASCII");
+        }
+    }
+
+    /// Append `len` bytes, `N` at a time from `next` (the last block cut
+    /// short), each masked to 7 bits: for a source whose blocks are ASCII
+    /// by construction, written in one pass with no check. A non-ASCII
+    /// byte panics in debug builds.
+    #[inline]
+    pub fn push_ascii_blocks<const N: usize>(
+        &mut self,
+        len: usize,
+        mut next: impl FnMut() -> [u8; N],
+    ) {
+        let start = self.0.len();
+        self.0.resize(start + len, 0);
+        let mask = |b: [u8; N]| {
+            debug_assert!(b.is_ascii(), "push_ascii_blocks: input is not ASCII");
+            b.map(|x| x & 0x7f)
+        };
+        let mut blocks = self.0[start..].chunks_exact_mut(N);
+        for c in &mut blocks {
+            c.copy_from_slice(&mask(next()));
+        }
+        let rest = blocks.into_remainder();
+        if !rest.is_empty() {
+            let n = rest.len();
+            rest.copy_from_slice(&mask(next())[..n]);
         }
     }
 
@@ -413,6 +468,32 @@ mod tests {
             got,
             ["red", "", "green", "blue", "one onex", "one onex", ""]
         );
+    }
+
+    #[test]
+    fn push_ascii_with_fills_in_place() {
+        let mut c = StrCol::new();
+        c.push_with(|b| b.push_ascii_with(3, |s| s.copy_from_slice(b"abc")));
+        assert_eq!(c.get(0), "abc");
+    }
+
+    #[test]
+    fn push_ascii_blocks_cuts_the_last() {
+        let mut c = StrCol::new();
+        let mut i = 0u8;
+        c.push_with(|b| {
+            b.push_ascii_blocks(5, || {
+                i += 1;
+                [b'a' + i, b'-', b'z']
+            })
+        });
+        assert_eq!(c.get(0), "b-zc-");
+    }
+
+    #[test]
+    #[should_panic(expected = "not ASCII")]
+    fn push_ascii_with_checks() {
+        StrCol::new().push_with(|b| b.push_ascii_with(1, |s| s[0] = 0xc3));
     }
 
     #[test]

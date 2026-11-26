@@ -1471,18 +1471,27 @@ where
     }
 }
 
-/// A returns generator that also yields the sale line of every return.
+/// A returns generator that also makes the sale line of every return.
 pub(crate) trait WithSale: Source {
     type Sale: Line;
-    fn next_pair(&mut self) -> Option<(Self::Sale, Option<Self::Item>)>;
+    /// `f` on the next sale line and its return, if any; and whether the
+    /// line is its source row's last.
+    fn with_next<R>(
+        &mut self,
+        f: impl FnOnce(&Self::Sale, Option<&Self::Item>) -> R,
+    ) -> Option<(R, bool)>;
 }
 
 macro_rules! with_sale {
     ($($gen:ident => $sale:ident),* $(,)?) => {
         $(impl WithSale for $gen {
             type Sale = $sale;
-            fn next_pair(&mut self) -> Option<($sale, Option<Self::Item>)> {
-                self.next_with_sale()
+            #[inline]
+            fn with_next<R>(
+                &mut self,
+                f: impl FnOnce(&$sale, Option<&Self::Item>) -> R,
+            ) -> Option<(R, bool)> {
+                self.with_next_sale(f)
             }
         })*
     };
@@ -1494,16 +1503,14 @@ with_sale!(
     WebReturnsRowGenerator => WebSalesRow,
 );
 
-/// A sale line and its return, if any.
-type SaleAndReturn<G> = (<G as WithSale>::Sale, Option<<G as Iterator>::Item>);
-
 /// A sales table and its returns from one pass: the returns generator `G`
 /// makes each sale line with its return, if any. Its generator stays open
 /// as [`Lines`]'s does.
 pub(crate) struct Pairs<G: WithSale> {
     session: Session,
     next: u64,
-    open: Option<Open<G, SaleAndReturn<G>>>,
+    /// The generator, at the first line of source row `next`.
+    open: Option<G>,
 }
 
 impl<G: WithSale> Clone for Pairs<G> {
@@ -1521,16 +1528,16 @@ impl<G: WithSale> Pairs<G> {
     fn lines(&mut self, n: u64, mut push: impl FnMut(&G::Sale, Option<&G::Item>)) {
         let last = self.next + n - 1;
         let (session, next) = (&self.session, self.next);
-        let o = self.open.get_or_insert_with(|| Open {
-            rows: G::open(session, next, u64::MAX),
-            held: None,
-        });
-        while let Some(pair) = o.held.take().or_else(|| o.rows.next_pair()) {
-            if pair.0.source_row() > last {
-                o.held = Some(pair);
-                break;
+        let o = self
+            .open
+            .get_or_insert_with(|| G::open(session, next, u64::MAX));
+        let mut left = n;
+        while left > 0 {
+            match o.with_next(&mut push) {
+                Some(((), true)) => left -= 1,
+                Some(((), false)) => {}
+                None => break,
             }
-            push(&pair.0, pair.1.as_ref());
         }
         self.next = last + 1;
     }

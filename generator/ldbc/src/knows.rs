@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! Friendships: three passes of `DistanceKnowsGenerator` over persons
 //! sorted by university, main interest and random id, merged per person
 //! (`SparkKnowsGenerator`, `SparkKnowsMerger`, `FriendshipMerger`).

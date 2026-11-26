@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! `java.util.Random`, bit for bit, and the datagen's `RandomGeneratorFarm`.
 
 const MULT: u64 = 0x5_DEEC_E66D;

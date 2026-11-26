@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! LDBC SNB data, byte-identical to the LDBC Spark datagen, on all cores.
 //!
 //! A port of the generator of [ldbc_snb_datagen_spark] (Apache-2.0) to

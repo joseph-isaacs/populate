@@ -1,3 +1,6 @@
+// Modified from tpcdsgen-arrow 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 use crate::conversions::{
     bool_to_yn, date_to_date32, PrimitiveArrayRecycler, StringViewArrayRecycler,
 };

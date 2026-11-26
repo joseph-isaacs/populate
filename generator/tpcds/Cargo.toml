@@ -3,13 +3,19 @@ name = "populate-tpcds"
 description = "TPC-DS data byte-identical to dsdgen, on all cores: Arrow, Parquet or .dat"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+rust-version.workspace = true
+license = "MIT AND Apache-2.0"
 
 [dependencies]
 # the CLI's allocator (feature `mimalloc`, on by default; the library
 # itself doesn't use it)
 mimalloc = { version = "0.1", default-features = false, optional = true }
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-combinators = { workspace = true }
+populate-sink-arrow = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
+rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
@@ -17,13 +23,15 @@ arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # dsdgen's logic, ported to Rust (Apache-2.0, tpcgen-rs project)
 tpcdsgen = "4.0"
-tpcdsgen-arrow = "4.0"
 
 [features]
 default = ["mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+# tpcdsgen's own Arrow conversion: the reference the tables are tested
+# against
+tpcdsgen-arrow = "4.0"
 divan = { workspace = true }
 arrow-cast = { workspace = true }
 bytes = "1"

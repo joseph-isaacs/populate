@@ -23,7 +23,7 @@ macro_rules! tuple_impls {
         }
 
         impl<$($T, $S: Sink<$T>),+> Sink<($($T,)+)> for ($($S,)+) {
-            #[inline]
+            #[inline(always)]
             fn push(&mut self, value: ($($T,)+)) {
                 $(self.$idx.push(value.$idx);)+
             }

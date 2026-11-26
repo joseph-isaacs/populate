@@ -3,6 +3,7 @@ name = "populate-table"
 description = "Named, typed, any-width tables from populate distributions, generated as Arrow batches in parallel"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -15,9 +16,10 @@ arrow-cast = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow"], optional = true }
 populate-sink-parquet = { workspace = true, optional = true }
+arrow-select = { version = "60", optional = true }
 
 [features]
-parquet = ["dep:parquet", "dep:populate-sink-parquet"]
+parquet = ["dep:parquet", "dep:populate-sink-parquet", "dep:arrow-select"]
 
 [dev-dependencies]
 populate-builtins = { workspace = true }

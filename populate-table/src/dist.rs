@@ -15,6 +15,7 @@
 
 use crate::chunks::{Chunks, MultiChunks};
 use crate::stream::mix64;
+use crate::text::{Encoding, TextColumns, TextTables, write_columns};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use populate_core::{Columnar, Columns, Distribution, Tables};
@@ -133,6 +134,28 @@ where
             at += n;
         }
     }
+}
+
+impl<D> DistTable<D>
+where
+    D: Distribution + Clone,
+    Columns<D::Item>: TextColumns,
+{
+    /// Source rows `first..first + n` (the rows of
+    /// [`batch`](Self::batch)) appended to `out` as text lines
+    /// ([`write_columns`]), straight from the columns.
+    pub fn text(&self, first: u64, n: u64, encoding: Encoding, out: &mut Vec<u8>) {
+        write_columns(&collect(&self.dist, first, n), encoding, out);
+    }
+}
+
+/// Source rows `first..first + n` of `dist`, as [`DistTable::batch`]
+/// makes them: skipped to `first` and collected with an RNG seeded by it.
+fn collect<D: Distribution + Clone>(dist: &D, first: u64, n: u64) -> Columns<D::Item> {
+    let mut d = dist.clone();
+    d.skip(first);
+    let mut rng = SmallRng::seed_from_u64(mix64(first));
+    d.collect(&mut rng, usize::try_from(n).expect("batch fits in memory"))
 }
 
 impl<D> Chunks for DistTable<D>
@@ -260,6 +283,18 @@ where
             }
             at += n;
         }
+    }
+}
+
+impl<D> DistTables<D>
+where
+    D: Distribution + Clone,
+    Columns<D::Item>: TextTables,
+{
+    /// Source rows `first..first + n` as text lines, table `k`'s appended
+    /// to `bufs[k]` ([`TextTables`]).
+    pub fn text(&self, first: u64, n: u64, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        collect(&self.dist, first, n).write_tables(encoding, bufs);
     }
 }
 

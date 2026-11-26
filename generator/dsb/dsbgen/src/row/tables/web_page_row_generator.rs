@@ -1,3 +1,6 @@
+// Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 use crate::config::{Session, Table as ConfigTable};
 use crate::distribution::web_page_use_distribution::WebPageUseDistribution;
 use crate::dsb::join::join_key;

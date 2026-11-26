@@ -144,3 +144,9 @@ What makes the sequential parts fast:
 - At `N = 1e9` the join script writes in batches of 1e8 rows with one
   header; the output here is the same file, but has not been compared
   with R's at that size.
+
+## Licence
+
+`GPL-2.0-or-later AND MPL-2.0`, unlike the rest of the workspace (MIT):
+the crate ports R's random number generation and data.table's `fwrite`
+number formatting bit for bit. See [`NOTICE.md`](NOTICE.md).

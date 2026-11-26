@@ -73,3 +73,20 @@ again. Taxi scales to 34.6 M rows/s on 4 threads. Columns whose values are
 nearly all distinct within a chunk (times, ids, continuous features,
 vectors) are written without a dictionary by default, and random floats
 without compression (`Synth::parquet_props`), which is faster and smaller.
+
+## Native distributions
+
+`Shape::Row` is the exact native row type. `Shape::dist()` returns its
+`Distribution`, and `Shape::raw(rows)` supplies `populate_core::DistChunks`
+for independent range access and ordered parallel batches. This applies to
+all four shapes and every configured feature/vector dimension.
+
+Native columns retain numeric values, timestamp units, validity bits,
+fixed-size vectors, and string buffers. `kernel::Views::with_str` reads strings
+without converting to an output format. Taxi and hit row/column aliases and
+feature block types are public in their respective modules.
+
+Set `default-features = false` to exclude Arrow, Parquet and `populate-table`.
+The default `formats` feature enables adapters and CLI. Custom `Shape`
+implementations supply `type Row`; only calling the table adapter requires
+that row's columns to implement the Arrow conversion trait.

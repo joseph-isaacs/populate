@@ -8,7 +8,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use arrow_schema::SchemaRef;
 use arrow_select::concat::concat_batches;
-use dsbgen::config::{Session, Table as Ds};
+use dsbgen::config::Session;
 use dsbgen::row::*;
 use dsbgen_arrow::*;
 use parquet::basic::Compression;
@@ -65,19 +65,6 @@ impl<T: ?Sized> fmt::Debug for Shared<T> {
 
 macro_rules! tables {
     ($($t:ident => $arrow:ident, $rows:ident, $per_source:expr;)*) => {
-        impl TableName {
-            /// The dsbgen table.
-            pub(crate) fn ds(self) -> Ds {
-                match self { $(TableName::$t => Ds::$t,)* }
-            }
-
-            /// Average output rows per source row (line items per ticket or
-            /// order; returned share of them; 1 otherwise).
-            pub fn rows_per_source_row(self) -> f64 {
-                match self { $(TableName::$t => $per_source,)* }
-            }
-        }
-
         impl DsTable {
 
             /// The table as dsbgen-arrow generates it, sequentially: the

@@ -11,7 +11,7 @@ use crate::java::{binary_search_f32, lines, parse_f32, parse_f64, parse_i32, spl
 use crate::jrand::{Aspect, Farm, JavaRandom};
 use crate::params::Params;
 use populate_core::StrBuf;
-use populate_table::resolve_threads;
+use populate_core::sched::resolve_threads;
 use std::collections::HashMap;
 use std::fs;
 use std::io;

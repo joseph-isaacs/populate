@@ -24,8 +24,8 @@
 use crate::csv::spark_micros;
 use crate::par_map;
 use crate::rows::{OrgEdgeRow, RawCols, Rows, StaticCols, TableDef, Ts, rows_of};
+use populate_core::sched::resolve_threads;
 use populate_core::{Children, Columns, Sink, Tables, Timestamp};
-use populate_table::resolve_threads;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hash, Hasher};

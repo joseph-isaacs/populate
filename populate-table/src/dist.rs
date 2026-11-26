@@ -53,17 +53,14 @@ use crate::stream::mix64;
 use crate::text::{Encoding, TextColumns, TextTables, write_columns};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use populate_core::{Columnar, Columns, Distribution, Tables};
+use populate_core::{Columnar, Columns, DistChunks, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, schema_of, schemas_of};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::fmt;
 use std::sync::Arc;
 
-/// Default rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
-/// Default rows per Arrow batch.
-pub const DEFAULT_BATCH_ROWS: usize = 8 * 1024;
+pub use populate_core::chunks::{DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS};
 
 /// `rows` source rows of `dist`, as Arrow batches.
 ///
@@ -128,6 +125,14 @@ where
     /// The distribution, at row 0.
     pub fn dist(&self) -> &D {
         &self.dist
+    }
+
+    /// The same distribution and chunk boundaries, producing raw columns
+    /// for a custom backend. No Arrow arrays are constructed by this source.
+    pub fn raw(&self) -> DistChunks<D> {
+        DistChunks::new(self.rows, self.dist.clone())
+            .chunk_rows(self.chunk_rows)
+            .batch_rows(self.batch_rows)
     }
 
     /// Source rows per chunk (a chunk is one Parquet row group).

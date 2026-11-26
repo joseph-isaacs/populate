@@ -124,3 +124,19 @@ random 6-byte group built in one word from YCSB's int; Parquet uses
 writer properties (`Ycsb::parquet_props`, `YcsbRun::parquet_props`) that
 skip dictionaries for columns of distinct values. Most of the Parquet time
 is in populate-table's encoder.
+
+## Native columns
+
+`Ycsb::dist()` exposes `(Text, Wide<Text>)`: the key and one column per
+configured field. `YcsbRun::dist()` exposes `Children<raw::CallRow>` with
+operation, key, scan length, requested fields, and nullable written values.
+A read-modify-write emits two binding calls per source operation.
+
+`raw()` wraps either distribution in `populate_core::DistChunks`, preserving
+its configured chunk and batch sizes. Call `batch`, `chunk`, or
+`for_each_batch` to consume native columns; string columns expose `get` and
+`into_parts`. `into_dist()` recovers the underlying distribution.
+
+Use `default-features = false` for a library without Arrow, Parquet, or
+`populate-table`. The default `formats` feature enables the existing output
+adapters and CLI.

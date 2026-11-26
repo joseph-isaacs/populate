@@ -10,14 +10,17 @@
 //! copies a byte.
 
 use populate_combinators::lehmer::{draws, scale};
-use populate_combinators::views::{Buffers, Dict, Picks, Shared, by_weight, static_buffer, view};
-use populate_table::resolve_threads;
+#[cfg(feature = "formats")]
+use populate_combinators::views::view;
+use populate_combinators::views::{Buffers, Dict, Picks, Shared, by_weight, static_buffer};
+use populate_core::sched::resolve_threads;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use tpchgen::distribution::{Distribution, Distributions};
 
 #[cfg(doc)]
 use populate_combinators::views::DATA;
 /// Buffer index of the text pool.
+#[cfg(feature = "formats")]
 pub(crate) const POOL: u32 = 1;
 /// Buffer index of the distribution values.
 pub(crate) const DICT: u32 = 2;
@@ -127,6 +130,7 @@ impl Text {
 
     /// The view of pool bytes `offset..offset + len`.
     #[inline(always)]
+    #[cfg(feature = "formats")]
     pub(crate) fn pool_view(&self, offset: u32, len: u32) -> u128 {
         let (o, n) = (offset as usize, len as usize);
         if n <= 12 {
@@ -143,7 +147,7 @@ impl Text {
 
 /// TPC-H's string buffers ([`Text`]), for the column types.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Tpch;
+pub struct Tpch;
 
 impl Buffers for Tpch {
     fn shared() -> &'static Shared {

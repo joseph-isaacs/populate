@@ -11,26 +11,30 @@
 //! schemas get their string types from.
 
 use crate::text::{POOL_SIZE, Text, Tpch};
+#[cfg(feature = "formats")]
 use arrow_array::ArrayRef;
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_combinators::lehmer::bounded;
 use populate_combinators::views;
 use populate_core::RowCount;
 use populate_core::{Columnar, Sink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
+#[cfg(feature = "formats")]
 use std::sync::Arc;
 
 /// A string that is a precomputed view into [`Text`]'s buffers.
-pub(crate) type Word = views::Word<Tpch>;
+pub type Word = views::Word<Tpch>;
 
 /// A string with bytes of its own (names, addresses, phone numbers).
-pub(crate) type Bytes = views::Str<Tpch>;
+pub type Bytes = views::Str<Tpch>;
 
 /// A comment: `len` bytes of the text pool from `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Comment {
-    pub(crate) off: u32,
-    pub(crate) len: u32,
+pub struct Comment {
+    pub off: u32,
+    pub len: u32,
 }
 
 /// dbgen's comments of average length `avg` (`RandomText`: two draws per
@@ -63,7 +67,7 @@ impl CommentLen {
 /// an array: each reads the pool at a random offset (a cache miss), and in
 /// a pass of their own the loads are independent and overlap.
 #[derive(Debug, Default)]
-pub(crate) struct Comments(Vec<Comment>);
+pub struct Comments(pub Vec<Comment>);
 
 impl Columnar for Comment {
     type Columns = Comments;
@@ -90,6 +94,7 @@ impl RowCount for Comments {
     }
 }
 
+#[cfg(feature = "formats")]
 impl IntoArrowArray for Comments {
     fn data_type() -> DataType {
         DataType::Utf8View
@@ -99,5 +104,12 @@ impl IntoArrowArray for Comments {
         let t = Text::get();
         let views = self.0.iter().map(|c| t.pool_view(c.off, c.len)).collect();
         Arc::new(t.shared.array(views, Vec::new()))
+    }
+}
+
+impl Comment {
+    /// Borrow the comment text from the shared pool.
+    pub fn as_str(&self) -> &'static str {
+        &Text::get().pool[self.off as usize..(self.off + self.len) as usize]
     }
 }

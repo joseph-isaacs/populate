@@ -2,13 +2,13 @@
 //! generation alone).
 //!
 //! ```sh
-//! cargo run -p populate-synth --release --bin synth-gen -- taxi --rows 10000000 --out taxi.parquet
-//! cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
+//! cargo run -p populate-gen-synth --release --bin synth-gen -- taxi --rows 10000000 --out taxi.parquet
+//! cargo run -p populate-gen-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
 //! ```
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use populate_synth::{DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi};
+use populate_gen_synth::{DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi};
 use populate_table::DEFAULT_BATCH_ROWS;
 use populate_table::cli::{create, file_size};
 use std::env::args;

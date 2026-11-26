@@ -4,6 +4,10 @@ description = "Arrow output for populate: collected columns to Arrow arrays and 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

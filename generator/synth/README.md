@@ -1,4 +1,4 @@
-# populate-synth
+# populate-gen-synth
 
 Synthetic tables shaped like data people benchmark on, on
 `populate-table`'s `Chunks` engine: Arrow `RecordBatch`es or Parquet, on all
@@ -15,8 +15,8 @@ examples and fixtures, not benchmarks.
 | `Embeddings` | a vector-search corpus | id, cluster, `FixedSizeList<Float32>[384]`: clustered, unit-length vectors |
 
 ```sh
-cargo run -p populate-synth --release --bin synth-gen -- taxi --rows 10000000 --out taxi.parquet
-cargo run -p populate-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
+cargo run -p populate-gen-synth --release --bin synth-gen -- taxi --rows 10000000 --out taxi.parquet
+cargo run -p populate-gen-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
 ```
 
 Flags: `--rows`, `--seed`, `--threads` (default all cores), `--batch-size`,
@@ -25,7 +25,7 @@ Flags: `--rows`, `--seed`, `--threads` (default all cores), `--batch-size`,
 `--out` the batches are generated and dropped, to time generation alone.
 
 ```rust
-use populate_synth::{Hits, Shape};
+use populate_gen_synth::{Hits, Shape};
 
 let hits = Hits::new(42).table(100_000_000);
 hits.for_each_batch(0, |batch| { /* in order */ });
@@ -56,7 +56,7 @@ features).
 
 ## Speed
 
-`cargo bench -p populate-synth` (256Ki rows, 64Ki for embeddings, one
+`cargo bench -p populate-gen-synth` (256Ki rows, 64Ki for embeddings, one
 thread, 4-core cloud VM):
 
 | Shape | Arrow | Parquet |

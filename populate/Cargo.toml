@@ -4,6 +4,11 @@ description = "Sampling combinators for columnar data generation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 license.workspace = true
 
 [dependencies]
@@ -44,3 +49,6 @@ required-features = ["arrow"]
 [[bench]]
 name = "leaves"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true

@@ -15,7 +15,7 @@
 //! pool through [`populate_table`]'s drivers.
 //!
 //! ```
-//! use populate_tpcc::{Tpcc, TpccTableName};
+//! use populate_gen_tpcc::{Tpcc, TpccTableName};
 //!
 //! let stock = Tpcc::new(2).table(TpccTableName::Stock);
 //! let mut rows = 0;

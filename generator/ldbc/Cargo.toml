@@ -1,9 +1,14 @@
 [package]
-name = "populate-ldbc"
+name = "populate-gen-ldbc"
+publish = false
 description = "LDBC SNB data identical to the LDBC Spark datagen, on all cores: CSV, Arrow or Parquet"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license = "MIT AND Apache-2.0 AND SunPro"
 
 [dependencies]

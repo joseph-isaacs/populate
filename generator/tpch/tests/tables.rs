@@ -6,7 +6,7 @@ use arrow_array::RecordBatch;
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use populate_tpch::{TableName, Tpch, TpchTable, write_tbl_many};
+use populate_gen_tpch::{TableName, Tpch, TpchTable, write_tbl_many};
 use tpchgen::generators::*;
 use tpchgen_arrow::*;
 

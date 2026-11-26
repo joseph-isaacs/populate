@@ -47,3 +47,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.92
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --all-features
+
+  python:
+    name: Python bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ./python pyarrow pytest
+      - run: pytest python/tests

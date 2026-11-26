@@ -1,5 +1,6 @@
-//! dsdgen's `.dat` text format, written straight from Arrow batches by
-//! [`populate_table::text`].
+//! dsdgen's `.dat` text format. The tables write it from their columns
+//! ([`populate_table::text::write_columns`]); [`write_batch`] writes it from
+//! an Arrow batch of a table.
 //!
 //! One line per row: every field followed by `|`, NULL as an empty field,
 //! decimals with exactly `scale` digits (`-0.05`), dates as `YYYY-MM-DD`.

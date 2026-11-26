@@ -448,7 +448,7 @@ pub fn order_facts(channel: Channel, first: u64, last: u64) -> OrderFacts {
 }
 
 /// Orders per checkpoint of [`orders_before`]'s prefix sums.
-const CHECKPOINT: u64 = 1 << 16;
+const CHECKPOINT: u64 = 1 << 12;
 
 type PrefixCache = Mutex<HashMap<(Channel, u64), Arc<OnceLock<Vec<OrderFacts>>>>>;
 

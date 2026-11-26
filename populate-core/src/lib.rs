@@ -159,3 +159,7 @@ pub trait Distribution: Sized {
 pub trait Dist<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
 
 impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Dist<T> for D {}
+
+/// Stateless per-row random streams.
+pub mod stream;
+pub use stream::Stream;

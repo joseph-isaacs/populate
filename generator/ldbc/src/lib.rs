@@ -55,7 +55,7 @@ use factors::{FACTOR, FACTOR_TABLES, Factor, FactorCols, FactorInput, Factors};
 use knows::Knows;
 use params::Params;
 use person::{Hot, Person, PersonGenerator};
-use populate_builtins::{flat_map, named_all, range};
+use populate_builtins::{flat_map, named_all, row_numbers};
 use populate_core::{Distribution, Sink};
 use populate_table::text::TextChunks;
 use populate_table::{DistTables, par_map, resolve_threads};
@@ -340,7 +340,7 @@ impl Ldbc {
         let names: Vec<&str> = DYNAMIC_COLUMNS.concat();
         named_all(
             &names,
-            flat_map::<Raw, _, _>(range(0u64, 1), |&i: &u64, out: &mut RawCols| {
+            flat_map::<Raw, _, _>(row_numbers(), |i: u64, out: &mut RawCols| {
                 self.chunk_into(i, out)
             }),
         )
@@ -385,7 +385,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            flat_map::<Factors, _, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
+            flat_map::<Factors, _, _>(row_numbers(), move |_: u64, out: &mut FactorCols| {
                 let f = self.factor_input.as_ref().expect("collect_factors first");
                 let mut statics = StaticCols::default();
                 self.static_into(&mut statics);
@@ -416,7 +416,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            flat_map::<Statics, _, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
+            flat_map::<Statics, _, _>(row_numbers(), |_: u64, out: &mut StaticCols| {
                 self.static_into(out)
             }),
         )

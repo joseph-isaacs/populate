@@ -3,7 +3,7 @@
 
 use crate::TableName;
 use crate::flat::{self, Dims};
-use crate::tables::{self, Scale, TableGen};
+use crate::tables::{self, Scale};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
 use parquet::basic::Compression;
@@ -11,15 +11,11 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{Encoding, TextChunks, write_batch, write_text_many};
-use populate_table::{Chunks, MultiChunks, chunks};
+use populate_table::{
+    Chunks, DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS, DynTable, MultiChunks, chunks,
+};
 use std::io::{self, Write};
 use std::sync::{Arc, LazyLock, OnceLock};
-
-/// Default output rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
-/// Default rows per Arrow batch (about: `lineorder` batches end on an
-/// order).
-pub const DEFAULT_BATCH_SIZE: usize = 8 * 1024;
 
 /// One table of an [`Ssb`](crate::Ssb) data set.
 ///
@@ -39,7 +35,7 @@ pub struct SsbTable {
     /// when the table is made, except for `lineorder_flat`, whose
     /// distribution holds the dimension tables, so it is built on first
     /// use and shared by every `lineorder_flat` of the data set.
-    generator: Arc<OnceLock<Arc<dyn TableGen>>>,
+    generator: Arc<OnceLock<DynTable>>,
 }
 
 /// Every table's schema, read off its distribution (no rows generated).
@@ -47,8 +43,8 @@ static SCHEMAS: LazyLock<Vec<SchemaRef>> = LazyLock::new(|| {
     let s = Scale::new(1.0);
     TableName::ALL
         .iter()
-        .map(|&t| tables::generator(t, &s).schema())
-        .chain([flat::generator(&s, Arc::default()).schema()])
+        .map(|&t| tables::generator(t, &s).schema().clone())
+        .chain([flat::generator(&s, Arc::default()).schema().clone()])
         .collect()
 });
 
@@ -81,7 +77,7 @@ impl SsbTable {
         name: TableName,
         scale: Scale,
         source_rows: u64,
-        flat: Arc<OnceLock<Arc<dyn TableGen>>>,
+        flat: Arc<OnceLock<DynTable>>,
     ) -> Self {
         let generator = match name {
             TableName::LineOrderFlat => flat,
@@ -92,7 +88,7 @@ impl SsbTable {
             scale,
             source_rows,
             chunk_source_rows: 1,
-            batch_size: DEFAULT_BATCH_SIZE,
+            batch_size: DEFAULT_BATCH_ROWS,
             generator,
         }
         .chunk_rows(DEFAULT_CHUNK_ROWS)
@@ -150,42 +146,29 @@ impl SsbTable {
         self.source_rows.div_ceil(self.chunk_source_rows)
     }
 
-    /// 0-based source-row range `first..end` of chunk `i`.
-    fn range(&self, i: u64) -> (u64, u64) {
-        let first = i * self.chunk_source_rows;
-        (
-            first,
-            (first + self.chunk_source_rows).min(self.source_rows),
-        )
-    }
-
     /// Build what generation needs before the first chunk: for
-    /// `lineorder_flat`, the dimension tables, on `threads` threads.
-    fn prepare(&self, threads: usize) {
-        self.generator(threads);
+    /// `lineorder_flat`, the dimension tables, on `threads` threads. The
+    /// methods here do this themselves; call it before driving the table
+    /// through [`Chunks`] or [`TextChunks`].
+    pub fn prepare(&self, threads: usize) {
+        self.table(threads);
     }
 
-    fn generator(&self, threads: usize) -> &dyn TableGen {
+    /// The table, cut to this one's rows, chunks and batches (about
+    /// `batch_size` output rows each).
+    fn table(&self, threads: usize) -> DynTable {
         let s = &self.scale;
+        let per = (self.batch_size as f64 / self.name.rows_per_source_row()).ceil() as u64;
         self.generator
             .get_or_init(|| {
                 // only `lineorder_flat`'s is not set in `new`
                 debug_assert_eq!(self.name, TableName::LineOrderFlat);
                 flat::generator(s, Arc::new(Dims::build(s, threads)))
             })
-            .as_ref()
-    }
-
-    /// Source rows `first..end` as batches of about `batch_size` rows.
-    fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let g = self.generator(0);
-        let per = (self.batch_size as f64 / self.name.rows_per_source_row()).ceil() as u64;
-        let mut at = first;
-        while at < end {
-            let n = per.max(1).min(end - at);
-            emit(g.batch(at, n));
-            at += n;
-        }
+            .clone()
+            .limit_rows(self.source_rows)
+            .chunk_rows(self.chunk_source_rows)
+            .batch_rows(per.max(1))
     }
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
@@ -226,9 +209,8 @@ impl SsbTable {
     /// Source rows `first..end` (0-based) as `.tbl` text, generated on the
     /// calling thread: one chunk, wherever it starts.
     pub fn tbl_range(&self, first: u64, end: u64) -> Vec<u8> {
-        self.prepare(0);
         let mut out = Vec::new();
-        self.generate(first, end.min(self.source_rows), &mut |b| {
+        self.table(0).range(first, end, &mut |b| {
             write_batch(&b, Encoding::Utf8, &mut out)
         });
         out
@@ -249,8 +231,7 @@ impl Chunks for SsbTable {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, end) = self.range(i);
-        self.generate(first, end, emit)
+        Chunks::chunk(&self.table(0), i, emit)
     }
 }
 
@@ -264,9 +245,10 @@ impl TextChunks for SsbTable {
     }
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
-        let (first, end) = self.range(i);
         let out = &mut bufs[0];
-        self.generate(first, end, &mut |b| write_batch(&b, Encoding::Utf8, out));
+        Chunks::chunk(&self.table(0), i, &mut |b| {
+            write_batch(&b, Encoding::Utf8, out)
+        });
     }
 }
 

@@ -7,6 +7,7 @@
 //! With `TSBS_GENERATE_DATA` set to a `tsbs_generate_data` binary,
 //! `against_go_binary` also compares a wider set of runs byte for byte.
 
+use populate_table::fnv1a64;
 use populate_tsbs::config::{parse_duration, parse_rfc3339};
 use populate_tsbs::{Config, Format, Tsbs};
 
@@ -486,15 +487,6 @@ const GOLDEN: &[Case] = &[
     ),
 ];
 
-fn fnv(b: &[u8]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &c in b {
-        h ^= c as u64;
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    h
-}
-
 fn config(uc: &str, scale: u64, seed: i64, end: &str, extra: &str) -> Config {
     let mut c = Config::new(uc.parse().unwrap(), scale, seed);
     c.start = parse_rfc3339("2016-01-01T00:00:00Z").unwrap();
@@ -522,7 +514,7 @@ fn golden_chunked() {
         let f: Format = f.parse().unwrap();
         let out = t.write_text(f, Vec::new(), 4, 1000).unwrap();
         assert_eq!(
-            (out.len(), fnv(&out)),
+            (out.len(), fnv1a64(&out)),
             (len, hash),
             "{uc} {f} {scale} {seed} {end} {extra}"
         );
@@ -537,7 +529,7 @@ fn golden_sequential() {
             .write_text_sequential(f.parse().unwrap(), Vec::new())
             .unwrap();
         assert_eq!(
-            (out.len(), fnv(&out)),
+            (out.len(), fnv1a64(&out)),
             (len, hash),
             "{uc} {f} {scale} {seed} {end} {extra}"
         );

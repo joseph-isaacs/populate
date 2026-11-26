@@ -16,7 +16,7 @@
 //! and the same columns as its single-threaded `write_columns`. This
 //! module adds the row groups and the threads.
 
-use crate::sched::{par_ordered, resolve_threads};
+use crate::sched::{par_map, par_ordered, resolve_threads};
 use crate::stream::mix64;
 use parquet::errors::{ParquetError, Result};
 use parquet::file::properties::{WriterProperties, WriterPropertiesPtr};
@@ -26,7 +26,6 @@ use populate_core::{Columns, Distribution};
 use populate_sink_parquet::{Chunk, ParquetColumns, encode_leaf, leaves, schema};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use std::convert::Infallible;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -84,7 +83,7 @@ where
         // fewer row groups than threads: the spare threads share the
         // group's columns
         let leaf_threads = (threads / groups.max(1) as usize).max(1);
-        par_map(leaf_threads, leaves.len(), |i| {
+        par_map(leaves.len(), leaf_threads, |i| {
             encode_leaf(&leaves[i], &descrs[i], &props)
         })
         .into_iter()
@@ -99,20 +98,4 @@ where
         Ok::<(), ParquetError>(())
     })?;
     file.into_inner()
-}
-
-/// `f(0..n)` on up to `threads` threads, results in order.
-fn par_map<T: Send>(threads: usize, n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let mut out = Vec::with_capacity(n);
-    let r: std::result::Result<(), Infallible> = par_ordered(
-        n as u64,
-        threads.max(1),
-        |i| f(i as usize),
-        |t| {
-            out.push(t);
-            Ok(())
-        },
-    );
-    r.unwrap_or_else(|e| match e {});
-    out
 }

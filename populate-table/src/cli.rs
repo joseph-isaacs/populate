@@ -14,11 +14,12 @@
 
 use crate::chunks::for_each_batch_many;
 use crate::text::{TextChunks, write_text_many};
-use crate::{Chunks, DEFAULT_BATCH_ROWS, MultiChunks, write_parquet_many};
+use crate::{Chunks, DEFAULT_BATCH_ROWS, MultiChunks, write_parquet, write_parquet_many};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::SchemaRef;
 use parquet::basic::Compression;
+use parquet::file::metadata::ParquetMetaDataReader;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
@@ -61,6 +62,9 @@ pub struct Tool {
     pub batch: usize,
     /// The tool's own flags, for the usage line.
     pub flags: &'static str,
+    /// Whether the tool takes `--row-group-bytes` (it then sizes its chunks
+    /// with [`source_rows_per_group`]).
+    pub row_group_bytes: bool,
 }
 
 impl Tool {
@@ -78,6 +82,7 @@ impl Tool {
             tables: true,
             batch: DEFAULT_BATCH_ROWS,
             flags: "",
+            row_group_bytes: false,
         }
     }
 }
@@ -102,7 +107,8 @@ pub fn no_flags(_: &str, _: &mut dyn FnMut() -> Result<String, String>) -> Resul
 
 /// The flags every generator takes: `--sf`, `--out`, `--format
 /// parquet|<text>|none`, `--tables`, `--threads`, `--batch`,
-/// `--row-group`, `--compression snappy|none` and `--no-dictionary`.
+/// `--row-group` (or `--row-group-bytes`, where the tool takes it),
+/// `--compression snappy|none` and `--no-dictionary`.
 #[derive(Debug, Clone)]
 pub struct Args<T> {
     /// Scale factor (`--sf`).
@@ -119,6 +125,9 @@ pub struct Args<T> {
     pub batch: usize,
     /// Rows per Parquet row group, if set (`--row-group`).
     pub row_group: Option<u64>,
+    /// About this many uncompressed Parquet bytes per row group, as
+    /// `tpchgen-cli`'s `--row-group-bytes` sizes them.
+    pub row_group_bytes: Option<u64>,
     /// Parquet compression (`--compression`).
     pub compression: Compression,
     /// Whether Parquet columns are dictionary-encoded (off with
@@ -164,6 +173,11 @@ impl<T: FromStr<Err: Display> + PartialEq> Args<T> {
         } else {
             format!(" {}", tool.flags)
         };
+        let row_group = if tool.row_group_bytes {
+            "[--row-group ROWS | --row-group-bytes BYTES]"
+        } else {
+            "[--row-group ROWS]"
+        };
         let tables = if tool.tables {
             " [--tables a,b,...]"
         } else {
@@ -177,12 +191,13 @@ impl<T: FromStr<Err: Display> + PartialEq> Args<T> {
             threads: 0,
             batch: tool.batch,
             row_group: None,
+            row_group_bytes: None,
             compression: Compression::SNAPPY,
             dictionary: true,
             ext: tool.ext,
             usage: format!(
                 "usage: {name}{flags}{sf} [--out DIR] [--format parquet|{text}|none]{tables} \
-[--threads N] [--batch ROWS] [--row-group ROWS] [--compression snappy|none] [--no-dictionary]"
+[--threads N] [--batch ROWS] {row_group} [--compression snappy|none] [--no-dictionary]"
             ),
         };
         let r = a.read(&tool, own, args);
@@ -223,6 +238,9 @@ impl<T: FromStr<Err: Display> + PartialEq> Args<T> {
                 "--threads" => a.threads = num(&flag, val()?)?,
                 "--batch" => a.batch = num(&flag, val()?)?,
                 "--row-group" => a.row_group = Some(num(&flag, val()?)?),
+                "--row-group-bytes" if tool.row_group_bytes => {
+                    a.row_group_bytes = Some(num(&flag, val()?)?)
+                }
                 "--compression" => {
                     a.compression = match val()?.as_str() {
                         "snappy" => Compression::SNAPPY,
@@ -247,8 +265,11 @@ impl<T: FromStr<Err: Display> + PartialEq> Args<T> {
         {
             return Err(format!("--sf must be in (0, {max}]"));
         }
-        if a.batch == 0 || a.row_group == Some(0) {
-            return Err("--batch and --row-group must be > 0".into());
+        if a.batch == 0 || a.row_group == Some(0) || a.row_group_bytes == Some(0) {
+            return Err("--batch, --row-group and --row-group-bytes must be > 0".into());
+        }
+        if a.row_group.is_some() && a.row_group_bytes.is_some() {
+            return Err("--row-group and --row-group-bytes are exclusive".into());
         }
         Ok(())
     }
@@ -312,6 +333,28 @@ pub fn parquet_rows(path: &Path) -> u64 {
         .ok()
         .and_then(|f| SerializedFileReader::new(f).ok())
         .map_or(0, |r| r.metadata().file_metadata().num_rows() as u64)
+}
+
+/// Source rows per chunk for row groups of about `bytes` uncompressed
+/// Parquet bytes (the size a row group's footer records), measured by
+/// writing `sample`, the table's first `sample_source_rows` source rows as
+/// one chunk, with `props`.
+pub fn source_rows_per_group(
+    sample: &impl Chunks,
+    sample_source_rows: u64,
+    props: WriterProperties,
+    bytes: u64,
+) -> u64 {
+    let buf = write_parquet(sample, Vec::new(), 1, Some(props))
+        .unwrap_or_else(|e| fail(&"parquet sample", &e));
+    // footer: metadata, its 4-byte length, `PAR1`
+    let end = buf.len() - 8;
+    let len = u32::from_le_bytes(buf[end..end + 4].try_into().expect("4 bytes")) as usize;
+    let meta = ParquetMetaDataReader::decode_metadata(&buf[end - len..end])
+        .unwrap_or_else(|e| fail(&"parquet sample", &e));
+    let sample_bytes: i64 = meta.row_groups().iter().map(|g| g.total_byte_size()).sum();
+    let per_row = sample_bytes.max(1) as f64 / sample_source_rows.max(1) as f64;
+    ((bytes as f64 / per_row).round() as u64).max(1)
 }
 
 /// Write `tables` as `a.format` says, `tables[i]` to `paths[i]` (from
@@ -535,6 +578,27 @@ mod tests {
         assert!(args(&["--batch", "0"]).is_err());
         assert!(args(&["--bogus"]).is_err());
         assert_eq!(args(&["--tables", "b,a,b"]).unwrap().tables, ["b", "a"]);
+        // only for a tool that sizes its chunks by bytes
+        assert!(args(&["--row-group-bytes", "100"]).is_err());
+    }
+
+    #[test]
+    fn row_group_bytes() {
+        let tool = Tool {
+            row_group_bytes: true,
+            ..Tool::new("x-gen", "dat", 100.0)
+        };
+        let parse = |v: &[&str]| {
+            Args::<String>::parse_from(tool, Vec::new, no_flags, v.iter().map(|s| s.to_string()))
+        };
+        assert_eq!(
+            parse(&["--row-group-bytes", "7340032"])
+                .unwrap()
+                .row_group_bytes,
+            Some(7340032)
+        );
+        assert!(parse(&["--row-group-bytes", "0"]).is_err());
+        assert!(parse(&["--row-group", "5", "--row-group-bytes", "5"]).is_err());
     }
 
     #[test]

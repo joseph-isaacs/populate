@@ -52,6 +52,7 @@ struct Frontier<S> {
 
 /// A TSBS run as chunks: see the module docs.
 pub struct Chunked<S = AnySim> {
+    initial: Cursor<S>,
     layout: Layout,
     n: u64,
     max: u64,
@@ -86,7 +87,12 @@ impl<S: Sim> Chunked<S> {
         };
         let max = sim.max_points();
         sim.normalize();
+        let initial = Cursor {
+            sim: sim.clone(),
+            group: 0,
+        };
         let mut c = Chunked {
+            initial,
             layout,
             n: 1,
             max,
@@ -183,6 +189,37 @@ impl<S: Sim> Chunked<S> {
                 return c;
             }
             self.ready.lock().expect("ready").insert(here, c);
+        }
+    }
+
+    /// Obtain a reusable native source cursor. Re-reading a consumed chunk
+    /// replays from the initial simulator without retaining all checkpoints.
+    pub(crate) fn replay_cursor(&self, k: u64) -> Cursor<S> {
+        assert!(k < self.n, "chunk index out of bounds");
+        let consumed = {
+            let frontier = self.frontier.lock().expect("frontier");
+            k < frontier.next && !self.ready.lock().expect("ready").contains_key(&k)
+        };
+        if consumed {
+            let mut cursor = self.initial.clone();
+            self.skip(&mut cursor, self.threshold(k));
+            cursor
+        } else {
+            self.cursor(k)
+        }
+    }
+
+    pub(crate) fn run_cursor(&self, k: u64, mut c: Cursor<S>, mut f: impl FnMut(&Point)) {
+        let end = self.end(k).unwrap_or(u64::MAX);
+        let mut p = Point::default();
+        while !c.sim.finished() && c.sim.progress() < end {
+            if !c.sim.next(&mut p) {
+                continue;
+            }
+            if c.group == self.group_id {
+                f(&p);
+            }
+            c.group = (c.group + 1) % self.groups;
         }
     }
 

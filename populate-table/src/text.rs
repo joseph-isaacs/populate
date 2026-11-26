@@ -1,5 +1,7 @@
 //! The TPC text formats (dsdgen's `.dat`, dbgen's `.tbl`), written straight
-//! from Arrow batches, and a parallel writer for them.
+//! from Arrow batches ([`write_batch`]) or from collected columns
+//! ([`write_columns`], with no Arrow in between), and a parallel writer for
+//! them.
 //!
 //! One line per row: every field followed by `|`, NULL as an empty field,
 //! decimals with exactly `scale` digits (`-0.05`), dates as `YYYY-MM-DD`.
@@ -758,6 +760,7 @@ pub trait TextField {
 /// [`TextField`], a tuple or [`SpreadCols`] of them, or a child table's
 /// [`ChildCols`].
 pub trait TextColumns {
+    /// Rows to print.
     fn text_rows(&self) -> usize;
 
     /// Most bytes all its rows take, separators included.

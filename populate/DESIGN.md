@@ -111,7 +111,9 @@ each may hold nulls (a column type that stores nulls says so). The names
 come from the distribution:
 `Distribution::column_names`, which `named` / `named_all` set and a tuple
 concatenates. `DistTable` (`populate-table`) runs a distribution over any
-range of rows (clone, `skip`, collect) with that schema.
+range of rows (clone, `skip`, collect) with that schema; `DynTable` is the
+same with the distribution's type erased, so a data set's tables share one
+type.
 
 ## Seekable streams
 
@@ -184,14 +186,15 @@ straight into the `StrCol` buffer.
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
 | `populate-core`         | the three traits, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, tuple impls |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `named`, `checkpointed`, `column`, random leaves |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `format`, `named`, `checkpointed`, `column`, random leaves |
 | `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
-| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on |
+| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable` / `DynTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on; `cli`: the generators' shared command-line flags and report |
 | `populate`              | facade re-exporting the above                         |
+| `populate-combinators`  | what several generators share (`generator/combinators`): dbgen's and dsdgen's Lehmer streams, `Utf8View` columns over shared buffers |
 
 TPC-H (`populate-tpch`) and H2O (`populate-h2o`) are built on
-`Distribution`: each table is one distribution run by `DistTable`, its
-schema read off it. The other
+`Distribution`: each table is one distribution run by `DynTable` (TPC-H)
+or `DistTable` (H2O), its schema read off it. The other
 benchmark generators (TPC-DS and the rest) implement `Chunks` from
 `populate-table` directly.

@@ -33,17 +33,13 @@
 //! dictionary views ([`part_words`], [`party_words`]).
 
 use crate::TableName;
-use crate::cols::{Bytes, Word, children_of, format};
+use crate::cols::{Bytes, Word, children_of};
 use crate::dict::{COLORS, DAYS, Dict, NATIONS, days_in_month, holiday, season};
-use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
-use populate_builtins::{Draws, derive, draws, named, named_all, range};
+use populate_builtins::{Draws, derive, draws, format, named, named_all, range};
 use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
-use populate_core::{Columnar, Columns, Distribution, Sink};
+use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf};
 use populate_sink_arrow::IntoArrowColumns;
-use populate_table::DistTable;
-use std::fmt;
-use std::sync::Arc;
+use populate_table::DynTable;
 
 /// Most lines an order has, and the draws per order of the line streams.
 pub(crate) const LINES: usize = 7;
@@ -184,44 +180,16 @@ fn day<T: Columnar + Clone + 'static>(
 // ---------------------------------------------------------------------------
 // Tables
 
-/// A table, generated from any range of its source rows.
-pub(crate) trait TableGen: Send + Sync {
-    fn schema(&self) -> SchemaRef;
-
-    /// Source rows `first..first + n`.
-    fn batch(&self, first: u64, n: u64) -> RecordBatch;
-}
-
-impl fmt::Debug for dyn TableGen {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TableGen").finish_non_exhaustive()
-    }
-}
-
-impl<D> TableGen for DistTable<D>
-where
-    D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowColumns,
-{
-    fn schema(&self) -> SchemaRef {
-        DistTable::schema(self).clone()
-    }
-
-    fn batch(&self, first: u64, n: u64) -> RecordBatch {
-        DistTable::batch(self, first, n)
-    }
-}
-
-pub(crate) fn table<D>(t: TableName, rows: u64, dist: D) -> Arc<dyn TableGen>
+pub(crate) fn table<D>(t: TableName, rows: u64, dist: D) -> DynTable
 where
     D: Distribution + Clone + Send + Sync + 'static,
     Columns<D::Item>: IntoArrowColumns,
 {
-    Arc::new(DistTable::new(t.as_str(), rows, dist))
+    DynTable::new(t.as_str(), rows, dist)
 }
 
 /// Base table `t` (not `lineorder_flat`) at scale `s`.
-pub(crate) fn generator(t: TableName, s: &Scale) -> Arc<dyn TableGen> {
+pub(crate) fn generator(t: TableName, s: &Scale) -> DynTable {
     let d = Dict::get();
     match t {
         TableName::Part => part(d, s),
@@ -285,18 +253,18 @@ pub(crate) fn part_words(d: &Dict, code: PartCode) -> PartWords {
     let ((name, color), category, brand, kind, container, size) = code;
     let category = category as usize;
     (
-        Word(d.names[name as usize]),
-        Word(d.mfgrs[category / 5]),
-        Word(d.categories[category]),
-        Word(d.brands[category * 40 + brand as usize]),
-        Word(d.colors[color as usize]),
-        Word(d.types.views[kind as usize]),
+        Word::new(d.names[name as usize]),
+        Word::new(d.mfgrs[category / 5]),
+        Word::new(d.categories[category]),
+        Word::new(d.brands[category * 40 + brand as usize]),
+        Word::new(d.colors[color as usize]),
+        Word::new(d.types.views[kind as usize]),
         size,
-        Word(d.containers.views[container as usize]),
+        Word::new(d.containers.views[container as usize]),
     )
 }
 
-fn part(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
+fn part(d: &'static Dict, s: &Scale) -> DynTable {
     table(
         TableName::Part,
         s.parts,
@@ -338,42 +306,44 @@ fn full_range(x: u32) -> u64 {
 /// Append the address the draws of one row make (`a_rnd`): a length, then
 /// 5 characters of 6 bits from each further draw.
 #[inline]
-fn address(row: &[u32; ADDR_DRAWS], out: &mut Vec<u8>) {
+fn address(row: &[u32; ADDR_DRAWS], out: &mut StrBuf<'_>) {
     let len = ADDR_MIN as usize + scale(row[0], (ADDR_MAX - ADDR_MIN + 1) as u32) as usize;
+    let mut b = [b' '; ADDR_MAX as usize];
     let mut bits = 0;
-    for i in 0..len {
+    for (i, c) in b[..len].iter_mut().enumerate() {
         if i % 5 == 0 {
             bits = full_range(row[1 + i / 5]);
         }
-        out.push(ALPHA_NUM[(bits & 63) as usize]);
+        *c = ALPHA_NUM[(bits & 63) as usize];
         bits >>= 6;
     }
+    out.push_padded(&Padded::ascii(b, len));
 }
 
 /// Append `prefix` and `k` in 9 zero-padded digits (dbgen's `%09ld`; keys
 /// stay below 10^9 up to `MAX_SCALE_FACTOR`).
 #[inline]
-fn name(prefix: &[u8], k: u64, out: &mut Vec<u8>) {
+fn name(prefix: &[u8; 9], k: u64, out: &mut StrBuf<'_>) {
     debug_assert!(k < 1_000_000_000);
-    out.extend_from_slice(prefix);
-    let mut digits = [b'0'; 9];
+    let mut b = [b'0'; 18];
+    b[..9].copy_from_slice(prefix);
     let mut k = k;
-    for d in digits.iter_mut().rev() {
+    for d in b[9..].iter_mut().rev() {
         *d = b'0' + (k % 10) as u8;
         k /= 10;
     }
-    out.extend_from_slice(&digits);
+    out.push_padded(&Padded::ascii(b, 18));
 }
 
 /// Append a phone number: the nation's country code, then three draws.
 #[inline]
-fn phone(nation: i32, draws: [u32; 3], out: &mut Vec<u8>) {
+fn phone(nation: i32, draws: [u32; 3], out: &mut StrBuf<'_>) {
     let a = 100 + scale(draws[0], 900);
     let b = 100 + scale(draws[1], 900);
     let c = 1000 + scale(draws[2], 9000);
     let cc = 10 + nation as u32;
     let digit = |v: u32| b'0' + v as u8;
-    out.extend_from_slice(&[
+    let b = [
         digit(cc / 10),
         digit(cc % 10),
         b'-',
@@ -389,7 +359,8 @@ fn phone(nation: i32, draws: [u32; 3], out: &mut Vec<u8>) {
         digit(c / 100 % 10),
         digit(c / 10 % 10),
         digit(c % 10),
-    ]);
+    ];
+    out.push_padded(&Padded::ascii(b, b.len()));
 }
 
 /// Supplier or customer.
@@ -414,7 +385,7 @@ impl Party {
         }
     }
 
-    fn prefix(self) -> &'static [u8] {
+    fn prefix(self) -> &'static [u8; 9] {
         match self {
             Party::Supplier => b"Supplier#",
             Party::Customer => b"Customer#",
@@ -481,9 +452,9 @@ pub(crate) fn party_codes(p: Party, s: &Scale) -> impl Col<PartyCode> {
 pub(crate) fn party_words(d: &Dict, (nation, city): PartyCode) -> (Word, Word, Word) {
     let n = nation as usize;
     (
-        Word(d.cities[n * 10 + city as usize]),
-        Word(d.nations[n]),
-        Word(d.regions[n]),
+        Word::new(d.cities[n * 10 + city as usize]),
+        Word::new(d.nations[n]),
+        Word::new(d.regions[n]),
     )
 }
 
@@ -494,11 +465,11 @@ pub(crate) fn segment_codes(d: &'static Dict) -> impl Col<u8> {
 
 fn party_name(p: Party) -> impl Col<Bytes> {
     let prefix = p.prefix();
-    format(key(), move |k, out| name(prefix, k as u64, out))
+    format(key(), move |&k, out| name(prefix, k as u64, out))
 }
 
 fn party_address(p: Party) -> impl Col<Bytes> {
-    format(stream::<ADDR_DRAWS>(p.seeds().0), |x, out| address(&x, out))
+    format(stream::<ADDR_DRAWS>(p.seeds().0), address)
 }
 
 fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
@@ -507,7 +478,7 @@ fn party_phone(p: Party, s: &Scale) -> impl Col<Bytes> {
             ints(p.seeds().1, 0, NATIONS as i32 - 1),
             at(stream::<3>(C_PHNE), p.shared(s)),
         ),
-        |(n, x), out| phone(n, x, out),
+        |(&n, &x), out| phone(n, x, out),
     )
 }
 
@@ -516,7 +487,7 @@ pub(crate) fn party_text(p: Party, s: &Scale) -> impl Col<(Bytes, Bytes, Bytes)>
     (party_name(p), party_address(p), party_phone(p, s))
 }
 
-fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
+fn party(d: &'static Dict, s: &Scale, p: Party) -> DynTable {
     let c = p.columns();
     let words = derive(party_codes(p, s), move |(&n, &c)| party_words(d, (n, c)));
     let row = (
@@ -535,7 +506,9 @@ fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
                 row,
                 named(
                     c[7],
-                    derive(segment_codes(d), |&i| Word(d.segments.views[i as usize])),
+                    derive(segment_codes(d), |&i| {
+                        Word::new(d.segments.views[i as usize])
+                    }),
                 ),
             ),
         ),
@@ -545,27 +518,27 @@ fn party(d: &'static Dict, s: &Scale, p: Party) -> Arc<dyn TableGen> {
 // ---------------------------------------------------------------------------
 // date
 
-fn date(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
+fn date(d: &'static Dict, s: &Scale) -> DynTable {
     let t = |i: usize| d.days[i];
     // ssb-dbgen numbers weekdays from Sunday = 1, but computes the number
     // as `(tm_wday + 1) % 7 + 1` and names the day from it: Wednesday is 5,
     // "Thursday"
     let dnw = move |i: usize| (t(i).wday + 1) % 7 + 1;
-    let flag = move |b: bool| Word(d.flags[b as usize]);
+    let flag = move |b: bool| Word::new(d.flags[b as usize]);
     table(
         TableName::Date,
         s.dates,
         (
             (
                 named("d_datekey", day(move |i| t(i).key())),
-                named("d_date", day(|i| Word(d.day_names[i]))),
+                named("d_date", day(|i| Word::new(d.day_names[i]))),
                 named(
                     "d_dayofweek",
-                    day(move |i| Word(d.weekdays[dnw(i) as usize - 1])),
+                    day(move |i| Word::new(d.weekdays[dnw(i) as usize - 1])),
                 ),
                 named(
                     "d_month",
-                    day(move |i| Word(d.months[t(i).month as usize - 1])),
+                    day(move |i| Word::new(d.months[t(i).month as usize - 1])),
                 ),
                 named("d_year", day(move |i| t(i).year)),
                 named("d_yearmonthnum", day(move |i| t(i).year * 100 + t(i).month)),
@@ -573,7 +546,7 @@ fn date(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
                     "d_yearmonth",
                     day(move |i| {
                         let t = t(i);
-                        Word(d.year_months[((t.year - 1992) * 12 + t.month - 1) as usize])
+                        Word::new(d.year_months[((t.year - 1992) * 12 + t.month - 1) as usize])
                     }),
                 ),
                 named("d_daynuminweek", day(dnw)),
@@ -585,7 +558,7 @@ fn date(d: &'static Dict, s: &Scale) -> Arc<dyn TableGen> {
                 named("d_weeknuminyear", day(move |i| t(i).yday / 7 + 1)),
                 named(
                     "d_sellingseason",
-                    day(move |i| Word(d.seasons[season(t(i).month, t(i).mday)])),
+                    day(move |i| Word::new(d.seasons[season(t(i).month, t(i).mday)])),
                 ),
                 named("d_lastdayinweekfl", day(move |i| flag(dnw(i) == 7))),
                 named(
@@ -752,7 +725,7 @@ pub(crate) fn lines(d: &'static Dict) -> impl Fn(&Columns<Order>, &mut Columns<L
         o_prio.push_n(
             order
                 .iter()
-                .map(|&o| Word(d.priorities.view(prio[o as usize][0]))),
+                .map(|&o| Word::new(d.priorities.view(prio[o as usize][0]))),
         );
         o_ship.resize(o_ship.len() + lines, 0);
         o_cost.extend(price.iter().map(|p| 6 * p / 10));
@@ -762,7 +735,10 @@ pub(crate) fn lines(d: &'static Dict) -> impl Fn(&Columns<Order>, &mut Columns<L
                 .zip(&order)
                 .map(|(&j, &o)| d.keys[date(o) + cd[j as usize] as usize]),
         );
-        o_mode.push_n(slot.iter().map(|&j| Word(d.modes.view(mode[j as usize]))));
+        o_mode.push_n(
+            slot.iter()
+                .map(|&j| Word::new(d.modes.view(mode[j as usize]))),
+        );
         for (col, v) in [
             (o_part, pkey),
             (o_qty, qty),

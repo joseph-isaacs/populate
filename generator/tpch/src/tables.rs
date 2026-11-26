@@ -24,18 +24,19 @@
 //!   flag and receipt date).
 
 use crate::TableName;
-use crate::cols::{Bytes, Comment, CommentLen, Word, format};
-use crate::text::{Dicts, Dist, Text};
-use arrow_array::RecordBatch;
+use crate::cols::{Bytes, Comment, CommentLen, Word};
+use crate::text::{Dicts, Text};
 use arrow_schema::SchemaRef;
 use populate_builtins::{
-    Draws, children, constant, derive, draws, draws_reserving, flat_map, named, named_all, range,
+    Draws, children, constant, derive, draws, draws_reserving, flat_map, format, named, named_all,
+    range,
 };
-use populate_combinators::lehmer::{INT_RANGE, Int, Ints, Lcg, bounded, scale};
-use populate_core::{Children, Columns, Date32, Decimal, Distribution, Sink};
+use populate_combinators::lehmer::{Int, Ints, Lcg, bound, bounded};
+use populate_combinators::views::Picks;
+use populate_core::{Children, Columns, Date32, Decimal, Dist, Distribution, Padded, Sink};
 use populate_sink_arrow::IntoArrowColumns;
-use populate_table::DistTable;
-use std::sync::{Arc, LazyLock};
+use populate_table::DynTable;
+use std::sync::LazyLock;
 use tpchgen::dates::{MIN_GENERATE_DATE, TOTAL_DATE_RANGE, TPCHDate};
 
 /// Draws per order reserved by the line streams: the most lines an order
@@ -102,60 +103,40 @@ impl Scale {
 // ---------------------------------------------------------------------------
 // Leaves
 
-/// dbgen's bounded value of draw `x` in `lo..=hi`.
-#[inline(always)]
-fn bound(x: u32, lo: i32, hi: i32) -> i32 {
-    let range = (hi as i64 - lo as i64 + 1) as u64;
-    if range < INT_RANGE as u64 {
-        // equal to the `f64` formula for these ranges (see `scale`)
-        lo + scale(x, range as u32) as i32
-    } else {
-        bounded(x, lo, hi)
-    }
-}
-
 /// The stream seeded `seed`, `K` draws per row.
 fn stream<const K: usize>(seed: i64) -> Draws<Lcg, K> {
     draws(Lcg::new(seed))
 }
 
-/// Trait bounds every column distribution meets, so helpers can return
-/// one as `impl Col<T>`.
-trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
-
-impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
-
 /// `lo..=hi`, one draw per row.
-fn ints(seed: i64, lo: i32, hi: i32) -> impl Col<i32> {
+fn ints(seed: i64, lo: i32, hi: i32) -> impl Dist<i32> {
     Int(Ints::new(seed, lo, hi))
 }
 
 /// A value of `dist`, one draw per row.
-fn pick(dist: &'static Dist, seed: i64) -> impl Col<Word> {
-    derive(stream::<1>(seed), move |&[x]| {
-        Word(dist.views[dist.pick_draw(x)])
-    })
+fn pick(dist: &'static Picks, seed: i64) -> impl Dist<Word> {
+    derive(stream::<1>(seed), move |&[x]| Word::new(dist.view(x)))
 }
 
 /// A comment of average length `avg`, two draws per row.
-fn comment(seed: i64, avg: f64) -> impl Col<Comment> {
+fn comment(seed: i64, avg: f64) -> impl Dist<Comment> {
     let c = CommentLen::new(avg);
     derive(stream::<2>(seed), move |&[a, b]| c.make(a, b))
 }
 
 /// The 1-based row number: the key of most tables.
-fn key() -> impl Col<i64> {
+fn key() -> impl Dist<i64> {
     range(1i64, 1)
 }
 
 /// A nation, one draw per row (supplier's and customer's `nationkey`, and
 /// the country code of their phone numbers).
-fn nation(seed: i64) -> impl Col<i64> {
+fn nation(seed: i64) -> impl Dist<i64> {
     derive(ints(seed, 0, NATIONS - 1), |&n| n as i64)
 }
 
 /// A balance in `-999.99..=9999.99`.
-fn balance(seed: i64) -> impl Col<Dec> {
+fn balance(seed: i64) -> impl Dist<Dec> {
     derive(ints(seed, -99_999, 999_999), |&b| dec(b as i64))
 }
 
@@ -178,59 +159,46 @@ pub(crate) fn order_key(i: i64) -> i64 {
     ((i >> 3) << 5) + (i & 7)
 }
 
-/// Append `v` in decimal, zero-padded to at least `width` digits.
-#[inline]
-fn padded(out: &mut Vec<u8>, v: u64, width: usize) {
-    let mut buf = [b'0'; 20];
-    let mut i = 20;
-    let mut v = v;
-    while v > 0 {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-    }
-    let i = i.min(20 - width);
-    out.extend_from_slice(&buf[i..]);
-}
-
 /// `prefix` then `v` zero-padded to 9 digits (`Supplier#000000001`).
-fn numbered(prefix: &'static [u8], keys: impl Col<i64>) -> impl Col<Bytes> {
+fn numbered(prefix: &'static str, keys: impl Dist<i64>) -> impl Dist<Bytes> {
     format(keys, move |&k, out| {
-        out.extend_from_slice(prefix);
-        padded(out, k as u64, 9);
+        out.push_str(prefix);
+        out.push_u64_padded(k as u64, 9);
     })
 }
 
 /// A `RandomAlphaNumeric` address (`avg` 25), 9 draws per row: a length
 /// draw, then the characters, 5 per draw.
-fn address(seed: i64) -> impl Col<Bytes> {
+fn address(seed: i64) -> impl Dist<Bytes> {
     const CHARS: &[u8; 64] = b"0123456789abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ,";
     format(stream::<9>(seed), |x, out| {
         let len = bound(x[0], 10, 40) as usize;
+        let mut b = [b' '; 40];
         let mut idx = 0i64;
-        for i in 0..len {
+        for (i, c) in b[..len].iter_mut().enumerate() {
             if i % 5 == 0 {
                 idx = bounded(x[1 + i / 5], 0, i32::MAX) as i64;
             }
-            out.push(CHARS[(idx & 0x3f) as usize]);
+            *c = CHARS[(idx & 0x3f) as usize];
             idx >>= 6;
         }
+        out.push_padded(&Padded::ascii(b, len));
     })
 }
 
 /// A `RandomPhoneNumber`, `CC-LLL-LLL-LLLL`, 3 draws per row; the country
 /// is the row's nation (the same stream as `nation`).
-fn phone(nation_seed: i64, seed: i64) -> impl Col<Bytes> {
+fn phone(nation_seed: i64, seed: i64) -> impl Dist<Bytes> {
     format(
         (nation(nation_seed), stream::<3>(seed)),
         |(&nation, &[a, b, c]), out| {
-            padded(out, (10 + nation % 90) as u64, 2);
-            out.push(b'-');
-            padded(out, bound(a, 100, 999) as u64, 3);
-            out.push(b'-');
-            padded(out, bound(b, 100, 999) as u64, 3);
-            out.push(b'-');
-            padded(out, bound(c, 1000, 9999) as u64, 4);
+            out.push_u64_padded((10 + nation % 90) as u64, 2);
+            out.push_ascii(b'-');
+            out.push_u64_padded(bound(a, 100, 999) as u64, 3);
+            out.push_ascii(b'-');
+            out.push_u64_padded(bound(b, 100, 999) as u64, 3);
+            out.push_ascii(b'-');
+            out.push_u64_padded(bound(c, 1000, 9999) as u64, 4);
         },
     )
 }
@@ -238,38 +206,16 @@ fn phone(nation_seed: i64, seed: i64) -> impl Col<Bytes> {
 // ---------------------------------------------------------------------------
 // Tables
 
-/// A table, generated from any range of its source rows.
-pub(crate) trait TableGen: Send + Sync {
-    fn schema(&self) -> SchemaRef;
-
-    /// Source rows `first..first + n`.
-    fn batch(&self, first: u64, n: u64) -> RecordBatch;
-}
-
-impl<D> TableGen for DistTable<D>
-where
-    D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowColumns,
-{
-    fn schema(&self) -> SchemaRef {
-        DistTable::schema(self).clone()
-    }
-
-    fn batch(&self, first: u64, n: u64) -> RecordBatch {
-        DistTable::batch(self, first, n)
-    }
-}
-
-fn table<D>(t: TableName, rows: u64, dist: D) -> Arc<dyn TableGen>
+fn table<D>(t: TableName, rows: u64, dist: D) -> DynTable
 where
     D: Distribution + Clone + Send + Sync + 'static,
     Columns<D::Item>: IntoArrowColumns,
 {
-    Arc::new(DistTable::new(t.as_str(), rows, dist))
+    DynTable::new(t.as_str(), rows, dist)
 }
 
 /// Table `t` at scale `s`, `rows` source rows.
-pub(crate) fn generator(t: TableName, s: &Scale, rows: u64) -> Arc<dyn TableGen> {
+pub(crate) fn generator(t: TableName, s: &Scale, rows: u64) -> DynTable {
     match t {
         TableName::Nation => nation_table(rows),
         TableName::Region => region_table(rows),
@@ -287,11 +233,11 @@ pub(crate) static SCHEMAS: LazyLock<Vec<SchemaRef>> = LazyLock::new(|| {
     let s = Scale::new(1.0);
     TableName::ALL
         .iter()
-        .map(|&t| generator(t, &s, 0).schema())
+        .map(|&t| generator(t, &s, 0).schema().clone())
         .collect()
 });
 
-fn nation_table(rows: u64) -> Arc<dyn TableGen> {
+fn nation_table(rows: u64) -> DynTable {
     let d = Dicts::get();
     table(
         TableName::Nation,
@@ -300,7 +246,7 @@ fn nation_table(rows: u64) -> Arc<dyn TableGen> {
             named("n_nationkey", range(0i64, 1)),
             named(
                 "n_name",
-                derive(range(0usize, 1), |&i| Word(d.nations.views[i])),
+                derive(range(0usize, 1), |&i| Word::new(d.nations.views[i])),
             ),
             named(
                 "n_regionkey",
@@ -311,7 +257,7 @@ fn nation_table(rows: u64) -> Arc<dyn TableGen> {
     )
 }
 
-fn region_table(rows: u64) -> Arc<dyn TableGen> {
+fn region_table(rows: u64) -> DynTable {
     let d = Dicts::get();
     table(
         TableName::Region,
@@ -320,19 +266,19 @@ fn region_table(rows: u64) -> Arc<dyn TableGen> {
             named("r_regionkey", range(0i64, 1)),
             named(
                 "r_name",
-                derive(range(0usize, 1), |&i| Word(d.regions.views[i])),
+                derive(range(0usize, 1), |&i| Word::new(d.regions.views[i])),
             ),
             named("r_comment", comment(1500869201, 72.0)),
         ),
     )
 }
 
-fn part(rows: u64) -> Arc<dyn TableGen> {
-    let d = Dicts::get();
-    let colors = &d.colors;
-    // RandomStringSequence: one draw per color reserved, 5 used to shuffle
-    // the first 5 of all colors
-    let names = format(
+/// `p_name`: dbgen's `RandomStringSequence`, the first 5 of all colors
+/// after a partial shuffle. The stream reserves one draw per color and
+/// uses 5.
+fn part_name() -> impl Dist<Bytes> {
+    let colors = &Dicts::get().colors;
+    format(
         draws_reserving::<_, 5>(Lcg::new(709314158), colors.values.len() as u64),
         move |x, out| {
             let mut order = [0u8; 256];
@@ -346,31 +292,35 @@ fn part(rows: u64) -> Arc<dyn TableGen> {
             }
             for (k, &c) in order[..5].iter().enumerate() {
                 if k > 0 {
-                    out.push(b' ');
+                    out.push_ascii(b' ');
                 }
-                out.extend_from_slice(colors.values[c as usize].as_bytes());
+                out.push_str(colors.values[c as usize]);
             }
         },
-    );
+    )
+}
+
+fn part(rows: u64) -> DynTable {
+    let d = Dicts::get();
     let mfgr = || ints(1, 1, 5);
     table(
         TableName::Part,
         rows,
         (
             named("p_partkey", key()),
-            named("p_name", names),
+            named("p_name", part_name()),
             named(
                 "p_mfgr",
-                format(mfgr(), |&m, out| {
-                    out.extend_from_slice(b"Manufacturer#");
-                    padded(out, m as u64, 1);
+                format::<_, Bytes, _>(mfgr(), |&m, out| {
+                    out.push_str("Manufacturer#");
+                    out.push_u64_padded(m as u64, 1);
                 }),
             ),
             named(
                 "p_brand",
-                format((mfgr(), ints(46831694, 1, 5)), |(&m, &b), out| {
-                    out.extend_from_slice(b"Brand#");
-                    padded(out, (m * 10 + b) as u64, 1);
+                format::<_, Bytes, _>((mfgr(), ints(46831694, 1, 5)), |(&m, &b), out| {
+                    out.push_str("Brand#");
+                    out.push_u64_padded((m * 10 + b) as u64, 1);
                 }),
             ),
             named("p_type", pick(&d.types, 1841581359)),
@@ -382,13 +332,13 @@ fn part(rows: u64) -> Arc<dyn TableGen> {
     )
 }
 
-fn supplier(rows: u64) -> Arc<dyn TableGen> {
-    const BBB_BASE: &[u8] = b"Customer ";
-    const COMPLAINTS: &[u8] = b"Complaints";
-    const RECOMMENDS: &[u8] = b"Recommends";
+fn supplier(rows: u64) -> DynTable {
+    const BBB_BASE: &str = "Customer ";
+    const COMPLAINTS: &str = "Complaints";
+    const RECOMMENDS: &str = "Recommends";
     const BBB_LEN: usize = BBB_BASE.len() + COMPLAINTS.len();
     let len = CommentLen::new(63.0);
-    let comments = format(
+    let comments = format::<_, Bytes, _>(
         (
             stream::<2>(1341315363),
             stream::<1>(202794285),
@@ -401,7 +351,7 @@ fn supplier(rows: u64) -> Arc<dyn TableGen> {
             let pool = Text::get().pool;
             let c = &pool[c.off as usize..(c.off + c.len) as usize];
             if bound(bbb, 1, 10_000) > 10 {
-                out.extend_from_slice(c);
+                out.push_str(c);
                 return;
             }
             // a Better Business Bureau complaint or recommendation, written
@@ -413,11 +363,11 @@ fn supplier(rows: u64) -> Arc<dyn TableGen> {
             } else {
                 RECOMMENDS
             };
-            out.extend_from_slice(&c[..off]);
-            out.extend_from_slice(BBB_BASE);
-            out.extend_from_slice(&c[off + BBB_BASE.len()..off + BBB_BASE.len() + noise]);
-            out.extend_from_slice(kind);
-            out.extend_from_slice(&c[off + BBB_BASE.len() + noise + kind.len()..]);
+            out.push_str(&c[..off]);
+            out.push_str(BBB_BASE);
+            out.push_str(&c[off + BBB_BASE.len()..off + BBB_BASE.len() + noise]);
+            out.push_str(kind);
+            out.push_str(&c[off + BBB_BASE.len() + noise + kind.len()..]);
         },
     );
     table(
@@ -425,7 +375,7 @@ fn supplier(rows: u64) -> Arc<dyn TableGen> {
         rows,
         (
             named("s_suppkey", key()),
-            named("s_name", numbered(b"Supplier#", key())),
+            named("s_name", numbered("Supplier#", key())),
             named("s_address", address(706178559)),
             named("s_nationkey", nation(110356601)),
             named("s_phone", phone(110356601, 884434366)),
@@ -435,14 +385,14 @@ fn supplier(rows: u64) -> Arc<dyn TableGen> {
     )
 }
 
-fn customer(rows: u64) -> Arc<dyn TableGen> {
+fn customer(rows: u64) -> DynTable {
     let d = Dicts::get();
     table(
         TableName::Customer,
         rows,
         (
             named("c_custkey", key()),
-            named("c_name", numbered(b"Customer#", key())),
+            named("c_name", numbered("Customer#", key())),
             named("c_address", address(881155353)),
             named("c_nationkey", nation(1489529863)),
             named("c_phone", phone(1489529863, 1521138112)),
@@ -459,7 +409,7 @@ const PER_PART: usize = SUPPLIERS_PER_PART as usize;
 
 /// `partsupp`, 4 rows per part: every column is [`children`] of the parts,
 /// its stream reserving 4 draws per part (8 for the comment).
-fn partsupp(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
+fn partsupp(s: &Scale, rows: u64) -> DynTable {
     let suppliers = s.suppliers;
     let per_part = || constant(PER_PART);
     let len = CommentLen::new(124.0);
@@ -512,7 +462,7 @@ fn partsupp(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
 // orders and lineitem
 
 /// An order's date, as dbgen numbers dates.
-fn order_date() -> impl Col<i32> {
+fn order_date() -> impl Dist<i32> {
     ints(
         1066728069,
         MIN_GENERATE_DATE,
@@ -521,12 +471,12 @@ fn order_date() -> impl Col<i32> {
 }
 
 /// An order's number of lines.
-fn line_count() -> impl Col<usize> {
+fn line_count() -> impl Dist<usize> {
     derive(ints(1434868289, 1, LINES as i32), |&n| n as usize)
 }
 
 /// A line stream's values in `lo..=hi`, one per line slot of an order.
-fn slots(seed: i64, lo: i32, hi: i32) -> impl Col<Slots<i32>> {
+fn slots(seed: i64, lo: i32, hi: i32) -> impl Dist<Slots<i32>> {
     Ints::new(seed, lo, hi)
 }
 
@@ -535,7 +485,7 @@ type LineValues = (Slots<i32>, Slots<i32>, Slots<i32>, Slots<i32>, Slots<i32>);
 
 /// The line streams `orders` and `lineitem` both read: quantity, discount,
 /// tax, part and ship delay.
-fn line_values(s: &Scale) -> impl Col<LineValues> {
+fn line_values(s: &Scale) -> impl Dist<LineValues> {
     (
         slots(209208115, 1, 50),
         slots(554590007, 0, 10),
@@ -551,7 +501,7 @@ fn date(d: i32) -> Date32 {
     Date32(d - MIN_GENERATE_DATE + EPOCH)
 }
 
-fn orders(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
+fn orders(s: &Scale, rows: u64) -> DynTable {
     let d = Dicts::get();
     let (customers, past) = (s.customers, *PAST);
     let custkey = derive(stream::<1>(851767375), move |&[x]| {
@@ -596,7 +546,7 @@ fn orders(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
             named(
                 "o_clerk",
                 numbered(
-                    b"Clerk#",
+                    "Clerk#",
                     derive(ints(1171034773, 1, s.clerks), |&c| c as i64),
                 ),
             ),
@@ -614,7 +564,7 @@ type Line = (
 
 /// `lineitem`: the lines of each order, from streams that reserve 7 draws
 /// per order.
-fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
+fn lineitem(s: &Scale, rows: u64) -> DynTable {
     let d = Dicts::get();
     let (suppliers, past) = (s.suppliers, *PAST);
     let len = CommentLen::new(27.0);
@@ -654,7 +604,7 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
                 let flag = if received <= past {
                     let x = flag_x[returned];
                     returned += 1;
-                    Word(d.return_flags.views[d.return_flags.pick_draw(x)])
+                    Word::new(d.return_flags.view(x))
                 } else {
                     n
                 };
@@ -675,8 +625,8 @@ fn lineitem(s: &Scale, rows: u64) -> Arc<dyn TableGen> {
                         date(shipped),
                         date(commit[j] + od),
                         date(received),
-                        Word(d.instructions.views[d.instructions.pick_draw(instr_x[j])]),
-                        Word(d.modes.views[d.modes.pick_draw(mode_x[j])]),
+                        Word::new(d.instructions.view(instr_x[j])),
+                        Word::new(d.modes.view(mode_x[j])),
                         len.make(cx[2 * j], cx[2 * j + 1]),
                     ),
                 ));
@@ -738,14 +688,5 @@ mod tests {
             }
             assert_eq!(order_key(p), OrderGenerator::make_order_key(p));
         }
-    }
-
-    #[test]
-    fn padding() {
-        let mut v = Vec::new();
-        padded(&mut v, 7, 9);
-        padded(&mut v, 0, 1);
-        padded(&mut v, 1_234_567_890, 9);
-        assert_eq!(v, b"00000000701234567890");
     }
 }

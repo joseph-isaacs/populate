@@ -226,11 +226,10 @@ impl StrBuf<'_> {
             debug_assert!(b.is_ascii(), "push_ascii_blocks: input is not ASCII");
             b.map(|x| x & 0x7f)
         };
-        let mut blocks = self.0[start..].chunks_exact_mut(N);
-        for c in &mut blocks {
-            c.copy_from_slice(&mask(next()));
+        let (blocks, rest) = self.0[start..].as_chunks_mut::<N>();
+        for c in blocks {
+            *c = mask(next());
         }
-        let rest = blocks.into_remainder();
         if !rest.is_empty() {
             let n = rest.len();
             rest.copy_from_slice(&mask(next())[..n]);

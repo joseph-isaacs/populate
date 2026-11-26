@@ -461,11 +461,10 @@ impl RandomLayout {
     #[inline]
     pub(crate) fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
         let mut next = self.blocks(tlr, j, f);
-        let mut chunks = out.chunks_exact_mut(6);
-        for c in &mut chunks {
-            c.copy_from_slice(&next());
+        let (chunks, rest) = out.as_chunks_mut::<6>();
+        for c in chunks {
+            *c = next();
         }
-        let rest = chunks.into_remainder();
         let n = rest.len();
         if n > 0 {
             rest.copy_from_slice(&next()[..n]);

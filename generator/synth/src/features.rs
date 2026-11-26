@@ -20,10 +20,8 @@
 //! the table.
 
 use crate::Shape;
-use crate::kernel::{
-    Pool, Quantiles, Rows, View, Views, Weighted, Zipf, row_numbers, threshold, unit,
-};
-use populate_builtins::{derive_columns, named, named_all, range};
+use crate::kernel::{Pool, Quantiles, View, Views, Weighted, Zipf, threshold, unit};
+use populate_builtins::{Rows, derive, derive_columns, named, named_all, range, row_numbers};
 use populate_core::{Columnar, Distribution, Nullable, Spread, SpreadCols, Timestamp, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;
@@ -257,18 +255,9 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC,
             named("id", range(0i64, 1)),
             named(
                 "event_time",
-                derive_columns::<_, _, Millis>(
-                    row_numbers(),
-                    move |rows: &Rows, out: &mut Vec<Millis>| {
-                        out.extend(rows.0.clone().map(|r| {
-                            Timestamp(
-                                DEFAULT_START_MS
-                                    + r as i64 * 100
-                                    + (time.s_time.at(r) % 100) as i64,
-                            )
-                        }))
-                    },
-                ),
+                derive(row_numbers(), move |r: u64| -> Millis {
+                    Timestamp(DEFAULT_START_MS + r as i64 * 100 + (time.s_time.at(r) % 100) as i64)
+                }),
             ),
             named(
                 "split",

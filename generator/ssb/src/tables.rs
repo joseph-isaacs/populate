@@ -35,7 +35,7 @@
 use crate::TableName;
 use crate::cols::{Bytes, Word, children_of};
 use crate::dict::{COLORS, DAYS, Dict, NATIONS, days_in_month, holiday, season};
-use populate_builtins::{Draws, derive, draws, format, named, named_all, range};
+use populate_builtins::{Col, Draws, derive, draws, format, named, named_all, range, row_numbers};
 use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
 use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf};
 use populate_sink_arrow::IntoArrowColumns;
@@ -143,12 +143,6 @@ fn part_price(p: i64) -> i64 {
 // ---------------------------------------------------------------------------
 // Leaves
 
-/// Trait bounds every column distribution meets, so helpers can return
-/// one as `impl Col<T>`.
-pub(crate) trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
-
-impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
-
 /// `d` from its row `row` on: for a stream another table used first.
 pub(crate) fn at<D: Distribution>(mut d: D, row: u64) -> D {
     d.skip(row);
@@ -174,7 +168,7 @@ fn key() -> impl Col<i32> {
 fn day<T: Columnar + Clone + 'static>(
     f: impl Fn(usize) -> T + Clone + Send + Sync + 'static,
 ) -> impl Col<T> {
-    derive(range(0usize, 1), move |&i| f(i))
+    derive(row_numbers(), move |r: u64| f(r as usize))
 }
 
 // ---------------------------------------------------------------------------

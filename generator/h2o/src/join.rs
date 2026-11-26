@@ -17,9 +17,8 @@ use crate::raw::Native;
 use arrow_array::RecordBatch;
 #[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
-use populate_builtins::{checkpointed, column_as, named};
+use populate_builtins::{Col, checkpointed, column_as, named};
 use populate_core::DistChunks;
-use populate_core::Distribution;
 use populate_core::chunks::DEFAULT_CHUNK_ROWS;
 use populate_core::sched::resolve_threads;
 #[cfg(feature = "formats")]
@@ -521,11 +520,6 @@ fn key<const NULL: bool>((c, na): &(Arc<Vec<u32>>, NaSet)) -> impl Col<Int<NULL>
 fn key_name<const NULL: bool>((c, na): &(Arc<Vec<u32>>, NaSet)) -> impl Col<Id<0, NULL>> {
     na_values(column_as(c.clone()), na.clone())
 }
-
-/// Bounds of a table's column distributions.
-trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
-
-impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
 
 /// `t` as one distribution: `id1..idp` (`Int32`), `id4..` (the same keys
 /// as `"id<key>"`, `Utf8View`), the value (`Float64`). Only the left

@@ -102,15 +102,22 @@ impl CatalogReturnsRowGenerator {
 
     /// The next sales line item and, when it is returned, its return:
     /// both tables of the channel from one pass, with the same rows as
-    /// the sales and the returns generators each make alone.
-    pub fn next_with_sale(&mut self) -> Option<(CatalogSalesRow, Option<CatalogReturnsRow>)> {
+    /// the sales and the returns generators each make alone. `f` reads
+    /// them where they are made (they are large to move); also returned
+    /// is whether the line is its order's last.
+    pub fn with_next_sale<R>(
+        &mut self,
+        f: impl FnOnce(&CatalogSalesRow, Option<&CatalogReturnsRow>) -> R,
+    ) -> Option<(R, bool)> {
         let item = self.sales.next_line_item()?;
         let sale = self.sales.generate_sales_row(item.item_sk);
         let ret = item.is_returned.then(|| self.generate_row(&sale));
-        if self.sales.finish_line_item() {
+        let out = f(&sale, ret.as_ref());
+        let last = self.sales.finish_line_item();
+        if last {
             self.abstract_generator.consume_remaining_seeds_for_row();
         }
-        Some((sale, ret))
+        Some((out, last))
     }
 
     /// Generate the return row for `sales_row`.

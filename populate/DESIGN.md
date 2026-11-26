@@ -119,11 +119,12 @@ type.
 lines (`|` after every field, NULL empty: dbgen's and dsdgen's formats)
 without making Arrow arrays. `TextField` is a column that prints one
 value per row (numbers, `Decimal`, `Date32`, `StrCol`, `Nullable` of
-those) and `TextColumns` a row of them (a field, a tuple, `SpreadCols`),
-so each table's line writer is compiled for its row type.
+those) and `TextColumns` a row of them (a field, a tuple, `SpreadCols`,
+a child table's `ChildCols`), so each table's line writer is compiled for
+its row type. `DistTable::text` writes a range of rows that way.
 `TextColumns::write_row_masked` prints a row with some fields NULL by a
 caller's `null(j)`, for columns whose NULLs live outside them (a row's
-null bitmap). `DistTable::text` writes a range of rows that way.
+null bitmap).
 
 `write_parquet_many_in_batches` writes tables whose generated batches
 vary in length (a ticket's 8 to 16 lines) with pages cut as if the rows

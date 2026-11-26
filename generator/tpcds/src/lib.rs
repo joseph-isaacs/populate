@@ -32,7 +32,6 @@
 //! ```
 
 mod channels;
-mod cols;
 pub mod dat;
 mod dims;
 mod gen_tables;

@@ -19,8 +19,8 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+use populate_gen_tpch::{TableName, Tpch, TpchTable, parquet_props};
 use populate_table::cli::{Args, Tool, no_flags, report, write};
-use populate_tpch::{TableName, Tpch, TpchTable, parquet_props};
 use std::time::Instant;
 
 /// mimalloc: 10-18% faster runs than the system allocator (buffers are
@@ -31,8 +31,8 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
     let tool = Tool {
-        batch: populate_tpch::DEFAULT_BATCH_SIZE,
-        ..Tool::new("tpch-gen", "tbl", populate_tpch::MAX_SCALE_FACTOR)
+        batch: populate_gen_tpch::DEFAULT_BATCH_SIZE,
+        ..Tool::new("tpch-gen", "tbl", populate_gen_tpch::MAX_SCALE_FACTOR)
     };
     let a = Args::parse(tool, || TableName::ALL.to_vec(), no_flags)
         .unwrap_or_else(|e| Args::<TableName>::exit_usage(&e));

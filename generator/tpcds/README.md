@@ -1,17 +1,17 @@
-# populate-tpcds
+# populate-gen-tpcds
 
 TPC-DS data byte-identical to the reference `dsdgen`, on all cores: all 24
 tables as Arrow `RecordBatch`es, Parquet, or dsdgen's own `.dat` text.
 
 ```sh
 # all tables at SF 1 as Parquet in ./tpcds (one file per table)
-cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds
+cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds
 
 # dsdgen's .dat files, byte for byte
-cargo run -p populate-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --format dat
+cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- --sf 1 --out tpcds --format dat
 
 # a few tables, generation only (no output), 4 threads
-cargo run -p populate-tpcds --release --bin tpcds-gen -- \
+cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- \
     --sf 10 --tables store_sales,store_returns --format none --threads 4
 ```
 
@@ -23,7 +23,7 @@ default 256Ki), `--compression snappy|none`, `--no-dictionary`,
 From Rust:
 
 ```rust
-use populate_tpcds::{Encoding, TableName, Tpcds};
+use populate_gen_tpcds::{Encoding, TableName, Tpcds};
 
 let ds = Tpcds::new(10.0);
 let sales = ds.table(TableName::StoreSales);
@@ -138,7 +138,7 @@ interleaved and each keeps its best time: best of 3 at SF 1 (output to
 tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
 `--encoding utf8`, so the files are `cmp`-identical to tpcgen-cli's.
 
-| SF | output           | threads | tpcgen-cli | populate-tpcds | speedup |
+| SF | output           | threads | tpcgen-cli | populate-gen-tpcds | speedup |
 |---:|------------------|--------:|-----------:|---------------:|--------:|
 | 1  | `.dat`           | 1       | 9.51 s     | 3.04 s         | 3.1x    |
 | 1  | `.dat`           | 4       | 3.05 s     | 0.92 s         | 3.3x    |
@@ -154,7 +154,7 @@ Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
 
 ### Where the time goes
 
-`cargo run -p populate-tpcds --release --example stages` times each stage
+`cargo run -p populate-gen-tpcds --release --example stages` times each stage
 per table on one thread, in ms, at SF 1: tpcdsgen's own row generation,
 then this crate's Arrow, `.dat` and Parquet output (each includes the
 stages before it). A returns table is generated with its sales, so its

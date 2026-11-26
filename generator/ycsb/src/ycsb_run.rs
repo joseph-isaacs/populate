@@ -84,7 +84,7 @@ pub enum RequestDistribution {
 /// The operations of `ycsb run` with `CoreWorkload`, on top of a load.
 ///
 /// ```
-/// use populate_ycsb::{Ycsb, YcsbRun};
+/// use populate_gen_ycsb::{Ycsb, YcsbRun};
 ///
 /// // workload A: 50% reads, 50% updates, zipfian keys
 /// let run = YcsbRun::workload('a', Ycsb::new(1000), 10_000);

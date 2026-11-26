@@ -1,9 +1,14 @@
 [package]
-name = "populate-synth"
+name = "populate-gen-synth"
+publish = false
 description = "Synthetic dataset shapes on populate-table: taxi trips, web hits, ML features and vector embeddings, deterministic on all cores"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

@@ -1,9 +1,14 @@
 [package]
-name = "populate-dsb"
+name = "populate-gen-dsb"
+publish = false
 description = "DSB (skewed, correlated TPC-DS) data byte-identical to Microsoft's DSB dsdgen, on all cores: Arrow, Parquet or .dat"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

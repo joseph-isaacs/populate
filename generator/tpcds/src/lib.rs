@@ -15,7 +15,7 @@
 //! - `.dat` output is the exact dsdgen text format, for diffing.
 //!
 //! ```
-//! use populate_tpcds::{Encoding, TableName, Tpcds};
+//! use populate_gen_tpcds::{Encoding, TableName, Tpcds};
 //!
 //! let ds = Tpcds::new(1.0);
 //! let ship_mode = ds.table(TableName::ShipMode);

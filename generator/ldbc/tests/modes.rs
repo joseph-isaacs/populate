@@ -12,11 +12,11 @@
 //! - `LDBC_REFERENCE_FACTORS_SF0_1`: `--mode raw --generate-factors
 //!   --factor-format csv` (tables with no defined row order as sets).
 
-use populate_ldbc::bi::{Batches, Bi, BiRun};
-use populate_ldbc::factors::{Factor, UNORDERED};
-use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
-use populate_ldbc::rows::{Rows, TableDef};
-use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
+use populate_gen_ldbc::bi::{Batches, Bi, BiRun};
+use populate_gen_ldbc::factors::{Factor, UNORDERED};
+use populate_gen_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
+use populate_gen_ldbc::rows::{Rows, TableDef};
+use populate_gen_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
 use populate_table::text::write_text_many;
 use std::env::var_os;
 use std::fs;

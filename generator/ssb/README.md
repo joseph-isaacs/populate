@@ -33,6 +33,12 @@ lo.write_parquet(std::fs::File::create("lineorder.parquet")?, 0, None)?;
 lo.write_tbl(std::fs::File::create("lineorder.tbl")?, 0)?;
 ```
 
+Parallel Arrow iteration subdivides work into at most eight batches per
+job, aiming for four jobs per worker on smaller tables. This reduces
+buffered data while preserving each table's row order, including
+`lineorder_flat`. Parquet row groups and text writer chunks retain their
+configured size.
+
 Column names are ssb-dbgen's `ssb.ddl`. Integers are `Int32`
 (`lo_orderkey` is `Int64`), dates are `Int32` `YYYYMMDD` as ssb-dbgen
 prints them, and text is `Utf8View`. `lineorder_flat` has `lineorder`'s 17

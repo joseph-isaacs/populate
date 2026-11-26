@@ -91,3 +91,19 @@ one core.
   64Ki orders or rows.
 
 See [NOTICE.md](NOTICE.md) for licences.
+
+## Native distributions
+
+`Dsb` exposes a typed method for every table (`customer()`, `inventory()`,
+`store_sales()`, and so on), returning `populate_core::DistChunks`.
+`store_sales_returns()`, `catalog_sales_returns()`, and `web_sales_returns()`
+emit paired channels from one pass. Sales/return source counts refer to
+tickets or orders, each producing child rows.
+
+Use `batch`, `chunk`, or `for_each_batch` for native columns and `into_dist()`
+for the underlying distribution. Public aliases and constructors in `raw`
+preserve integer/date/decimal types, nullable values, and string buffers.
+Native inventory and demographics retain their specialized column generators.
+
+Set `default-features = false` to exclude Arrow, Parquet, and `populate-table`.
+The default `formats` feature enables existing output adapters and CLI.

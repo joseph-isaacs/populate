@@ -11,10 +11,10 @@ use populate_combinators::views::{Str, Unshared, Views};
 use populate_core::{StrBuf, StrSink};
 
 /// A string (ASCII): every TPC-C string is written per row.
-pub(crate) type Text = Str<Unshared>;
+pub type Text = Str<Unshared>;
 
 /// A `Utf8View` column of [`Text`].
-pub(crate) type TextCol = Views<Unshared>;
+pub type TextCol = Views<Unshared>;
 
 /// A string column: `f(r, out)` writes row `r`'s string straight into
 /// the column. `avg` is the bytes per row to reserve: the average length of

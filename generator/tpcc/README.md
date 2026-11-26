@@ -76,3 +76,16 @@ For comparison, on the same machine: `go-tpc tpcc prepare --warehouses 10
 Parquet uses per-table writer properties (`tpcc::parquet_props`) that skip
 dictionaries for columns of distinct values. Most of the Parquet time is in
 populate-table's encoder.
+
+## Native columns
+
+`Tpcc` exposes `warehouse()`, `district()`, `customer()`, `history()`,
+`new_order()`, `orders()`, `order_line()`, `item()`, and `stock()` as typed
+`populate_core::DistChunks`. `batch`, `chunk`, and `for_each_batch` return
+native columns; `into_dist()` exposes the underlying distribution. Row
+aliases and string buffers are public in `raw`. Order-line counts refer to
+source orders, each producing child rows. Decimals retain integer units and
+scale; timestamps retain microseconds; nullable values retain validity bits.
+
+Set `default-features = false` for a library without Arrow, Parquet, or
+`populate-table`. The default `formats` feature enables the adapters and CLI.

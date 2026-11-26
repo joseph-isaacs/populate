@@ -17,18 +17,19 @@ license.workspace = true
 mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-combinators = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-combinators = { path = "../combinators", version = "0.1.0", default-features = false }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 itoa = "1"
 
 [features]
-default = ["mimalloc"]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-buffer", "dep:parquet", "populate-combinators/formats"]
+default = ["formats", "mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
@@ -36,9 +37,15 @@ divan = { workspace = true }
 arrow-select = "60"
 
 [[bin]]
+required-features = ["formats"]
 name = "tpcc-gen"
 path = "src/bin/tpcc-gen.rs"
 
 [[bench]]
+required-features = ["formats"]
 name = "tpcc"
 harness = false
+
+[[test]]
+name = "tpcc"
+required-features = ["formats"]

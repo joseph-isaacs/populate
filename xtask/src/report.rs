@@ -1,5 +1,8 @@
-//! Engine-neutral benchmark interchange format, written by `--json`; BENCHMARKS.md describes it.
+//! Engine-neutral benchmark interchange format, written by `--json`.
+//! The types below are the format: `cargo xtask bench-schema` prints
+//! their JSON Schema, and BENCHMARKS.md describes the fields.
 
+use std::collections::BTreeMap;
 use std::env::consts::{ARCH, OS};
 use std::env::{args, current_dir, var};
 use std::fs::{create_dir_all, read_to_string, rename, write};
@@ -8,14 +11,204 @@ use std::process::Command;
 use std::thread::available_parallelism;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use schemars::JsonSchema;
+use serde::Serialize;
 
 use crate::stats::{Sample, summarize};
 use crate::{Cmd, Format, Opts};
 
+/// One `cargo xtask bench --json` run.
+#[derive(Clone, Serialize, JsonSchema)]
+#[schemars(title = "populate benchmark report")]
+pub(super) struct Data {
+    /// Format version; 1 is the only one.
+    schema_version: u32,
+    started_at_unix_seconds: f64,
+    finished_at_unix_seconds: Option<f64>,
+    /// `false` while running or when interrupted; `true` once the whole
+    /// matrix ran, even if samples failed or tools were skipped.
+    complete: bool,
+    source: Source,
+    environment: Environment,
+    /// The command line, program name first.
+    invocation: Vec<String>,
+    configuration: Configuration,
+    specification: Specification,
+    engines: Vec<Engine>,
+    measurements: Vec<Measurement>,
+    skipped: Vec<Skip>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Source {
+    revision: Option<String>,
+    worktree_dirty: Option<bool>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Environment {
+    os: String,
+    architecture: String,
+    os_version: Option<String>,
+    cpu: Option<String>,
+    memory_bytes: Option<u64>,
+    logical_cpus: Option<usize>,
+    rustc: Option<String>,
+    cargo: Option<String>,
+    rustflags: Option<String>,
+    cargo_encoded_rustflags: Option<String>,
+    build_profile: String,
+    output_directory: PathBuf,
+    ldbc_resources: Option<String>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Configuration {
+    scales: Vec<f64>,
+    threads: Vec<usize>,
+    generators: Vec<String>,
+    formats: Vec<String>,
+    /// Minimum timed attempts per engine and configuration.
+    runs: usize,
+    warmup_runs: usize,
+    statistic: String,
+    max_runs: usize,
+    /// More attempts while `(max - min) / median` exceeds this.
+    noise_threshold: f64,
+    sync_output: bool,
+}
+
+/// How the numbers were taken, in words.
+#[derive(Clone, Serialize, JsonSchema)]
+struct Specification {
+    methodology: Methodology,
+    storage: Storage,
+    validation: Vec<Validation>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Methodology {
+    sampling: String,
+    wall_time: String,
+    arrow: String,
+    flush: String,
+    warmups: String,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Storage {
+    output_directory: PathBuf,
+    sync_output: bool,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Validation {
+    compared: String,
+    text: String,
+    parquet: String,
+    result: String,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct Engine {
+    id: String,
+    version: Option<String>,
+    revision: Option<String>,
+}
+
+/// One engine at one configuration.
+#[derive(Clone, Serialize, JsonSchema)]
+struct Measurement {
+    /// An `engines` id.
+    engine: String,
+    workload: String,
+    scale: f64,
+    /// Display label of the resolved size; `command.args` is exact.
+    size: String,
+    format: String,
+    threads: usize,
+    sink: Sink,
+    validation_status: ValidationStatus,
+    command: CommandRecord,
+    /// Every timed attempt, in order.
+    samples: Vec<SampleRecord>,
+    /// `null` when any attempt failed.
+    summary: Option<SummaryRecord>,
+}
+
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum Sink {
+    /// Arrow batches generated and dropped in memory.
+    Memory,
+    File,
+}
+
+/// The output comparison against the reference.
+#[derive(Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ValidationStatus {
+    Passed,
+    /// The outputs differ; the run fails.
+    Mismatch,
+    NotRun,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct CommandRecord {
+    program: PathBuf,
+    args: Vec<String>,
+    stdout_file: Option<String>,
+    /// Environment overrides.
+    env: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SampleRecord {
+    Ok {
+        /// Process start to exit.
+        wall_time_seconds: f64,
+        output_bytes: u64,
+        /// File sync after the timed run, with `--sync-output`.
+        flush_time_seconds: Option<f64>,
+        flushed_wall_time_seconds: Option<f64>,
+    },
+    Error {
+        error: String,
+    },
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+struct SummaryRecord {
+    statistic: String,
+    /// Median.
+    wall_time_seconds: f64,
+    min_wall_time_seconds: f64,
+    max_wall_time_seconds: f64,
+    /// Median, rounded down for an even count.
+    output_bytes: u64,
+    flush_time_seconds: Option<f64>,
+    /// Median of the per-sample totals.
+    flushed_wall_time_seconds: Option<f64>,
+}
+
+#[derive(Clone, PartialEq, Serialize, JsonSchema)]
+struct Skip {
+    engine: String,
+    workload: Option<String>,
+    reason: String,
+}
+
+/// The report's JSON Schema, for `cargo xtask bench-schema`.
+pub(super) fn schema() -> String {
+    let s = schemars::schema_for!(Data);
+    serde_json::to_string_pretty(&s).expect("a schema serializes")
+}
+
 pub(super) struct Report {
     path: Option<PathBuf>,
-    data: Value,
+    data: Data,
 }
 
 fn output(root: &Path, program: &str, arguments: &[&str]) -> Option<String> {
@@ -36,32 +229,31 @@ fn unix_seconds() -> f64 {
         .as_secs_f64()
 }
 
-fn samples(times: &[Result<Sample, String>]) -> Value {
-    Value::Array(
-        times
-            .iter()
-            .map(|r| match r {
-                Ok(s) => json!({
-                    "status": "ok", "wall_time_seconds": s.wall.as_secs_f64(), "output_bytes": s.bytes,
-                    "flush_time_seconds": s.flush.map(|d| d.as_secs_f64()),
-                    "flushed_wall_time_seconds": s.flush.map(|d| (s.wall + d).as_secs_f64())
-                }),
-                Err(e) => json!({"status": "error", "error": e}),
-            })
-            .collect(),
-    )
+fn samples(times: &[Result<Sample, String>]) -> Vec<SampleRecord> {
+    times
+        .iter()
+        .map(|r| match r {
+            Ok(s) => SampleRecord::Ok {
+                wall_time_seconds: s.wall.as_secs_f64(),
+                output_bytes: s.bytes,
+                flush_time_seconds: s.flush.map(|d| d.as_secs_f64()),
+                flushed_wall_time_seconds: s.flush.map(|d| (s.wall + d).as_secs_f64()),
+            },
+            Err(e) => SampleRecord::Error { error: e.clone() },
+        })
+        .collect()
 }
 
-fn summary(times: &[Result<Sample, String>]) -> Value {
-    match summarize(times) {
-        Ok(s) => json!({
-            "statistic": "median", "wall_time_seconds": s.wall.as_secs_f64(), "output_bytes": s.bytes,
-            "min_wall_time_seconds": s.min.as_secs_f64(), "max_wall_time_seconds": s.max.as_secs_f64(),
-            "flush_time_seconds": s.flush.map(|d| d.as_secs_f64()),
-            "flushed_wall_time_seconds": s.flushed_wall.map(|d| d.as_secs_f64())
-        }),
-        Err(_) => Value::Null,
-    }
+fn summary(times: &[Result<Sample, String>]) -> Option<SummaryRecord> {
+    summarize(times).ok().map(|s| SummaryRecord {
+        statistic: "median".into(),
+        wall_time_seconds: s.wall.as_secs_f64(),
+        min_wall_time_seconds: s.min.as_secs_f64(),
+        max_wall_time_seconds: s.max.as_secs_f64(),
+        output_bytes: s.bytes,
+        flush_time_seconds: s.flush.map(|d| d.as_secs_f64()),
+        flushed_wall_time_seconds: s.flushed_wall.map(|d| d.as_secs_f64()),
+    })
 }
 
 impl Report {
@@ -108,71 +300,112 @@ impl Report {
             ),
             _ => (None, None),
         };
-        let mut engines = vec![json!({
-            "id": "populate", "version": env!("CARGO_PKG_VERSION"), "revision": revision
-        })];
+        let mut engines = vec![Engine {
+            id: "populate".into(),
+            version: Some(env!("CARGO_PKG_VERSION").into()),
+            revision: revision.clone(),
+        }];
         for (id, p) in [
             ("tpcgen-cli", &o.tpcgen_cli),
             ("tsbs_generate_data", &o.tsbs_ref),
             ("ssb-dbgen", &o.ssb_dbgen),
         ] {
             if p.is_some() {
-                engines.push(json!({"id": id, "version": null, "revision": null}));
+                engines.push(Engine {
+                    id: id.into(),
+                    version: None,
+                    revision: None,
+                });
             }
         }
+        let text = |s: &str| s.to_string();
         let report = Self {
             path,
-            data: json!({
-                "schema_version": 1,
-                "started_at_unix_seconds": unix_seconds(),
-                "finished_at_unix_seconds": null,
-                "complete": false,
-                "source": {"revision": revision, "worktree_dirty": dirty},
-                "environment": {
-                    "os": OS, "architecture": ARCH,
-                    "os_version": output(root, "uname", &["-srv"]),
-                    "cpu": cpu, "memory_bytes": memory,
-                    "logical_cpus": available_parallelism().ok().map(|n| n.get()),
-                    "rustc": output(root, "rustc", &["-Vv"]),
-                    "cargo": output(root, "cargo", &["-V"]),
-                    "rustflags": var("RUSTFLAGS").ok(),
-                    "cargo_encoded_rustflags": var("CARGO_ENCODED_RUSTFLAGS").ok(),
-                    "build_profile": "release",
-                    "output_directory": o.out,
-                    "ldbc_resources": var("LDBC_DATAGEN_RESOURCES").ok()
+            data: Data {
+                schema_version: 1,
+                started_at_unix_seconds: unix_seconds(),
+                finished_at_unix_seconds: None,
+                complete: false,
+                source: Source {
+                    revision,
+                    worktree_dirty: dirty,
                 },
-                "invocation": args().collect::<Vec<_>>(),
-                "configuration": {
-                    "scales": o.scales, "threads": o.threads,
-                    "generators": o.generators,
-                    "formats": o.formats.iter().map(|f| match f {
-                        Format::Text => "text", Format::Parquet => "parquet", Format::Arrow => "arrow"
-                    }).collect::<Vec<_>>(),
-                    "runs": o.runs,
-                    "warmup_runs": 0,
-                    "statistic": "median",
-                    "max_runs": o.max_runs, "noise_threshold": o.noise_threshold, "sync_output": o.sync_output
+                environment: Environment {
+                    os: OS.into(),
+                    architecture: ARCH.into(),
+                    os_version: output(root, "uname", &["-srv"]),
+                    cpu,
+                    memory_bytes: memory,
+                    logical_cpus: available_parallelism().ok().map(|n| n.get()),
+                    rustc: output(root, "rustc", &["-Vv"]),
+                    cargo: output(root, "cargo", &["-V"]),
+                    rustflags: var("RUSTFLAGS").ok(),
+                    cargo_encoded_rustflags: var("CARGO_ENCODED_RUSTFLAGS").ok(),
+                    build_profile: "release".into(),
+                    output_directory: o.out.clone(),
+                    ldbc_resources: var("LDBC_DATAGEN_RESOURCES").ok(),
                 },
-                "specification": {
-                    "methodology": {
-                        "sampling": "Reverse engine order each trial; extend only noisy engines, up to max_runs. Failures stop retries and invalidate the summary.",
-                        "wall_time": "Process startup through exit, including file close; excludes final fsync and cleanup.",
-                        "arrow": "Generate and drop RecordBatches in memory; no Arrow IPC serialization.",
-                        "flush": "Optional regular-file sync_all after timing. Flushed totals are computed per sample before taking the median; directory metadata is not synced.",
-                        "warmups": "No separate warmups or global page-cache drops. Where a reference runs, populate first runs once untimed: the reference takes its settings from that output, which is compared with the reference's first timed run."
+                invocation: args().collect(),
+                configuration: Configuration {
+                    scales: o.scales.clone(),
+                    threads: o.threads.clone(),
+                    generators: o.generators.iter().map(|g| g.to_string()).collect(),
+                    formats: o
+                        .formats
+                        .iter()
+                        .map(|f| match f {
+                            Format::Text => "text",
+                            Format::Parquet => "parquet",
+                            Format::Arrow => "arrow",
+                        })
+                        .map(text)
+                        .collect(),
+                    runs: o.runs,
+                    warmup_runs: 0,
+                    statistic: "median".into(),
+                    max_runs: o.max_runs,
+                    noise_threshold: o.noise_threshold,
+                    sync_output: o.sync_output,
+                },
+                specification: Specification {
+                    methodology: Methodology {
+                        sampling: text(
+                            "Reverse engine order each trial; extend only noisy engines, up to max_runs. Failures stop retries and invalidate the summary.",
+                        ),
+                        wall_time: text(
+                            "Process startup through exit, including file close; excludes final fsync and cleanup.",
+                        ),
+                        arrow: text(
+                            "Generate and drop RecordBatches in memory; no Arrow IPC serialization.",
+                        ),
+                        flush: text(
+                            "Optional regular-file sync_all after timing. Flushed totals are computed per sample before taking the median; directory metadata is not synced.",
+                        ),
+                        warmups: text(
+                            "No separate warmups or global page-cache drops. Where a reference runs, populate first runs once untimed: the reference takes its settings from that output, which is compared with the reference's first timed run.",
+                        ),
                     },
-                    "storage": {"output_directory": o.out, "sync_output": o.sync_output},
-                    "validation": [{
-                        "compared": "populate's untimed output against the reference's first timed run, per uncached reference configuration",
-                        "text": "byte for byte",
-                        "parquet": "row count, Arrow schema, decoded values, codecs and dictionary use",
-                        "result": "measurement validation_status: passed, mismatch (the run fails) or not_run"
-                    }]
+                    storage: Storage {
+                        output_directory: o.out.clone(),
+                        sync_output: o.sync_output,
+                    },
+                    validation: vec![Validation {
+                        compared: text(
+                            "populate's untimed output against the reference's first timed run, per uncached reference configuration",
+                        ),
+                        text: text("byte for byte"),
+                        parquet: text(
+                            "row count, Arrow schema, decoded values, codecs and dictionary use",
+                        ),
+                        result: text(
+                            "measurement validation_status: passed, mismatch (the run fails) or not_run",
+                        ),
+                    }],
                 },
-                "engines": engines,
-                "measurements": [],
-                "skipped": []
-            }),
+                engines,
+                measurements: Vec::new(),
+                skipped: Vec::new(),
+            },
         };
         // Fail on an unwritable report before starting the expensive build/run.
         report.save(false)?;
@@ -180,10 +413,13 @@ impl Report {
     }
 
     pub(super) fn skip(&mut self, engine: &str, workload: Option<&str>, reason: &str) {
-        let entry = json!({"engine": engine, "workload": workload, "reason": reason});
-        let skips = self.data["skipped"].as_array_mut().unwrap();
-        if !skips.contains(&entry) {
-            skips.push(entry);
+        let entry = Skip {
+            engine: engine.into(),
+            workload: workload.map(Into::into),
+            reason: reason.into(),
+        };
+        if !self.data.skipped.contains(&entry) {
+            self.data.skipped.push(entry);
         }
     }
 
@@ -191,26 +427,29 @@ impl Report {
         &mut self,
         engine: &str,
         (workload, scale, threads): (&str, f64, usize),
-        (size, format, validation): (&str, &str, &str),
+        (size, format, validation): (&str, &str, ValidationStatus),
         cmd: &Cmd,
         times: &[Result<Sample, String>],
     ) {
-        self.data["measurements"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "engine": engine,
-                "workload": workload,
-                "scale": scale,
-                "size": size,
-                "format": if format == "none" { "arrow" } else { format },
-                "threads": threads,
-                "sink": if format == "none" { "memory" } else { "file" },
-                "validation_status": validation,
-                "command": {"program": cmd.program, "args": cmd.args, "stdout_file": cmd.stdout, "env": cmd.env},
-                "samples": samples(times),
-                "summary": summary(times)
-            }));
+        let memory = format == "none";
+        self.data.measurements.push(Measurement {
+            engine: engine.into(),
+            workload: workload.into(),
+            scale,
+            size: size.into(),
+            format: if memory { "arrow" } else { format }.into(),
+            threads,
+            sink: if memory { Sink::Memory } else { Sink::File },
+            validation_status: validation,
+            command: CommandRecord {
+                program: cmd.program.clone(),
+                args: cmd.args.clone(),
+                stdout_file: cmd.stdout.map(Into::into),
+                env: cmd.env.clone(),
+            },
+            samples: samples(times),
+            summary: summary(times),
+        });
     }
 
     pub(super) fn save(&self, complete: bool) -> Result<(), String> {
@@ -218,11 +457,11 @@ impl Report {
             return Ok(());
         };
         let mut data = self.data.clone();
-        data["complete"] = json!(complete);
+        data.complete = complete;
         if complete {
-            data["finished_at_unix_seconds"] = json!(unix_seconds());
+            data.finished_at_unix_seconds = Some(unix_seconds());
         }
-        let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
         let tmp = path.with_extension("json.tmp");
         write(&tmp, bytes)
             .and_then(|()| rename(&tmp, path))
@@ -239,6 +478,8 @@ mod tests {
     use std::process::id;
     use std::time::Duration;
 
+    use serde_json::Value;
+
     #[test]
     fn preserves_samples_and_reports_even_medians() {
         let times = vec![
@@ -253,7 +494,8 @@ mod tests {
                 flush: None,
             }),
         ];
-        let data = samples(&times);
+        let data = serde_json::to_value(samples(&times)).unwrap();
+        let summary = |t: &[Result<Sample, String>]| serde_json::to_value(summary(t)).unwrap();
         assert_eq!(data[0]["wall_time_seconds"], 0.001234);
         assert_eq!(data[1]["output_bytes"], 20);
         assert_eq!(summary(&times)["wall_time_seconds"], 0.001217);
@@ -273,7 +515,8 @@ mod tests {
             }),
             Err("bad \"engine\"\nfailed".into()),
         ];
-        let data = samples(&times);
+        let data = serde_json::to_value(samples(&times)).unwrap();
+        let summary = |t: &[Result<Sample, String>]| serde_json::to_value(summary(t)).unwrap();
         assert_eq!(data[0]["output_bytes"], 0);
         assert_eq!(data[1]["status"], "error");
         assert!(data[1].get("wall_time_seconds").is_none());

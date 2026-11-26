@@ -190,7 +190,7 @@ and the data-set generators under `generator/`.
 
 The generator crates are listed [above](#benchmark-generators). See
 [`populate/DESIGN.md`](populate/DESIGN.md) for the design, and the
-[book](book/src/introduction.md) (`mdbook serve book`) for a guide to
+[book](populate/book/introduction.md) (`mdbook serve book`) for a guide to
 writing tables with the library.
 
 ## Licence

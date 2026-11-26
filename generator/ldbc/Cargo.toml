@@ -1,6 +1,5 @@
 [package]
 name = "populate-gen-ldbc"
-publish = false
 description = "LDBC SNB data identical to the LDBC Spark datagen, on all cores: CSV, Arrow or Parquet"
 version.workspace = true
 edition.workspace = true

@@ -2,7 +2,7 @@
 title = "populate"
 authors = ["populate contributors"]
 language = "en"
-src = "src"
+src = "../populate/book"
 
 [output.html]
 git-repository-url = "https://github.com/joseph-isaacs/populate"

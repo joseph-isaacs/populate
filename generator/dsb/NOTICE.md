@@ -1,6 +1,7 @@
 # Notices
 
-`dsbgen` (in `dsbgen/`) and `dsbgen-arrow` (in `dsbgen-arrow/`) are
+`populate-dsbgen` (in `dsbgen/`, imported as `dsbgen`) and
+`populate-dsbgen-arrow` (in `dsbgen-arrow/`, imported as `dsbgen_arrow`) are
 tpcdsgen 4.0 and tpcdsgen-arrow 4.0 from the
 [tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs) project,
 licensed under the Apache License 2.0 (`dsbgen/LICENSE`), modified here.

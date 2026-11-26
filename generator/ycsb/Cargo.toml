@@ -1,6 +1,5 @@
 [package]
 name = "populate-gen-ycsb"
-publish = false
 description = "YCSB load and run operations, byte-identical to YCSB 0.17.0, on all cores: Arrow, Parquet or TSV"
 version.workspace = true
 edition.workspace = true

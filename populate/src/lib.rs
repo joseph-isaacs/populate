@@ -87,13 +87,13 @@ pub use populate_table as table;
 #[cfg(test)]
 mod test;
 
-/// The book's chapters (`book/` at the repository root), so their examples
+/// The book's chapters (`book/` beside this crate's manifest), so their examples
 /// are compiled and run as doctests.
 #[cfg(all(doctest, feature = "table"))]
 mod book {
     macro_rules! chapters {
         ($($name:ident = $file:literal),+ $(,)?) => {
-            $(#[doc = include_str!(concat!("../../book/src/", $file))]
+            $(#[doc = include_str!(concat!("../book/", $file))]
             mod $name {})+
         };
     }

@@ -45,6 +45,24 @@ feature.
 The minimum supported Rust version is the workspace `rust-version`
 (1.92); CI's `msrv` job checks the workspace builds with it.
 
+## Release packages
+
+Run the publication check from a clean checkout:
+
+```bash
+cargo publish --workspace --dry-run --all-features
+```
+
+Cargo packages and builds all publishable crates in dependency order using
+an isolated staging registry. The dry run uploads nothing. It includes the
+core libraries, all ten generators, and the two DSB support crates;
+benchmark and Python binding crates remain unpublished.
+
+The facade's book chapters live in `populate/book/` so its published
+archive contains the documentation examples. `book/book.toml` points
+mdBook at those same chapters. LDBC's external reference dictionaries are
+not bundled; its README describes how to obtain them.
+
 ## Code Quality
 
 - Run `cargo fmt` before committing

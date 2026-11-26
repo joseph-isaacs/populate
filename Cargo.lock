@@ -397,18 +397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsbgen"
-version = "0.1.0"
-
-[[package]]
-name = "dsbgen-arrow"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "dsbgen",
-]
-
-[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -797,6 +785,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-dsbgen"
+version = "0.1.0"
+
+[[package]]
+name = "populate-dsbgen-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "populate-dsbgen",
+]
+
+[[package]]
 name = "populate-gen-dsb"
 version = "0.1.0"
 dependencies = [
@@ -806,13 +806,13 @@ dependencies = [
  "arrow-select",
  "bytes",
  "divan",
- "dsbgen",
- "dsbgen-arrow",
  "mimalloc",
  "parquet",
  "populate-builtins",
  "populate-combinators",
  "populate-core",
+ "populate-dsbgen",
+ "populate-dsbgen-arrow",
  "populate-sink-arrow",
  "populate-table",
  "rand",

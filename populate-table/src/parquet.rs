@@ -244,6 +244,8 @@ struct State {
     busy: usize,
     /// Per source: whether its chunks are big enough to split by field.
     big: Vec<bool>,
+    /// Chunks not yet started.
+    unpicked: u64,
     failed: Option<ParquetError>,
 }
 
@@ -357,6 +359,9 @@ fn generate_whole(ctx: &Ctx, s: usize, g: u64) -> Result<(Encoded, usize), Parqu
 /// tables).
 const SPLIT_BYTES: usize = 8 << 20;
 
+/// Chunks per thread, at the end of the run, that are split by field.
+const TAIL: u64 = 2;
+
 fn finish(open: Open) -> Encoded {
     open.outputs
         .into_iter()
@@ -406,6 +411,7 @@ fn run(
         in_flight: 0,
         busy: 0,
         big: vec![false; chunks.len()],
+        unpicked: jobs,
         failed: None,
     });
     let wake = Condvar::new();
@@ -426,8 +432,10 @@ fn run(
                         && let Some((s, g)) = st.schedule.pick()
                     {
                         st.in_flight += 1;
-                        // a source is split once a whole chunk showed it big
-                        if st.big[s] {
+                        st.unpicked -= 1;
+                        // only the last chunks of the run are split, and only
+                        // of sources a whole chunk showed big
+                        if st.big[s] && st.unpicked < threads as u64 * TAIL {
                             Job::Generate(s, g)
                         } else {
                             Job::Whole(s, g)

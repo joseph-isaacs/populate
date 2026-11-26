@@ -72,17 +72,19 @@ impl<C: GeneratorColumn, const N: usize> RowSeeds<C, N> {
 impl<C: GeneratorColumn, const N: usize> Distribution for RowSeeds<C, N> {
     type Item = [u32; N];
 
-    #[inline]
-    fn sample(&mut self, _rng: &mut impl Rng) -> [u32; N] {
-        let row = self.seeds.map(|s| s as u32);
-        for (s, &a) in self.seeds.iter_mut().zip(&self.step) {
-            // a stream that never draws keeps its unreduced initial seed,
-            // as tpcdsgen's does
-            if a != 1 {
-                *s = *s * a % M;
+    fn collect_into(&mut self, cols: &mut Vec<[u32; N]>, _rng: &mut impl Rng, n: usize) {
+        cols.reserve(n);
+        cols.extend((0..n).map(|_| {
+            let row = self.seeds.map(|s| s as u32);
+            for (s, &a) in self.seeds.iter_mut().zip(&self.step) {
+                // a stream that never draws keeps its unreduced initial seed,
+                // as tpcdsgen's does
+                if a != 1 {
+                    *s = *s * a % M;
+                }
             }
-        }
-        row
+            row
+        }));
     }
 
     fn skip(&mut self, n: u64) {
@@ -140,9 +142,9 @@ mod tests {
         let mut skipped = RowSeeds::<S, 26>::new();
         skipped.skip(37);
         for row in 0..50 {
-            let at = seeds.sample(&mut rng);
+            let at = seeds.collect(&mut rng, 1)[0];
             if row == 37 {
-                assert_eq!(skipped.sample(&mut rng), at);
+                assert_eq!(skipped.collect(&mut rng, 1)[0], at);
             }
             let mut st = Streams::<S, 26>::at(&at);
             for c in S::values() {

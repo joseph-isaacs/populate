@@ -67,6 +67,12 @@ impl Validity {
             .reserve((self.len + additional).div_ceil(64) - self.words.len());
     }
 
+    /// Drop every row, keeping the buffer.
+    pub fn clear(&mut self) {
+        self.words.clear();
+        self.len = 0;
+    }
+
     /// One more row.
     #[inline(always)]
     pub fn push(&mut self, valid: bool) {

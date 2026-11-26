@@ -9,7 +9,7 @@ use parquet::basic::Compression;
 use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
-use populate_core::{Columns, Distribution};
+use populate_core::{Columnar, Columns, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables};
 use populate_table::text::{TextChunks, TextColumns, TextTables, write_text_many};
 use populate_table::{
@@ -89,10 +89,10 @@ where
     }
 }
 
-impl<D> Source for DistTables<D>
+impl<D, T> Source for DistTables<D>
 where
-    D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowTables + TextTables,
+    D: Distribution<Item = Tables<T>> + Clone + Send + Sync,
+    T: Columnar<Columns: IntoArrowTables + TextTables>,
 {
     fn schemas(&self) -> &[SchemaRef] {
         DistTables::schemas(self)
@@ -120,10 +120,10 @@ fn source(t: TableName, s: &Session) -> (Arc<dyn Source>, usize) {
     {
         (Arc::new(DistTable::new(t.as_str(), rows, dist)), 0)
     }
-    fn channel<D>(names: [TableName; 2], rows: u64, dist: D) -> Arc<dyn Source>
+    fn channel<D, T>(names: [TableName; 2], rows: u64, dist: D) -> Arc<dyn Source>
     where
-        D: Distribution + Clone + Send + Sync + 'static,
-        Columns<D::Item>: IntoArrowTables + TextTables,
+        D: Distribution<Item = Tables<T>> + Clone + Send + Sync + 'static,
+        T: Columnar<Columns: IntoArrowTables + TextTables>,
     {
         Arc::new(DistTables::new(&names.map(TableName::as_str), rows, dist))
     }

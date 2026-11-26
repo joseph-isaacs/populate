@@ -563,11 +563,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `b` (ASCII) as a [`Text`].
-fn text(b: Vec<u8>) -> Text {
-    Text::from(String::from_utf8(b).expect("YCSB strings are ASCII"))
-}
-
 /// One binding call as a row: `op`, `ycsb_key`, `scan_length`,
 /// `read_fields`, then the values written.
 type CallRow = (Text, Text, Option<i32>, Option<Text>, Wide<Option<Text>>);
@@ -592,26 +587,6 @@ impl Ops {
 
 impl Distribution for Ops {
     type Item = Children<CallRow>;
-
-    fn sample(&mut self, _rng: &mut impl Rng) -> Self::Item {
-        let names = self.run.load.field_names();
-        let mut calls = Vec::new();
-        self.run(1, &mut |r| {
-            let mut read = Vec::new();
-            r.read_fields(&names, &mut read);
-            let values = (0..names.len())
-                .map(|f| r.written[f].then(|| text(r.values[f].clone())))
-                .collect();
-            calls.push((
-                Text::from(r.op.to_string()),
-                Text::from(r.key.clone()),
-                r.scan,
-                r.read.is_some().then(|| text(read)),
-                Wide(values),
-            ));
-        });
-        Children(calls)
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _rng: &mut impl Rng, n: usize) {
         let names = self.run.load.field_names();

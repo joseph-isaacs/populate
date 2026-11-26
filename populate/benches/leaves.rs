@@ -1,12 +1,12 @@
 //! Per-leaf cost of columnar collection: each random leaf (and `range`,
-//! `constant`, `map`, `list`) into its columns, `N` rows,
+//! `constant`, `derive`, `list`) into its columns, `N` rows,
 //! one seeded `SmallRng`. The columns are passed to `black_box`, so the
 //! result stays observable.
 
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
 use populate::Distribution;
-use populate::dist::{chars, choose, constant, list, map, range, text, uniform, weighted};
+use populate::dist::{chars, choose, constant, derive, list, range, text, uniform, weighted};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
@@ -80,10 +80,10 @@ fn chars_alnum(b: Bencher) {
 }
 
 #[divan::bench]
-fn map_i64(b: Bencher) {
+fn derive_i64(b: Bencher) {
     run(
         b,
-        map(uniform(black_box(1i64), black_box(50)), |q: i64| q * 100),
+        derive(uniform(black_box(1i64), black_box(50)), |q: &i64| q * 100),
     );
 }
 
@@ -92,7 +92,7 @@ fn list_i64(b: Bencher) {
     run(
         b,
         list(
-            uniform(1usize, 7),
+            uniform(1i32, 7),
             uniform(black_box(1i64), black_box(200_000)),
         ),
     );

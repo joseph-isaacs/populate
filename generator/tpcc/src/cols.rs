@@ -30,11 +30,6 @@ pub(crate) fn per_row<T, F: Fn(u64) -> T>(f: F) -> PerRow<F> {
 impl<T: Columnar, F: Fn(u64) -> T> Distribution for PerRow<F> {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        self.next += 1;
-        (self.f)(self.next - 1)
-    }
-
     fn collect_into(&mut self, cols: &mut T::Columns, _rng: &mut impl Rng, n: usize) {
         let first = self.next;
         self.next += n as u64;
@@ -65,12 +60,6 @@ pub(crate) fn text<F: Fn(u64, &mut StrBuf<'_>)>(avg: usize, f: F) -> TextRows<F>
 
 impl<F: Fn(u64, &mut StrBuf<'_>)> Distribution for TextRows<F> {
     type Item = Text;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Text {
-        let mut c = TextCol::default();
-        self.collect_into(&mut c, rng, 1);
-        Text::from(c.get(0))
-    }
 
     fn collect_into(&mut self, cols: &mut TextCol, _rng: &mut impl Rng, n: usize) {
         cols.reserve_bytes(n, n * self.avg);

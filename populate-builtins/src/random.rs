@@ -7,7 +7,7 @@
 //! so no per-value `String` is ever allocated.
 
 use crate::bounded::Bounded;
-use populate_core::{Columnar, Columns, Distribution, Sink, StrBuf, StrCol, in_local};
+use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf, StrCol, in_local};
 use rand::Rng;
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
 use std::sync::Arc;
@@ -169,11 +169,6 @@ pub fn uniform<T: UniformValue>(lo: T, hi: T) -> Uniform<T> {
 impl<T: UniformValue + Columnar> Distribution for Uniform<T> {
     type Item = T;
 
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        T::sample(&mut self.sampler, rng)
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         T::fill(&mut self.sampler, rng, cols, n);
     }
@@ -204,11 +199,6 @@ pub fn choose<T: Copy>(values: &'static [T]) -> Choose<T> {
 
 impl<T: Copy + Columnar> Distribution for Choose<T> {
     type Item = T;
-
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        self.values[self.idx.next(rng) as usize]
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
@@ -276,16 +266,6 @@ pub fn weighted<T: Copy>(values: &'static [(T, u32)]) -> Weighted<T> {
 impl<T: Copy + Columnar> Distribution for Weighted<T> {
     type Item = T;
 
-    #[inline]
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        let x = self.draw.next(rng) as u32;
-        let i = match &self.pick {
-            Pick::Table(t) => t[x as usize] as usize,
-            Pick::Search(c) => c.partition_point(|&c| c <= x),
-        };
-        self.values[i].0
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let values = self.values;
         match &self.pick {
@@ -329,14 +309,6 @@ macro_rules! string_distribution {
         impl Distribution for $t {
             type Item = String;
 
-            /// Allocates a `String`; collecting writes into the column's
-            /// buffer instead.
-            fn sample(&mut self, rng: &mut impl Rng) -> String {
-                let mut col = StrCol::new();
-                col.push_with(|b| self.write(rng, b));
-                col.get(0).to_owned()
-            }
-
             fn collect_into(&mut self, cols: &mut StrCol, rng: &mut impl Rng, n: usize) {
                 cols.reserve_bytes(n * self.mean_len());
                 in_local(self, |w| cols.push_n_with(n, |b| w.write(rng, b)));
@@ -355,8 +327,8 @@ macro_rules! string_distribution {
 /// with one 16-byte move.
 const WORD_BLOCK: usize = 16;
 
-/// A word and a space, padded to [`WORD_BLOCK`] bytes, and that length.
-type WordBlock = ([u8; WORD_BLOCK], u8);
+/// A word and a space, padded to [`WORD_BLOCK`] bytes.
+type WordBlock = Padded<WORD_BLOCK>;
 
 /// `min..=max` words drawn uniformly from a list, joined by single spaces.
 #[derive(Clone)]
@@ -382,12 +354,8 @@ pub fn text(words: &'static [&'static str], min: usize, max: usize) -> Text {
         .div_ceil(words.len());
     let blocks = words
         .iter()
-        .map(|w| {
-            let mut b = [b' '; WORD_BLOCK];
-            b.get_mut(..w.len())?.copy_from_slice(w.as_bytes());
-            // the word and its space fit
-            (w.len() < WORD_BLOCK).then_some((b, w.len() as u8 + 1))
-        })
+        // the word and its space fit
+        .map(|w| Padded::new(w, w.len() + 1))
         .collect();
     Text {
         words,
@@ -407,8 +375,7 @@ impl WriteStr for Text {
             Some(blocks) => {
                 // every word with a space after it, then the last space off
                 for _ in 0..count {
-                    let (b, len) = &blocks[self.pick.next(rng) as usize];
-                    out.push_padded(b, *len as usize);
+                    out.push_padded(&blocks[self.pick.next(rng) as usize]);
                 }
                 if count > 0 {
                     out.pop_ascii();

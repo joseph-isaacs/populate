@@ -24,7 +24,7 @@
 //!
 //! Steps 1 and 2 are a global pre-pass ([`Ldbc::new`], blocks in
 //! parallel). Step 3 is [`Ldbc::raw`], one distribution of all 14 tables
-//! (a `fan_out` over chunks, its schemas read off its row types). A chunk
+//! (a `flat_map` over chunks, its schemas read off its row types). A chunk
 //! is [`SEGMENT`] persons of an activity block, generated from the state
 //! the block reaches at its first person, so it is a pure function of its
 //! index and the pre-pass, and any number of threads gives the same
@@ -55,7 +55,7 @@ use factors::{FACTOR, FACTOR_TABLES, Factor, FactorCols, FactorInput, Factors};
 use knows::Knows;
 use params::Params;
 use person::{Hot, Person, PersonGenerator};
-use populate_builtins::{fan_out, named_all, range};
+use populate_builtins::{flat_map, named_all, range};
 use populate_core::{Distribution, Sink};
 use populate_table::text::TextChunks;
 use populate_table::{DistTables, par_map, resolve_threads};
@@ -340,7 +340,7 @@ impl Ldbc {
         let names: Vec<&str> = DYNAMIC_COLUMNS.concat();
         named_all(
             &names,
-            fan_out::<_, Raw, _>(range(0u64, 1), |&i: &u64, out: &mut RawCols| {
+            flat_map::<Raw, _, _>(range(0u64, 1), |&i: &u64, out: &mut RawCols| {
                 self.chunk_into(i, out)
             }),
         )
@@ -385,7 +385,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            fan_out::<_, Factors, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
+            flat_map::<Factors, _, _>(range(0u64, 1), move |_: &u64, out: &mut FactorCols| {
                 let f = self.factor_input.as_ref().expect("collect_factors first");
                 let mut statics = StaticCols::default();
                 self.static_into(&mut statics);
@@ -416,7 +416,7 @@ impl Ldbc {
             .collect();
         named_all(
             &names,
-            fan_out::<_, Statics, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
+            flat_map::<Statics, _, _>(range(0u64, 1), |_: &u64, out: &mut StaticCols| {
                 self.static_into(out)
             }),
         )
@@ -434,7 +434,7 @@ impl Ldbc {
         let d = &self.dicts;
         const DBP: &str = "http://dbpedia.org/resource/";
         const DBPOWL: &str = "http://dbpedia.org/ontology/";
-        let (orgs, places, tags, classes) = out;
+        let (orgs, places, tags, classes) = &mut out.tables;
         // organisations: companies, then universities
         for (id, name) in d.companies.name.iter().enumerate() {
             let name = java::clamp(name, 256);

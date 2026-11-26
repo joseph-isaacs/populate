@@ -47,12 +47,6 @@ impl Distribution for InventoryKeys {
     /// `inv_date_sk`, `inv_item_sk`, `inv_warehouse_sk`.
     type Item = (i32, i32, i32);
 
-    fn sample(&mut self, rng: &mut impl Rng) -> (i32, i32, i32) {
-        let mut c = Columns::<Self::Item>::default();
-        self.collect_into(&mut c, rng, 1);
-        (c.0[0], c.1[0], c.2[0])
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
         let scaling = self.session.get_scaling();
         let (date, item, wh) = cols;
@@ -192,23 +186,6 @@ impl Demographics {
 
 impl Distribution for Demographics {
     type Item = DemoRow;
-
-    fn sample(&mut self, _: &mut impl Rng) -> DemoRow {
-        let d = |k| self.digits(k, 1).next().unwrap_or(0);
-        let row = (
-            self.row as i32 + 1,
-            Some(self.gender[d(0)]),
-            Some(self.marital[d(1)]),
-            Some(self.education[d(2)]),
-            Some(self.purchase[d(3)]),
-            Some(self.credit[d(4)]),
-            Some(d(5) as i32),
-            Some(d(6) as i32),
-            Some(d(7) as i32),
-        );
-        self.row += 1;
-        row
-    }
 
     fn collect_into(&mut self, c: &mut Columns<DemoRow>, _: &mut impl Rng, n: usize) {
         let words = |list: &[Word], v: &mut StrViews, d| {

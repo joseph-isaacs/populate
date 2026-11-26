@@ -11,7 +11,6 @@
 
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, SchemaRef};
-use populate_builtins::ReadRows;
 use populate_core::{Columnar, Columns, Distribution, Sink};
 use populate_sink_arrow::{IntoArrowArray, IntoArrowColumns};
 use populate_table::DistTable;
@@ -98,16 +97,6 @@ macro_rules! value_type {
             }
             fn values_mut(&mut self) -> &mut Vec<u32> {
                 &mut self.0
-            }
-        }
-
-        impl<$($g)*> ReadRows for $col<$($a)*> {
-            type Row = $row<$($a)*>;
-            fn rows(&self) -> usize {
-                self.0.len()
-            }
-            fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-                self.0[start..].iter().map(|&v| $row(v))
             }
         }
 
@@ -245,12 +234,6 @@ where
     Columns<D::Item>: Values,
 {
     type Item = D::Item;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> D::Item {
-        let mut c = Columns::<D::Item>::default();
-        self.collect_into(&mut c, rng, 1);
-        D::Item::from(c.values()[0])
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<D::Item>, rng: &mut impl Rng, n: usize) {
         let start = cols.values().len();

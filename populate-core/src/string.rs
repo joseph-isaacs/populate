@@ -53,6 +53,52 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     v.truncate(start + n);
 }
 
+/// A short string padded with spaces to `W` bytes, for
+/// [`StrBuf::push_padded`]: a word list stored this way is appended by one
+/// fixed-size move per word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Padded<const W: usize> {
+    bytes: [u8; W],
+    len: u8,
+}
+
+impl<const W: usize> Padded<W> {
+    /// `s` padded with spaces to `W` bytes, of which the first `len` are
+    /// the value: `s` cut at `len`, or `s` and `len - s.len()` spaces.
+    /// `None` if `s` or `len` is longer than the block or `len` is not a
+    /// character boundary of `s`.
+    pub fn new(s: &str, len: usize) -> Option<Self> {
+        let ok = s.len() <= W && len <= W && len <= u8::MAX as usize;
+        if !ok || (len < s.len() && !s.is_char_boundary(len)) {
+            return None;
+        }
+        let mut bytes = [b' '; W];
+        bytes[..s.len()].copy_from_slice(s.as_bytes());
+        Some(Padded {
+            bytes,
+            len: len as u8,
+        })
+    }
+
+    /// `bytes`, each masked to 7 bits, of which the first `len` are the
+    /// value: for a block written per row from an ASCII character set, made
+    /// valid at any cut with no check. A non-ASCII byte panics in debug
+    /// builds.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is past the block.
+    #[inline]
+    pub fn ascii(bytes: [u8; W], len: usize) -> Self {
+        assert!(len <= W && len <= u8::MAX as usize, "length past the block");
+        debug_assert!(bytes.is_ascii(), "Padded::ascii: input is not ASCII");
+        Padded {
+            bytes: bytes.map(|b| b & 0x7f),
+            len: len as u8,
+        }
+    }
+}
+
 /// Whether every byte of `b` is ASCII: an OR of its 8-byte words, which
 /// vectorises. `<[u8]>::is_ascii` made YCSB's load (100-byte values) 40%
 /// slower; this costs it a few percent.
@@ -176,18 +222,14 @@ impl StrBuf<'_> {
         }
     }
 
-    /// Append the first `len` bytes of `padded`, a fixed-size block: the
-    /// copy is a fixed-size move, not a `memcpy` call. The whole block is
-    /// written and the tail cut off again, so it must be valid UTF-8 up to
-    /// `len` and at every byte after it (pad with ASCII). Panics if `len`
-    /// is past the block, or the bytes are not valid UTF-8 at `len`.
+    /// Append a [`Padded`] block's value: the copy is a fixed-size move, not
+    /// a `memcpy` call. The whole block is written and the tail cut off
+    /// again, which [`Padded::new`] checked leaves valid UTF-8.
     #[inline]
-    pub fn push_padded<const W: usize>(&mut self, padded: &[u8; W], len: usize) {
-        assert!(len <= W, "push_padded: length past the block");
+    pub fn push_padded<const W: usize>(&mut self, padded: &Padded<W>) {
         let start = self.0.len();
-        self.0.extend_from_slice(padded);
-        self.0.truncate(start + len);
-        debug_assert!(std::str::from_utf8(&self.0[start..]).is_ok());
+        self.0.extend_from_slice(&padded.bytes);
+        self.0.truncate(start + padded.len as usize);
     }
 
     /// Remove the last byte of this value if it is ASCII (so the buffer
@@ -453,11 +495,13 @@ mod tests {
         let mut c = StrCol::new();
         Sink::<&str>::push_n(&mut c, ["red", "", "green"].into_iter());
         Sink::<String>::push_n(&mut c, ["blue".to_string()].into_iter());
-        let mut block = [b' '; 8];
-        block[..3].copy_from_slice(b"one");
+        let space = Padded::<8>::new("one", 4).unwrap();
+        let word = Padded::<8>::new("one", 3).unwrap();
+        assert_eq!(Padded::<8>::new("é", 1), None);
+        assert_eq!(Padded::<2>::new("one", 3), None);
         c.push_n_with(2, |b| {
-            b.push_padded(&block, 4);
-            b.push_padded(&block, 3);
+            b.push_padded(&space);
+            b.push_padded(&word);
             b.extend_ascii(b"xy".iter().copied());
             assert_eq!(b.pop_ascii(), Some(b'y'));
         });
@@ -468,6 +512,16 @@ mod tests {
             got,
             ["red", "", "green", "blue", "one onex", "one onex", ""]
         );
+    }
+
+    #[test]
+    fn ascii_blocks_cut_at_their_length() {
+        let mut c = StrCol::new();
+        c.push_with(|b| b.push_padded(&Padded::ascii(*b"ab-cd   ", 5)));
+        c.push_with(|b| b.push_padded(&Padded::ascii(*b"xyz", 0)));
+        assert_eq!([c.get(0), c.get(1)], ["ab-cd", ""]);
+        let past = std::panic::catch_unwind(|| Padded::ascii(*b"ab", 3));
+        assert!(past.is_err());
     }
 
     #[test]

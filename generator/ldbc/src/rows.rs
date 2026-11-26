@@ -15,7 +15,8 @@ use crate::java::MS_PER_DAY;
 use arrow_array::ArrayRef;
 use arrow_schema::{Field, Schema, SchemaRef};
 use populate_core::{
-    ChildCols, Children, Columns, Date32, Nullable, StrBuf, StrCol, Timestamp, Validity, time_unit,
+    ChildCols, Children, Columns, Date32, Nullable, StrBuf, StrCol, TableCols, Tables, Timestamp,
+    Validity, time_unit,
 };
 use populate_sink_arrow::IntoArrowArray;
 use std::borrow::Cow;
@@ -78,7 +79,7 @@ pub type CommentRow = (
 
 /// One chunk of the 14 dynamic tables, in [`DYNAMIC_NAMES`] order: persons
 /// and their edges, forums, then messages and likes.
-pub type Raw = (
+pub type Raw = Tables<(
     (
         Children<PersonRow>,
         Children<TagEdgeRow>,
@@ -95,7 +96,7 @@ pub type Raw = (
         Children<EdgeRow>,
         Children<EdgeRow>,
     ),
-);
+)>;
 
 /// The columns of [`Raw`].
 pub type RawCols = Columns<Raw>;
@@ -599,6 +600,12 @@ impl<V: IntoCols> IntoRows for ChildCols<V> {
     }
 }
 
+impl<C: IntoRows> IntoRows for TableCols<C> {
+    fn into_rows(self, out: &mut Vec<Rows>) {
+        self.tables.into_rows(out);
+    }
+}
+
 macro_rules! tuple_rows {
     ($($T:ident $i:tt),+) => {
         impl<$($T: IntoRows),+> IntoRows for ($($T,)+) {
@@ -686,12 +693,12 @@ pub static DYNAMIC: LazyLock<Vec<TableDef>> = LazyLock::new(|| {
 });
 
 /// The static tables, in [`STATIC_TABLES`] order.
-pub type Statics = (
+pub type Statics = Tables<(
     Children<OrganisationRow>,
     Children<PlaceRow>,
     Children<TagRow>,
     Children<TagClassRow>,
-);
+)>;
 
 /// The columns of [`Statics`].
 pub type StaticCols = Columns<Statics>;

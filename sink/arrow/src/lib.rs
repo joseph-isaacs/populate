@@ -44,8 +44,8 @@ use arrow_buffer::{
 };
 use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use populate_core::{
-    ChildCols, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols, StrCol,
-    Timestamp, WideCols, time_unit,
+    ChildCols, Columnar, Columns, Date32, Decimal, Distribution, ListCol, Nullable, SpreadCols,
+    StrCol, Tables, Timestamp, WideCols, time_unit,
 };
 use rand::Rng;
 use std::iter::repeat_n;
@@ -564,7 +564,9 @@ fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
 }
 
 /// The columns of several tables made together: a tuple of
-/// [`ChildCols`], one per table (`populate_builtins::fan_out` makes them).
+/// [`ChildCols`], one per table, inside the [`TableCols`] of a
+/// [`Tables`](populate_core::Tables) row (`populate_builtins::flat_map`
+/// makes them).
 pub trait IntoArrowTables {
     /// The number of tables.
     const TABLES: usize;
@@ -627,12 +629,13 @@ tuple_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 /// # Panics
 ///
 /// If `dist` names some of its columns but not all.
-pub fn schemas_of<D: Distribution>(dist: &D) -> Vec<Schema>
+pub fn schemas_of<D, T>(dist: &D) -> Vec<Schema>
 where
-    Columns<D::Item>: IntoArrowTables,
+    D: Distribution<Item = Tables<T>>,
+    T: Columnar<Columns: IntoArrowTables>,
 {
-    let mut types = Vec::with_capacity(<Columns<D::Item>>::TABLES);
-    <Columns<D::Item>>::table_types(&mut types);
+    let mut types = Vec::with_capacity(<Columns<T>>::TABLES);
+    <Columns<T>>::table_types(&mut types);
     let mut names = Vec::new();
     dist.column_names(&mut names);
     let total: usize = types.iter().map(|(t, _)| t.len()).sum();
@@ -706,9 +709,10 @@ mod tests {
 
     impl Distribution for Row {
         type Item = (Decimal<9, 2>, Date32);
-        fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
-            (Decimal(1234), Date32(19_000))
+        fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+            cols.push_n((0..n).map(|_| (Decimal(1234), Date32(19_000))));
         }
+        fn skip(&mut self, _: u64) {}
         fn column_names(&self, out: &mut Vec<String>) {
             out.extend(["price".into(), "day".into()]);
         }
@@ -732,9 +736,10 @@ mod tests {
         struct C(&'static str, bool);
         impl Distribution for C {
             type Item = Option<i64>;
-            fn sample(&mut self, _: &mut impl Rng) -> Option<i64> {
-                self.1.then_some(1)
+            fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+                cols.push_n((0..n).map(|_| self.1.then_some(1)));
             }
+            fn skip(&mut self, _: u64) {}
             fn column_names(&self, out: &mut Vec<String>) {
                 out.push(self.0.into());
             }
@@ -766,15 +771,20 @@ mod tests {
         struct R(i64);
         impl Distribution for R {
             type Item = (Option<i32>, Ts, [f32; 2], Spread<i16, 2>);
-            fn sample(&mut self, _: &mut impl Rng) -> Self::Item {
-                self.0 += 1;
-                let x = self.0;
-                (
-                    (x % 2 == 0).then_some(x as i32),
-                    Timestamp(x),
-                    [x as f32; 2],
-                    Spread([1, 2]),
-                )
+            fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _: &mut impl Rng, n: usize) {
+                cols.push_n((0..n).map(|_| {
+                    self.0 += 1;
+                    let x = self.0;
+                    (
+                        (x % 2 == 0).then_some(x as i32),
+                        Timestamp(x),
+                        [x as f32; 2],
+                        Spread([1, 2]),
+                    )
+                }));
+            }
+            fn skip(&mut self, n: u64) {
+                self.0 += n as i64;
             }
         }
         let s = schema_of(&R(0));

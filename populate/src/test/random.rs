@@ -42,6 +42,13 @@ fn d_list_of_str() -> impl Distribution<Item = Vec<&'static str>> {
 }
 
 #[test]
+fn list_of_picked_strings() {
+    let c = d_list_of_str().collect(&mut rng(), 2);
+    assert_eq!(c.offsets(), [0, 2, 4]);
+    assert!((0..4).all(|i| c.values.get(i) == "x"));
+}
+
+#[test]
 fn uniform_choose_weighted_stay_in_domain() {
     let v: Vec<i32> = d_uniform().collect(&mut rng(), 10_000);
     assert!(v.iter().all(|x| (3..=9).contains(x)));
@@ -74,13 +81,6 @@ fn strings_collect_into_one_buffer() {
 
     let picked: StrCol = d_colors().collect(&mut rng(), 100);
     assert!((0..100).all(|i| ["red", "green"].contains(&picked.get(i))));
-}
-
-#[test]
-fn sampled_rows_match_types() {
-    let s = d_chars().sample(&mut rng());
-    assert!(s.len() == 4 && s.bytes().all(|b| b == b'X' || b == b'Y'));
-    assert_eq!(d_list_of_str().sample(&mut rng()), vec!["x", "x"]);
 }
 
 #[cfg(feature = "arrow")]

@@ -21,16 +21,15 @@ use populate_core::{Columnar, Columns, Date32, Distribution, Nullable};
 use populate_sink_arrow::{IntoArrowArray, IntoArrowColumns};
 use populate_table::{Chunks, mix64};
 use rand::rngs::SmallRng;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 
 /// The object-safe part of [`Distribution`], for one row type `T`.
 ///
-/// Every `Distribution + Clone + Send + Sync` is one. `sample` takes the
-/// caller's RNG as a trait object; `collect` takes a concrete [`SmallRng`],
-/// so the inner distribution's per-row draws are not virtual calls.
+/// Every `Distribution + Clone + Send + Sync` is one. `collect` takes a
+/// concrete [`SmallRng`], so the inner distribution's per-row draws are not
+/// virtual calls.
 pub trait DynDist<T: Columnar>: Send + Sync {
-    fn sample_dyn(&mut self, rng: &mut dyn RngCore) -> T;
     fn collect_dyn(&mut self, cols: &mut Columns<T>, rng: &mut SmallRng, n: usize);
     fn skip_dyn(&mut self, n: u64);
     fn columns_dyn(&self) -> Columns<T>;
@@ -41,10 +40,6 @@ impl<D> DynDist<D::Item> for D
 where
     D: Distribution + Clone + Send + Sync + 'static,
 {
-    fn sample_dyn(&mut self, mut rng: &mut dyn RngCore) -> D::Item {
-        self.sample(&mut rng)
-    }
-
     fn collect_dyn(&mut self, cols: &mut Columns<D::Item>, rng: &mut SmallRng, n: usize) {
         self.collect_into(cols, rng, n)
     }
@@ -82,10 +77,6 @@ impl<T: Columnar> Clone for BoxDist<T> {
 
 impl<T: Columnar> Distribution for BoxDist<T> {
     type Item = T;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        self.0.sample_dyn(rng)
-    }
 
     /// The box draws from its own [`SmallRng`], seeded from `rng`: a
     /// generic RNG can't cross the trait object, and one seed per column
@@ -138,10 +129,6 @@ where
 {
     type Item = U;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> U {
-        (self.f)(self.inner.sample(rng))
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<U>, rng: &mut impl Rng, n: usize) {
         let src = self.inner.collect(rng, n);
         cols.extend(src.into_iter().map(self.f));
@@ -159,10 +146,6 @@ pub struct Owned<D>(pub D);
 
 impl<D: Distribution<Item = &'static str>> Distribution for Owned<D> {
     type Item = String;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> String {
-        self.0.sample(rng).to_owned()
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<String>, rng: &mut impl Rng, n: usize) {
         self.0.collect_into(cols, rng, n)
@@ -194,11 +177,6 @@ where
     D::Item: Default,
 {
     type Item = Option<D::Item>;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Option<D::Item> {
-        let v = self.inner.sample(rng);
-        (rng.random::<f64>() >= self.rate).then_some(v)
-    }
 
     fn collect_into(
         &mut self,
@@ -445,11 +423,14 @@ pub struct Normal {
 impl Distribution for Normal {
     type Item = f64;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> f64 {
-        // 1 - u is in (0, 1], so the log is finite
-        let u: f64 = 1.0 - rng.random::<f64>();
-        let v: f64 = rng.random();
-        self.mean + self.std * (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+    fn collect_into(&mut self, cols: &mut Vec<f64>, rng: &mut impl Rng, n: usize) {
+        let (mean, std) = (self.mean, self.std);
+        cols.extend((0..n).map(|_| {
+            // 1 - u is in (0, 1], so the log is finite
+            let u: f64 = 1.0 - rng.random::<f64>();
+            let v: f64 = rng.random();
+            mean + std * (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        }));
     }
 
     fn skip(&mut self, _n: u64) {}

@@ -9,7 +9,7 @@
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
-use populate_builtins::{chars, choose, constant, list, map, range, text, uniform, weighted};
+use populate_builtins::{chars, choose, constant, derive, list, range, text, uniform, weighted};
 use populate_table::Table;
 use populate_table::hash_str;
 
@@ -33,7 +33,7 @@ fn table() -> Table {
             "pairs",
             list(constant(2usize), (range(0i32, 1), choose(&["x", "y"]))),
         )
-        .col("mapped", map(uniform(0i64, 9), |x| x * x))
+        .col("mapped", derive(uniform(0i64, 9), |x: &i64| x * x))
         .col("nullable", uniform(0i32, 9))
         .nullable(0.3)
 }

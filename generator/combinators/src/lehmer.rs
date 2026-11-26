@@ -274,10 +274,6 @@ impl<const K: usize> Ints<K> {
 impl<const K: usize> Distribution for Ints<K> {
     type Item = [i32; K];
 
-    fn sample(&mut self, _rng: &mut impl rand::Rng) -> [i32; K] {
-        std::array::from_fn(|_| bounded(self.stream.next_draw(), self.lo, self.hi))
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<[i32; K]>, _rng: &mut impl rand::Rng, n: usize) {
         let start = cols.len();
         cols.resize(start + n, [0; K]);
@@ -295,10 +291,6 @@ pub struct Int(pub Ints<1>);
 
 impl Distribution for Int {
     type Item = i32;
-
-    fn sample(&mut self, rng: &mut impl rand::Rng) -> i32 {
-        self.0.sample(rng)[0]
-    }
 
     fn collect_into(&mut self, cols: &mut Vec<i32>, _rng: &mut impl rand::Rng, n: usize) {
         let start = cols.len();

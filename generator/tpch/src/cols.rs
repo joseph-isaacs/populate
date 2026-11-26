@@ -13,9 +13,9 @@
 use crate::text::{POOL_SIZE, Text, Tpch};
 use arrow_array::ArrayRef;
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
 use populate_combinators::lehmer::bounded;
 use populate_combinators::views;
+use populate_core::RowCount;
 use populate_core::{Columnar, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use std::sync::Arc;
@@ -84,15 +84,9 @@ impl Sink<Comment> for Comments {
     }
 }
 
-impl ReadRows for Comments {
-    type Row = Comment;
-
+impl RowCount for Comments {
     fn rows(&self) -> usize {
         self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Comment> + '_ {
-        self.0[start..].iter().copied()
     }
 }
 

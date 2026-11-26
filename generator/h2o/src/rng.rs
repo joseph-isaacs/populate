@@ -583,10 +583,6 @@ impl<T> Clone for Sample<T> {
 impl<T: Value> Distribution for Sample<T> {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        T::from(self.rng.unif_index(self.range) as u32 + 1)
-    }
-
     fn collect_into(&mut self, cols: &mut T::Col, _rng: &mut impl Rng, n: usize) {
         let cols = cols.values_mut();
         let start = cols.len();
@@ -628,10 +624,6 @@ impl<T> Clone for Runif100<T> {
 
 impl<T: Value> Distribution for Runif100<T> {
     type Item = T;
-
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        T::from(round6_micros(100.0 * self.rng.unif_rand()) as u32)
-    }
 
     fn collect_into(&mut self, cols: &mut T::Col, _rng: &mut impl Rng, n: usize) {
         let cols = cols.values_mut();

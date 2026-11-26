@@ -36,13 +36,6 @@ pub(crate) struct Load {
 impl Distribution for Records {
     type Item = (Text, Wide<Text>);
 
-    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
-        let mut c = self.columns();
-        self.collect_into(&mut c, rng, 1);
-        let fields = c.1.0.iter().map(|f| Text::from(f.get(0))).collect();
-        (Text::from(c.0.get(0)), Wide(fields))
-    }
-
     fn collect_into(
         &mut self,
         (keys, WideCols(fields)): &mut Columns<Self::Item>,

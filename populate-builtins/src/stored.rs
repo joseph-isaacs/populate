@@ -74,11 +74,6 @@ pub fn column_as<Out: From<T> + Columnar, T: Copy>(values: Arc<Vec<T>>) -> Colum
 impl<T: Copy, Out: From<T> + Columnar> Distribution for Column<T, Out> {
     type Item = Out;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> Out {
-        self.at += 1;
-        Out::from(self.values[self.at - 1])
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Out>, _rng: &mut impl Rng, n: usize) {
         let rows = &self.values[self.at..self.at + n];
         cols.reserve(n);
@@ -161,11 +156,6 @@ pub fn checkpointed<D: Distribution + Clone>(
 impl<D: Distribution + Clone> Distribution for Checkpointed<D> {
     type Item = D::Item;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> D::Item {
-        self.at += 1;
-        self.inner.sample(rng)
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<D::Item>, rng: &mut impl Rng, n: usize) {
         self.inner.collect_into(cols, rng, n);
         self.at += n as u64;
@@ -197,16 +187,21 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::Relaxed;
 
-    /// 0, 1, 2, ..., skipping by running (as the default `skip` does).
+    /// 0, 1, 2, ..., skipping by running: `.1` counts the rows run.
     #[derive(Clone)]
     struct Slow(u64, Arc<AtomicU64>);
 
     impl Distribution for Slow {
         type Item = u64;
-        fn sample(&mut self, _rng: &mut impl Rng) -> u64 {
-            self.1.fetch_add(1, Relaxed);
-            self.0 += 1;
-            self.0 - 1
+
+        fn collect_into(&mut self, cols: &mut Vec<u64>, _rng: &mut impl Rng, n: usize) {
+            cols.extend(self.0..self.0 + n as u64);
+            self.skip(n as u64);
+        }
+
+        fn skip(&mut self, n: u64) {
+            self.1.fetch_add(n, Relaxed);
+            self.0 += n;
         }
     }
 
@@ -225,7 +220,7 @@ mod tests {
             assert_eq!(d.collect(rng, 1), [first]);
             // and again from there
             d.skip(13);
-            assert_eq!(d.sample(rng), first + 14);
+            assert_eq!(d.collect(rng, 1), [first + 14]);
         }
         ran.store(0, Relaxed);
         let mut d = k.clone();
@@ -241,7 +236,7 @@ mod tests {
     fn column_rows() {
         let mut c = first_ten();
         let rng = &mut SmallRng::seed_from_u64(0);
-        assert_eq!(c.sample(rng), 0);
+        assert_eq!(c.collect(rng, 1), [0]);
         c.skip(4);
         assert_eq!(c.collect(rng, 3), [5, 6, 7]);
     }

@@ -10,8 +10,7 @@ use arrow_array::builder::make_view;
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
-use populate_core::{Columnar, Decimal as Fixed, Nullable, Sink};
+use populate_core::{Columnar, Decimal as Fixed, Nullable, RowCount, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use populate_table::text::{Cursor, Encoding, TextField};
 use std::sync::Arc;
@@ -58,20 +57,6 @@ impl StrViews {
             let offset = u32::try_from(start).expect("string data exceeds 4GiB");
             self.views.push(make_view(s, 0, offset));
         }
-    }
-
-    /// The string of row `i`.
-    fn get(&self, i: usize) -> String {
-        let v = self.views[i];
-        let len = v as u32 as usize;
-        let bytes = v.to_le_bytes();
-        let s = if len <= 12 {
-            &bytes[4..4 + len]
-        } else {
-            let offset = (v >> 96) as u32 as usize;
-            &self.data[offset..offset + len]
-        };
-        String::from_utf8(s.to_vec()).expect("UTF-8")
     }
 }
 
@@ -198,15 +183,9 @@ impl Sink<Str> for StrViews {
     }
 }
 
-impl ReadRows for StrViews {
-    type Row = Str;
-
+impl RowCount for StrViews {
     fn rows(&self) -> usize {
         self.views.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Str> + '_ {
-        (start..self.views.len()).map(|i| Str(self.get(i)))
     }
 }
 
@@ -278,15 +257,9 @@ impl Sink<Gmt> for GmtCol {
     }
 }
 
-impl ReadRows for GmtCol {
-    type Row = Gmt;
-
+impl RowCount for GmtCol {
     fn rows(&self) -> usize {
         self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Gmt> + '_ {
-        self.0[start..].iter().map(|d| Gmt((d.0 / 100) as i32))
     }
 }
 

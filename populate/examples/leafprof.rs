@@ -1,7 +1,7 @@
 //! Run one built-in leaf over 20 x 64Ki rows, for an instruction-count
 //! profiler: `valgrind --tool=callgrind leafprof <leaf>`.
 use populate::Distribution;
-use populate::dist::{chars, choose, constant, list, map, range, text, uniform, weighted};
+use populate::dist::{chars, choose, constant, derive, list, range, text, uniform, weighted};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use std::hint::black_box;
@@ -30,10 +30,11 @@ fn main() {
         Some("weighted") => run(weighted(WEIGHTS)),
         Some("text") => run(text(WORDS, 2, 6)),
         Some("chars") => run(chars(b"abcdefghijklmnopqrstuvwxyz0123456789", 8, 16)),
-        Some("map") => run(map(uniform(black_box(1i64), black_box(50)), |q: i64| {
-            q * 100
-        })),
-        Some("list") => run(list(uniform(1usize, 7), uniform(1i64, 200_000))),
+        Some("derive") => run(derive(
+            uniform(black_box(1i64), black_box(50)),
+            |q: &i64| q * 100,
+        )),
+        Some("list") => run(list(uniform(1i32, 7), uniform(1i64, 200_000))),
         _ => panic!("leaf?"),
     }
 }

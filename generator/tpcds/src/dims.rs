@@ -7,7 +7,7 @@
 //! is negative, a date is a Julian day (NULL when negative), text is
 //! `Utf8View`, and an address is ten columns ([`Address`]).
 
-use populate_builtins::{ReadRows, named_all};
+use populate_builtins::named_all;
 use populate_combinators::text::{Gmt, PushText, Str};
 use populate_core::{Columnar, Columns, Date32, Decimal as Fixed, Distribution, Sink};
 use rand::Rng;
@@ -190,16 +190,9 @@ impl<G, F, T> Distribution for Dim<G, F, T>
 where
     G: RowGenerator,
     T: Columnar,
-    Columns<T>: ReadRows<Row = T>,
     F: Fn(&G::Item, &mut Columns<T>),
 {
     type Item = T;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        let mut c = Columns::<T>::default();
-        self.collect_into(&mut c, rng, 1);
-        c.rows_from(0).next().expect("one row")
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<T>, _: &mut impl Rng, n: usize) {
         let (session, rows, at) = (&self.session, self.rows, self.at);

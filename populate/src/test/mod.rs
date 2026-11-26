@@ -1,4 +1,5 @@
-use crate::Distribution;
+use crate::{Columns, Distribution};
+use rand::Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -10,10 +11,8 @@ mod list;
 mod list_ticks;
 mod nested;
 mod random;
-mod row;
 mod scalar;
 mod skip;
-mod with_column;
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 
@@ -21,8 +20,8 @@ type Log = Rc<RefCell<Vec<&'static str>>>;
 // Tracked distribution for verifying sampling order
 // ========================================================================
 
-/// Logs its name at every `sample`. It keeps the default `collect_into`, so
-/// it collects by sampling: one tick per row.
+/// Logs its name once per row it collects, all of a block's ticks at
+/// once, so the log shows which column was filled when, and how many rows.
 struct Tracked<D> {
     name: &'static str,
     inner: D,
@@ -32,9 +31,15 @@ struct Tracked<D> {
 impl<D: Distribution> Distribution for Tracked<D> {
     type Item = D::Item;
 
-    fn sample(&mut self, rng: &mut impl rand::Rng) -> Self::Item {
-        self.log.borrow_mut().push(self.name);
-        self.inner.sample(rng)
+    fn collect_into(&mut self, cols: &mut Columns<D::Item>, rng: &mut impl Rng, n: usize) {
+        self.log
+            .borrow_mut()
+            .extend(std::iter::repeat_n(self.name, n));
+        self.inner.collect_into(cols, rng, n);
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.inner.skip(n);
     }
 }
 

@@ -37,7 +37,7 @@ use crate::cols::{Bytes, Word, children_of};
 use crate::dict::{COLORS, DAYS, Dict, NATIONS, days_in_month, holiday, season};
 use populate_builtins::{Draws, derive, draws, format, named, named_all, range};
 use populate_combinators::lehmer::{Int, Ints, Lcg, M, scale};
-use populate_core::{Columnar, Columns, Distribution, Sink, StrBuf};
+use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DynTable;
 
@@ -317,7 +317,7 @@ fn address(row: &[u32; ADDR_DRAWS], out: &mut StrBuf<'_>) {
         *c = ALPHA_NUM[(bits & 63) as usize];
         bits >>= 6;
     }
-    out.push_padded(&b, len);
+    out.push_padded(&Padded::ascii(b, len));
 }
 
 /// Append `prefix` and `k` in 9 zero-padded digits (dbgen's `%09ld`; keys
@@ -332,7 +332,7 @@ fn name(prefix: &[u8; 9], k: u64, out: &mut StrBuf<'_>) {
         *d = b'0' + (k % 10) as u8;
         k /= 10;
     }
-    out.push_padded(&b, 18);
+    out.push_padded(&Padded::ascii(b, 18));
 }
 
 /// Append a phone number: the nation's country code, then three draws.
@@ -360,7 +360,7 @@ fn phone(nation: i32, draws: [u32; 3], out: &mut StrBuf<'_>) {
         digit(c / 10 % 10),
         digit(c % 10),
     ];
-    out.push_padded(&b, b.len());
+    out.push_padded(&Padded::ascii(b, b.len()));
 }
 
 /// Supplier or customer.

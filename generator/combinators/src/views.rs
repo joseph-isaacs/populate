@@ -36,8 +36,7 @@
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
-use populate_core::{Columnar, Sink, StrBuf, StrSink};
+use populate_core::{Append, Columnar, RowCount, Sink, StrBuf, StrSink};
 use populate_sink_arrow::IntoArrowArray;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -273,15 +272,15 @@ impl<B> Sink<Word<B>> for Words<B> {
     }
 }
 
-impl<B> ReadRows for Words<B> {
-    type Row = Word<B>;
-
+impl<B> RowCount for Words<B> {
     fn rows(&self) -> usize {
         self.0.len()
     }
+}
 
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Word<B>> + '_ {
-        self.0[start..].iter().map(|&v| Word::new(v))
+impl<B> Append for Words<B> {
+    fn append_rows(&mut self, other: Self) {
+        self.0.append_rows(other.0);
     }
 }
 
@@ -385,15 +384,9 @@ impl<B> Sink<Str<B>> for Views<B> {
     }
 }
 
-impl<B> ReadRows for Views<B> {
-    type Row = Str<B>;
-
+impl<B> RowCount for Views<B> {
     fn rows(&self) -> usize {
         self.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Str<B>> + '_ {
-        (start..self.len()).map(|i| Str::from(self.get(i)))
     }
 }
 

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 //! The sales channels (store, catalog, web): each sales table and its
-//! returns as one distribution, [`fan_out`] over the tickets or orders.
+//! returns as one distribution, a [`flat_map`] over the tickets or orders.
 //!
 //! A source row is a ticket (an order): its number and where every random
 //! stream of the sales and the returns generator stands at its start
@@ -31,8 +31,10 @@
 
 use crate::masked::{Masked, NOT_NULL as N, NullBits};
 use crate::seeds::{RowSeeds, Streams};
-use populate_builtins::{fan_out, named_all, range};
-use populate_core::{Children, Columns, Decimal as Fixed, Distribution, Sink, Spread, SpreadCols};
+use populate_builtins::{flat_map, named_all, range};
+use populate_core::{
+    Children, Columns, Decimal as Fixed, Distribution, Sink, Spread, SpreadCols, Tables,
+};
 use std::sync::Arc;
 use tpcdsgen::config::{Scaling, Session, Table as Ds};
 use tpcdsgen::distribution::hours_distribution::HoursWeights;
@@ -261,7 +263,7 @@ null_bits!(
         0, 1, N, 3, 4, 5, 6, 7, 8, N, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
     ]
 );
-pub(crate) type StoreTables = (Children<StoreSale>, Children<StoreReturn>);
+pub(crate) type StoreTables = Tables<(Children<StoreSale>, Children<StoreReturn>)>;
 
 const STORE_NAMES: &[&str] = &[
     "ss_sold_date_sk",
@@ -339,10 +341,11 @@ pub(crate) fn store(
     );
     named_all(
         STORE_NAMES,
-        fan_out(
+        flat_map(
             source,
             move |(&ticket, s, r): (&i64, &[u32; 26], &[u32; 22]),
-                  (sales, returns): &mut Columns<StoreTables>| {
+                  out: &mut Columns<StoreTables>| {
+                let (sales, returns) = &mut out.tables;
                 store_ticket(&cx, ticket, s, r, &mut sales.values, &mut returns.values)
             },
         )
@@ -534,7 +537,7 @@ type CatalogSale = Masked<(Spread<i32, 15>, i32, i32, i64, i32, Spread<Dec, 15>)
 /// mode, warehouse, reason; order number; quantity; decimals.
 type CatalogReturn =
     Masked<(i32, i32, i32, Spread<i32, 13>, i64, i32, Spread<Dec, 9>), CatalogReturnBits>;
-pub(crate) type CatalogTables = (Children<CatalogSale>, Children<CatalogReturn>);
+pub(crate) type CatalogTables = Tables<(Children<CatalogSale>, Children<CatalogReturn>)>;
 
 null_bits!(
     CatalogSaleBits = [
@@ -658,10 +661,11 @@ pub(crate) fn catalog(
     );
     named_all(
         CATALOG_NAMES,
-        fan_out(
+        flat_map(
             source,
             move |(&order, s, r): (&i64, &[u32; 39], &[u32; 29]),
-                  (sales, returns): &mut Columns<CatalogTables>| {
+                  out: &mut Columns<CatalogTables>| {
+                let (sales, returns) = &mut out.tables;
                 let date = dates.of(order as u64);
                 catalog_order(
                     &cx,
@@ -863,7 +867,7 @@ type WebSale = Masked<
 /// date, time; item; refunded (4), returning (4), web page, reason; order
 /// number; quantity; decimals.
 type WebReturn = Masked<(i32, i32, i32, Spread<i32, 10>, i64, i32, Spread<Dec, 9>), WebReturnBits>;
-pub(crate) type WebTables = (Children<WebSale>, Children<WebReturn>);
+pub(crate) type WebTables = Tables<(Children<WebSale>, Children<WebReturn>)>;
 
 null_bits!(
     WebSaleBits = [
@@ -954,10 +958,10 @@ pub(crate) fn web(session: &Session) -> impl Distribution<Item = WebTables> + Cl
     );
     named_all(
         WEB_NAMES,
-        fan_out(
+        flat_map(
             source,
-            move |(&order, s, r): (&i64, &[u32; 38], &[u32; 26]),
-                  (sales, returns): &mut Columns<WebTables>| {
+            move |(&order, s, r): (&i64, &[u32; 38], &[u32; 26]), out: &mut Columns<WebTables>| {
+                let (sales, returns) = &mut out.tables;
                 web_order(&cx, order, s, r, &mut sales.values, &mut returns.values)
             },
         )
@@ -1098,7 +1102,7 @@ mod tests {
     use super::*;
     use arrow_array::RecordBatch;
     use arrow_select::concat::concat_batches;
-    use populate_core::Columns;
+    use populate_core::Columnar;
     use populate_sink_arrow::IntoArrowTables;
     use populate_table::DistTables;
     use tpcdsgen::config::SessionBuilder;
@@ -1170,14 +1174,14 @@ mod tests {
 
     /// Source rows `first..=last` (1-based) of `channel` are tpcdsgen-arrow's
     /// sales and returns, in one batch and in batches of 7 source rows.
-    fn check<D>(
+    fn check<D, T>(
         channel: D,
         rows: u64,
         want: impl Fn(u64, u64) -> [Vec<RecordBatch>; 2],
         ranges: &[(u64, u64)],
     ) where
-        D: Distribution + Clone + Sync,
-        Columns<D::Item>: IntoArrowTables,
+        D: Distribution<Item = Tables<T>> + Clone + Sync,
+        T: Columnar<Columns: IntoArrowTables>,
     {
         let t = DistTables::new(&["sales", "returns"], rows, channel);
         for &(first, last) in ranges {

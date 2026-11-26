@@ -10,7 +10,9 @@ use crate::tpcc::{
 };
 use arrow_schema::SchemaRef;
 use populate_builtins::{flat_map, named, named_all};
-use populate_core::{Columns, Decimal, Distribution, Sink, StrBuf, StrSink, Timestamp, time_unit};
+use populate_core::{
+    Children, Columns, Decimal, Distribution, Sink, StrBuf, StrSink, Timestamp, time_unit,
+};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::{DynTable, Stream};
 use rand::Rng;
@@ -165,12 +167,6 @@ impl OrderCustomers {
 
 impl Distribution for OrderCustomers {
     type Item = i32;
-
-    fn sample(&mut self, _rng: &mut impl Rng) -> i32 {
-        let r = self.next;
-        self.next += 1;
-        self.perm(r / ORDERS)[(r % ORDERS) as usize]
-    }
 
     fn collect_into(&mut self, cols: &mut Vec<i32>, _rng: &mut impl Rng, n: usize) {
         cols.reserve(n);
@@ -408,10 +404,10 @@ impl Gen {
             self.s("ol_dist_info"),
         );
         let now: Micros = Timestamp(self.load_time);
-        let lines = flat_map::<_, Line, _, _>(
+        let lines = flat_map::<Children<Line>, _, _>(
             (row_number(), self.ol_cnt()),
-            |(_, n)| *n as usize,
-            move |(r, n), out| {
+            move |(r, n), lines| {
+                let out = &mut lines.values;
                 let (r, n) = (*r, *n);
                 let o = (r % ORDERS + 1) as i32;
                 let d = (r / ORDERS % DISTRICTS) as i32 + 1;
@@ -438,7 +434,9 @@ impl Gen {
                         .push_with(|s| s.push_ascii_with(24, |b| ALNUM.fill(&mut x, b)));
                 }
             },
-        );
+        )
+        // 5 to 15 lines an order, 10 on average
+        .reserving(&[10.2]);
         table(
             TpccTableName::OrderLine,
             rows,

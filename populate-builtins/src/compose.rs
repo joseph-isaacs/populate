@@ -36,9 +36,10 @@
 //! assert_eq!(q.values.len(), lines.iter().sum::<usize>());
 //! ```
 
-use crate::with_column::{ReadRows, RowRefs};
+use crate::RowRefs;
 use populate_core::{
-    ChildCols, Children, Columnar, Columns, Distribution, SeekRng, Sink, StrBuf, StrSink,
+    ChildCols, Children, Columnar, Columns, Distribution, RowCount, SeekRng, Sink, StrBuf, StrSink,
+    TableCols, Tables,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -80,12 +81,6 @@ where
 {
     type Item = [S::Draw; K];
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> [S::Draw; K] {
-        let row = std::array::from_fn(|_| self.stream.next_draw());
-        self.stream.advance(self.per_row - K as u64);
-        row
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<[S::Draw; K]>, _rng: &mut impl Rng, n: usize) {
         let start = cols.len();
         cols.resize(start + n, [S::Draw::default(); K]);
@@ -108,11 +103,29 @@ where
 // Derive
 // ============================================================================
 
+/// A source's columns, kept between collects so their buffers are reused;
+/// empty between collects. A clone starts with none.
+#[derive(Default)]
+struct Scratch<C>(C);
+
+impl<C: Default> Clone for Scratch<C> {
+    fn clone(&self) -> Self {
+        Scratch::default()
+    }
+}
+
+impl<C> std::fmt::Debug for Scratch<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Scratch")
+    }
+}
+
 /// `f` of every row of `source`, collected columnar. See [`derive()`].
 #[derive(Debug, Clone)]
-pub struct Derive<D, F, Out> {
+pub struct Derive<D: Distribution, F, Out> {
     pub source: D,
     pub f: F,
+    scratch: Scratch<Columns<D::Item>>,
     /// Fixed here rather than read off `F`, so a source's `Item` is a
     /// plain type wherever it is used.
     _out: PhantomData<fn() -> Out>,
@@ -120,7 +133,7 @@ pub struct Derive<D, F, Out> {
 
 /// `f` of every row of `source`: a column computed from others.
 ///
-/// Unlike [`map`](crate::map), `source` is collected column by column
+/// `source` is collected column by column
 /// first (a tuple of streams fills each stream's block in one go), then
 /// `f` runs in one pass over those columns. The source columns are
 /// scratch: only `f`'s output is kept. Rows are read in place
@@ -135,6 +148,7 @@ where
     Derive {
         source,
         f,
+        scratch: Scratch::default(),
         _out: PhantomData,
     }
 }
@@ -148,16 +162,12 @@ where
 {
     type Item = Out;
 
-    /// One source row, collected (so read the way `collect` reads it).
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let src = self.source.collect(rng, 1);
-        (self.f)(src.row_refs().next().expect("one row"))
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
+        let src = &mut self.scratch.0;
+        self.source.collect_into(src, rng, n);
         cols.reserve(n);
         cols.push_n(src.row_refs().map(&self.f));
+        src.clear();
     }
 
     fn skip(&mut self, n: u64) {
@@ -199,26 +209,16 @@ impl<D, F, Out> Distribution for DeriveColumns<D, F, Out>
 where
     D: Distribution,
     Out: Columnar,
-    Columns<Out>: ReadRows<Row = Out>,
+    Columns<Out>: RowCount,
     F: Fn(&Columns<D::Item>, &mut Columns<Out>),
 {
     type Item = Out;
-
-    /// One row, written as `collect` writes it.
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let src = self.source.collect(rng, 1);
-        let mut out = Columns::<Out>::default();
-        (self.f)(&src, &mut out);
-        out.rows_from(0)
-            .next()
-            .expect("derive_columns wrote no row")
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
         let before = cols.rows();
         (self.f)(&src, cols);
-        debug_assert_eq!(
+        assert_eq!(
             cols.rows() - before,
             n,
             "derive_columns: f must write one row per source row"
@@ -260,11 +260,6 @@ where
 {
     type Item = Children<T>;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> Children<T> {
-        let n = self.counts.sample(rng);
-        Children(self.slots.sample(rng)[..n].to_vec())
-    }
-
     fn collect_into(&mut self, cols: &mut ChildCols<Columns<T>>, rng: &mut impl Rng, n: usize) {
         let counts = self.counts.collect(rng, n);
         let slots = self.slots.collect(rng, n);
@@ -291,95 +286,16 @@ where
 
 /// Child rows that `f` writes for each source row. See [`flat_map`].
 #[derive(Debug, Clone)]
-pub struct FlatMap<D, C, F, Out> {
-    pub source: D,
-    pub count: C,
-    pub f: F,
-    _out: PhantomData<fn() -> Out>,
-}
-
-/// Child rows: `f(row, children)` appends `count(row)` rows of `Out` to the
-/// child columns for every row of `source`. For children whose columns
-/// share work (a line's ship date decides its status, its return flag and
-/// its receipt date), where a [`children`] per column would repeat it.
-///
-/// `source` is collected column by column first; then the child columns
-/// are reserved for exactly the rows the counts add up to, and `f` runs
-/// once per source row, writing straight into them. Rows are read in
-/// place ([`RowRefs`]): a row of a `Vec<T>` column is a `&T`.
-pub fn flat_map<D, Out, C, F>(source: D, count: C, f: F) -> FlatMap<D, C, F, Out>
-where
-    D: Distribution,
-    Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    C: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>) -> usize,
-    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
-{
-    FlatMap {
-        source,
-        count,
-        f,
-        _out: PhantomData,
-    }
-}
-
-impl<D, C, F, Out> Distribution for FlatMap<D, C, F, Out>
-where
-    D: Distribution,
-    Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    Columns<Out>: ReadRows<Row = Out>,
-    C: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>) -> usize,
-    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
-{
-    type Item = Children<Out>;
-
-    /// One source row, collected (so read the way `collect` reads it).
-    fn sample(&mut self, rng: &mut impl Rng) -> Children<Out> {
-        let src = self.source.collect(rng, 1);
-        let mut out = Columns::<Out>::default();
-        for row in src.row_refs() {
-            (self.f)(row, &mut out);
-        }
-        Children(out.rows_from(0).collect())
-    }
-
-    fn collect_into(&mut self, cols: &mut ChildCols<Columns<Out>>, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
-        let total = src.row_refs().map(&self.count).sum();
-        let start = cols.values.rows();
-        cols.values.reserve(total);
-        for row in src.row_refs() {
-            (self.f)(row, &mut cols.values);
-        }
-        debug_assert_eq!(
-            cols.values.rows() - start,
-            total,
-            "flat_map: children written differ from their counts"
-        );
-        cols.sources += n;
-    }
-
-    fn skip(&mut self, n: u64) {
-        self.source.skip(n);
-    }
-}
-
-// ============================================================================
-// FanOut
-// ============================================================================
-
-/// Several child tables written in one pass over a source. See [`fan_out`].
-#[derive(Debug, Clone)]
-pub struct FanOut<D, F, Out> {
+pub struct FlatMap<D: Distribution, F, Out> {
     pub source: D,
     pub f: F,
-    /// Children to reserve per source row, per table ([`FanOut::reserving`]).
+    scratch: Scratch<Columns<D::Item>>,
+    /// Children to reserve per source row, per table ([`FlatMap::reserving`]).
     pub reserve: Vec<f64>,
     _out: PhantomData<fn() -> Out>,
 }
 
-impl<D, F, Out> FanOut<D, F, Out> {
+impl<D: Distribution, F, Out> FlatMap<D, F, Out> {
     /// Reserve `per_source[k]` children per source row in table `k` before
     /// collecting, so the columns are allocated once instead of grown (each
     /// growth copies them). A table's mean children per source row, with a
@@ -390,65 +306,63 @@ impl<D, F, Out> FanOut<D, F, Out> {
     }
 }
 
-/// Several child tables from one pass over `source`: `Out` is a tuple of
-/// [`Children`], one per table, and `f(row, tables)` appends each source
-/// row's children to any of them (`tables.0.values`, `tables.1.values`,
-/// ...), as many as it likes, none included.
+/// Child rows: `f(row, out)` appends any number of rows, none included, to
+/// the child columns `out` for every row of `source`.
 ///
-/// For tables made by the same loop, where generating each alone would
-/// repeat it: a sale and its return (about one line in ten is returned,
-/// decided while making the line), or a graph's nodes and edges. Like
-/// [`flat_map`], `source` is collected column by column first and its rows
-/// are read in place ([`RowRefs`]).
+/// `Out` is one child table, [`Children<T>`](Children) (`f` writes
+/// `out.values`), or several made in the same loop,
+/// [`Tables`](populate_core::Tables) of a tuple of `Children` (`f` writes
+/// `out.0.values`, `out.1.values`, ...): a sale and its return, decided
+/// while making the sale, or a graph's nodes and edges. It is for children
+/// whose columns share work (a line's ship date decides its status, its
+/// return flag and its receipt date), where a [`children`] per column would
+/// repeat it.
 ///
-/// Every table has its own columns and schema; names given with
-/// [`named_all`] cover all tables' columns in order.
-pub fn fan_out<D, Out, F>(source: D, f: F) -> FanOut<D, F, Out>
+/// `source` is collected column by column first, then `f` runs once per
+/// source row, writing straight into the child columns. Rows are read in
+/// place ([`RowRefs`]): a row of a `Vec<T>` column is a `&T`. Names given
+/// with [`named_all`] cover every table's columns in order.
+pub fn flat_map<Out, D, F>(source: D, f: F) -> FlatMap<D, F, Out>
 where
     D: Distribution,
     Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    Columns<Out>: ChildTables<Rows = Out>,
+    Out: ChildTables,
     F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
 {
-    FanOut {
+    FlatMap {
         source,
         f,
+        scratch: Scratch::default(),
         reserve: Vec::new(),
         _out: PhantomData,
     }
 }
 
-impl<D, F, Out> Distribution for FanOut<D, F, Out>
+impl<D, F, Out> Distribution for FlatMap<D, F, Out>
 where
     D: Distribution,
     Columns<D::Item>: RowRefs,
-    Out: Columnar,
-    Columns<Out>: ChildTables<Rows = Out>,
+    Out: ChildTables,
     F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut Columns<Out>),
 {
     type Item = Out;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        let mut out = Columns::<Out>::default();
-        self.collect_into(&mut out, rng, 1);
-        out.into_rows()
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
+        let src = &mut self.scratch.0;
+        self.source.collect_into(src, rng, n);
         if !self.reserve.is_empty() {
             let per: Vec<usize> = self
                 .reserve
                 .iter()
                 .map(|r| (r * n as f64).ceil() as usize)
                 .collect();
-            cols.reserve_children(&per);
+            Out::reserve_children(cols, &per);
         }
         for row in src.row_refs() {
             (self.f)(row, cols);
         }
-        cols.add_sources(n);
+        src.clear();
+        Out::add_sources(cols, n);
     }
 
     fn skip(&mut self, n: u64) {
@@ -456,67 +370,51 @@ where
     }
 }
 
-/// The columns of a tuple of [`Children`]: several child tables of the
-/// same source rows ([`fan_out`]).
-pub trait ChildTables: Default {
-    /// The row type collected into these columns.
-    type Rows;
-
+/// The rows [`flat_map`] writes: one child table ([`Children`]), a tuple
+/// of them, or [`Tables`] of a tuple of them.
+pub trait ChildTables: Columnar {
     /// Count `n` more source rows in every table.
-    fn add_sources(&mut self, n: usize);
+    fn add_sources(cols: &mut Self::Columns, n: usize);
 
     /// Reserve `children[k]` more rows in table `k`, for as many tables as
     /// `children` covers; returns the rest of `children`.
-    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize];
-
-    /// Every table's children, as one row (for a collect of one source row).
-    fn into_rows(self) -> Self::Rows;
+    fn reserve_children<'a>(cols: &mut Self::Columns, children: &'a [usize]) -> &'a [usize];
 }
 
-impl<V: ReadRows + Sink<V::Row> + Default> ChildTables for ChildCols<V> {
-    type Rows = Children<V::Row>;
+impl<T: Columnar> ChildTables for Children<T> {
+    fn add_sources(cols: &mut ChildCols<Columns<T>>, n: usize) {
+        cols.sources += n;
+    }
 
-    fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
+    fn reserve_children<'a>(
+        cols: &mut ChildCols<Columns<T>>,
+        children: &'a [usize],
+    ) -> &'a [usize] {
         match children.split_first() {
             Some((&n, rest)) => {
-                self.values.reserve(n);
+                cols.values.reserve(n);
                 rest
             }
             None => children,
         }
-    }
-
-    fn add_sources(&mut self, n: usize) {
-        self.sources += n;
-    }
-
-    fn into_rows(self) -> Children<V::Row> {
-        Children(self.values.rows_from(0).collect())
     }
 }
 
 macro_rules! child_tables {
     ($($T:ident $i:tt),+) => {
         impl<$($T: ChildTables),+> ChildTables for ($($T,)+) {
-            type Rows = ($($T::Rows,)+);
-
-            fn add_sources(&mut self, n: usize) {
-                $(self.$i.add_sources(n);)+
+            fn add_sources(cols: &mut Self::Columns, n: usize) {
+                $($T::add_sources(&mut cols.$i, n);)+
             }
 
-            fn reserve_children<'a>(&mut self, children: &'a [usize]) -> &'a [usize] {
-                $(let children = self.$i.reserve_children(children);)+
+            fn reserve_children<'a>(cols: &mut Self::Columns, children: &'a [usize]) -> &'a [usize] {
+                $(let children = $T::reserve_children(&mut cols.$i, children);)+
                 children
-            }
-
-            fn into_rows(self) -> Self::Rows {
-                ($(self.$i.into_rows(),)+)
             }
         }
     };
 }
 
-child_tables!(A 0);
 child_tables!(A 0, B 1);
 child_tables!(A 0, B 1, C 2);
 child_tables!(A 0, B 1, C 2, D 3);
@@ -528,6 +426,19 @@ child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
 child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
 child_tables!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+impl<T: ChildTables> ChildTables for Tables<T> {
+    fn add_sources(cols: &mut TableCols<Columns<T>>, n: usize) {
+        T::add_sources(&mut cols.tables, n);
+    }
+
+    fn reserve_children<'a>(
+        cols: &mut TableCols<Columns<T>>,
+        children: &'a [usize],
+    ) -> &'a [usize] {
+        T::reserve_children(&mut cols.tables, children)
+    }
+}
 
 // ============================================================================
 // Format
@@ -569,17 +480,6 @@ where
     Columns<T>: StrSink,
 {
     type Item = T;
-
-    /// One source row, collected (so read the way `collect` reads it).
-    fn sample(&mut self, rng: &mut impl Rng) -> T {
-        let src = self.source.collect(rng, 1);
-        let mut out = Vec::new();
-        (self.f)(
-            src.row_refs().next().expect("one row"),
-            &mut StrBuf::appending(&mut out),
-        );
-        T::from(String::from_utf8(out).expect("StrBuf writes UTF-8"))
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
         let src = self.source.collect(rng, n);
@@ -627,10 +527,6 @@ pub fn named_all<D: Distribution>(names: &[&str], inner: D) -> Named<D> {
 
 impl<D: Distribution> Distribution for Named<D> {
     type Item = D::Item;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> D::Item {
-        self.inner.sample(rng)
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<D::Item>, rng: &mut impl Rng, n: usize) {
         self.inner.collect_into(cols, rng, n)
@@ -681,7 +577,7 @@ mod tests {
         let mut d = draws_reserving::<_, 2>(Count(0), 3);
         d.skip(2);
         assert_eq!(d.collect(&mut rng(), 2), [[7, 8], [10, 11]]);
-        assert_eq!(d.sample(&mut rng()), [13, 14]);
+        assert_eq!(d.collect(&mut rng(), 1), [[13, 14]]);
         let mut e = draws::<_, 2>(Count(0));
         assert_eq!(e.collect(&mut rng(), 2), [[1, 2], [3, 4]]);
     }
@@ -694,45 +590,44 @@ mod tests {
         assert_eq!(c.sources, 4);
         // row 0: none, row 1: [3], row 2: [5, 6], row 3: none
         assert_eq!(c.values, [3, 5, 6]);
-        assert_eq!(k.sample(&mut rng()).0, [9]);
+        assert_eq!(k.collect(&mut rng(), 1).values, [9]);
     }
 
     #[test]
-    fn flat_map_writes_counted_children() {
+    fn flat_map_writes_children() {
         let src = (range(1i64, 1), derive(range(0usize, 1), |&i| i % 3));
-        let mut f = flat_map::<_, (i64, i32), _, _>(
+        let mut f = flat_map::<Children<(i64, i32)>, _, _>(
             src,
-            |(_, n): (&i64, &usize)| *n,
-            |(k, n): (&i64, &usize), out: &mut (Vec<i64>, Vec<i32>)| {
+            |(k, n): (&i64, &usize), out: &mut ChildCols<(Vec<i64>, Vec<i32>)>| {
                 for j in 0..*n {
-                    out.push((*k, j as i32));
+                    out.values.push((*k, j as i32));
                 }
             },
-        );
+        )
+        .reserving(&[1.0]);
         let mut g = f.clone();
         let c = f.collect(&mut rng(), 4);
         assert_eq!(c.values, (vec![2, 3, 3], vec![0, 0, 1]));
+        assert_eq!(c.sources, 4);
         g.skip(2);
-        assert_eq!(g.sample(&mut rng()).0, [(3, 0), (3, 1)]);
+        assert_eq!(g.collect(&mut rng(), 1).values, (vec![3, 3], vec![0, 1]));
     }
 
     #[test]
-    fn fan_out_writes_several_tables() {
+    fn flat_map_writes_several_tables() {
         // per key: `k` lines, and a return for every even line
-        type Out = (Children<(i64, i32)>, Children<i64>);
-        let mut f = fan_out::<_, Out, _>(
-            range(1i64, 1),
-            |k: &i64, (lines, returns): &mut Columns<Out>| {
-                for j in 0..*k as i32 {
-                    lines.values.push((*k, j));
-                    if j % 2 == 0 {
-                        returns.values.push(*k * 10 + j as i64);
-                    }
+        type Out = Tables<(Children<(i64, i32)>, Children<i64>)>;
+        let mut f = flat_map::<Out, _, _>(range(1i64, 1), |k: &i64, out: &mut Columns<Out>| {
+            let (lines, returns) = &mut out.tables;
+            for j in 0..*k as i32 {
+                lines.values.push((*k, j));
+                if j % 2 == 0 {
+                    returns.values.push(*k * 10 + j as i64);
                 }
-            },
-        );
+            }
+        });
         let mut g = f.clone();
-        let (lines, returns) = f.collect(&mut rng(), 3);
+        let (lines, returns) = f.collect(&mut rng(), 3).tables;
         assert_eq!(
             lines.values,
             (vec![1, 2, 2, 3, 3, 3], vec![0, 0, 1, 0, 1, 2])
@@ -740,9 +635,9 @@ mod tests {
         assert_eq!(returns.values, [10, 20, 30, 32]);
         assert_eq!((lines.sources, returns.sources), (3, 3));
         g.skip(2);
-        let (l, r) = g.sample(&mut rng());
-        assert_eq!(l.0, [(3, 0), (3, 1), (3, 2)]);
-        assert_eq!(r.0, [30, 32]);
+        let (l, r) = g.collect(&mut rng(), 1).tables;
+        assert_eq!(l.values, (vec![3, 3, 3], vec![0, 1, 2]));
+        assert_eq!(r.values, [30, 32]);
     }
 
     #[test]
@@ -762,7 +657,8 @@ mod tests {
         assert_eq!(b.values, [10, 0, 12]);
         assert_eq!(b.valid.iter().collect::<Vec<_>>(), [true, false, true]);
         e.skip(1);
-        assert_eq!(e.sample(&mut rng()), (22, None));
+        let (a, b) = e.collect(&mut rng(), 1);
+        assert_eq!((a, b.valid.get(0)), (vec![22], false));
     }
 
     #[test]

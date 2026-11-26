@@ -12,7 +12,7 @@
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
+use populate_core::RowCount;
 use populate_core::{Columnar, Distribution, Nullable, Sink, Validity};
 use populate_sink_arrow::IntoArrowArray;
 use populate_table::Stream;
@@ -315,15 +315,9 @@ impl Sink<View> for Views {
     }
 }
 
-impl ReadRows for Views {
-    type Row = View;
-
+impl RowCount for Views {
     fn rows(&self) -> usize {
         self.views.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = View> + '_ {
-        self.views[start..].iter().map(|&v| View(v))
     }
 }
 
@@ -502,15 +496,9 @@ impl Sink<Row> for Rows {
     }
 }
 
-impl ReadRows for Rows {
-    type Row = Row;
-
+impl RowCount for Rows {
     fn rows(&self) -> usize {
         self.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Row> + '_ {
-        self.0.clone().skip(start).map(Row)
     }
 }
 
@@ -526,11 +514,6 @@ pub fn row_numbers() -> RowNumbers {
 
 impl Distribution for RowNumbers {
     type Item = Row;
-
-    fn sample(&mut self, _: &mut impl Rng) -> Row {
-        self.next += 1;
-        Row(self.next - 1)
-    }
 
     fn collect_into(&mut self, cols: &mut Rows, _: &mut impl Rng, n: usize) {
         let end = self.next + n as u64;

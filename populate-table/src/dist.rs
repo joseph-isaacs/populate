@@ -18,7 +18,7 @@ use crate::stream::mix64;
 use crate::text::{Encoding, TextColumns, TextTables, write_columns};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use populate_core::{Columns, Distribution};
+use populate_core::{Columnar, Columns, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, schema_of, schemas_of};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -182,9 +182,10 @@ where
 }
 
 /// Several tables made together by one distribution of `rows` source rows:
-/// its rows are a tuple of [`Children`](populate_core::Children), one per
-/// table (`populate_builtins::fan_out`), so one pass over a range of
-/// source rows makes every table's rows for it.
+/// its rows are [`Tables`] of a tuple of
+/// [`Children`](populate_core::Children), one per table
+/// (`populate_builtins::flat_map`), so one pass over a range of source rows
+/// makes every table's rows for it.
 ///
 /// Chunks, batches and their reproducibility are as for [`DistTable`]; a
 /// chunk is the same source rows in every table, so every table gets one
@@ -200,10 +201,10 @@ pub struct DistTables<D> {
     batch_rows: u64,
 }
 
-impl<D> DistTables<D>
+impl<D, T> DistTables<D>
 where
-    D: Distribution + Clone + Sync,
-    Columns<D::Item>: IntoArrowTables,
+    D: Distribution<Item = Tables<T>> + Clone + Sync,
+    T: Columnar<Columns: IntoArrowTables>,
 {
     /// Tables `names` (one per table the distribution makes), from `rows`
     /// source rows of `dist`, in chunks of 256Ki source rows and batches of
@@ -260,7 +261,7 @@ where
     pub fn batches(&self, first: u64, n: u64) -> Vec<RecordBatch> {
         let cols = collect(&self.dist, first, n);
         let mut tables = Vec::with_capacity(self.schemas.len());
-        cols.into_tables(&mut tables);
+        cols.tables.into_tables(&mut tables);
         tables
             .into_iter()
             .zip(&self.schemas)
@@ -298,10 +299,10 @@ where
     }
 }
 
-impl<D> MultiChunks for DistTables<D>
+impl<D, T> MultiChunks for DistTables<D>
 where
-    D: Distribution + Clone + Sync,
-    Columns<D::Item>: IntoArrowTables,
+    D: Distribution<Item = Tables<T>> + Clone + Sync,
+    T: Columnar<Columns: IntoArrowTables>,
 {
     fn schemas(&self) -> Vec<SchemaRef> {
         self.schemas.clone()
@@ -464,24 +465,22 @@ mod tests {
     use arrow_array::Int64Array;
     use arrow_array::cast::AsArray;
     use arrow_array::types::Int64Type;
-    use populate_builtins::{fan_out, named_all, range};
+    use populate_builtins::{flat_map, named_all, range};
     use populate_core::{Children, Sink};
 
-    type Two = (Children<i64>, Children<(i64, i64)>);
+    type Two = Tables<(Children<i64>, Children<(i64, i64)>)>;
 
     /// Per key `k`: `k % 3` lines of `k`, and a return `(k, 10k)` for odd `k`.
     fn tables() -> DistTables<impl Distribution<Item = Two> + Clone + Sync> {
-        let d = fan_out::<_, Two, _>(
-            range(0i64, 1),
-            |k: &i64, (lines, rets): &mut Columns<Two>| {
-                for _ in 0..k % 3 {
-                    lines.values.push(*k);
-                }
-                if k % 2 == 1 {
-                    rets.values.push((*k, k * 10));
-                }
-            },
-        );
+        let d = flat_map::<Two, _, _>(range(0i64, 1), |k: &i64, out: &mut Columns<Two>| {
+            let (lines, rets) = &mut out.tables;
+            for _ in 0..k % 3 {
+                lines.values.push(*k);
+            }
+            if k % 2 == 1 {
+                rets.values.push((*k, k * 10));
+            }
+        });
         DistTables::new(
             &["lines", "returns"],
             10,

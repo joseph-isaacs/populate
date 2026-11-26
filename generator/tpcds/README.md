@@ -185,7 +185,7 @@ rest:
 Each sales table and its returns (`store_`, `catalog_`, `web_`) come from
 one distribution (`src/channels.rs`): ports of tpcdsgen's sales and
 returns generators (Apache-2.0) built on its public stream and key
-helpers, as one `fan_out` over tickets or orders that pushes each line to
+helpers, as one `flat_map` over tickets or orders that pushes each line to
 the sales columns and, when it is returned, a row to the returns columns.
 tpcdsgen's returns generators replay every sales line item; here the sales
 work is done once. Each channel is tested equal to tpcdsgen-arrow for both

@@ -13,7 +13,7 @@
 //! These impls live in this crate because only the crate that defines a
 //! trait may implement it for tuples (the orphan rule).
 
-use crate::{Columnar, Columns, Distribution, Sink};
+use crate::{Append, Columnar, Columns, Distribution, RowCount, Sink};
 use rand::Rng;
 
 macro_rules! tuple_impls {
@@ -33,12 +33,26 @@ macro_rules! tuple_impls {
             }
         }
 
+        impl<$($S: RowCount),+> RowCount for ($($S,)+) {
+            /// Every field's rows, which must agree.
+            fn rows(&self) -> usize {
+                let rows = [$(self.$idx.rows()),+];
+                assert!(
+                    rows.iter().all(|&r| r == rows[0]),
+                    "tuple columns of different lengths: {rows:?}"
+                );
+                rows[0]
+            }
+        }
+
+        impl<$($S: Append),+> Append for ($($S,)+) {
+            fn append_rows(&mut self, other: Self) {
+                $(self.$idx.append_rows(other.$idx);)+
+            }
+        }
+
         impl<$($T: Distribution),+> Distribution for ($($T,)+) {
             type Item = ($($T::Item,)+);
-
-            fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
-                ($(self.$idx.sample(rng),)+)
-            }
 
             fn collect_into(
                 &mut self,

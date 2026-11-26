@@ -16,8 +16,9 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{ListArray, RecordBatch, StructArray};
 use populate::arrow::{IntoArrowColumns, into_record_batch};
-use populate::dist::{constant, list, map, range};
+use populate::dist::{constant, list, range};
 use populate::{Columns, Distribution};
+use rand::Rng;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -100,23 +101,38 @@ const N: usize = 100_000;
 /// Anything this big is a data buffer, not Arc/schema bookkeeping.
 const DATA_SIZED: usize = 4096;
 
-fn row_len(i: usize) -> usize {
-    i % 8
+fn row_len(i: usize) -> i32 {
+    (i % 8) as i32
+}
+
+/// Lengths 0, 1, ..., 7, 0, 1, ...: `i32`, so a list collects them straight
+/// into its offsets.
+#[derive(Clone, Default)]
+struct Lengths(usize);
+
+impl Distribution for Lengths {
+    type Item = i32;
+
+    fn collect_into(&mut self, cols: &mut Vec<i32>, _: &mut impl Rng, n: usize) {
+        cols.extend((self.0..self.0 + n).map(row_len));
+        self.0 += n;
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.0 += n as usize;
+    }
 }
 
 /// list<i64>: lengths cycle 0..8, values 0, 1, 2, ...
 fn gen_list() -> impl Distribution<Item = Vec<i64>> {
-    list(map(range(0usize, 1), row_len), range(0i64, 1))
+    list(Lengths::default(), range(0i64, 1))
 }
 
 /// list<{ id: i32, tags: list<i64> }>: 2 structs per row, tag lens cycle 0..8
 fn gen_list_of_struct_of_list() -> impl Distribution<Item = Vec<(i32, Vec<i64>)>> {
     list(
-        constant(2usize),
-        (
-            range(0i32, 1),
-            list(map(range(0usize, 1), row_len), range(0i64, 1)),
-        ),
+        constant(2i32),
+        (range(0i32, 1), list(Lengths::default(), range(0i64, 1))),
     )
 }
 
@@ -124,7 +140,7 @@ fn expected_offsets(rows: usize) -> Vec<i32> {
     let mut out = Vec::with_capacity(rows + 1);
     out.push(0);
     for i in 0..rows {
-        out.push(out[i] + row_len(i) as i32);
+        out.push(out[i] + row_len(i));
     }
     out
 }

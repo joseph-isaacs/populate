@@ -33,7 +33,7 @@ use populate_builtins::{
 };
 use populate_combinators::lehmer::{Int, Ints, Lcg, bound, bounded};
 use populate_combinators::views::Picks;
-use populate_core::{Columns, Date32, Decimal, Dist, Distribution, Sink};
+use populate_core::{Children, Columns, Date32, Decimal, Dist, Distribution, Padded, Sink};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DynTable;
 use std::sync::LazyLock;
@@ -182,7 +182,7 @@ fn address(seed: i64) -> impl Dist<Bytes> {
             *c = CHARS[(idx & 0x3f) as usize];
             idx >>= 6;
         }
-        out.push_padded(&b, len);
+        out.push_padded(&Padded::ascii(b, len));
     })
 }
 
@@ -584,9 +584,8 @@ fn lineitem(s: &Scale, rows: u64) -> DynTable {
             stream::<{ 2 * LINES }>(1095462486),
         ),
     );
-    let lines = flat_map::<_, Line, _, _>(
+    let lines = flat_map::<Children<Line>, _, _>(
         per_order,
-        |((_, _, lines), ..)| *lines,
         move |(
             (key, od, lines),
             (qty, disc, tax, part, ship),
@@ -609,7 +608,7 @@ fn lineitem(s: &Scale, rows: u64) -> DynTable {
                 } else {
                     n
                 };
-                out.push((
+                out.values.push((
                     (
                         key,
                         p,
@@ -633,7 +632,10 @@ fn lineitem(s: &Scale, rows: u64) -> DynTable {
                 ));
             }
         },
-    );
+    )
+    // 1 to 7 lines an order, 4 on average; a batch of 8Ki orders is within
+    // 1% of the mean, so the line columns are allocated once
+    .reserving(&[4.1]);
     table(
         TableName::LineItem,
         rows,

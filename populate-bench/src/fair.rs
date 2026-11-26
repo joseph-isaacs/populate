@@ -15,7 +15,7 @@
 use crate::lanes::{A, LANES, M, mulmod, powmod};
 use crate::{LINES_PER_ORDER, Output, batch_bytes, batch_bytes_60, chunks, numeric_schema_60, rng};
 use populate::arrow::DistributionArrow;
-use populate::dist::{Uniform, list, map, range, uniform};
+use populate::dist::{Uniform, derive, list, range, uniform};
 use populate::{Columnar, Distribution};
 use rand::Rng;
 use std::hint::black_box;
@@ -252,10 +252,12 @@ pub fn tpch_direct_with_string_draws(n: usize) -> Output {
 pub fn p2_list_fair(n: usize) -> Output {
     let elem: Uniform<i64> = uniform(1i64, PARTS);
     let mut d = (
-        map(range(1i64, 1), |i: i64| OrderGenerator::make_order_key(i)),
+        derive(range(1i64, 1), |&i: &i64| OrderGenerator::make_order_key(i)),
         list(
-            uniform(1usize, 7),
-            map((elem, uniform(1i64, 50)), |(p, q): (i64, i64)| price(p) * q),
+            uniform(1i32, 7),
+            derive((elem, uniform(1i64, 50)), |(p, q): (&i64, &i64)| {
+                price(*p) * q
+            }),
         ),
     );
     let b = d
@@ -342,13 +344,15 @@ where
 {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        T::from(self.g.next_value())
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<T>, _rng: &mut impl Rng, n: usize) {
         let g = &mut self.g;
         cols.extend((0..n).map(|_| T::from(g.next_value())));
+    }
+
+    fn skip(&mut self, n: u64) {
+        for _ in 0..n {
+            self.g.next_value();
+        }
     }
 }
 
@@ -422,15 +426,17 @@ where
 {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        let mut one = Vec::with_capacity(1);
-        self.fill(&mut one, 1);
-        one.pop().expect("one value")
-    }
-
     fn collect_into(&mut self, cols: &mut Vec<T>, _rng: &mut impl Rng, n: usize) {
         cols.reserve(n);
         self.fill(cols, n);
+    }
+
+    fn skip(&mut self, n: u64) {
+        let mut dropped = Vec::new();
+        self.fill(
+            &mut dropped,
+            usize::try_from(n).expect("skip fits in memory"),
+        );
     }
 }
 

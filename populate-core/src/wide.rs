@@ -56,10 +56,6 @@ impl<T, C: Sink<T> + Default> Sink<Wide<T>> for WideCols<C> {
 impl<D: Distribution> Distribution for Vec<D> {
     type Item = Wide<D::Item>;
 
-    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item {
-        Wide(self.iter_mut().map(|d| d.sample(rng)).collect())
-    }
-
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl Rng, n: usize) {
         if cols.0.is_empty() {
             *cols = self.columns();
@@ -98,9 +94,12 @@ mod tests {
 
     impl Distribution for Count {
         type Item = i64;
-        fn sample(&mut self, _: &mut impl Rng) -> i64 {
-            self.0 += 1;
-            self.0
+        fn collect_into(&mut self, cols: &mut Vec<i64>, _: &mut impl Rng, n: usize) {
+            cols.extend(self.0 + 1..=self.0 + n as i64);
+            self.0 += n as i64;
+        }
+        fn skip(&mut self, n: u64) {
+            self.0 += n as i64;
         }
     }
 
@@ -110,7 +109,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(0);
         let c = d.collect(&mut rng, 2);
         assert_eq!(c.0, vec![vec![1, 2], vec![11, 12], vec![21, 22]]);
-        assert_eq!(d.sample(&mut rng), Wide(vec![3, 13, 23]));
+        assert_eq!(d.collect(&mut rng, 1).0, vec![vec![3], vec![13], vec![23]]);
         let mut cols = d.columns();
         cols.push(Wide(vec![0, 0, 0]));
         assert_eq!(cols.0.len(), 3);
@@ -123,7 +122,7 @@ mod tests {
         let mut cols = WideCols::<Vec<i64>>::default();
         d.collect_into(&mut cols, &mut rng, 1);
         let mut pushed = WideCols::<Vec<i64>>::default();
-        pushed.push(d.sample(&mut rng));
+        pushed.push(Wide(vec![2, 12]));
         assert_eq!(cols.0, vec![vec![1], vec![11]]);
         assert_eq!(pushed.0, vec![vec![2], vec![12]]);
     }

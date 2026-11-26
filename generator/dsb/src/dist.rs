@@ -25,7 +25,9 @@ use dsbgen::types::{Address, Decimal as DsDecimal};
 use populate_builtins::{derive_columns, named_all, range};
 use populate_combinators::lehmer::{A, M, mulmod};
 use populate_combinators::text::{Gmt, Str, StrViews, Word};
-use populate_core::{Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink};
+use populate_core::{
+    Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink, Tables,
+};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables, into_record_batch_with};
 use populate_table::text::{TextColumns, TextTables, write_columns};
 use populate_table::{DistTable, DistTables};
@@ -235,15 +237,6 @@ where
     Out: Columnar,
 {
     type Item = Out;
-
-    fn sample(&mut self, _rng: &mut impl rand::Rng) -> Out {
-        let (session, next) = (&self.session, self.next);
-        let g = self
-            .open
-            .get_or_insert_with(|| G::open(session, next, u64::MAX));
-        self.next += 1;
-        (self.f)(&g.next().expect("a row in range"))
-    }
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, _rng: &mut impl rand::Rng, n: usize) {
         let (session, next) = (&self.session, self.next);
@@ -996,17 +989,6 @@ type InventoryRow = (i32, i32, i32, Option<i32>);
 impl Distribution for Inventory {
     type Item = InventoryRow;
 
-    fn sample(&mut self, rng: &mut impl rand::Rng) -> InventoryRow {
-        let mut c = Columns::<InventoryRow>::default();
-        self.collect_into(&mut c, rng, 1);
-        (
-            c.0[0],
-            c.1[0],
-            c.2[0],
-            c.3.valid.get(0).then_some(c.3.values[0]),
-        )
-    }
-
     fn collect_into(
         &mut self,
         (date, item_sk, wh, qty): &mut Columns<InventoryRow>,
@@ -1111,9 +1093,8 @@ pub(crate) trait Fact {
     type Cols: Columnar;
     /// Lines per source row on average (`TableName::rows_per_source_row`).
     const PER_SOURCE_ROW: f64;
-    fn cols(&self) -> Self::Cols;
-    /// [`cols`](Self::cols) written straight into the columns, without
-    /// making the tuple.
+    /// The line written straight into the columns, without making the
+    /// row's tuple.
     fn push(&self, cols: &mut Columns<Self::Cols>);
 }
 
@@ -1130,11 +1111,6 @@ macro_rules! fact {
             const NAMES: &[&str] = $names;
             type Cols = $cols;
             const PER_SOURCE_ROW: f64 = $per;
-            fn cols(&self) -> $cols {
-                let $r = self;
-                let $n = $r.null_bit_map();
-                ($(($($e,)+),)+)
-            }
             #[inline]
             fn push(&self, cols: &mut Columns<$cols>) {
                 let $r = self;
@@ -1439,12 +1415,6 @@ where
 {
     type Item = Children<<G::Item as Fact>::Cols>;
 
-    fn sample(&mut self, _rng: &mut impl rand::Rng) -> Self::Item {
-        let mut v = Vec::new();
-        self.lines(1, |r| v.push(r.cols()));
-        Children(v)
-    }
-
     fn collect_into(
         &mut self,
         cols: &mut Columns<Self::Item>,
@@ -1547,26 +1517,18 @@ where
     G::Sale: Fact,
     G::Item: Fact,
 {
-    type Item = (
+    type Item = Tables<(
         Children<<G::Sale as Fact>::Cols>,
         Children<<G::Item as Fact>::Cols>,
-    );
-
-    fn sample(&mut self, _rng: &mut impl rand::Rng) -> Self::Item {
-        let (mut sales, mut rets) = (Vec::new(), Vec::new());
-        self.lines(1, |s, r| {
-            sales.push(s.cols());
-            rets.extend(r.map(Fact::cols));
-        });
-        (Children(sales), Children(rets))
-    }
+    )>;
 
     fn collect_into(
         &mut self,
-        (sales, rets): &mut Columns<Self::Item>,
+        cols: &mut Columns<Self::Item>,
         _rng: &mut impl rand::Rng,
         n: usize,
     ) {
+        let (sales, rets) = &mut cols.tables;
         sales
             .values
             .reserve(lines_in(n, <G::Sale as Fact>::PER_SOURCE_ROW));
@@ -1622,10 +1584,10 @@ pub(crate) trait PairGen: Send + Sync {
     );
 }
 
-impl<D> PairGen for DistTables<D>
+impl<D, T> PairGen for DistTables<D>
 where
-    D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowTables + TextTables,
+    D: Distribution<Item = Tables<T>> + Clone + Send + Sync,
+    T: Columnar<Columns: IntoArrowTables + TextTables>,
 {
     fn range_dat(
         &self,
@@ -1636,7 +1598,7 @@ where
         bufs: &mut [Vec<u8>],
     ) {
         blocks(self.dist(), first, last, per_batch as usize, |cols| {
-            cols.write_tables(encoding, bufs)
+            cols.tables.write_tables(encoding, bufs)
         });
     }
 
@@ -1650,7 +1612,7 @@ where
         let schemas = DistTables::schemas(self);
         blocks(self.dist(), first, last, per_batch as usize, |cols| {
             let mut tables = Vec::with_capacity(2);
-            cols.into_tables(&mut tables);
+            cols.tables.into_tables(&mut tables);
             for (k, cols) in tables.into_iter().enumerate() {
                 // a block of tickets may have no returns
                 if !cols[0].is_empty() {
@@ -1695,7 +1657,10 @@ pub(crate) fn pair(t: TableName, s: &Session) -> Option<Box<dyn PairGen>> {
         G: WithSale + Send + Sync + 'static,
         G::Sale: Fact + Send + Sync,
         G::Item: Fact + Send + Sync,
-        Columns<<Pairs<G> as Distribution>::Item>: IntoArrowTables + TextTables,
+        Columns<(
+            Children<<G::Sale as Fact>::Cols>,
+            Children<<G::Item as Fact>::Cols>,
+        )>: IntoArrowTables + TextTables,
     {
         let dist = Pairs::<G> {
             session: s.clone(),

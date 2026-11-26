@@ -9,23 +9,18 @@ it will be stored in.
 All of the core is in `populate-core` (re-exported from `populate`).
 
 ```rust
-/// A stream of rows.
+/// A stream of rows, produced a block at a time.
 pub trait Distribution {
     type Item: Columnar;
 
-    /// The next row.
-    fn sample(&mut self, rng: &mut impl Rng) -> Self::Item;
-
-    /// The next `n` rows, appended column by column. Defaults to `n`
-    /// samples; leaves override it to fill a whole column at once.
+    /// The next `n` rows, appended column by column.
     fn collect_into(&mut self, cols: &mut Columns<Self::Item>, rng: &mut impl Rng, n: usize);
+
+    /// Move past the next `n` rows without producing them.
+    fn skip(&mut self, n: u64);
 
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item>;
-
-    /// Move past the next `n` rows without producing them. Defaults to `n`
-    /// samples, dropped; override it wherever that can be done directly.
-    fn skip(&mut self, n: u64);
 }
 
 /// A row type and the columns that hold many of it.
@@ -61,26 +56,21 @@ without copying (nested tuples become flat columns at the top level and
 struct fields inside a list), and `populate-sink-parquet` encodes Parquet
 pages straight out of them.
 
-## Two ways to get rows
+## Columns, never rows
 
-- `sample` gives one row. A tuple samples each field in turn, so the
-  draws interleave: `a0 b0 a1 b1 ...`.
-- `collect_into` gives many. A tuple fills its first column completely,
-  then the second: `a0 a1 ... b0 b1 ...`. A list collects all its lengths
-  into the offsets, then hands the element columns to the element
-  distribution for the total count, so nesting stays columnar all the way
-  down.
-
-Both give valid rows, but for the same seeded RNG they are different
-rows, because the draws happen in a different order.
-
-`map` has only `sample`: it needs a whole row of its source to call the
-closure. `with_column` is the columnar alternative: the parent collects
-its columns, then the new column is computed in one pass over them.
+There is no way to ask a distribution for one row: `collect_into` is the
+only way rows come out, so every combinator works on whole columns. A
+tuple fills its first column completely, then the second:
+`a0 a1 ... b0 b1 ...`. A list collects all its lengths into the offsets
+(`i32` lengths straight into the offsets buffer, other integer types
+through a buffer the list keeps), then hands the element columns to the
+element distribution for the total count, so nesting stays columnar all
+the way down. A value computed from others is a `derive` over a tuple of
+its inputs, randomness included: each input is a column of its own.
 
 ## A distribution is a stream
 
-Sampling moves a distribution on. `range(0, 1)` collected twice gives
+Collecting moves a distribution on. `range(0, 1)` collected twice gives
 `0..n` and then `n..2n`, and the random leaves keep unused random bits
 between calls. Clone a distribution to start again from the same point.
 
@@ -89,16 +79,8 @@ between calls. Clone a distribution to start again from the same point.
 batch's first row, so a batch depends only on its index and seed, and a
 `range` column still counts through the whole table. Every built-in skips
 in constant time: the random leaves do nothing, `range` adds `n * step`,
-and `map`, `with_column` and tuples pass `n` on. `list` skips `n` lengths
-and leaves its elements alone, because how many elements `n` rows hold is
-random.
-
-The default `skip` samples `n` rows and drops them. It is there so that
-any distribution works in a table, but it is slow (batch `k` pays for the
-`k` batches before it), so a distribution whose rows depend on their
-position should override it. It draws from a throwaway RNG, so it lands
-exactly on row `n` only when the state doesn't depend on the values drawn:
-a counter does, a random walk doesn't.
+and `derive` and tuples pass `n` on. `list` skips `n` lengths and leaves
+its elements alone, because how many elements `n` rows hold is random.
 
 ## Schemas come from the distribution
 
@@ -159,43 +141,48 @@ read one stored column.
 - `derive(source, f)` collects `source` column by column, then maps each
   row: a column computed from others, with the source columns as scratch.
   Rows are read in place (`RowRefs`: a row of a `Vec<T>` is a `&T`).
+- `derive_columns(source, f)` is the same a block at a time: `f` reads
+  the source columns and writes one output row per source row, for
+  columns that share intermediate values.
 - `children(counts, slots)` is a child table column: for every source
   row, the first `count` of the `K` values `slots` makes for it (each line
   stream of an order reserves 7 slots). A tuple of `children` over the
   same counts is the child table.
-- `flat_map(source, count, f)` writes `count(row)` children for each
-  source row straight into the child columns, for children whose columns
-  share work, its source rows read in place too.
+- `flat_map(source, f)` writes any number of children for each source
+  row straight into the child columns, for children whose columns share
+  work, its source rows read in place too. `.reserving(per_source)`
+  allocates the child columns once from a mean per source row.
 
 A distribution of `Children<T>` is a table of `T` rows: its columns are
-the children's, and the source rows only drive them.
+the children's, and the source rows only drive them. `Tables<T>`, with
+`T` a tuple of `Children`, is several such tables made in one pass (a
+sale and its return): `flat_map` writes each, and `schemas_of` and
+`DistTables` give one schema and one batch per table. A plain tuple of
+`Children` stays one table whose columns are its fields.
 
 ## Several tables from one pass
 
-`fan_out(source, f)` makes several child tables at once: its rows are a
-tuple of `Children`, one per table, and `f` appends each source row's
-children to any of them (a sale and its occasional return; a graph's
-nodes and edges). `schemas_of(&dist)` splits the names and types into one
+`flat_map::<Tables<(..)>, _, _>(source, f)` makes several child tables at
+once: its rows are `Tables` of a tuple of `Children`, one per table, and
+`f` appends each source row's children to any of them (a sale and its
+occasional return; a graph's nodes and edges). `schemas_of(&dist)` splits the names and types into one
 schema per table, and `DistTables` (`populate-table`) runs it like
 `DistTable`, one batch per table per range of source rows (`text` writes
 each table's lines to its own buffer).
 
 ## Writing a leaf
 
-Implement `sample`. That is enough: the default `collect_into` reserves
-`n` once and pushes `n` samples with one `push_n`, which for a `Vec` is a
-single `extend` of known length.
+Implement `collect_into` and `skip`. A leaf that makes one value at a
+time pushes them with one `push_n` over a `Range`-driven iterator, which
+for a `Vec` is a single `extend` of known length. `range` runs its loop
+inside `in_local`, which moves the counter into a local variable for the
+loop and back afterwards: through `&mut self` the compiler must assume
+each value written to a column could overwrite the distribution's own
+state, so it would store and reload it for every value; in a local it
+stays in a register and the loop vectorises.
 
-The default runs its loop inside `in_local`, which moves the distribution
-into a local variable for the loop and back afterwards. Through `&mut
-self` the compiler must assume each value written to a column could
-overwrite the distribution's own state, so it would store and reload that
-state for every value; in a local the state stays in registers and the
-loop vectorises. This is why `range` and `map` need no hand-written
-`collect_into` to be as fast as a hand-written loop.
-
-Override `collect_into` when a column can be made faster than one value
-at a time: the random leaves draw indices in batches (`fill_indices` in
+Leaves that can do better than one value at a time do: the random leaves
+draw indices in batches (`fill_indices` in
 `populate-builtins/src/random.rs`), and strings write their bytes
 straight into the `StrCol` buffer.
 
@@ -203,8 +190,8 @@ straight into the `StrCol` buffer.
 
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
-| `populate-core`         | the three traits, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, tuple impls |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `children`, `flat_map`, `format`, `named`, `checkpointed`, `column`, random leaves |
+| `populate-core`         | the three traits, `RowCount`, `Append`, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, `Tables`, tuple impls |
+| `populate-builtins`     | `constant`, `range`, `list`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `format`, `named`, `checkpointed`, `column`, random leaves |
 | `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
 | `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable` / `DynTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on; `cli`: the generators' shared command-line flags and report |

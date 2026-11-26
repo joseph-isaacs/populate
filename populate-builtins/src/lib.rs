@@ -1,24 +1,23 @@
-//! Built-in distributions: [`constant`], [`range`], [`map`], [`list`],
-//! [`draws`], [`derive()`], [`children`], [`flat_map`], [`fan_out`], [`named`],
+//! Built-in distributions: [`constant`], [`range`], [`list`], [`draws`],
+//! [`derive()`], [`derive_columns`], [`children`], [`flat_map`], [`named`],
 //! [`column`], [`checkpointed`],
-//! [`with_column`], and the random leaves in [`random`] ([`uniform`], [`choose`],
+//! and the random leaves in [`random`] ([`uniform`], [`choose`],
 //! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in
 //! `populate-core` (orphan rule).
 
-use populate_core::{Columnar, Columns, Distribution, ListCol, in_local};
+use populate_core::{Columnar, Columns, Distribution, ListCol, Sink, in_local};
 use rand::Rng;
 use std::ops::Add;
 
 mod compose;
+mod row_refs;
 mod stored;
-mod with_column;
 pub use compose::{
-    ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FanOut, FlatMap, Format, Named,
-    children, derive, derive_columns, draws, draws_reserving, fan_out, flat_map, format, named,
-    named_all,
+    ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FlatMap, Format, Named, children,
+    derive, derive_columns, draws, draws_reserving, flat_map, format, named, named_all,
 };
+pub use row_refs::RowRefs;
 pub use stored::{Checkpointed, Column, checkpointed, column, column_as};
-pub use with_column::{ColumnRng, ReadRows, RowAppend, RowRefs, WithColumn, with_column};
 
 pub mod bounded;
 pub mod random;
@@ -40,11 +39,12 @@ pub fn constant<T>(value: T) -> Constant<T> {
     Constant { value }
 }
 
-impl<T: Copy + Columnar> Distribution for Constant<T> {
+impl<T: Copy + Columnar<Columns: Sink<T>>> Distribution for Constant<T> {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        self.value
+    fn collect_into(&mut self, cols: &mut Columns<T>, _rng: &mut impl Rng, n: usize) {
+        cols.reserve(n);
+        cols.push_n(std::iter::repeat_n(self.value, n));
     }
 
     fn skip(&mut self, _n: u64) {}
@@ -105,51 +105,21 @@ range_float!(f32, f64);
 impl<T: Columnar + RangeValue> Distribution for Range<T> {
     type Item = T;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> T {
-        let v = self.next;
-        self.next = v + self.step;
-        v
+    fn collect_into(&mut self, cols: &mut Columns<T>, _rng: &mut impl Rng, n: usize) {
+        cols.reserve(n);
+        // `in_local` keeps the counter in a register across the loop
+        in_local(&mut self.next, |next| {
+            let step = self.step;
+            cols.push_n((0..n).map(|_| {
+                let v = *next;
+                *next = v + step;
+                v
+            }));
+        });
     }
 
     fn skip(&mut self, n: u64) {
         self.next = self.next.advance(self.step, n);
-    }
-}
-
-// ============================================================================
-// Map
-// ============================================================================
-
-/// `f` of every row of `source`. Collects row by row: `source` is sampled,
-/// not collected, so prefer [`with_column`] or a tuple where it matters.
-#[derive(Clone)]
-pub struct Map<D, F> {
-    pub source: D,
-    pub f: F,
-}
-
-pub fn map<D, F, Out>(source: D, f: F) -> Map<D, F>
-where
-    D: Distribution,
-    F: Fn(D::Item) -> Out,
-{
-    Map { source, f }
-}
-
-impl<D, F, Out> Distribution for Map<D, F>
-where
-    D: Distribution,
-    F: Fn(D::Item) -> Out,
-    Out: Columnar,
-{
-    type Item = Out;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Out {
-        (self.f)(self.source.sample(rng))
-    }
-
-    fn skip(&mut self, n: u64) {
-        self.source.skip(n);
     }
 }
 
@@ -159,26 +129,81 @@ where
 
 /// A list per row: its length from `lengths`, its elements from `elements`.
 #[derive(Clone)]
-pub struct List<L, E> {
+pub struct List<L: Distribution, E> {
     pub lengths: L,
     pub elements: E,
+    /// Lengths of a type other than `i32`, collected before they become
+    /// offsets ([`ListLength`]); empty between collects.
+    scratch: Vec<L::Item>,
 }
 
-pub fn list<L, E>(lengths: L, elements: E) -> List<L, E> {
-    List { lengths, elements }
+/// A list per row: `lengths` sets each row's length, `elements` fills them.
+/// `i32` lengths are collected straight into the offsets buffer; other
+/// integer types go through a buffer the list keeps.
+pub fn list<L: Distribution, E>(lengths: L, elements: E) -> List<L, E> {
+    List {
+        lengths,
+        elements,
+        scratch: Vec::new(),
+    }
 }
+
+/// A type a [`list`]'s lengths can be: how its column of lengths becomes
+/// a list's offsets.
+pub trait ListLength: Columnar<Columns = Vec<Self>> + Copy {
+    /// Append `n` rows to `cols`, their lengths collected from `lengths`
+    /// (through `scratch` if need be), and return the sum of the lengths.
+    fn collect_lengths<D: Distribution<Item = Self>, V>(
+        lengths: &mut D,
+        cols: &mut ListCol<V>,
+        scratch: &mut Vec<Self>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> usize;
+}
+
+impl ListLength for i32 {
+    fn collect_lengths<D: Distribution<Item = i32>, V>(
+        lengths: &mut D,
+        cols: &mut ListCol<V>,
+        _scratch: &mut Vec<i32>,
+        rng: &mut impl Rng,
+        n: usize,
+    ) -> usize {
+        cols.push_lengths_in_place(|offsets| lengths.collect_into(offsets, rng, n))
+    }
+}
+
+macro_rules! list_length {
+    ($($t:ty),*) => {$(
+        impl ListLength for $t {
+            fn collect_lengths<D: Distribution<Item = $t>, V>(
+                lengths: &mut D,
+                cols: &mut ListCol<V>,
+                scratch: &mut Vec<$t>,
+                rng: &mut impl Rng,
+                n: usize,
+            ) -> usize {
+                scratch.clear();
+                lengths.collect_into(scratch, rng, n);
+                cols.push_lengths(
+                    scratch
+                        .iter()
+                        .map(|&l| usize::try_from(l).expect("list length fits in usize")),
+                )
+            }
+        }
+    )*};
+}
+
+list_length!(u8, u16, u32, u64, usize, i64);
 
 impl<L, E> Distribution for List<L, E>
 where
-    L: Distribution<Item = usize>,
+    L: Distribution<Item: ListLength>,
     E: Distribution,
 {
     type Item = Vec<E::Item>;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Vec<E::Item> {
-        let len = self.lengths.sample(rng);
-        (0..len).map(|_| self.elements.sample(rng)).collect()
-    }
 
     // Fully columnar:
     //   pass 1: n lengths -> offsets column (and the total element count)
@@ -186,9 +211,7 @@ where
     //           for `total` rows, so tuples/lists inside recurse col-by-col.
     fn collect_into(&mut self, cols: &mut ListCol<Columns<E::Item>>, rng: &mut impl Rng, n: usize) {
         cols.reserve_rows(n);
-        let total = in_local(&mut self.lengths, |lengths| {
-            cols.push_lengths((0..n).map(|_| lengths.sample(rng)))
-        });
+        let total = L::Item::collect_lengths(&mut self.lengths, cols, &mut self.scratch, rng, n);
         self.elements.collect_into(&mut cols.values, rng, total);
     }
 

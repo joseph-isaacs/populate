@@ -11,7 +11,7 @@
 use arrow_array::{ArrayRef, make_array};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer};
 use arrow_schema::DataType;
-use populate_builtins::ReadRows;
+use populate_core::RowCount;
 use populate_core::{Columnar, Columns, Sink};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::text::{Cursor, Encoding, TextColumns};
@@ -76,21 +76,9 @@ impl<T, C: Sink<T>, M> Sink<Masked<T, M>> for MaskedCols<C, M> {
     }
 }
 
-impl<C: ReadRows, M> ReadRows for MaskedCols<C, M> {
-    type Row = Masked<C::Row, M>;
-
+impl<C, M> RowCount for MaskedCols<C, M> {
     fn rows(&self) -> usize {
         self.nbm.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Self::Row> + '_ {
-        let nbm = self.nbm[start..].iter();
-        nbm.zip(self.values.rows_from(start))
-            .map(|(&nbm, row)| Masked {
-                nbm,
-                row,
-                bits: PhantomData,
-            })
     }
 }
 

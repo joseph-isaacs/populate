@@ -24,7 +24,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::sched::{Schedule, resolve_threads};
-use populate_core::{ChildCols, Date32, Decimal, Nullable, SpreadCols, StrCol};
+use populate_core::{ChildCols, Date32, Decimal, Nullable, SpreadCols, StrCol, TableCols};
 
 /// Text encoding of `.dat` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1042,10 +1042,9 @@ tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
 tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
 tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 
-/// The columns of several tables, as [`fan_out`] makes them (a tuple of
-/// [`ChildCols`]), each table printed to its own buffer.
-///
-/// [`fan_out`]: https://docs.rs/populate-builtins
+/// The columns of several tables (a [`TableCols`] of a tuple of
+/// [`ChildCols`], as `flat_map` writes them), each table printed to its own
+/// buffer.
 pub trait TextTables {
     /// Append table `k`'s rows to `bufs[k]`, as [`write_columns`].
     fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]);
@@ -1086,6 +1085,12 @@ impl<V: TextColumns> TextColumns for ChildCols<V> {
 impl<V: TextColumns> TextTables for ChildCols<V> {
     fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]) {
         write_columns(&self.values, encoding, &mut bufs[0]);
+    }
+}
+
+impl<C: TextTables> TextTables for TableCols<C> {
+    fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]) {
+        self.tables.write_tables(encoding, bufs);
     }
 }
 

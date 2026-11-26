@@ -453,22 +453,6 @@ struct SortedRows<const NULL: bool> {
 impl<const NULL: bool> Distribution for SortedRows<NULL> {
     type Item = Row<NULL>;
 
-    fn sample(&mut self, _rng: &mut impl Rng) -> Row<NULL> {
-        let r = self.rows[self.perm[self.at] as usize];
-        self.at += 1;
-        (
-            Id(r[0]),
-            Id(r[1]),
-            Id(r[2]),
-            Int(r[3]),
-            Int(r[4]),
-            Int(r[5]),
-            Int(r[6]),
-            Int(r[7]),
-            Micros(r[8]),
-        )
-    }
-
     /// One random access per row, its nine values written to the nine
     /// columns.
     fn collect_into(&mut self, cols: &mut Columns<Row<NULL>>, _rng: &mut impl Rng, n: usize) {

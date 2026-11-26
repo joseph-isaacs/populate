@@ -9,9 +9,22 @@ use std::iter::repeat_n;
 ///
 /// A writer that fills `values` itself (a string written in place, say)
 /// pushes one `valid` flag per row it writes.
+///
+/// ```
+/// use populate_core::{Columns, Sink};
+///
+/// let mut notes: Columns<Option<i32>> = Default::default();
+/// notes.push(Some(7));
+/// notes.push(None);
+/// assert_eq!(notes.values, [7, 0]);
+/// assert_eq!(notes.valid.iter().collect::<Vec<_>>(), [true, false]);
+/// assert_eq!(notes.valid.null_count(), 1);
+/// ```
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Nullable<C> {
+    /// A value for every row, present or not.
     pub values: C,
+    /// Which rows are present.
     pub valid: Validity,
 }
 
@@ -21,6 +34,7 @@ impl<C> Nullable<C> {
         self.valid.len()
     }
 
+    /// Whether there are no rows.
     pub fn is_empty(&self) -> bool {
         self.valid.is_empty()
     }
@@ -58,10 +72,12 @@ impl Validity {
         self.len
     }
 
+    /// Whether there are no rows.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Reserve room for `additional` more rows.
     pub fn reserve(&mut self, additional: usize) {
         self.words
             .reserve((self.len + additional).div_ceil(64) - self.words.len());

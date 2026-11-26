@@ -12,6 +12,7 @@ use crate::wide::WideCols;
 /// collected. For a child table ([`ChildCols`]) a row is a source row, so it
 /// counts the rows of the distribution that wrote it, not its children.
 pub trait RowCount {
+    /// Rows written so far.
     fn rows(&self) -> usize;
 }
 
@@ -67,6 +68,7 @@ impl<C: RowCount> RowCount for TableCols<C> {
 /// its rows after this one's, column by column. Moving onto empty columns
 /// takes the other's buffers as they are.
 pub trait Append {
+    /// Move `other`'s rows onto the end of these columns.
     fn append_rows(&mut self, other: Self);
 }
 

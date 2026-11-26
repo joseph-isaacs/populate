@@ -1,12 +1,13 @@
 # Modified from tpcdsgen 4.0.0 for the populate DSB variant.
 
 [package]
-name = "dsbgen"
+name = "populate-dsbgen"
 description = "DSB (skewed, correlated TPC-DS) data generation: tpcdsgen 4.0 with Microsoft DSB's dsdgen changes"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0 AND MIT"
-publish = false
+repository.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "dsbgen"

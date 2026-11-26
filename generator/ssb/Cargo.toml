@@ -1,6 +1,5 @@
 [package]
 name = "populate-gen-ssb"
-publish = false
 description = "Star Schema Benchmark (SSB) data byte-identical to ssb-dbgen, on all cores: Arrow, Parquet or .tbl"
 version.workspace = true
 edition.workspace = true

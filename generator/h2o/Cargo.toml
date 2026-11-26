@@ -1,6 +1,5 @@
 [package]
 name = "populate-gen-h2o"
-publish = false
 description = "H2O db-benchmark groupby and join data byte-identical to the R datagen scripts, on all cores: Arrow, Parquet or CSV"
 version.workspace = true
 edition.workspace = true

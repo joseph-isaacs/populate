@@ -1,12 +1,13 @@
 # Modified from tpcdsgen-arrow 4.0.0 for the populate DSB variant.
 
 [package]
-name = "dsbgen-arrow"
+name = "populate-dsbgen-arrow"
 description = "dsbgen rows into Apache Arrow (tpcdsgen-arrow 4.0, vendored)"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
-publish = false
+repository.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["arrow_60"]
@@ -14,4 +15,4 @@ arrow_60 = []
 
 [dependencies]
 arrow_60 = { package = "arrow", version = "60", default-features = false }
-dsbgen = { path = "../dsbgen" }
+dsbgen = { package = "populate-dsbgen", path = "../dsbgen", version = "0.1.0" }

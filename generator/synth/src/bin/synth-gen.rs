@@ -6,9 +6,11 @@
 //! cargo run -p populate-gen-synth --release --bin synth-gen -- embeddings --rows 1000000 --dim 768
 //! ```
 
-#[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+#[cfg(feature = "mimalloc")]
+use populate_core::Columns;
 use populate_gen_synth::{DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi};
+use populate_sink_arrow::IntoArrowColumns;
 use populate_table::DEFAULT_BATCH_ROWS;
 use populate_table::cli::{create, file_size};
 use std::env::args;
@@ -91,7 +93,10 @@ fn parse() -> Args {
     a
 }
 
-fn run(shape: impl Shape, a: &Args) {
+fn run<S: Shape>(shape: S, a: &Args)
+where
+    Columns<S::Row>: IntoArrowColumns,
+{
     let t = shape
         .table(a.rows)
         .batch_size(a.batch_size)

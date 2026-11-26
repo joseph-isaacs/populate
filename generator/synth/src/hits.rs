@@ -24,13 +24,12 @@ use crate::kernel::{
     unit,
 };
 use populate_builtins::{derive_columns, named_all};
-use populate_core::{Columnar, Date32, Distribution, Timestamp, time_unit};
-use populate_sink_arrow::IntoArrowColumns;
-use populate_table::{Stream, mix64};
+use populate_core::stream::{Stream, mix64};
+use populate_core::{Date32, Distribution, Timestamp, time_unit};
 use std::iter::repeat_n;
 use std::sync::Arc;
 
-type Secs = Timestamp<{ time_unit::SECOND }>;
+pub type Secs = Timestamp<{ time_unit::SECOND }>;
 
 /// 2013-07-01T00:00:00Z.
 const DEFAULT_START_SECS: i64 = 1_372_636_800;
@@ -448,12 +447,12 @@ fn url_hash(counter: u64, page: u64) -> i64 {
 
 /// The columns, in schema order (nested: a tuple has at most 12 fields,
 /// and is read back at up to 11).
-type Hit = (
+pub type Hit = (
     (i64, i16, View, i16, Secs, Date32, i32, i32, i32, i64),
     (i16, i16, View, View, i16, i16, i16, i16, View, i16),
     (i16, View, i16, i16, i16, i16, i16, i16, i64, i64),
 );
-type HitCols = (
+pub type HitCols = (
     (
         Vec<i64>,
         Vec<i16>,
@@ -724,6 +723,7 @@ impl Inner {
 }
 
 impl Shape for Hits {
+    type Row = Hit;
     fn name(&self) -> &'static str {
         "hits"
     }
@@ -732,10 +732,7 @@ impl Shape for Hits {
         matches!(column, "WatchID" | "ClientIP" | "UserID" | "URLHash")
     }
 
-    fn dist(
-        &self,
-    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<>
-    {
+    fn dist(&self) -> impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<> {
         let h = self.inner.clone();
         named_all(
             &COLUMNS,

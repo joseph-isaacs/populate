@@ -11,9 +11,8 @@
 use crate::Shape;
 use crate::kernel::{FastNormal, Quantiles, Rows, Zipf, row_numbers};
 use populate_builtins::{derive_columns, named, named_all, range};
-use populate_core::{Columnar, Distribution};
-use populate_sink_arrow::IntoArrowColumns;
-use populate_table::Stream;
+use populate_core::Distribution;
+use populate_core::Stream;
 use std::array::from_fn;
 use std::slice::from_raw_parts_mut;
 use std::sync::Arc;
@@ -113,6 +112,7 @@ impl<const DIM: usize> Inner<DIM> {
 }
 
 impl<const DIM: usize> Shape for Embeddings<DIM> {
+    type Row = (i64, (i32, [f32; DIM]));
     fn name(&self) -> &'static str {
         "embeddings"
     }
@@ -125,10 +125,7 @@ impl<const DIM: usize> Shape for Embeddings<DIM> {
         column == "embedding"
     }
 
-    fn dist(
-        &self,
-    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<DIM>
-    {
+    fn dist(&self) -> impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<DIM> {
         let e = self.inner.clone();
         (
             named("id", range(0i64, 1)),

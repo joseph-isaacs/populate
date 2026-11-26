@@ -24,9 +24,8 @@ use crate::kernel::{
     Pool, Quantiles, Rows, View, Views, Weighted, Zipf, row_numbers, threshold, unit,
 };
 use populate_builtins::{derive_columns, named, named_all, range};
-use populate_core::{Columnar, Distribution, Nullable, Spread, SpreadCols, Timestamp, time_unit};
-use populate_sink_arrow::IntoArrowColumns;
-use populate_table::Stream;
+use populate_core::Stream;
+use populate_core::{Distribution, Nullable, Spread, SpreadCols, Timestamp, time_unit};
 use std::array::from_fn;
 use std::mem::swap;
 use std::sync::Arc;
@@ -36,7 +35,7 @@ const DEFAULT_START_MS: i64 = 1_735_689_600_000;
 /// Features that feed the label and target.
 const SIGNAL: usize = 8;
 
-type Millis = Timestamp<{ time_unit::MILLISECOND }>;
+pub type Millis = Timestamp<{ time_unit::MILLISECOND }>;
 
 #[derive(Debug, Clone)]
 struct Numeric {
@@ -154,8 +153,8 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Features<NUMERIC, CATEGORIC
 }
 
 /// The features, the label and the target of a block of rows.
-type Block<const N: usize, const C: usize> = (Spread<Option<f32>, N>, Spread<i32, C>, i32, f64);
-type BlockCols<const N: usize, const C: usize> = (
+pub type Block<const N: usize, const C: usize> = (Spread<Option<f32>, N>, Spread<i32, C>, i32, f64);
+pub type BlockCols<const N: usize, const C: usize> = (
     SpreadCols<Nullable<Vec<f32>>, N>,
     SpreadCols<Vec<i32>, C>,
     Vec<i32>,
@@ -229,6 +228,7 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Inner<NUMERIC, CATEGORICAL>
 }
 
 impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC, CATEGORICAL> {
+    type Row = (i64, Millis, View, Block<NUMERIC, CATEGORICAL>);
     fn name(&self) -> &'static str {
         "features"
     }
@@ -243,11 +243,7 @@ impl<const NUMERIC: usize, const CATEGORICAL: usize> Shape for Features<NUMERIC,
 
     fn dist(
         &self,
-    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>>
-    + Clone
-    + Send
-    + Sync
-    + use<NUMERIC, CATEGORICAL> {
+    ) -> impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<NUMERIC, CATEGORICAL> {
         let (time, split, block) = (self.inner.clone(), self.inner.clone(), self.inner.clone());
         let mut names: Vec<String> = (0..NUMERIC).map(|i| format!("f_{i}")).collect();
         names.extend((0..CATEGORICAL).map(|j| format!("c_{j}")));

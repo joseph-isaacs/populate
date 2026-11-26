@@ -1,5 +1,5 @@
 //! Synthetic dataset shapes, each one populate [`Distribution`] run by
-//! `populate-table`'s [`DistTable`].
+//! `populate-table`'s `DistTable`.
 //!
 //! Four tables that look like data people benchmark on, with no reference
 //! generator to match:
@@ -23,6 +23,7 @@
 //! sequential run, and the same seed always gives the same data.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_synth::{Shape, Taxi};
 //!
 //! let trips = Taxi::new(42).table(10_000);
@@ -33,6 +34,7 @@
 //! // any slice of rows on its own equals the same rows of the whole table
 //! let all = trips.collect();
 //! assert_eq!(trips.slice(1234, 10), all.slice(1234, 10));
+//! # }
 //! ```
 
 pub mod embeddings;
@@ -46,17 +48,29 @@ pub use features::Features;
 pub use hits::Hits;
 pub use taxi::Taxi;
 
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
+#[cfg(feature = "formats")]
 use parquet::arrow::ArrowSchemaConverter;
+#[cfg(feature = "formats")]
 use parquet::basic::Compression;
+#[cfg(feature = "formats")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "formats")]
 use parquet::file::properties::WriterProperties;
-use populate_core::{Columnar, Columns, Distribution};
+#[cfg(feature = "formats")]
+use populate_core::Columns;
+use populate_core::{Columnar, DistChunks, Distribution};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowColumns;
+#[cfg(feature = "formats")]
 use populate_table::chunks::{for_each_batch, try_for_each_batch};
+#[cfg(feature = "formats")]
 use populate_table::{Chunks, DEFAULT_BATCH_ROWS, DistTable};
 use std::fmt::{self, Display, Formatter};
+#[cfg(feature = "formats")]
 use std::io::Write;
 
 /// Default rows per chunk (one Parquet row group, one job on the pool).
@@ -65,14 +79,22 @@ pub const DEFAULT_CHUNK_ROWS: u64 = 128 * 1024;
 /// A table whose rows are each a pure function of the row number: one
 /// [`Distribution`] of named columns, its schema read off it.
 pub trait Shape: Sync {
+    /// Exact native row type, independent of the output backend.
+    type Row: Columnar;
     /// Table name, e.g. `taxi`.
     fn name(&self) -> &'static str;
 
     /// The table's rows. Row `r` depends only on `r`, so any range of rows
     /// is the same however the table is cut.
-    fn dist(
+    fn dist(&self) -> impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<Self>;
+
+    /// Finite native columns in independently addressable chunks.
+    fn raw(
         &self,
-    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<Self>;
+        rows: u64,
+    ) -> DistChunks<impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<Self>> {
+        self.dist().chunks(rows).chunk_rows(DEFAULT_CHUNK_ROWS)
+    }
 
     /// Whether a column is written PLAIN by default: nearly every value distinct within
     /// a chunk (ids, times, continuous floats), where a dictionary costs
@@ -91,22 +113,23 @@ pub trait Shape: Sync {
     }
 
     /// `rows` rows of this shape.
+    #[cfg(feature = "formats")]
     fn table(
         &self,
         rows: u64,
-    ) -> Synth<
-        impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<Self>,
-    >
+    ) -> Synth<impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<Self>>
     where
         Self: Sized,
+        Columns<Self::Row>: IntoArrowColumns,
     {
         Synth::from_dist(self, self.dist(), rows)
     }
 }
 
-/// `rows` rows of a [`Shape`], cut into chunks of batches: a [`Chunks`]
+/// `rows` rows of a [`Shape`], cut into chunks of batches: a `Chunks`
 /// source for `populate-table`'s parallel drivers and Parquet writer.
 #[derive(Debug, Clone)]
+#[cfg(feature = "formats")]
 pub struct Synth<D> {
     table: DistTable<D>,
     plain: Vec<String>,
@@ -115,6 +138,7 @@ pub struct Synth<D> {
     chunk_rows: u64,
 }
 
+#[cfg(feature = "formats")]
 impl<D> Synth<D>
 where
     D: Distribution + Clone + Sync,
@@ -247,12 +271,14 @@ where
 
 /// Snappy, everything else arrow-rs's defaults (dictionaries on for every
 /// column).
+#[cfg(feature = "formats")]
 pub fn parquet_props() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .build()
 }
 
+#[cfg(feature = "formats")]
 impl<D> Chunks for Synth<D>
 where
     D: Distribution + Clone + Sync,

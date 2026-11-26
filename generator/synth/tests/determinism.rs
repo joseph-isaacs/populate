@@ -65,7 +65,10 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
 }
 
 /// Every way of cutting the table gives the same rows.
-fn check_chunking<S: Shape>(shape: S) {
+fn check_chunking<S: Shape>(shape: S)
+where
+    Columns<S::Row>: IntoArrowColumns,
+{
     let whole = shape.table(ROWS).collect();
     assert_eq!(whole.num_rows() as u64, ROWS);
     for (batch, chunk) in [

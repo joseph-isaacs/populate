@@ -31,7 +31,7 @@ impl<T: Columnar + Default> Columnar for Option<T> {
 }
 
 impl<T: Default, C: Sink<T>> Sink<Option<T>> for Nullable<C> {
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, value: Option<T>) {
         self.valid.push(value.is_some());
         self.values.push(value.unwrap_or_default());
@@ -68,20 +68,30 @@ impl Validity {
     }
 
     /// One more row.
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, valid: bool) {
         let bit = self.len % 64;
         if bit == 0 {
-            self.words.push(0);
+            self.words.push(valid as u64);
+        } else if let Some(w) = self.words.last_mut() {
+            *w |= (valid as u64) << bit;
         }
-        let last = self.words.len() - 1;
-        self.words[last] |= (valid as u64) << bit;
         self.len += 1;
     }
 
     /// `n` more rows, all present.
     pub fn push_valid(&mut self, n: usize) {
-        self.extend(repeat_n(true, n));
+        let bit = self.len % 64;
+        let head = if bit == 0 { 0 } else { (64 - bit).min(n) };
+        if let Some(w) = self.words.last_mut().filter(|_| head > 0) {
+            *w |= (u64::MAX >> (64 - head)) << bit;
+        }
+        let rest = n - head;
+        self.words.extend(repeat_n(u64::MAX, rest / 64));
+        if !rest.is_multiple_of(64) {
+            self.words.push(u64::MAX >> (64 - rest % 64));
+        }
+        self.len += n;
     }
 
     /// `other`'s rows after these (a copy of its words if this is empty).
@@ -97,6 +107,11 @@ impl Validity {
     pub fn get(&self, i: usize) -> bool {
         assert!(i < self.len, "row {i} of {}", self.len);
         self.words[i / 64] >> (i % 64) & 1 == 1
+    }
+
+    /// The packed flags: row `i` is bit `i % 64` of word `i / 64`.
+    pub fn words(&self) -> &[u64] {
+        &self.words
     }
 
     /// Every row's flag, in order.
@@ -160,6 +175,25 @@ impl FromIterator<bool> for Validity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_valid_matches_pushing_each_row() {
+        for (start, n) in [
+            (0, 0),
+            (0, 64),
+            (3, 2),
+            (3, 61),
+            (3, 200),
+            (63, 1),
+            (64, 130),
+        ] {
+            let mut got: Validity = (0..start).map(|i| i % 3 == 0).collect();
+            let mut want = got.clone();
+            got.push_valid(n);
+            want.extend(repeat_n(true, n));
+            assert_eq!(got, want, "{start} + {n}");
+        }
+    }
 
     #[test]
     fn missing_rows_hold_the_default() {

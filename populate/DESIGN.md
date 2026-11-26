@@ -86,6 +86,24 @@ in constant time: the random leaves do nothing, `range` adds `n * step`,
 and `derive` and tuples pass `n` on. `list` skips `n` lengths and leaves
 its elements alone, because how many elements `n` rows hold is random.
 
+## Backend-independent chunks
+
+`Distribution::chunks(rows)` creates `DistChunks<D>` in `populate-core`.
+It clones and skips the distribution once per chunk, then collects batches
+of raw `Columns<D::Item>`. Consumers can use a custom column type or encode
+those buffers for any backend without an Arrow dependency. Its ordered
+parallel driver shares the scheduler used by the table layer and limits
+reordering to windows of twice the worker count. Backend errors stop
+consumption; already running chunks may finish.
+
+The caller RNG is seeded by the source's seed and each batch's first row.
+Output is reproducible for fixed chunk/batch sizes and seed regardless of
+thread count. Changing boundaries can change random output, including
+state retained between batches. Chunk sizes count source rows, including
+for distributions that expand one source row into several child rows.
+`DistTable::raw()` preserves the table's distribution and boundaries while
+exposing its native columns.
+
 ## Schemas come from the distribution
 
 `schema_of(&dist)` (`populate-sink-arrow`) is a table's schema without

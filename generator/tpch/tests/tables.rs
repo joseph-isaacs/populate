@@ -222,3 +222,20 @@ fn many_tables_on_one_pool() {
         assert!(g == t.write_tbl(Vec::new(), 1).unwrap(), "{}", t.name());
     }
 }
+
+#[test]
+fn arrow_many_preserves_each_output_with_repeated_and_empty_tables() {
+    let h = Tpch::new(0.01);
+    let mut tables: Vec<_> = h.tables().map(|t| t.chunk_rows(5000)).collect();
+    tables.reverse();
+    tables.push(h.table(TableName::Supplier).limit_source_rows(0));
+    tables.push(h.table(TableName::LineItem).batch_size(137));
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_tpch::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        for (t, batches) in tables.iter().zip(&got) {
+            assert_eq!(cat(t, batches), cat(t, &t.collect(1)), "{}", t.name());
+        }
+    }
+    populate_gen_tpch::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}

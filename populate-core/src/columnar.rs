@@ -6,6 +6,8 @@ use crate::sink::Sink;
 /// for a scalar, one set of columns per field for a tuple. The table in the
 /// [crate docs](crate) lists every implementation.
 pub trait Columnar: Sized {
+    /// The columns many `Self` rows are stored in. `Default` is the empty
+    /// set, which rows are then pushed or collected into.
     type Columns: Sink<Self> + Default;
 }
 

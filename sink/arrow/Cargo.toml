@@ -16,3 +16,6 @@ rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
+
+[dev-dependencies]
+populate-builtins = { workspace = true }

@@ -20,18 +20,14 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterPropertiesBuilder;
-use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::schema::types::ColumnPath;
 use populate_gen_dsb::{
     DsTable, Dsb, Encoding, TableName, for_each_batch_many, parquet_props, write_dat_many,
     write_parquet_many,
 };
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
-use std::process::exit;
+use populate_table::cli::{
+    self, Args, Counts, Format, Tool, create, fail, parquet_counts, report, text_counts,
+    text_writers,
+};
 use std::time::Instant;
 
 /// mimalloc: the system allocator returns buffers to the OS, and they
@@ -40,112 +36,34 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Format {
-    Parquet,
-    Dat,
-    None,
-}
-
-struct Args {
-    sf: f64,
-    out: PathBuf,
-    format: Format,
-    tables: Vec<TableName>,
-    threads: usize,
-    batch: usize,
-    row_group: Option<u64>,
-    compression: Compression,
-    dictionary: bool,
-    encoding: Encoding,
-}
-
-const USAGE: &str = "usage: dsb-gen [--sf 1] [--out DIR] [--format parquet|dat|none] \
-[--tables a,b,...] [--threads N] [--batch ROWS] [--row-group ROWS] [--compression snappy|none] [--no-dictionary] [--encoding latin1|utf8]";
-
-fn parse() -> Result<Args, String> {
-    let mut a = Args {
-        sf: 1.0,
-        out: PathBuf::from("dsb"),
-        format: Format::Parquet,
-        tables: TableName::ALL.to_vec(),
-        threads: 0,
-        batch: populate_gen_dsb::DEFAULT_BATCH_SIZE,
-        row_group: None,
-        compression: Compression::SNAPPY,
-        dictionary: true,
-        encoding: Encoding::Utf8,
-    };
-    let mut it = std::env::args().skip(1);
-    while let Some(flag) = it.next() {
-        let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--sf" => a.sf = val()?.parse().map_err(|e| format!("--sf: {e}"))?,
-            "--out" => a.out = val()?.into(),
-            "--format" => {
-                a.format = match val()?.as_str() {
-                    "parquet" => Format::Parquet,
-                    "dat" => Format::Dat,
-                    "none" => Format::None,
-                    f => return Err(format!("unknown format `{f}`")),
-                }
-            }
-            "--tables" => {
-                a.tables = val()?
-                    .split(',')
-                    .map(str::parse)
-                    .collect::<Result<_, _>>()?;
-            }
-            "--threads" => a.threads = val()?.parse().map_err(|e| format!("--threads: {e}"))?,
-            "--batch" => a.batch = val()?.parse().map_err(|e| format!("--batch: {e}"))?,
-            "--row-group" => {
-                a.row_group = Some(val()?.parse().map_err(|e| format!("--row-group: {e}"))?)
-            }
-            "--compression" => {
-                a.compression = match val()?.as_str() {
-                    "snappy" => Compression::SNAPPY,
-                    "none" => Compression::UNCOMPRESSED,
-                    c => return Err(format!("unknown compression `{c}`")),
-                }
-            }
-            "--no-dictionary" => a.dictionary = false,
-            "--encoding" => {
-                a.encoding = match val()?.as_str() {
-                    "latin1" => Encoding::Latin1,
-                    "utf8" => Encoding::Utf8,
-                    e => return Err(format!("unknown encoding `{e}`")),
-                }
-            }
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                exit(0);
-            }
-            f => return Err(format!("unknown flag `{f}`")),
-        }
-    }
-    // DSB's dsdgen reads a whole scale, and crashes below 1.
-    if a.sf.is_nan() || a.sf < 1.0 || a.sf.fract() != 0.0 {
-        return Err("--sf must be a whole number, at least 1".into());
-    }
-    if a.batch == 0 || a.row_group == Some(0) {
-        return Err("--batch and --row-group must be > 0".into());
-    }
-    Ok(a)
-}
-
 fn main() {
-    let a = parse().unwrap_or_else(|e| {
-        eprintln!("{e}\n{USAGE}");
-        exit(2);
-    });
-    let ds = Dsb::new(a.sf);
-    let fail = |what: &dyn std::fmt::Display, e: &dyn std::fmt::Display| -> ! {
-        eprintln!("{what}: {e}");
-        exit(1);
+    let mut encoding = Encoding::Utf8;
+    let tool = Tool {
+        batch: populate_gen_dsb::DEFAULT_BATCH_SIZE,
+        flags: "[--encoding latin1|utf8]",
+        ..Tool::new("dsb-gen", "dat", f64::INFINITY)
     };
-    if a.format != Format::None {
-        std::fs::create_dir_all(&a.out).unwrap_or_else(|e| fail(&a.out.display(), &e));
+    let own = |f: &str, val: &mut dyn FnMut() -> Result<String, String>| {
+        if f != "--encoding" {
+            return Ok(false);
+        }
+        encoding = match val()?.as_str() {
+            "latin1" => Encoding::Latin1,
+            "utf8" => Encoding::Utf8,
+            e => return Err(format!("unknown encoding `{e}`")),
+        };
+        Ok(true)
+    };
+    let a = Args::parse(tool, || TableName::ALL.to_vec(), own)
+        .unwrap_or_else(|e| Args::<TableName>::exit_usage(&e));
+    // DSB's dsdgen reads a whole scale, and crashes below 1.
+    if a.sf < 1.0 || a.sf.fract() != 0.0 {
+        Args::<TableName>::exit_usage(&format!(
+            "--sf must be a whole number, at least 1\n{}",
+            a.usage()
+        ));
     }
+    let ds = Dsb::new(a.sf);
     // Every chunk of every table goes to one pool, biggest tables first.
     let mut names = a.tables.clone();
     names.sort_by_key(|&t| std::cmp::Reverse(ds.table(t).approx_rows()));
@@ -159,118 +77,28 @@ fn main() {
             }
         })
         .collect();
-    let paths: Vec<PathBuf> = names
-        .iter()
-        .map(|t| {
-            let ext = if a.format == Format::Parquet {
-                "parquet"
-            } else {
-                "dat"
-            };
-            a.out.join(format!("{t}.{ext}"))
-        })
-        .collect();
-    let create = || -> Vec<BufWriter<File>> {
-        paths
-            .iter()
-            .map(|p| {
-                let f = File::create(p).unwrap_or_else(|e| fail(&p.display(), &e));
-                BufWriter::with_capacity(1 << 20, f)
-            })
-            .collect()
-    };
-    let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
+    let paths = a.paths(&names);
 
     let start = Instant::now();
-    let (rows, bytes): (Vec<u64>, Vec<u64>) = match a.format {
+    // a sales table and its returns are made together, so the tables are
+    // written by this crate's drivers rather than `cli::write`
+    let (rows, bytes) = match a.format {
         Format::Parquet => {
-            let props = parquet_props()
-                .set_compression(a.compression)
-                .set_dictionary_enabled(a.dictionary);
-            let props = if a.dictionary {
-                props
-            } else {
-                no_dictionary(props)
-            };
-            let props = props.build();
-            let w = write_parquet_many(&tables, create(), a.threads, Some(props))
+            let props = cli::parquet_props(&a, parquet_props(), tables.iter().map(DsTable::schema));
+            write_parquet_many(&tables, create(&paths), a.threads, Some(props))
                 .unwrap_or_else(|e| fail(&"parquet", &e));
-            drop(w);
-            paths.iter().map(|p| (parquet_rows(p), size(p))).unzip()
+            parquet_counts(&paths)
         }
-        Format::Dat => {
-            let w: Vec<_> = create().into_iter().map(|f| Lines(f, 0)).collect();
-            let w = write_dat_many(&tables, w, a.threads, a.encoding)
+        Format::Text => {
+            let w = write_dat_many(&tables, text_writers(&paths), a.threads, encoding)
                 .unwrap_or_else(|e| fail(&"dat", &e));
-            w.iter().zip(&paths).map(|(l, p)| (l.1, size(p))).unzip()
+            text_counts(&w, &paths)
         }
         Format::None => {
-            let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
-            for_each_batch_many(&tables, a.threads, |t, b| {
-                rows[t] += b.num_rows() as u64;
-                bytes[t] += b.get_array_memory_size() as u64;
-            });
-            (rows, bytes)
+            let mut c = Counts::new(tables.len());
+            for_each_batch_many(&tables, a.threads, |t, b| c.add(t, &b));
+            c.into_parts()
         }
     };
-    let secs = start.elapsed().as_secs_f64();
-
-    println!("| table | rows | MiB |");
-    println!("|---|---:|---:|");
-    let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
-    let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_by_key(|&i| names[i]);
-    for i in order {
-        println!("| {} | {} | {:.0} |", names[i], rows[i], mib(bytes[i]));
-    }
-    let (r, b): (u64, u64) = (rows.iter().sum(), bytes.iter().sum());
-    println!("| **total** | {r} | {:.0} |", mib(b));
-    println!(
-        "\n{secs:.2} s: {:.1} M rows/s, {:.0} MiB/s",
-        r as f64 / secs / 1e6,
-        mib(b) / secs
-    );
-}
-
-/// Turn dictionary encoding off for every column, overriding the per-column
-/// choices of [`parquet_props`].
-fn no_dictionary(mut p: WriterPropertiesBuilder) -> WriterPropertiesBuilder {
-    for t in TableName::ALL {
-        for f in Dsb::new(1.0).table(t).schema().fields() {
-            p = p.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), false);
-        }
-    }
-    p
-}
-
-/// Rows in a Parquet file, from its footer.
-fn parquet_rows(path: &Path) -> u64 {
-    File::open(path)
-        .ok()
-        .and_then(|f| SerializedFileReader::new(f).ok())
-        .map_or(0, |r| r.metadata().file_metadata().num_rows() as u64)
-}
-
-/// `\n` bytes in `buf`. Summed in `u8` lanes, 255 bytes at a time, so it
-/// vectorizes (~10x `filter().count()`, which went a byte at a time and was
-/// 13% of a one-thread `.dat` run's instructions).
-fn newlines(buf: &[u8]) -> u64 {
-    buf.chunks(255)
-        .map(|c| c.iter().fold(0u8, |n, &b| n + u8::from(b == b'\n')) as u64)
-        .sum()
-}
-
-/// A writer that counts the lines written through it.
-struct Lines<W>(W, u64);
-
-impl<W: Write> Write for Lines<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.0.write(buf)?;
-        self.1 += newlines(&buf[..n]);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
+    report(&names, &rows, &bytes, start.elapsed().as_secs_f64(), "");
 }

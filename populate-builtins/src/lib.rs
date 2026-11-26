@@ -309,8 +309,10 @@ where
         cols
     }
 
-    /// Skips `n` lengths. The elements stay where they are: how many of
-    /// them `n` rows hold is random, so there is no row `n` to land on.
+    /// Advances the length source by `n` rows and leaves the element source
+    /// in place. A future implementation could build a skip index from
+    /// generated lengths, recording cumulative element counts at row
+    /// checkpoints so a seek can start from the nearest checkpoint.
     fn skip(&mut self, n: u64) {
         self.lengths.skip(n);
     }

@@ -9,8 +9,8 @@ on a 4-core x86-64 cloud VM; see each README for the settings.
 
 | benchmark | crate | matches | speed vs the reference |
 |---|---|---|---|
-| TPC-H | [`populate-gen-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 1.4–2.6x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads) |
-| TPC-DS | [`populate-gen-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 2.3–3.3x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet) |
+| TPC-H | [`populate-gen-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 2.0–3.7x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads, same settings) |
+| TPC-DS | [`populate-gen-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 3.0–4.7x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet, same settings) |
 | DSB | [`populate-gen-dsb`](generator/dsb/README.md) | DSB's `dsdgen`, byte for byte, all 24 tables (SF 1 and 2) | SF 1 `.dat` in ~2 s on 4 cores; `dsdgen` takes 68 s on one |
 | SSB and SSB-flat | [`populate-gen-ssb`](generator/ssb/README.md) | `ssb-dbgen`, byte for byte, all 5 tables (SF 0.0001 to 10) | 5.8x `ssb-dbgen` on 1 thread, 13x on 4 (SF 1 `.tbl`) |
 | H2O db-benchmark | [`populate-gen-h2o`](generator/h2o/README.md) | its R datagen (`set.seed(108)`), byte for byte | 7–39x `Rscript`; 1e8-row joins that R runs out of memory on take ~17–20 s |
@@ -34,7 +34,22 @@ format at `--scale 1` on 1 thread and on every core, and prints a Markdown
 table of wall time and output size. Where a reference tool is on `PATH` it
 runs alternately with ours and the table gets a speedup column:
 `tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
-`tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
+`tsbs_generate_data` for TSBS. Missing tools are skipped.
+
+Both sides of a comparison get the same settings:
+
+- the same thread count (`--threads` / `--num-threads`), except Go's
+  `tsbs_generate_data`, which is single-threaded: its one time is the
+  reference for every thread count, and the table says so;
+- text output in the reference's own format, checked to be the same bytes
+  (the `same bytes` column; TPC-DS `.dat` runs use `--encoding utf8`, as
+  `tpcgen-cli` writes);
+- Parquet with Snappy and row groups of about 7 MiB uncompressed,
+  `tpcgen-cli`'s default, passed to both (`--compression`,
+  `--row-group-bytes`). The schemas and row counts are the same; the
+  dictionary choices are each tool's own (`tpcgen-cli` tries a dictionary
+  on every column, populate only where it pays), so file sizes differ a
+  little. The default run
 takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
 minute.
 

@@ -14,21 +14,31 @@ license = "GPL-2.0-or-later AND MPL-2.0"
 [dependencies]
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-sink-arrow = { workspace = true }
+populate-sink-arrow = { workspace = true, optional = true }
 rand = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-arrow-buffer = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 
 [dev-dependencies]
 divan = { workspace = true }
 
 [[bin]]
+required-features = ["formats"]
 name = "h2o-gen"
 path = "src/bin/h2o-gen.rs"
 
 [[bench]]
+required-features = ["formats"]
 name = "h2o"
 harness = false
+
+[features]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-buffer", "dep:parquet"]
+default = ["formats"]
+
+[[test]]
+name = "h2o"
+required-features = ["formats"]

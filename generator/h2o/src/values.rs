@@ -1,5 +1,5 @@
 //! The data sets' row types, their columns, and a table that is one
-//! populate [`Distribution`], as Arrow (a [`DistTable`]) and as the
+//! populate [`Distribution`], as Arrow (a `DistTable`) and as the
 //! scripts' CSV.
 //!
 //! Every value is a `u32` with [`NA`] for R's `NA`: an [`Id`] is
@@ -9,15 +9,24 @@
 //! nulls (`NULL`), so a table's schema is read off its distribution; and
 //! they write themselves as `fwrite` does, straight from the `u32`s.
 
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, RecordBatch};
+#[cfg(feature = "formats")]
 use arrow_schema::{DataType, SchemaRef};
 use populate_core::{Columnar, Columns, Distribution, Sink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::{IntoArrowArray, IntoArrowColumns};
+#[cfg(feature = "formats")]
 use populate_table::DistTable;
 use rand::{Rng, RngCore};
 use std::sync::Arc;
 
-use crate::cols::{Bits, Cursor, NA, id_strings, int32, micros, write_with};
+use crate::cols::{Bits, Cursor, NA, write_with};
+#[cfg(feature = "formats")]
+use crate::cols::{id_strings, int32, micros};
+use crate::raw::{ColumnKind, ColumnType};
+#[cfg(not(feature = "formats"))]
+use populate_core::DistChunks;
 
 /// A row type whose columns are a `Vec<u32>` of its values, NA as [`NA`].
 pub trait Value: Copy + From<u32> + Columnar<Columns = Self::Col> {
@@ -26,6 +35,8 @@ pub trait Value: Copy + From<u32> + Columnar<Columns = Self::Col> {
 
 /// Columns whose values are a `Vec<u32>`.
 pub trait Values {
+    fn column_type() -> ColumnType;
+    fn into_values(self) -> Vec<u32>;
     fn values(&self) -> &Vec<u32>;
     fn values_mut(&mut self) -> &mut Vec<u32>;
 }
@@ -52,7 +63,7 @@ pub unsafe trait CsvColumn {
 
 macro_rules! value_type {
     ($(#[$m:meta])* $row:ident, $col:ident, [$($g:tt)*], [$($a:tt)*], $dt:expr,
-     $max:expr, |$v:ident, $w:ident| $write:expr, |$c:ident| $array:expr) => {
+     $kind:expr, $max:expr, |$v:ident, $w:ident| $write:expr, |$c:ident| $array:expr) => {
         $(#[$m])*
         #[derive(Debug, Clone, Copy, PartialEq, Default)]
         pub struct $row<$($g)*>(pub u32);
@@ -92,6 +103,8 @@ macro_rules! value_type {
         }
 
         impl<$($g)*> Values for $col<$($a)*> {
+            fn column_type() -> ColumnType { ColumnType { kind: $kind, nullable: NULL } }
+            fn into_values(self) -> Vec<u32> { self.0 }
             fn values(&self) -> &Vec<u32> {
                 &self.0
             }
@@ -100,6 +113,7 @@ macro_rules! value_type {
             }
         }
 
+        #[cfg(feature = "formats")]
         impl<$($g)*> IntoArrowArray for $col<$($a)*> {
             fn data_type() -> DataType {
                 $dt
@@ -133,7 +147,7 @@ macro_rules! value_type {
 value_type!(
     /// `"id"` and the value, zero-padded to `W <= 10` digits (`W = 0`: as
     /// is): Arrow `Utf8View`, every value inline in its view.
-    Id, Ids, [const W: usize, const NULL: bool], [W, NULL], DataType::Utf8View,
+    Id, Ids, [const W: usize, const NULL: bool], [W, NULL], DataType::Utf8View, ColumnKind::Id { width: W },
     {
         const { assert!(W <= 10, "an id longer than an inline view") };
         12
@@ -147,7 +161,7 @@ value_type!(
 
 value_type!(
     /// The value: Arrow `Int32`.
-    Int, Ints, [const NULL: bool], [NULL], DataType::Int32,
+    Int, Ints, [const NULL: bool], [NULL], DataType::Int32, ColumnKind::Int,
     10,
     |v, w| w.uint(v),
     |c| int32(c)
@@ -155,7 +169,7 @@ value_type!(
 
 value_type!(
     /// The value over 1e6: Arrow `Float64`.
-    Micros, MicrosCol, [const NULL: bool], [NULL], DataType::Float64,
+    Micros, MicrosCol, [const NULL: bool], [NULL], DataType::Float64, ColumnKind::Micros,
     16,
     |v, w| w.micros(v),
     |c| micros(&c)
@@ -163,13 +177,17 @@ value_type!(
 
 /// Columns that write their rows as CSV lines.
 pub trait CsvRows {
+    fn into_raw(self) -> Vec<Vec<u32>>;
+    fn column_types() -> Vec<ColumnType>;
     /// Append every row, one line each.
     fn write_csv(&self, out: &mut Vec<u8>);
 }
 
 macro_rules! csv_rows {
     ($first:ident $f:tt $(, $C:ident $idx:tt)*) => {
-        impl<$first: CsvColumn, $($C: CsvColumn),*> CsvRows for ($first, $($C,)*) {
+        impl<$first: CsvColumn + Values, $($C: CsvColumn + Values),*> CsvRows for ($first, $($C,)*) {
+            fn into_raw(self) -> Vec<Vec<u32>> { vec![self.$f.into_values(), $(self.$idx.into_values(),)*] }
+            fn column_types() -> Vec<ColumnType> { vec![$first::column_type(), $($C::column_type(),)*] }
             fn write_csv(&self, out: &mut Vec<u8>) {
                 let rows = self.$f.rows();
                 $(assert_eq!(self.$idx.rows(), rows, "columns of different lengths");)*
@@ -263,33 +281,68 @@ where
     }
 }
 
+#[cfg(feature = "formats")]
+type Source<D> = DistTable<D>;
+#[cfg(not(feature = "formats"))]
+type Source<D> = DistChunks<D>;
+
+#[cfg(feature = "formats")]
+pub(crate) trait RawColumns: CsvRows + IntoArrowColumns {}
+#[cfg(feature = "formats")]
+impl<T: CsvRows + IntoArrowColumns> RawColumns for T {}
+#[cfg(not(feature = "formats"))]
+pub(crate) trait RawColumns: CsvRows {}
+#[cfg(not(feature = "formats"))]
+impl<T: CsvRows> RawColumns for T {}
+
 /// A table, generated from any range of its rows, as Arrow or as CSV.
 pub(crate) trait Table: Send + Sync {
+    #[cfg(feature = "formats")]
     fn schema(&self) -> SchemaRef;
+    fn names(&self) -> Vec<String>;
+    fn column_types(&self) -> Vec<ColumnType>;
+    fn raw(&self, first: u64, n: usize) -> Vec<Vec<u32>>;
 
     /// The same table in Arrow batches of `n` rows.
     fn with_batch_rows(&self, n: u64) -> Arc<dyn Table>;
 
     /// Rows `first..end` as batches.
+    #[cfg(feature = "formats")]
     fn arrow(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch));
 
     /// Rows `first..end` as CSV lines, appended to `out`.
     fn csv(&self, first: u64, end: u64, out: &mut Vec<u8>);
 }
 
-impl<D> Table for DistTable<D>
+impl<D> Table for Source<D>
 where
     D: Distribution + Clone + Send + Sync + 'static,
-    Columns<D::Item>: IntoArrowColumns + CsvRows,
+    Columns<D::Item>: RawColumns,
 {
+    #[cfg(feature = "formats")]
     fn schema(&self) -> SchemaRef {
         DistTable::schema(self).clone()
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        self.dist().column_names(&mut names);
+        names
+    }
+    fn column_types(&self) -> Vec<ColumnType> {
+        <Columns<D::Item> as CsvRows>::column_types()
+    }
+    fn raw(&self, first: u64, n: usize) -> Vec<Vec<u32>> {
+        let mut d = self.dist().clone();
+        d.skip(first);
+        d.collect(&mut NoRng, n).into_raw()
     }
 
     fn with_batch_rows(&self, n: u64) -> Arc<dyn Table> {
         Arc::new(self.clone().batch_rows(n))
     }
 
+    #[cfg(feature = "formats")]
     fn arrow(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
         self.range(first, end, emit)
     }
@@ -307,18 +360,26 @@ where
 pub(crate) fn table<D>(name: &str, rows: u64, batch_rows: usize, dist: D) -> Arc<dyn Table>
 where
     D: Distribution + Clone + Send + Sync + 'static,
-    Columns<D::Item>: IntoArrowColumns + CsvRows,
+    Columns<D::Item>: RawColumns,
 {
-    Arc::new(DistTable::new(name, rows, dist).batch_rows(batch_rows as u64))
+    #[cfg(feature = "formats")]
+    {
+        Arc::new(DistTable::new(name, rows, dist).batch_rows(batch_rows as u64))
+    }
+    #[cfg(not(feature = "formats"))]
+    {
+        let _ = name;
+        Arc::new(DistChunks::new(rows, dist).batch_rows(batch_rows as u64))
+    }
 }
 
 /// The CSV header: the schema's names.
-pub(crate) fn header(schema: &SchemaRef, out: &mut Vec<u8>) {
-    for (i, f) in schema.fields().iter().enumerate() {
+pub(crate) fn header(names: &[String], out: &mut Vec<u8>) {
+    for (i, name) in names.iter().enumerate() {
         if i > 0 {
             out.push(b',');
         }
-        out.extend_from_slice(f.name().as_bytes());
+        out.extend_from_slice(name.as_bytes());
     }
     out.push(b'\n');
 }

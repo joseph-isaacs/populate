@@ -12,12 +12,20 @@
 //! tables `small`, `medium` and `big` (N/1e6, N/1e3 and N rows), named
 //! with that row count in place of `NA`.
 
+use crate::raw::Native;
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
 use populate_builtins::{checkpointed, column_as, named};
+use populate_core::DistChunks;
 use populate_core::Distribution;
+use populate_core::chunks::DEFAULT_CHUNK_ROWS;
+use populate_core::sched::resolve_threads;
+#[cfg(feature = "formats")]
+use populate_table::Chunks;
+#[cfg(feature = "formats")]
 use populate_table::text::TextChunks;
-use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, resolve_threads};
 use std::fmt::{self, Debug, Formatter};
 use std::mem::take;
 use std::sync::mpsc::channel;
@@ -613,9 +621,20 @@ impl JoinTable {
         (s, (s + self.chunk_rows).min(self.rows))
     }
 
+    /// Native distribution of encoded columns with names, logical types and nullability.
+    pub fn dist(&self) -> Native {
+        Native::new(self.table.clone())
+    }
+
+    /// Native columns with this table's chunk size.
+    pub fn raw(&self) -> DistChunks<Native> {
+        DistChunks::new(self.rows(), self.dist()).chunk_rows(self.chunk_rows)
+    }
+
     /// Arrow schema, read off the table's distribution: `id1..` `Int32`,
     /// `id4..` (`"id<id1>"`) `Utf8View`, the value `Float64`. Only the left
     /// table is nullable.
+    #[cfg(feature = "formats")]
     pub fn schema(&self) -> SchemaRef {
         self.table.schema()
     }
@@ -623,13 +642,14 @@ impl JoinTable {
     /// Append chunk `j`'s CSV text (with the header for chunk 0).
     pub fn chunk_csv(&self, j: u64, out: &mut Vec<u8>) {
         if j == 0 {
-            header(&self.schema(), out);
+            header(&self.table.names(), out);
         }
         let (a, b) = self.chunk_range(j);
         self.table.csv(a, b, out);
     }
 }
 
+#[cfg(feature = "formats")]
 impl Chunks for JoinTable {
     fn schema(&self) -> SchemaRef {
         JoinTable::schema(self)
@@ -645,6 +665,7 @@ impl Chunks for JoinTable {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for JoinTable {
     fn outputs(&self) -> usize {
         1
@@ -703,6 +724,7 @@ mod tests {
 #[cfg(test)]
 mod sort_tests {
     use super::*;
+    use crate::cols::NA;
 
     #[test]
     fn sort_by_is_stable_lexicographic() {
@@ -722,6 +744,39 @@ mod sort_tests {
             for c in 0..3 {
                 let want: Vec<u32> = rows.iter().map(|&r| cols[c][r]).collect();
                 assert_eq!(got[c], want, "keys {keys:?} col {c}");
+            }
+        }
+    }
+    #[test]
+    fn native_join_columns_cover_every_shape() {
+        for keys in 1..=3 {
+            for left in [false, true] {
+                let mut missing = Bits::new(4);
+                missing.set(2);
+                let na = left.then(|| Arc::new(missing));
+                let t = JoinTable::new(
+                    Tab {
+                        name: "fixture".into(),
+                        ids: vec![vec![3, 2, 1]; keys],
+                        id_na: vec![na; keys],
+                        v: RMt::set_seed(SEED),
+                        rows: 3,
+                        v_na: None,
+                        v_name: "v1",
+                    },
+                    left,
+                    2,
+                );
+                let raw = t.raw().batch_rows(1);
+                let specs = raw.dist().column_types();
+                assert_eq!(specs.len(), keys * 2 + 1);
+                let values = raw.batch(0, 3);
+                for (k, spec) in specs.iter().take(keys).enumerate() {
+                    assert_eq!(values.0[k], [3, if left { NA } else { 2 }, 1]);
+                    assert_eq!(values.0[k], values.0[keys + k]);
+                    assert_eq!(spec.nullable, left);
+                }
+                assert_eq!(raw.batch(1, 1).0[0][0], if left { NA } else { 2 });
             }
         }
     }

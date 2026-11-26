@@ -35,17 +35,26 @@
 //! distributions draw a variable number of random values per record, so
 //! records could not be generated independently.
 
-use crate::cols::{Load, Records};
+use crate::cols::{Load, Records, Text};
 use crate::rng::JavaTlr;
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::{Schema, SchemaRef};
+#[cfg(feature = "formats")]
 use parquet::basic::Compression;
+#[cfg(feature = "formats")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "formats")]
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
+use populate_core::DistChunks;
+use populate_core::chunks::DEFAULT_BATCH_ROWS;
+use populate_core::{Distribution, Wide};
+#[cfg(feature = "formats")]
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{
-    Chunks, DEFAULT_BATCH_ROWS, DynTable, MultiChunks, chunks, write_parquet_many,
-};
+#[cfg(feature = "formats")]
+use populate_table::{Chunks, DynTable, MultiChunks, chunks, write_parquet_many};
+#[cfg(feature = "formats")]
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -58,11 +67,13 @@ pub const YCSB_CHUNK_ROWS: u64 = 32 * 1024;
 /// `zeropadding=1`, random values.
 ///
 /// ```
+/// # #[cfg(feature = "formats")] {
 /// use populate_gen_ycsb::Ycsb;
 ///
 /// let y = Ycsb::new(1000).data_integrity(true);
 /// let tsv = y.write_tsv(Vec::new(), 0).unwrap();
 /// assert!(tsv.starts_with(b"user6284781860667377211\tuser6284781860667377211:field0:-56807877:"));
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Ycsb {
@@ -78,6 +89,7 @@ pub struct Ycsb {
     pub(crate) tlr: JavaTlr,
     pub(crate) chunk_rows: u64,
     pub(crate) batch: usize,
+    #[cfg(feature = "formats")]
     pub(crate) schema: SchemaRef,
 }
 
@@ -100,6 +112,7 @@ impl Ycsb {
             },
             chunk_rows: YCSB_CHUNK_ROWS,
             batch: DEFAULT_BATCH_ROWS,
+            #[cfg(feature = "formats")]
             schema: Arc::new(Schema::empty()),
         };
         y.update();
@@ -107,7 +120,10 @@ impl Ycsb {
     }
 
     fn update(&mut self) {
-        self.schema = self.table().schema().clone();
+        #[cfg(feature = "formats")]
+        {
+            self.schema = self.table().schema().clone();
+        }
     }
 
     fn set(mut self, f: impl FnOnce(&mut Self)) -> Self {
@@ -206,6 +222,7 @@ impl Ycsb {
     }
 
     /// `ycsb_key` then the fields.
+    #[cfg(feature = "formats")]
     pub fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -241,22 +258,41 @@ impl Ycsb {
     }
 
     /// The load as one distribution ([`Records`]).
+    #[cfg(feature = "formats")]
     fn table(&self) -> DynTable {
+        DynTable::new("usertable", self.rows(), self.dist())
+            .chunk_rows(self.chunk_rows)
+            .batch_rows(self.batch as u64)
+    }
+
+    /// Native load distribution: keys and one string column per field.
+    pub fn dist(
+        &self,
+    ) -> impl Distribution<Item = (Text, Wide<Text>)> + Clone + Send + Sync + use<> {
         let load = Load {
             ycsb: self.clone(),
             names: self.field_names(),
             layout: (!self.data_integrity).then(|| RandomLayout::new(self)),
         };
-        let records = Records {
+        Records {
             load: Arc::new(load),
             next: 0,
-        };
-        DynTable::new("usertable", self.rows(), records)
+        }
+    }
+
+    /// Native columns with the configured chunk and batch sizes.
+    pub fn raw(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = (Text, Wide<Text>)> + Clone + Send + Sync + use<>>
+    {
+        self.dist()
+            .chunks(self.rows())
             .chunk_rows(self.chunk_rows)
             .batch_rows(self.batch as u64)
     }
 
     /// Records `first..end` as TSV lines, straight from the generators.
+    #[cfg(feature = "formats")]
     fn text(&self, first: u64, end: u64, out: &mut Vec<u8>) {
         let names = self.field_names();
         let layout = (!self.data_integrity).then(|| RandomLayout::new(self));
@@ -290,6 +326,7 @@ impl Ycsb {
     }
 
     /// Records `first..end` (0-based within this load), on this thread.
+    #[cfg(feature = "formats")]
     pub fn range(&self, first: u64, end: u64) -> Vec<RecordBatch> {
         let mut v = Vec::new();
         self.table().range(first, end, &mut |b| v.push(b));
@@ -298,6 +335,7 @@ impl Ycsb {
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
     /// batch, in order, on the calling thread.
+    #[cfg(feature = "formats")]
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
         chunks::for_each_batch(self, threads, f)
     }
@@ -305,6 +343,7 @@ impl Ycsb {
     /// Parquet writer properties for YCSB: every value is distinct, so no
     /// dictionaries (the writer would build them and fall back). Snappy.
     /// Used when `write_parquet` gets no properties.
+    #[cfg(feature = "formats")]
     pub fn parquet_props() -> WriterPropertiesBuilder {
         WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
@@ -313,6 +352,7 @@ impl Ycsb {
 
     /// Write the records as one Parquet file, one row group per chunk
     /// (`props: None` means [`Ycsb::parquet_props`]).
+    #[cfg(feature = "formats")]
     pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
@@ -331,13 +371,16 @@ impl Ycsb {
 
     /// Write the records as TSV: `key\tfield0\t...\n`, fields in name
     /// order. YCSB's values never contain a tab or newline.
+    #[cfg(feature = "formats")]
     pub fn write_tsv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
         let mut w = write_text_many(&[self as &dyn TextChunks], vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
 
+#[cfg(feature = "formats")]
 impl Chunks for Ycsb {
+    #[cfg(feature = "formats")]
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -351,6 +394,7 @@ impl Chunks for Ycsb {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for Ycsb {
     fn outputs(&self) -> usize {
         1
@@ -459,6 +503,7 @@ impl RandomLayout {
 
     /// Field `f` of record `j` of the load, into `out`.
     #[inline]
+    #[cfg(feature = "formats")]
     pub(crate) fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
         let mut next = self.blocks(tlr, j, f);
         let (chunks, rest) = out.as_chunks_mut::<6>();

@@ -16,25 +16,37 @@ license = "MIT AND Apache-2.0"
 # itself doesn't use it)
 mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
-populate-combinators = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-combinators = { path = "../combinators", version = "0.1.0", default-features = false }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
-parquet = { workspace = true, features = ["arrow", "snap"] }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow", "snap"], optional = true }
 itoa = "1"
 
 [features]
-default = ["mimalloc"]
+formats = ["dep:populate-table", "dep:arrow-array", "dep:arrow-schema", "dep:parquet", "populate-combinators/formats"]
+default = ["formats", "mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+populate-sink-arrow = { workspace = true }
 divan = { workspace = true }
 
 [[bin]]
+required-features = ["formats"]
 name = "ycsb-gen"
 path = "src/bin/ycsb-gen.rs"
 
 [[bench]]
+required-features = ["formats"]
 name = "ycsb"
 harness = false
+
+[[test]]
+name = "ycsb_run"
+required-features = ["formats"]
+
+[[test]]
+name = "ycsb"
+required-features = ["formats"]

@@ -4,6 +4,10 @@ description = "YCSB load and run operations, byte-identical to YCSB 0.17.0, on a
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license = "MIT AND Apache-2.0"
 
 [dependencies]

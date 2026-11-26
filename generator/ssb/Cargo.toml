@@ -4,6 +4,10 @@ description = "Star Schema Benchmark (SSB) data byte-identical to ssb-dbgen, on 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

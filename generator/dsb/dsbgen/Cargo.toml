@@ -1,4 +1,4 @@
-# Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+# Modified from tpcdsgen 4.0.0 for the populate DSB variant.
 
 [package]
 name = "dsbgen"

@@ -4,6 +4,10 @@ description = "The TPC-C initial database (TPC-C 5.11 clause 4.3.3.1), on all co
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

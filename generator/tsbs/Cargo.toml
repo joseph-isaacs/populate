@@ -4,6 +4,10 @@ description = "TSBS devops and IoT data byte-identical to tsbs_generate_data, on
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license = "MIT AND BSD-3-Clause AND Apache-2.0"
 
 [dependencies]

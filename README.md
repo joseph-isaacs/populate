@@ -1,6 +1,6 @@
 # populate
 
-[![CI](https://github.com/joseph-isaacs/data-comb/actions/workflows/ci.yml/badge.svg)](https://github.com/joseph-isaacs/data-comb/actions/workflows/ci.yml)
+[![CI](https://github.com/joseph-isaacs/populate/actions/workflows/ci.yml/badge.svg)](https://github.com/joseph-isaacs/populate/actions/workflows/ci.yml)
 [![Rust 1.92+](https://img.shields.io/badge/rust-1.92%2B-blue)](https://www.rust-lang.org/tools/install)
 
 Composable distribution combinators for generating tabular test data,
@@ -13,7 +13,7 @@ an application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-populate = { git = "https://github.com/joseph-isaacs/data-comb.git", features = ["parquet"] }
+populate = { git = "https://github.com/joseph-isaacs/populate.git", features = ["parquet"] }
 rand = "0.9"
 ```
 
@@ -109,7 +109,7 @@ tool.
 Install the TPC-H command from Git:
 
 ```sh
-cargo install --git https://github.com/joseph-isaacs/data-comb.git populate-tpch
+cargo install --git https://github.com/joseph-isaacs/populate.git populate-tpch
 ```
 
 The installed executable is `tpch-gen`:

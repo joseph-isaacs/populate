@@ -4,6 +4,10 @@ description = "DSB (skewed, correlated TPC-DS) data byte-identical to Microsoft'
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]

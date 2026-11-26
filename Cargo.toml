@@ -54,6 +54,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
+repository = "https://github.com/joseph-isaacs/populate"
+homepage = "https://github.com/joseph-isaacs/populate"
+keywords = ["data-generation", "benchmark", "arrow", "parquet", "tpch"]
+categories = ["development-tools::testing", "database"]
 
 [workspace.dependencies]
 divan = "0.1"
@@ -63,22 +67,22 @@ arrow-schema = "60"
 arrow-buffer = "60"
 arrow-cast = "60"
 parquet = { version = "60", default-features = false }
-populate = { path = "populate" }
-populate-core = { path = "populate-core" }
-populate-builtins = { path = "populate-builtins" }
-populate-sink-arrow = { path = "sink/arrow" }
-populate-sink-parquet = { path = "sink/parquet" }
-populate-table = { path = "populate-table" }
-populate-combinators = { path = "generator/combinators" }
-populate-tpcds = { path = "generator/tpcds" }
-populate-tpch = { path = "generator/tpch" }
-populate-tsbs = { path = "generator/tsbs" }
-populate-ssb = { path = "generator/ssb" }
-populate-h2o = { path = "generator/h2o" }
-populate-tpcc = { path = "generator/tpcc" }
-populate-ycsb = { path = "generator/ycsb" }
-populate-synth = { path = "generator/synth" }
-populate-ldbc = { path = "generator/ldbc" }
+populate = { path = "populate", version = "0.1.0" }
+populate-core = { path = "populate-core", version = "0.1.0" }
+populate-builtins = { path = "populate-builtins", version = "0.1.0" }
+populate-sink-arrow = { path = "sink/arrow", version = "0.1.0" }
+populate-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
+populate-table = { path = "populate-table", version = "0.1.0" }
+populate-combinators = { path = "generator/combinators", version = "0.1.0" }
+populate-tpcds = { path = "generator/tpcds", version = "0.1.0" }
+populate-tpch = { path = "generator/tpch", version = "0.1.0" }
+populate-tsbs = { path = "generator/tsbs", version = "0.1.0" }
+populate-ssb = { path = "generator/ssb", version = "0.1.0" }
+populate-h2o = { path = "generator/h2o", version = "0.1.0" }
+populate-tpcc = { path = "generator/tpcc", version = "0.1.0" }
+populate-ycsb = { path = "generator/ycsb", version = "0.1.0" }
+populate-synth = { path = "generator/synth", version = "0.1.0" }
+populate-ldbc = { path = "generator/ldbc", version = "0.1.0" }
 
 # populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
 # in test builds too (its dependencies stay as they are)

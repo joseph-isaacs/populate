@@ -19,10 +19,9 @@
 
 use crate::Shape;
 use crate::kernel::{
-    Pool, Quantiles, Rows, View, Views, Weighted, Zipf, cents, put, put_nullable, row_numbers,
-    threshold, unit,
+    Pool, Quantiles, View, Views, Weighted, Zipf, cents, put, put_nullable, threshold, unit,
 };
-use populate_builtins::{derive_columns, named_all};
+use populate_builtins::{Rows, derive_columns, named_all, row_numbers};
 use populate_core::{Columnar, Distribution, Nullable, Timestamp, Validity, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::Stream;

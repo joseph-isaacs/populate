@@ -8,8 +8,9 @@
 use crate::chunks::{Chunks, MultiChunks};
 use crate::sched::par_sources;
 use crate::table::Table;
-use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_array::{Array, ArrayRef, RecordBatch};
+use arrow_schema::{DataType, SchemaRef};
+use arrow_select::concat::concat;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_writer::{ArrowColumnChunk, ArrowColumnWriter, compute_leaves};
 use parquet::column::writer::ColumnCloseResult;
@@ -18,6 +19,7 @@ use parquet::file::properties::WriterProperties;
 use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
 use populate_sink_parquet::encode::{DirectColumn, Rope, eligible};
 use std::io::Write;
+use std::mem::take;
 
 /// Write `src` as one Parquet file, one row group per chunk, generating and
 /// encoding on `threads` threads (0 = all cores). Returns the writer.
@@ -44,6 +46,34 @@ pub fn write_parquet_many<W: Write + Send>(
     writers: Vec<W>,
     threads: usize,
     props: Option<WriterProperties>,
+) -> Result<Vec<W>, ParquetError> {
+    write_many(srcs, writers, threads, props, None)
+}
+
+/// [`write_parquet_many`], with the files it writes when every chunk's
+/// batches are cut into batches of `batch_rows[s]` rows for source `s`
+/// (the last of each chunk shorter), whatever batches the chunks emit: Parquet pages end
+/// where the writer's batches end, so this makes a file independent of
+/// how a source batches its rows. The directly encoded flat columns are
+/// paged as if cut, without copying; any other column's arrays are cut
+/// (and joined across batches) before they are written.
+pub fn write_parquet_many_in_batches<W: Write + Send>(
+    srcs: &[&dyn MultiChunks],
+    writers: Vec<W>,
+    threads: usize,
+    props: Option<WriterProperties>,
+    batch_rows: &[usize],
+) -> Result<Vec<W>, ParquetError> {
+    assert_eq!(batch_rows.len(), srcs.len(), "a batch size per source");
+    write_many(srcs, writers, threads, props, Some(batch_rows))
+}
+
+fn write_many<W: Write + Send>(
+    srcs: &[&dyn MultiChunks],
+    writers: Vec<W>,
+    threads: usize,
+    props: Option<WriterProperties>,
+    batch_rows: Option<&[usize]>,
 ) -> Result<Vec<W>, ParquetError> {
     let props = props.unwrap_or_default();
     // output `first[s] + k` is output `k` of source `s`
@@ -81,6 +111,7 @@ pub fn write_parquet_many<W: Write + Send>(
                     c => c.insert(Group::new(
                         &layouts[o],
                         factories[o].create_column_writers(g as usize)?,
+                        batch_rows.map(|b| b[s].max(1)),
                     )),
                 };
                 c.write(&schemas[o], &layouts[o], &batch)
@@ -90,7 +121,8 @@ pub fn write_parquet_many<W: Write + Send>(
         let mut out = Vec::new();
         for (k, c) in cols.into_iter().enumerate() {
             if let Some(c) = c {
-                out.push((first[s] + k, c.close(&props)?));
+                let o = first[s] + k;
+                out.push((o, c.close(&schemas[o], &layouts[o], &props)?));
             }
         }
         Ok(out)
@@ -119,6 +151,9 @@ struct Layout {
     leaves: Vec<Vec<usize>>,
     /// Per leaf: the descriptor, if it is encoded directly.
     direct: Vec<Option<ColumnDescPtr>>,
+    /// Per field: whether it is one directly encoded flat leaf, which
+    /// [`DirectColumn::with_batch_rows`] pages as if its arrays were cut.
+    paged_as_cut: Vec<bool>,
 }
 
 impl Layout {
@@ -128,15 +163,24 @@ impl Layout {
             leaves[descr.get_column_root_idx(l)].push(l);
         }
         let mut direct = vec![None; descr.num_columns()];
+        let mut paged_as_cut = vec![false; schema.fields().len()];
         for (f, field) in schema.fields().iter().enumerate() {
             if let [l] = leaves[f][..] {
                 let d = descr.column(l);
                 if eligible(field.data_type(), &d, props) {
                     direct[l] = Some(d);
+                    paged_as_cut[f] = !matches!(
+                        field.data_type(),
+                        DataType::List(_) | DataType::FixedSizeList(..)
+                    );
                 }
             }
         }
-        Self { leaves, direct }
+        Self {
+            leaves,
+            direct,
+            paged_as_cut,
+        }
     }
 }
 
@@ -144,6 +188,17 @@ impl Layout {
 struct Group {
     arrow: Vec<Option<ArrowColumnWriter>>,
     direct: Vec<Option<DirectColumn>>,
+    /// With batches of `n` rows ([`write_parquet_many_in_batches`]): per
+    /// field, its arrays not yet written, if the field's arrays must be
+    /// cut before they are written (it is not paged as if cut).
+    cut: Option<(usize, Vec<Option<Pending>>)>,
+}
+
+/// A field's arrays waiting to be cut into batches of `n` rows.
+#[derive(Default)]
+struct Pending {
+    arrays: Vec<ArrayRef>,
+    rows: usize,
 }
 
 /// One encoded column chunk.
@@ -153,14 +208,18 @@ enum Leaf {
 }
 
 impl Group {
-    fn new(layout: &Layout, writers: Vec<ArrowColumnWriter>) -> Self {
+    fn new(layout: &Layout, writers: Vec<ArrowColumnWriter>, batch_rows: Option<usize>) -> Self {
         let mut arrow = Vec::with_capacity(writers.len());
         let mut direct = Vec::with_capacity(writers.len());
         for (w, d) in writers.into_iter().zip(&layout.direct) {
             match d {
                 Some(d) => {
                     arrow.push(None);
-                    direct.push(Some(DirectColumn::new(d.clone())));
+                    let c = DirectColumn::new(d.clone());
+                    direct.push(Some(match batch_rows {
+                        Some(n) => c.with_batch_rows(n),
+                        None => c,
+                    }));
                 }
                 None => {
                     arrow.push(Some(w));
@@ -168,7 +227,13 @@ impl Group {
                 }
             }
         }
-        Self { arrow, direct }
+        let cut = batch_rows.map(|n| {
+            let pending = (0..layout.leaves.len())
+                .map(|f| (!layout.paged_as_cut[f]).then(Pending::default))
+                .collect();
+            (n, pending)
+        });
+        Self { arrow, direct, cut }
     }
 
     fn write(
@@ -177,26 +242,70 @@ impl Group {
         layout: &Layout,
         batch: &RecordBatch,
     ) -> Result<(), ParquetError> {
-        for ((field, array), leaves) in schema
-            .fields()
-            .iter()
-            .zip(batch.columns())
-            .zip(&layout.leaves)
-        {
-            if let [l] = leaves[..]
-                && let Some(d) = &mut self.direct[l]
-            {
-                d.write(array);
+        for (f, array) in batch.columns().iter().enumerate() {
+            let Some((n, pending)) = &mut self.cut else {
+                self.write_field(schema, layout, f, array)?;
                 continue;
-            }
-            for (leaf, &l) in compute_leaves(field, array)?.iter().zip(leaves) {
-                self.arrow[l].as_mut().expect("arrow-rs leaf").write(leaf)?;
+            };
+            let n = *n;
+            let Some(p) = &mut pending[f] else {
+                self.write_field(schema, layout, f, array)?;
+                continue;
+            };
+            p.arrays.push(array.clone());
+            p.rows += array.len();
+            if p.rows >= n {
+                let all = take(&mut p.arrays);
+                let rows = take(&mut p.rows);
+                let all = join(&all)?;
+                let whole = rows / n * n;
+                if whole < rows {
+                    p.arrays.push(all.slice(whole, rows - whole));
+                    p.rows = rows - whole;
+                }
+                for at in (0..whole).step_by(n) {
+                    self.write_field(schema, layout, f, &all.slice(at, n))?;
+                }
             }
         }
         Ok(())
     }
 
-    fn close(self, props: &WriterProperties) -> Result<Vec<Leaf>, ParquetError> {
+    /// Field `f`'s `array`, to its leaves' writers.
+    fn write_field(
+        &mut self,
+        schema: &SchemaRef,
+        layout: &Layout,
+        f: usize,
+        array: &ArrayRef,
+    ) -> Result<(), ParquetError> {
+        let leaves = &layout.leaves[f];
+        if let [l] = leaves[..]
+            && let Some(d) = &mut self.direct[l]
+        {
+            d.write(array);
+            return Ok(());
+        }
+        for (leaf, &l) in compute_leaves(schema.field(f), array)?.iter().zip(leaves) {
+            self.arrow[l].as_mut().expect("arrow-rs leaf").write(leaf)?;
+        }
+        Ok(())
+    }
+
+    fn close(
+        mut self,
+        schema: &SchemaRef,
+        layout: &Layout,
+        props: &WriterProperties,
+    ) -> Result<Vec<Leaf>, ParquetError> {
+        // the rest of each cut field: the chunk's last, shorter batch
+        if let Some((_, pending)) = self.cut.take() {
+            for (f, p) in pending.into_iter().enumerate() {
+                if let Some(p) = p.filter(|p| p.rows > 0) {
+                    self.write_field(schema, layout, f, &join(&p.arrays)?)?;
+                }
+            }
+        }
         self.arrow
             .into_iter()
             .zip(self.direct)
@@ -206,6 +315,17 @@ impl Group {
                 (None, None) => unreachable!("every leaf has a writer"),
             })
             .collect()
+    }
+}
+
+/// `arrays` as one array (the one itself, uncopied, if there is one).
+fn join(arrays: &[ArrayRef]) -> Result<ArrayRef, ParquetError> {
+    match arrays {
+        [a] => Ok(a.clone()),
+        _ => {
+            let refs: Vec<&dyn Array> = arrays.iter().map(|a| a.as_ref()).collect();
+            Ok(concat(&refs)?)
+        }
     }
 }
 
@@ -254,5 +374,112 @@ impl Table {
             per_group: (rows / batch_size).max(1) as u64,
         };
         write_parquet(&groups, writer, threads, Some(props))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::builder::{Int32Builder, ListBuilder};
+    use arrow_array::{Int32Array, StringViewArray};
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    /// Two chunks of `rows` rows each: a nullable Int32 and Utf8View
+    /// (encoded directly) and a nullable List (by arrow-rs), emitted in
+    /// batches of the lengths `cuts` cycles through.
+    struct Rows {
+        rows: usize,
+        cuts: Vec<usize>,
+    }
+
+    fn schema() -> SchemaRef {
+        let list = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
+        Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, true),
+            Field::new("s", DataType::Utf8View, true),
+            Field::new("l", list, true),
+        ]))
+    }
+
+    fn batch(rows: std::ops::Range<usize>) -> RecordBatch {
+        let i: Int32Array = rows
+            .clone()
+            .map(|r| (r % 7 != 0).then_some((r * 37 % 1000) as i32))
+            .collect();
+        let s: StringViewArray = rows
+            .clone()
+            .map(|r| (r % 5 != 0).then(|| format!("value number {}", r % 300)))
+            .collect();
+        let mut l = ListBuilder::new(Int32Builder::new());
+        for r in rows {
+            if r % 3 == 0 {
+                l.append_null();
+            } else {
+                l.append_value((0..r % 4).map(|k| Some((r + k) as i32)));
+            }
+        }
+        RecordBatch::try_new(
+            schema(),
+            vec![Arc::new(i), Arc::new(s), Arc::new(l.finish())],
+        )
+        .unwrap()
+    }
+
+    impl Chunks for Rows {
+        fn schema(&self) -> SchemaRef {
+            schema()
+        }
+
+        fn num_chunks(&self) -> u64 {
+            2
+        }
+
+        fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
+            let (mut at, end) = (i as usize * self.rows, (i as usize + 1) * self.rows);
+            for &n in self.cuts.iter().cycle() {
+                if at == end {
+                    break;
+                }
+                let n = n.min(end - at);
+                emit(batch(at..at + n));
+                at += n;
+            }
+        }
+    }
+
+    fn file(src: &Rows, batch_rows: Option<usize>) -> Vec<u8> {
+        let props = WriterProperties::builder()
+            .set_write_batch_size(100)
+            .set_data_page_row_count_limit(250)
+            .build();
+        let srcs = [src as &dyn MultiChunks];
+        let mut out = match batch_rows {
+            None => write_parquet_many(&srcs, vec![Vec::new()], 2, Some(props)),
+            Some(n) => write_parquet_many_in_batches(&srcs, vec![Vec::new()], 2, Some(props), &[n]),
+        }
+        .unwrap();
+        out.pop().unwrap()
+    }
+
+    #[test]
+    fn in_batches_is_the_file_of_those_batches() {
+        let rows = 2_345;
+        for n in [100, 300, 512] {
+            let want = file(
+                &Rows {
+                    rows,
+                    cuts: vec![n],
+                },
+                None,
+            );
+            let ragged = Rows {
+                rows,
+                cuts: vec![1, 777, 64, 1_000, 33],
+            };
+            // as they come, the batches would end pages elsewhere
+            assert_ne!(file(&ragged, None), want, "batches of {n}");
+            assert_eq!(file(&ragged, Some(n)), want, "batches of {n}");
+        }
     }
 }

@@ -88,7 +88,9 @@ its elements alone, because how many elements `n` rows hold is random.
 generating a row. The types come from the sinks: every column type's
 `IntoArrowColumns::data_types` says what Arrow array it becomes, so
 `Vec<i64>` is `Int64`, `Vec<Date32>` is `Date32` and a tuple of columns
-lists its fields' types in order. The names come from the distribution:
+lists its fields' types in order, and `IntoArrowColumns::nullables` whether
+each may hold nulls (a column type that stores nulls says so). The names
+come from the distribution:
 `Distribution::column_names`, which `named` / `named_all` set and a tuple
 concatenates. `DistTable` (`populate-table`) runs a distribution over any
 range of rows (clone, `skip`, collect) with that schema.
@@ -103,6 +105,18 @@ A `SeekRng` is a stream of draws that can jump `n` draws ahead.
 on its position. This is how the reference generators seed their columns
 (dbgen gives every column its own Lehmer stream), and why a chunk of such a
 table starts at its first row in `O(log n)`.
+
+## Streams that can't jump, and columns built whole
+
+Some reference generators' streams have no fast way to row `n`: R's
+`sample()` rejects draws, so a row takes a varying number of them.
+`checkpointed(inner, every, rows)` runs `inner` over its rows once (by its
+own `skip`), saving its state every `every` rows; a skip then restarts
+from the last saved state before the target and skips fewer than `every`
+rows. Some columns are only known whole (a shuffle, a sort): `column(values)`
+reads a column in memory, shared by every clone, and `column_as` converts
+each value as it is collected, so several columns of different types can
+read one stored column.
 
 ## Columns from columns, and child rows
 
@@ -148,14 +162,15 @@ straight into the `StrCol` buffer.
 
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
-| `populate-core`         | the three traits, `RowCount`, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, `Tables`, tuple impls |
-| `populate-builtins`     | `constant`, `range`, `list`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `named`, random leaves |
+| `populate-core`         | the three traits, `RowCount`, `Append`, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, `Tables`, tuple impls |
+| `populate-builtins`     | `constant`, `range`, `list`, `draws`, `derive`, `derive_columns`, `children`, `flat_map`, `named`, `checkpointed`, `column`, random leaves |
 | `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
 | `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on |
 | `populate`              | facade re-exporting the above                         |
 
-TPC-H (`populate-tpch`) is built on `Distribution`: each table is one
-distribution run by `DistTable`, its schema read off it. The other
+TPC-H (`populate-tpch`) and H2O (`populate-h2o`) are built on
+`Distribution`: each table is one distribution run by `DistTable`, its
+schema read off it. The other
 benchmark generators (TPC-DS and the rest) implement `Chunks` from
 `populate-table` directly.

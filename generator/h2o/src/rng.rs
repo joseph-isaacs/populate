@@ -10,9 +10,14 @@
 //!   top 16 bits of `y`), as `bits / 16 + 1` draws, and rejects values
 //!   `>= n`. So every attempt for one `n` takes the same number of draws.
 
+use crate::fwrite::round6_micros;
+use crate::values::{Value, Values};
+use populate_core::Distribution;
+use rand::Rng;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
 use std::fmt::{self, Debug, Formatter};
+use std::marker::PhantomData;
 
 /// MT19937 state size.
 pub const N: usize = 624;
@@ -538,6 +543,101 @@ pub fn sample_int(rng: &mut RMt, n: u64, k: u64) -> Vec<u32> {
         sample_hash(rng, n, k)
     } else {
         sample_noreplace(rng, n, k)
+    }
+}
+
+// ============================================================================
+// As distributions
+// ============================================================================
+
+/// `sample(range, n, TRUE)`'s values (1-based), one per row: a column of
+/// the groupby script. Rows take varying numbers of draws (rejection), so
+/// a skip runs the stream (by counting accepted draws, without making
+/// values); wrap it in `populate_builtins::checkpointed` to skip far.
+#[derive(Debug)]
+pub struct Sample<T> {
+    pub rng: RMt,
+    pub range: u64,
+    pub _out: PhantomData<fn() -> T>,
+}
+
+impl<T> Sample<T> {
+    pub fn new(rng: RMt, range: u64) -> Self {
+        Sample {
+            rng,
+            range,
+            _out: PhantomData,
+        }
+    }
+}
+
+impl<T> Clone for Sample<T> {
+    fn clone(&self) -> Self {
+        Sample::new(self.rng.clone(), self.range)
+    }
+}
+
+impl<T: Value> Distribution for Sample<T> {
+    type Item = T;
+
+    fn collect_into(&mut self, cols: &mut T::Col, _rng: &mut impl Rng, n: usize) {
+        let cols = cols.values_mut();
+        let start = cols.len();
+        cols.resize(start + n, 0);
+        let out = &mut cols[start..];
+        self.rng.fill_index(self.range, out);
+        for v in out {
+            *v += 1;
+        }
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.rng.skip_index(self.range, n);
+    }
+}
+
+/// `round(runif(n, max = 100), 6)`, one value per row, as micros (the
+/// value times 1e6, an integer).
+#[derive(Debug)]
+pub struct Runif100<T> {
+    pub rng: RMt,
+    pub _out: PhantomData<fn() -> T>,
+}
+
+impl<T> Runif100<T> {
+    pub fn new(rng: RMt) -> Self {
+        Runif100 {
+            rng,
+            _out: PhantomData,
+        }
+    }
+}
+
+impl<T> Clone for Runif100<T> {
+    fn clone(&self) -> Self {
+        Runif100::new(self.rng.clone())
+    }
+}
+
+impl<T: Value> Distribution for Runif100<T> {
+    type Item = T;
+
+    fn collect_into(&mut self, cols: &mut T::Col, _rng: &mut impl Rng, n: usize) {
+        let cols = cols.values_mut();
+        let start = cols.len();
+        cols.resize(start + n, 0);
+        let mut u = [0f64; 1024];
+        for part in cols[start..].chunks_mut(1024) {
+            let u = &mut u[..part.len()];
+            self.rng.fill_unif(u);
+            for (d, &u) in part.iter_mut().zip(u.iter()) {
+                *d = round6_micros(100.0 * u) as u32;
+            }
+        }
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.rng.skip(n);
     }
 }
 

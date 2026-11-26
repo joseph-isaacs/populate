@@ -74,16 +74,26 @@ What that takes:
 
 ## How it runs on all cores
 
-- **Groupby**: each column is one run of draws, so one sequential pass
-  over the stream (draws only, no formatting) records the generator state
-  at the start of each chunk of each column. Chunks then regenerate their
-  rows from those snapshots, on any thread. NAs come from the same pass
-  (each id column's distinct values in order of first appearance) and the
-  draws after it. Sorted data sets are generated in parallel, then sorted
-  by a stable counting sort per column, in memory.
+Every table is one populate `Distribution`: a tuple of `named` columns,
+run by `populate_table::DistTable`, with the Arrow schema read off it
+(`schema_of`: the names from `named`, the types and nullability from the
+column types in `src/values.rs`). The same columns write the CSV.
+
+- **Groupby**: each column is one run of R's stream, a `Sample` (or
+  `Runif100`) leaf in `populate_builtins::checkpointed`: one sequential
+  pass (draws only, counted without making values) saves the generator's
+  state at every chunk of every column, so a chunk starts from its
+  column's saved state, on any thread. NAs come from each id column's
+  distinct values in order of first appearance and the draws after the
+  pass, applied in place as the column is collected. Sorted data sets are
+  generated in parallel from the same distribution, sorted in memory, and
+  read back in sorted order by one leaf that writes all nine columns.
 - **Join**: the keys are permutations and resamples of permutations,
-  inherently sequential, so they are built in memory first; formatting
-  runs on all cores.
+  each known only whole, so they are built in memory first, and each key
+  column is a `column_as` leaf over them (`id4` reads `id1`'s column as
+  `"id<key>"`). The value column is a `Runif100` leaf in `checkpointed`,
+  like groupby's, and NAs (by key value, and by row for `v1`) are applied
+  in place as columns are collected.
 
 Both are `populate_table` `Chunks` (Arrow, Parquet) and `TextChunks` (CSV),
 so they use its parallel ordered writers.

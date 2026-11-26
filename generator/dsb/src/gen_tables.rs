@@ -16,15 +16,15 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, MultiChunks, chunks, par_sources};
+use populate_table::{
+    Chunks, DEFAULT_CHUNK_ROWS, MultiChunks, chunks, par_sources, resolve_threads,
+};
 use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::sync::Arc;
 
-/// Default output rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
 /// Default Arrow batch size, in rows. A sales or returns batch holds whole
 /// tickets or orders, so it is about this size.
 pub const DEFAULT_BATCH_SIZE: usize = 2048;
@@ -247,10 +247,34 @@ impl DsTable {
         (first, last.min(self.source_rows))
     }
 
+    /// Balance Arrow work without retaining a whole Parquet row group.
+    /// Channel generators retain their chunks to amortize per-chunk setup.
+    fn arrow_chunks(&self, threads: usize) -> Self {
+        let mut table = self.clone();
+        if channel(self.name).is_some() {
+            return table;
+        }
+        let threads = resolve_threads(threads);
+        if threads > 1 {
+            let batch = self.batch_source_rows();
+            // A few cheap batches do not amortize starting extra workers.
+            if self.source_rows <= batch.saturating_mul(4) {
+                return table;
+            }
+            let target = self
+                .source_rows
+                .div_ceil((threads as u64).saturating_mul(4));
+            let size = target.div_ceil(batch).clamp(1, 32).saturating_mul(batch);
+            table.chunk_source_rows = table.chunk_source_rows.min(size);
+        }
+        table
+    }
+
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
-    /// batch, in table order, on the calling thread.
+    /// batch, in table order, on the calling thread. Parallel generation
+    /// may subdivide chunks to balance work and limit buffered Arrow data.
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
-        chunks::for_each_batch(self, threads, f)
+        chunks::for_each_batch(&self.arrow_chunks(threads), threads, f)
     }
 
     /// The whole table, in order.
@@ -380,12 +404,14 @@ impl TextChunks for DatUnit<'_> {
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
+/// Parallel generation may subdivide chunks, as in [`DsTable::for_each_batch`].
 pub fn for_each_batch_many(
     tables: &[DsTable],
     threads: usize,
     mut f: impl FnMut(usize, RecordBatch),
 ) {
-    let units = plan(tables, None);
+    let tables: Vec<_> = tables.iter().map(|t| t.arrow_chunks(threads)).collect();
+    let units = plan(&tables, None);
     let chunks: Vec<u64> = units.iter().map(MultiChunks::num_chunks).collect();
     let r: Result<(), Infallible> = par_sources(
         &chunks,

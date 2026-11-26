@@ -18,7 +18,9 @@ cargo run -p populate-gen-tpch --release --bin tpch-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|tbl|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`.
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table), `--compression snappy|none`, `--no-dictionary`.
 
 From Rust:
 
@@ -132,10 +134,10 @@ generator whose partitioned output differs from its sequential output.
 
 On a 4-core cloud VM, `cargo xtask bench --generators tpch --scale 1,10`
 (see [BENCHMARKS.md](../../BENCHMARKS.md)) against
-`tpcgen-cli tpch` (the CLI of tpcgen-rs). The VM is noisy, so the
-two tools run interleaved and each keeps its best time: best of 3 at SF 1
-(output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
-not fit in the VM's tmpfs).
+`tpcgen-cli tpch` 4.0 (the CLI of tpcgen-rs), both with the same thread
+count, and for Parquet with tpcgen-cli given our settings (below). The VM is noisy, so the two tools run interleaved
+and each keeps its best time: best of 3 at SF 1 (output to tmpfs), best of
+2 at SF 10 (output to disk; 11 GB of text does not fit in the VM's tmpfs).
 
 | SF | output           | threads | tpcgen-cli | populate-gen-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|

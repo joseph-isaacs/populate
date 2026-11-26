@@ -16,15 +16,13 @@ use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, MultiChunks, chunks, par_sources};
+use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, MultiChunks, chunks, par_sources};
 use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::sync::Arc;
 
-/// Default output rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
 /// Default Arrow batch size, in rows. A sales or returns batch holds whole
 /// tickets or orders, so it is about this size.
 pub const DEFAULT_BATCH_SIZE: usize = 2048;

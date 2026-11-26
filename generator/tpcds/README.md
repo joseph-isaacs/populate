@@ -17,7 +17,10 @@ cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|dat|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`,
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table; a returns table is chunked as its sales table, so the two
+are generated in one pass), `--compression snappy|none`, `--no-dictionary`,
 `--encoding latin1|utf8` (`.dat` only).
 
 From Rust:
@@ -132,11 +135,13 @@ command line.
 
 SF 1 (19.6M rows, 24 tables) and SF 10 (192M rows) on a 4-core cloud VM,
 `cargo xtask bench --generators tpcds --scale 1,10` (see
-[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds`. The
-VM is noisy (±10% run to run, and it drifts), so both tools run
-interleaved and each keeps its best time: best of 3 at SF 1 (output to
-tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
-`--encoding utf8`, so the files are `cmp`-identical to tpcgen-cli's.
+[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds` 4.0,
+both with the same thread count, and for Parquet with tpcgen-cli given
+our settings (below). The VM is noisy (±10%
+run to run, and it drifts), so both tools run interleaved and each keeps
+its best time: best of 3 at SF 1 (output to tmpfs), best of 2 at SF 10
+(output to disk). `.dat` runs use `--encoding utf8`, so the files are the
+same bytes as tpcgen-cli's (the bench checks them).
 
 | SF | output           | threads | tpcgen-cli | populate-gen-tpcds | speedup |
 |---:|------------------|--------:|-----------:|---------------:|--------:|

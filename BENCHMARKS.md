@@ -44,7 +44,9 @@ table has about as many row groups on both sides. After the first run of
 each, the two outputs are compared, text files byte for byte and Parquet
 files by schema, values, codecs and dictionary use. The `output` column
 says `same`; a difference fails the run. Tables whose row-group counts still
-differ by more than 2x are listed under the table. The default run
+differ by more than 2x are listed under the table. Go's
+`tsbs_generate_data` is single-threaded, so its one time is the reference
+for every thread count, and the table says so. The default run
 takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
 minute.
 

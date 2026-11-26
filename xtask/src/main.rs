@@ -445,7 +445,7 @@ fn case(o: &Opts, bin: &Path, g: &str, scale: f64, f: Format, threads: usize) ->
                         r.args.extend(common.iter().cloned());
                         r = r.arg("--format=influx");
                         r.stdout = Some("data.influx");
-                        ("tsbs_generate_data", r)
+                        ("tsbs_generate_data (1 thread)", r)
                     });
                     ("influx", ours, reference)
                 }

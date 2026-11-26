@@ -71,7 +71,7 @@ fn yn(b: bool) -> &'static str {
 /// An address: street number, street name, street type, suite number,
 /// city, county, state, zip, country and GMT offset, each with its own
 /// null bit.
-pub(crate) type Address = (
+pub type Address = (
     Option<Str>,
     Option<Str>,
     Option<Str>,
@@ -218,7 +218,7 @@ where
 }
 
 /// A `call_center` row.
-pub(crate) type CallCenter = (
+pub type CallCenter = (
     (
         i32,
         Str,
@@ -248,9 +248,7 @@ pub(crate) type CallCenter = (
 );
 
 /// `call_center`.
-pub(crate) fn call_center(
-    s: &Session,
-) -> impl Distribution<Item = CallCenter> + Clone + Sync + use<> {
+pub fn call_center(s: &Session) -> impl Distribution<Item = CallCenter> + Clone + Sync + use<> {
     named_all(
         &[
             "cc_call_center_sk",
@@ -322,7 +320,7 @@ pub(crate) fn call_center(
 }
 
 /// A `catalog_page` row.
-pub(crate) type CatalogPage = (
+pub type CatalogPage = (
     i32,
     Str,
     Option<i32>,
@@ -335,9 +333,7 @@ pub(crate) type CatalogPage = (
 );
 
 /// `catalog_page`.
-pub(crate) fn catalog_page(
-    s: &Session,
-) -> impl Distribution<Item = CatalogPage> + Clone + Sync + use<> {
+pub fn catalog_page(s: &Session) -> impl Distribution<Item = CatalogPage> + Clone + Sync + use<> {
     named_all(
         &[
             "cp_catalog_page_sk",
@@ -371,7 +367,7 @@ pub(crate) fn catalog_page(
 }
 
 /// A `customer` row.
-pub(crate) type Customer = (
+pub type Customer = (
     (
         i32,
         Str,
@@ -397,7 +393,7 @@ pub(crate) type Customer = (
 );
 
 /// `customer`.
-pub(crate) fn customer(s: &Session) -> impl Distribution<Item = Customer> + Clone + Sync + use<> {
+pub fn customer(s: &Session) -> impl Distribution<Item = Customer> + Clone + Sync + use<> {
     named_all(
         &[
             "c_customer_sk",
@@ -452,10 +448,10 @@ pub(crate) fn customer(s: &Session) -> impl Distribution<Item = Customer> + Clon
 }
 
 /// A `customer_address` row.
-pub(crate) type CustomerAddress = (i32, Str, Address, Option<Str>);
+pub type CustomerAddress = (i32, Str, Address, Option<Str>);
 
 /// `customer_address`.
-pub(crate) fn customer_address(
+pub fn customer_address(
     s: &Session,
 ) -> impl Distribution<Item = CustomerAddress> + Clone + Sync + use<> {
     named_all(
@@ -489,7 +485,7 @@ pub(crate) fn customer_address(
 }
 
 /// A `date_dim` row.
-pub(crate) type DateDim = (
+pub type DateDim = (
     (
         i32,
         Str,
@@ -527,7 +523,7 @@ pub(crate) type DateDim = (
 );
 
 /// `date_dim`.
-pub(crate) fn date_dim(s: &Session) -> impl Distribution<Item = DateDim> + Clone + Sync + use<> {
+pub fn date_dim(s: &Session) -> impl Distribution<Item = DateDim> + Clone + Sync + use<> {
     named_all(
         &[
             "d_date_sk",
@@ -603,10 +599,10 @@ pub(crate) fn date_dim(s: &Session) -> impl Distribution<Item = DateDim> + Clone
 }
 
 /// A `household_demographics` row.
-pub(crate) type HouseholdDemographics = (i32, Option<i32>, Option<Str>, Option<i32>, Option<i32>);
+pub type HouseholdDemographics = (i32, Option<i32>, Option<Str>, Option<i32>, Option<i32>);
 
 /// `household_demographics`.
-pub(crate) fn household_demographics(
+pub fn household_demographics(
     s: &Session,
 ) -> impl Distribution<Item = HouseholdDemographics> + Clone + Sync + use<> {
     named_all(
@@ -634,12 +630,10 @@ pub(crate) fn household_demographics(
 }
 
 /// A `income_band` row.
-pub(crate) type IncomeBand = (i32, Option<i32>, Option<i32>);
+pub type IncomeBand = (i32, Option<i32>, Option<i32>);
 
 /// `income_band`.
-pub(crate) fn income_band(
-    s: &Session,
-) -> impl Distribution<Item = IncomeBand> + Clone + Sync + use<> {
+pub fn income_band(s: &Session) -> impl Distribution<Item = IncomeBand> + Clone + Sync + use<> {
     named_all(
         &["ib_income_band_sk", "ib_lower_bound", "ib_upper_bound"],
         dim::<IncomeBandRowGenerator, _, _>(
@@ -656,7 +650,7 @@ pub(crate) fn income_band(
 }
 
 /// A `item` row.
-pub(crate) type Item = (
+pub type Item = (
     (
         i32,
         Str,
@@ -686,7 +680,7 @@ pub(crate) type Item = (
 );
 
 /// `item`.
-pub(crate) fn item(s: &Session) -> impl Distribution<Item = Item> + Clone + Sync + use<> {
+pub fn item(s: &Session) -> impl Distribution<Item = Item> + Clone + Sync + use<> {
     named_all(
         &[
             "i_item_sk",
@@ -769,7 +763,7 @@ pub(crate) fn item(s: &Session) -> impl Distribution<Item = Item> + Clone + Sync
 }
 
 /// A `promotion` row.
-pub(crate) type Promotion = (
+pub type Promotion = (
     (
         i32,
         Str,
@@ -796,7 +790,7 @@ pub(crate) type Promotion = (
 );
 
 /// `promotion`.
-pub(crate) fn promotion(s: &Session) -> impl Distribution<Item = Promotion> + Clone + Sync + use<> {
+pub fn promotion(s: &Session) -> impl Distribution<Item = Promotion> + Clone + Sync + use<> {
     named_all(
         &[
             "p_promo_sk",
@@ -853,10 +847,10 @@ pub(crate) fn promotion(s: &Session) -> impl Distribution<Item = Promotion> + Cl
 }
 
 /// A `reason` row.
-pub(crate) type Reason = (i32, Str, Option<Str>);
+pub type Reason = (i32, Str, Option<Str>);
 
 /// `reason`.
-pub(crate) fn reason(s: &Session) -> impl Distribution<Item = Reason> + Clone + Sync + use<> {
+pub fn reason(s: &Session) -> impl Distribution<Item = Reason> + Clone + Sync + use<> {
     named_all(
         &["r_reason_sk", "r_reason_id", "r_reason_desc"],
         dim::<ReasonRowGenerator, _, _>(
@@ -873,10 +867,10 @@ pub(crate) fn reason(s: &Session) -> impl Distribution<Item = Reason> + Clone + 
 }
 
 /// A `ship_mode` row.
-pub(crate) type ShipMode = (i32, Str, Option<Str>, Option<Str>, Option<Str>, Option<Str>);
+pub type ShipMode = (i32, Str, Option<Str>, Option<Str>, Option<Str>, Option<Str>);
 
 /// `ship_mode`.
-pub(crate) fn ship_mode(s: &Session) -> impl Distribution<Item = ShipMode> + Clone + Sync + use<> {
+pub fn ship_mode(s: &Session) -> impl Distribution<Item = ShipMode> + Clone + Sync + use<> {
     named_all(
         &[
             "sm_ship_mode_sk",
@@ -903,7 +897,7 @@ pub(crate) fn ship_mode(s: &Session) -> impl Distribution<Item = ShipMode> + Clo
 }
 
 /// A `store` row.
-pub(crate) type Store = (
+pub type Store = (
     (
         i32,
         Str,
@@ -931,7 +925,7 @@ pub(crate) type Store = (
 );
 
 /// `store`.
-pub(crate) fn store(s: &Session) -> impl Distribution<Item = Store> + Clone + Sync + use<> {
+pub fn store(s: &Session) -> impl Distribution<Item = Store> + Clone + Sync + use<> {
     named_all(
         &[
             "s_store_sk",
@@ -1007,7 +1001,7 @@ pub(crate) fn store(s: &Session) -> impl Distribution<Item = Store> + Clone + Sy
 }
 
 /// A `time_dim` row.
-pub(crate) type TimeDim = (
+pub type TimeDim = (
     i32,
     Str,
     Option<i32>,
@@ -1021,7 +1015,7 @@ pub(crate) type TimeDim = (
 );
 
 /// `time_dim`.
-pub(crate) fn time_dim(s: &Session) -> impl Distribution<Item = TimeDim> + Clone + Sync + use<> {
+pub fn time_dim(s: &Session) -> impl Distribution<Item = TimeDim> + Clone + Sync + use<> {
     named_all(
         &[
             "t_time_sk",
@@ -1056,10 +1050,10 @@ pub(crate) fn time_dim(s: &Session) -> impl Distribution<Item = TimeDim> + Clone
 }
 
 /// A `warehouse` row.
-pub(crate) type Warehouse = (i32, Str, Option<Str>, Option<i32>, Address);
+pub type Warehouse = (i32, Str, Option<Str>, Option<i32>, Address);
 
 /// `warehouse`.
-pub(crate) fn warehouse(s: &Session) -> impl Distribution<Item = Warehouse> + Clone + Sync + use<> {
+pub fn warehouse(s: &Session) -> impl Distribution<Item = Warehouse> + Clone + Sync + use<> {
     named_all(
         &[
             "w_warehouse_sk",
@@ -1093,7 +1087,7 @@ pub(crate) fn warehouse(s: &Session) -> impl Distribution<Item = Warehouse> + Cl
 }
 
 /// A `web_page` row.
-pub(crate) type WebPage = (
+pub type WebPage = (
     (
         i32,
         Str,
@@ -1111,7 +1105,7 @@ pub(crate) type WebPage = (
 );
 
 /// `web_page`.
-pub(crate) fn web_page(s: &Session) -> impl Distribution<Item = WebPage> + Clone + Sync + use<> {
+pub fn web_page(s: &Session) -> impl Distribution<Item = WebPage> + Clone + Sync + use<> {
     named_all(
         &[
             "wp_web_page_sk",
@@ -1157,7 +1151,7 @@ pub(crate) fn web_page(s: &Session) -> impl Distribution<Item = WebPage> + Clone
 }
 
 /// A `web_site` row.
-pub(crate) type WebSite = (
+pub type WebSite = (
     (
         i32,
         Str,
@@ -1182,7 +1176,7 @@ pub(crate) type WebSite = (
 );
 
 /// `web_site`.
-pub(crate) fn web_site(s: &Session) -> impl Distribution<Item = WebSite> + Clone + Sync + use<> {
+pub fn web_site(s: &Session) -> impl Distribution<Item = WebSite> + Clone + Sync + use<> {
     named_all(
         &[
             "web_site_sk",
@@ -1238,7 +1232,7 @@ pub(crate) fn web_site(s: &Session) -> impl Distribution<Item = WebSite> + Clone
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_array::RecordBatch;

@@ -196,3 +196,34 @@ The channels also burn dsdgen's end-of-row seeds faster
 and tpcdsgen burns the unused ones one draw at a time: ~100 wasted draws per
 ticket. The stream is a Lehmer generator, so burning `k` draws is one
 multiply by `16807^k mod (2^31 - 1)`.
+
+## Raw distributions
+
+With `default-features = false`, the library has no Arrow or Parquet
+dependency. The `formats` feature enables the existing output adapters and
+CLI (enabled by default).
+
+`Tpcds` exposes a typed `DistChunks` constructor for every dimension table,
+`inventory` and `customer_demographics`. `store_sales_returns`,
+`catalog_sales_returns` and `web_sales_returns` each produce both tables
+from one source stream, preserving their relationship. Use `.into_dist()`
+to own the raw distribution, or `.batch`, `.chunk`, and `.for_each_batch`
+to consume its native columns. Chunk sizes count tickets/orders for sales
+channels and rows for dimensions.
+
+```rust
+use populate_gen_tpcds::Tpcds;
+let ds = Tpcds::new(1.0);
+let columns = ds.income_band().batch(0, 3);
+assert_eq!(columns.0, [1, 2, 3]);
+let paired = ds.store_sales_returns().batch(0, 10);
+let sales = paired.tables.0.values;
+// Values stay in their typed columns; NULLs are available separately.
+let first_column_is_null = sales.is_null(0, 0);
+```
+
+Sales columns expose `values`, per-row `nbm`, and `is_null(row, column)`.
+Nullable dimension columns expose their values and validity. String columns
+can be read through `get`, and expose their compact buffers via `into_parts`.
+The `raw` module exports the underlying distribution constructors and row
+aliases for applications that need to name their types.

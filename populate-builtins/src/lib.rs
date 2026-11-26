@@ -1,6 +1,6 @@
 //! Built-in distributions: [`constant`], [`range`], [`list`], [`draws`],
 //! [`derive()`], [`derive_columns`], [`children`], [`flat_map`], [`named`],
-//! [`column`], [`checkpointed`],
+//! [`column()`], [`checkpointed`],
 //! and the random leaves in [`random`] ([`uniform`], [`choose`],
 //! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in
 //! `populate-core` (orphan rule).

@@ -21,7 +21,7 @@
 //! | [`Tables<T>`](Tables)       | [`TableCols`]: one [`ChildCols`] per table    |
 //! | `(A, B, ...)`               | `(A`'s columns`, B`'s columns`, ...)`         |
 //!
-//! A tuple of distributions is a distribution of tuples (see [`tuple`]), so
+//! A tuple of distributions is a distribution of tuples (see [`mod@tuple`]), so
 //! a row of several columns is written as a tuple:
 //!
 //! ```

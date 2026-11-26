@@ -95,7 +95,7 @@ pub fn scale(x: u32, range: u32) -> u32 {
 }
 
 /// The `n` draws `start + 1 ..= start + n` of the stream seeded `seed`, as
-/// [`LANES`] independent chains (lane `l` holds draws `l, l + LANES, ...`),
+/// `LANES` independent chains (lane `l` holds draws `l, l + LANES, ...`),
 /// so the multiply chain vectorises.
 pub fn draws(seed: i64, start: u64, out: &mut [u32]) {
     fill_after(mulmod(residue(seed), pow(start)), out)
@@ -201,7 +201,7 @@ fn bound_all_any(v: &mut [u32], lo: i32, hi: i32) {
 
 /// One dbgen stream as a [`SeekRng`]: the draws after a state, made in
 /// lanes by [`fill`](SeekRng::fill), jumped over in `O(log n)` by
-/// [`advance`](SeekRng::advance). [`draws`](populate_builtins::draws) makes it a
+/// [`advance`](SeekRng::advance). `populate_builtins::draws` makes it a
 /// column that reserves a fixed number of draws per row.
 #[derive(Debug, Clone, Copy)]
 pub struct Lcg {

@@ -2,7 +2,7 @@
 //! populate [`Distribution`], as Arrow (a [`DistTable`]) and as the
 //! scripts' CSV.
 //!
-//! Every value is a `u32` with [`NA`] for R's `NA`: an [`Id`] is
+//! Every value is a `u32` with `NA` for R's `NA`: an [`Id`] is
 //! `"id"` and the value (zero-padded to `W` digits), an [`Int`] the value,
 //! [`Micros`] the value over 1e6 (`round(x, 6)` makes every double one).
 //! The column types say what they become in Arrow, and whether they hold
@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::cols::{Bits, Cursor, NA, id_strings, int32, micros, write_with};
 
-/// A row type whose columns are a `Vec<u32>` of its values, NA as [`NA`].
+/// A row type whose columns are a `Vec<u32>` of its values, NA as `NA`.
 pub trait Value: Copy + From<u32> + Columnar<Columns = Self::Col> {
     type Col: Sink<Self> + Default + CsvColumn + Values;
 }

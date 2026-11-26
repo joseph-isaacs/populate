@@ -481,7 +481,7 @@ impl Cursor {
         }
     }
 
-    /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in [`DATES`] for
+    /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in `DATES` for
     /// the years 1900 to 2099.
     ///
     /// # Safety

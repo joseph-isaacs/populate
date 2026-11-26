@@ -4,7 +4,7 @@
 //!
 //! The simulation makes the points of every table in one interleaved
 //! stream, so a chunk is run once and its points are logged per
-//! measurement ([`Log`]): times and field values straight into the
+//! measurement (`Log`): times and field values straight into the
 //! columns they end up in, and each point's host or truck. Each table is
 //! then one [`Distribution`] over its log: named leaf columns (time, each
 //! tag, each extra tag, each field) in a tuple of run-time-width groups,

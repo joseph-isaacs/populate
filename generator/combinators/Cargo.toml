@@ -12,7 +12,6 @@ license.workspace = true
 
 [dependencies]
 populate-core = { workspace = true }
-populate-builtins = { workspace = true }
 populate-sink-arrow = { workspace = true }
 populate-table = { workspace = true }
 rand = { workspace = true }
@@ -21,5 +20,6 @@ arrow-buffer = { workspace = true }
 arrow-schema = { workspace = true }
 
 [dev-dependencies]
+populate-builtins = { workspace = true }
 # dbgen's streams as ported by tpchgen, to check against
 tpchgen = "4.0"

@@ -15,6 +15,7 @@ export RUSTDOCFLAGS="-D warnings"
 scripts/check-tree.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo doc --workspace --all-features --no-deps
 cargo test --workspace --all-features
 cargo bench --workspace --no-run
 ```

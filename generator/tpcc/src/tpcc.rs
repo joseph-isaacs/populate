@@ -2,7 +2,7 @@
 //! nine tables, for any number of warehouses.
 //!
 //! Every random value is a pure function of `(seed, column, row)`
-//! ([`Draws`]), so any range of rows is generated on its own and chunked,
+//! (`Draws`), so any range of rows is generated on its own and chunked,
 //! multi-threaded output equals one sequential run. The two values that
 //! tables must agree on are shared the same way: `o_ol_cnt` (the number of
 //! `order_line` rows of an order) is the same stream in `orders` and

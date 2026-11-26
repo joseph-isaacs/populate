@@ -72,7 +72,6 @@ populate-builtins = { path = "populate-builtins", version = "0.1.0" }
 populate-sink-arrow = { path = "sink/arrow", version = "0.1.0" }
 populate-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
 populate-table = { path = "populate-table", version = "0.1.0" }
-populate-combinators = { path = "generator/combinators", version = "0.1.0" }
 populate-gen-ssb = { path = "generator/ssb", version = "0.1.0" }
 
 # populate-gen-ldbc's tests generate ~2 GB of data: optimise the crate itself

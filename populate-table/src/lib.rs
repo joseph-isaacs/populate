@@ -7,6 +7,8 @@
 //! - [`DistTable`]: a table that is one distribution, its schema read
 //!   off the distribution (names and column types), not declared;
 //!   [`DynTable`] the same with the distribution's type erased.
+//!   [`DistTable::raw`] exposes chunked native columns for custom backends;
+//!   [`populate_core::DistChunks`] also works without this crate or Arrow.
 //! - [`Stream`]: stateless per-row randomness, for values that several
 //!   tables must agree on (a return and the sale it refers to).
 //! - [`Chunks`]: any generator split into independent chunks gets the same

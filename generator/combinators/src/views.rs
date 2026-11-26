@@ -38,15 +38,22 @@
 //! # let _ = w;
 //! ```
 
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, StringViewArray};
+#[cfg(feature = "formats")]
 use arrow_buffer::{Buffer, ScalarBuffer};
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_core::{Append, Columnar, Nullable, RowCount, Sink, StrBuf, StrSink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
+#[cfg(feature = "formats")]
 use populate_table::text::{Cursor, Encoding, TextField};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+#[cfg(feature = "formats")]
 use std::ptr::NonNull;
+#[cfg(feature = "formats")]
 use std::sync::Arc;
 
 use crate::lehmer::scale;
@@ -72,7 +79,21 @@ pub fn view(bytes: &[u8], buffer: u32, offset: u32) -> u128 {
     }
 }
 
-/// `bytes` as an Arrow buffer, without copying.
+/// A shared byte buffer. The format adapters use Arrow's reference-counted
+/// owner; raw-only builds borrow the same static bytes.
+#[cfg(feature = "formats")]
+pub type SharedBuffer = Buffer;
+#[cfg(not(feature = "formats"))]
+pub type SharedBuffer = &'static [u8];
+
+/// Borrow static bytes without copying.
+#[cfg(not(feature = "formats"))]
+pub fn static_buffer(bytes: &'static [u8]) -> SharedBuffer {
+    bytes
+}
+
+/// `bytes` as a shared buffer, without copying.
+#[cfg(feature = "formats")]
 pub fn static_buffer(bytes: &'static [u8]) -> Buffer {
     let ptr = NonNull::new(bytes.as_ptr() as *mut u8).expect("non-null");
     // SAFETY: the bytes are 'static and never written, so they outlive the
@@ -84,24 +105,51 @@ pub fn static_buffer(bytes: &'static [u8]) -> Buffer {
 /// (each batch's own) then the shared ones, numbered from 1.
 #[derive(Debug)]
 pub struct Shared {
-    rest: Vec<Buffer>,
+    rest: Vec<SharedBuffer>,
     /// `[empty, rest..]`, for columns with no bytes of their own.
+    #[cfg(feature = "formats")]
     empty: Arc<[Buffer]>,
 }
 
 impl Shared {
     /// Shared buffers `rest`, numbered `1..`.
-    pub fn new(rest: Vec<Buffer>) -> Self {
+    pub fn new(rest: Vec<SharedBuffer>) -> Self {
+        #[cfg(feature = "formats")]
         let empty = std::iter::once(Buffer::from_vec(Vec::<u8>::new()))
             .chain(rest.iter().cloned())
             .collect();
-        Shared { rest, empty }
+        Shared {
+            rest,
+            #[cfg(feature = "formats")]
+            empty,
+        }
+    }
+
+    /// Shared buffer `i` (numbered from 1), for a custom output backend.
+    pub fn buffer(&self, i: usize) -> &[u8] {
+        &self.rest[i - 1]
+    }
+
+    /// Read a view with a callback; inline strings need no heap allocation.
+    pub fn with_str<R>(&self, v: u128, data: &[u8], f: impl FnOnce(&str) -> R) -> R {
+        let len = v as u32 as usize;
+        let inline = v.to_le_bytes();
+        let bytes = if len <= 12 {
+            &inline[4..4 + len]
+        } else {
+            let b = (v >> 64) as u32 as usize;
+            let off = (v >> 96) as usize;
+            let bytes = if b == 0 { data } else { self.buffer(b) };
+            &bytes[off..off + len]
+        };
+        f(std::str::from_utf8(bytes).expect("view holds UTF-8"))
     }
 
     /// A string column from views and the batch's own bytes.
     ///
     /// Every view must have been made by [`view`] from valid UTF-8 at the
     /// offset of the buffer it names.
+    #[cfg(feature = "formats")]
     pub fn array(&self, views: Vec<u128>, data: Vec<u8>) -> StringViewArray {
         let buffers = if data.is_empty() {
             self.empty.clone()
@@ -258,6 +306,17 @@ impl<B> Word<B> {
 #[derive(Debug, Default, Clone)]
 pub struct Words<B>(Vec<u128>, PhantomData<B>);
 
+impl<B: Buffers> Words<B> {
+    /// The compact string views, for a custom backend.
+    pub fn views(&self) -> &[u128] {
+        &self.0
+    }
+    /// Read string `i` without allocating.
+    pub fn with_str<R>(&self, i: usize, f: impl FnOnce(&str) -> R) -> R {
+        B::shared().with_str(self.0[i], &[], f)
+    }
+}
+
 impl<B: Buffers> Columnar for Word<B> {
     type Columns = Words<B>;
 }
@@ -290,6 +349,7 @@ impl<B> Append for Words<B> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<B: Buffers> IntoArrowArray for Words<B> {
     fn data_type() -> DataType {
         DataType::Utf8View
@@ -424,6 +484,7 @@ impl<B> RowCount for Views<B> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<B: Buffers> IntoArrowArray for Views<B> {
     fn data_type() -> DataType {
         DataType::Utf8View
@@ -434,6 +495,7 @@ impl<B: Buffers> IntoArrowArray for Views<B> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<B> TextField for Views<B> {
     fn text_rows(&self) -> usize {
         self.views.len()
@@ -553,7 +615,7 @@ impl<B> Sink<Listed> for Views<B> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "formats"))]
 mod tests {
     use super::*;
     use arrow_array::Array;

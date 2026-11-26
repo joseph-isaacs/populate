@@ -8,6 +8,26 @@
 //! it will be stored in, and the sinks move those buffers into Arrow arrays
 //! or encode them as Parquet without copying.
 //!
+//! Raw chunked columns work with `default-features = false`, without Arrow:
+//!
+//! ```
+//! use populate::Distribution;
+//! use populate::dist::range;
+//!
+//! let source = (range(0i64, 1), range(100i64, 2))
+//!     .chunks(10)
+//!     .chunk_rows(4)
+//!     .batch_rows(3);
+//! let mut ids = Vec::new();
+//! source.for_each_batch(2, |(id, value)| {
+//!     assert_eq!(value[0], 100 + 2 * id[0]);
+//!     ids.extend(id);
+//! });
+//! assert_eq!(ids, (0..10).collect::<Vec<_>>());
+//! ```
+//!
+//! With the `arrow` feature, distributions can also produce Arrow batches:
+//!
 //! ```
 //! # #[cfg(feature = "arrow")] {
 //! use populate::arrow::DistributionArrow;
@@ -52,9 +72,10 @@
 
 pub use populate_builtins as dist;
 pub use populate_core::{
-    Append, ChildCols, Children, Columnar, Columns, Date32, Decimal, Dist, Distribution, ListCol,
-    Nullable, Padded, RowCount, SeekRng, Sink, Spread, SpreadCols, StrBuf, StrCol, StrSink,
-    TableCols, Tables, Timestamp, Validity, Wide, WideCols, in_local, string, time_unit, tuple,
+    Append, ChildCols, Children, Columnar, Columns, Date32, Decimal, Dist, DistChunks,
+    Distribution, ListCol, Nullable, Padded, RowCount, SeekRng, Sink, Spread, SpreadCols, StrBuf,
+    StrCol, StrSink, TableCols, Tables, Timestamp, Validity, Wide, WideCols, in_local, string,
+    time_unit, tuple,
 };
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as arrow;

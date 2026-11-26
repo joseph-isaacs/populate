@@ -4,7 +4,7 @@ use arrow_array::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use populate_tpch::{TableName, Tpch};
+use populate_gen_tpch::{TableName, Tpch};
 use std::hint::black_box;
 use std::io::{self, Write};
 use std::time::Instant;

@@ -171,7 +171,7 @@ strings, read from random places in the pool and compressed.
 
 ### Comparing every format
 
-`cargo run --release -p populate-tpch --example tpch_compare -- 1 3`
+`cargo run --release -p populate-gen-tpch --example tpch_compare -- 1 3`
 compares all eight complete tables at SF 1, with one warm-up and three
 measured repetitions. Optional third argument `populate` or `tpchgen`
 selects one implementation. Output is CSV: seconds per table, and row
@@ -181,7 +181,7 @@ Both libraries run on one thread, with both text pools initialized before
 timing. Arrow batches are consumed without serialization; `.tbl` and CSV
 use the reference row formatters, and populate uses its native `.tbl`
 writer. Encoded bytes go to a counting sink, not disk. CSV is measured for
-tpchgen only because populate-tpch has no CSV writer.
+tpchgen only because populate-gen-tpch has no CSV writer.
 
 Parquet is measured with Snappy and without compression, dictionaries
 disabled for both tools, and a 262,144-row target per row group. Populate

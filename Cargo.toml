@@ -55,7 +55,6 @@ edition = "2024"
 rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/joseph-isaacs/populate"
-homepage = "https://github.com/joseph-isaacs/populate"
 keywords = ["data-generation", "benchmark", "arrow", "parquet", "tpch"]
 categories = ["development-tools::testing", "database"]
 

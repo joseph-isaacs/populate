@@ -361,7 +361,7 @@ impl<B: Buffers> IntoArrowArray for Words<B> {
 }
 
 /// A string with bytes of its own, written into the batch's [`DATA`]
-/// buffer. Made by [`format`](populate_builtins::format()).
+/// buffer. Made by `populate_builtins::format`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Str<B>(pub String, PhantomData<B>);
 

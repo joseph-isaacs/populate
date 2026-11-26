@@ -310,13 +310,18 @@ impl Cursor {
         }
     }
 
-    /// Decimal digits of `v`. Up to 8 digits are made at once in one
-    /// `u64` ([`eight`]) and stored as 8 bytes, of which all but the leading
-    /// zeros are kept (the reservation has room for 8 per number).
+    /// Decimal digits of `v`. Values below 100 use a byte or digit pair;
+    /// larger values use four or eight digits at once ([`four`], [`eight`]),
+    /// stored with leading zeros removed. The reservation has room for
+    /// 8 bytes per number.
     #[inline]
     unsafe fn uint(&mut self, v: u64) {
         unsafe {
-            if v < 10_000 {
+            if v < 10 {
+                self.byte(b'0' + v as u8);
+            } else if v < 100 {
+                self.pair(v as usize);
+            } else if v < 10_000 {
                 // most keys and prices: half the lanes ([`four`]); each
                 // field's call site has its own branch, which predicts
                 // well, as a column's values are of one size
@@ -403,6 +408,8 @@ impl Cursor {
         unsafe {
             match i64::try_from(v) {
                 Ok(v) if scale == 2 && print == 2 => self.decimal2(v),
+                // TPC-H quantities are stored in hundredths but printed whole.
+                Ok(v) if scale == 2 && print == 0 => self.int(v / 100),
                 Ok(v) if scale <= 18 => self.decimal(v / 10i64.pow(scale - print), print),
                 _ => self.0 = Self::wide_decimal(self.0, v / 10i128.pow(scale - print), print),
             }
@@ -1144,8 +1151,12 @@ mod tests {
         for v in [
             0u64,
             7,
+            9,
             10,
+            11,
+            99,
             100,
+            101,
             1_234,
             9_999,
             10_000,
@@ -1203,6 +1214,12 @@ mod tests {
                 (-5i128, 2, 2, "-0.05"),
                 (123_456, 3, 3, "123.456"),
                 (-1_234_567, 2, 0, "-12345"),
+                (-99, 2, 0, "0"),
+                (99, 2, 0, "0"),
+                (100, 2, 0, "1"),
+                (i64::MIN as i128, 2, 0, "-92233720368547758"),
+                (i64::MAX as i128, 2, 0, "92233720368547758"),
+                (i64::MAX as i128 + 1, 2, 0, "92233720368547758"),
                 (
                     i128::from(i64::MAX) * 1000 + 7,
                     2,

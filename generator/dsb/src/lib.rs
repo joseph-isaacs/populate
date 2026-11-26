@@ -8,7 +8,7 @@
 //! crate adds the parallel engine:
 //!
 //! - every table is one populate
-//!   [`Distribution`](populate_core::Distribution) over dsbgen's row
+//!   [`Distribution`] over dsbgen's row
 //!   generator (a sales table and its returns, one distribution of both),
 //!   and its schema is read off the distribution's column types;
 //! - every table is split into small, independent ranges of *source rows*

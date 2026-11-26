@@ -181,7 +181,7 @@ type Pending = (Vec<Rows>, Vec<Rows>);
 
 /// A BI run over a network: the snapshot as a [`MultiChunks`] /
 /// [`TextChunks`] source (one output per dynamic table), then
-/// [`Self::inserts`] and [`Self::deletes`].
+/// insert and delete batches returned by [`Self::finish`].
 pub struct BiRun<'a> {
     g: &'a Ldbc,
     layout: &'a Layout,

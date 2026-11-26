@@ -2,7 +2,7 @@
 //! generation alone, then our Arrow, `.dat` and Parquet output (each
 //! includes the stages before it), in ms, best of 3.
 //!
-//! `cargo run -p populate-gen-dsb --release --example stages`
+//! `cargo run -p populate-gen-dsb --release --example dsb_stages`
 use dsbgen::config::{SessionBuilder, Table as T};
 use dsbgen::row::*;
 use populate_gen_dsb::{Dsb, Encoding, TableName};

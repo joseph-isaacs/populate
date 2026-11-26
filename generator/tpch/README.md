@@ -175,6 +175,29 @@ Formatting text and encoding Parquet cost more than making the data.
 In Parquet, `lineitem`'s comment column alone is ~0.6 s: 6M unique
 strings, read from random places in the pool and compressed.
 
+### Comparing every format
+
+`cargo run --release -p populate-gen-tpch --example tpch_compare -- 1 3`
+compares all eight complete tables at SF 1, with one warm-up and three
+measured repetitions. Optional third argument `populate` or `tpchgen`
+selects one implementation. Output is CSV: seconds per table, and row
+counts for Arrow or encoded byte counts for the other formats.
+
+Both libraries run on one thread, with both text pools initialized before
+timing. Arrow batches are consumed without serialization; `.tbl` and CSV
+use the reference row formatters, and populate uses its native `.tbl`
+writer. Encoded bytes go to a counting sink, not disk. CSV is measured for
+tpchgen only because populate-gen-tpch has no CSV writer.
+
+Parquet is measured with Snappy and without compression, dictionaries
+disabled for both tools, and a 262,144-row target per row group. Populate
+chunks lineitem at order boundaries, so its group sizes can differ
+slightly. Both use Arrow batches targeting 8,192 rows. This measures the
+libraries' generation and encoding paths, excluding CLI startup, text-pool
+construction and filesystem I/O; it is separate from the CLI measurements
+above. Alternate tool order across repetitions and compare medians of the
+per-repetition totals, rather than summing per-table best times.
+
 ## Raw distributions
 
 Use `default-features = false` for a library with no Arrow or Parquet

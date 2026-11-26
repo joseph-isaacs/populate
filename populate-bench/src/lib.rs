@@ -641,9 +641,9 @@ pub enum Group {
     NumericArrow,
     /// 11 numeric lineitem columns to Parquet
     NumericParquet,
-    /// orders with list<line price> to Arrow
+    /// orders with `list<line price>` to Arrow
     ListArrow,
-    /// orders with list<line price> to Parquet
+    /// orders with `list<line price>` to Parquet
     ListParquet,
     /// tpchgen full lineitem, strings included (no populate equivalent)
     TpchFull,

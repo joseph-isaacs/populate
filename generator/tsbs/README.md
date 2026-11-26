@@ -119,3 +119,20 @@ One table per measurement (`cpu`, `diskio`, ..., `redis`; `readings`,
 `--interleaved-generation-group-id` filters them the same way. IoT's
 cleared tags and fields are nulls, as are the metrics a devops-generic host
 doesn't have.
+
+## Native points
+
+`Tsbs::raw_dist(chunk_points)` exposes a `Distribution<Item = Children<Point>>`.
+One source row is one simulator chunk; its children retain the original
+measurement index, host/truck index, timestamp, cleared-tag marker, and
+`Val` fields (`Nil`, integer, float, or fixed-point). `statics()` supplies
+measurement/field names and types plus all tag values.
+
+`Tsbs::raw(chunk_points)` supplies `DistChunks` with one simulator chunk per
+batch. It supports independent chunk access and ordered parallel generation.
+Clones share the checkpoint frontier; reading an already-consumed chunk
+replays from the start to keep checkpoint storage bounded. The existing
+`chunks().run()` callback also provides native points without buffering them.
+
+Set `default-features = false` to exclude Arrow, Parquet, and `populate-table`.
+The default `formats` feature enables their adapters and CLI.

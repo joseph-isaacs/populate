@@ -20,10 +20,9 @@
 
 use crate::Shape;
 use crate::kernel::{
-    Pool, Quantiles, Rows, View, ViewWriter, Views, Weighted, Zipf, put, row_numbers, threshold,
-    unit,
+    Pool, Quantiles, View, ViewWriter, Views, Weighted, Zipf, put, threshold, unit,
 };
-use populate_builtins::{derive_columns, named_all};
+use populate_builtins::{Rows, derive_columns, named_all, row_numbers};
 use populate_core::{Columnar, Date32, Distribution, Timestamp, time_unit};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::{Stream, mix64};

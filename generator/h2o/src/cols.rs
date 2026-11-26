@@ -1,3 +1,6 @@
+// unique()'s first-appearance order follows R 4.x (src/main/unique.c), GPL-2.0-or-later.
+// See ../NOTICE.md and ../LICENSE-GPL-2.0.txt.
+
 //! Shared pieces: NA-able `u32` columns, bit sets, the stable parallel
 //! sort data.table's `setkey` amounts to, and Arrow arrays from columns.
 

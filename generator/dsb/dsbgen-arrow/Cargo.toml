@@ -1,3 +1,5 @@
+# Modified from tpcdsgen-arrow 4.0.0 for the data-comb DSB variant.
+
 [package]
 name = "dsbgen-arrow"
 description = "dsbgen rows into Apache Arrow (tpcdsgen-arrow 4.0, vendored)"

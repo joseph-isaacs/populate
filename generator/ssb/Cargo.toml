@@ -3,6 +3,7 @@ name = "populate-ssb"
 description = "Star Schema Benchmark (SSB) data byte-identical to ssb-dbgen, on all cores: Arrow, Parquet or .tbl"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

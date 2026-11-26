@@ -3,6 +3,7 @@ name = "populate-combinators"
 description = "Distributions shared by populate's benchmark generators: dbgen's and dsdgen's skip-ahead Lehmer streams, Utf8View columns over shared buffers, dsdgen's text columns"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

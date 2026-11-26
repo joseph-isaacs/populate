@@ -1,3 +1,5 @@
+# Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+
 [package]
 name = "dsbgen"
 description = "DSB (skewed, correlated TPC-DS) data generation: tpcdsgen 4.0 with Microsoft DSB's dsdgen changes"

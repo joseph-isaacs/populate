@@ -1,6 +1,8 @@
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of the Go-derived code is governed by the BSD-3-Clause licence in
+// ../LICENSE-Go.txt. Rust adaptations are described in ../NOTICE.md.
+
 //! Tables from Go's `math/rand` (`rng.go`, `normal.go`), Go 1.24.
-//! Copyright 2009 The Go Authors. BSD-style licence: see
-//! <https://go.dev/LICENSE>.
 
 #![allow(clippy::unreadable_literal, clippy::excessive_precision)]
 

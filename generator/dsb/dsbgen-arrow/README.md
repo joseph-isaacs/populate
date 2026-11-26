@@ -1,3 +1,5 @@
+<!-- Modified from tpcdsgen-arrow 4.0.0 for the data-comb DSB variant. -->
+
 > **Vendored copy.** This is tpcdsgen-arrow 4.0 from
 > [tpcgen-rs](https://github.com/datafusion-contrib/tpcgen-rs), modified to
 > run on `dsbgen` (DSB's dsdgen changes). It is not published, and only

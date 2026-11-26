@@ -1,3 +1,6 @@
+// Ported from R 4.x (src/main/RNG.c, src/main/random.c), GPL-2.0-or-later.
+// See ../NOTICE.md and ../LICENSE-GPL-2.0.txt.
+
 //! R's random numbers: the Mersenne Twister as `set.seed()` seeds it, and
 //! the `sample()` / `runif()` draws the H2O datagen scripts make from it.
 //!

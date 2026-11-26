@@ -3,6 +3,7 @@ name = "populate-synth"
 description = "Synthetic dataset shapes on populate-table: taxi trips, web hits, ML features and vector embeddings, deterministic on all cores"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

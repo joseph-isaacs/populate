@@ -143,14 +143,13 @@ fn fill_any(mut x: u64, out: &mut [u32]) {
     // 32 x 32 -> 64 bit multiply (`pmuludq`), and the store is a plain copy
     let mut lanes = lanes.map(|x| x as u32);
     let step = step as u32;
-    let mut chunks = out.chunks_exact_mut(LANES);
-    for c in &mut chunks {
-        c.copy_from_slice(&lanes);
+    let (chunks, rest) = out.as_chunks_mut::<LANES>();
+    for c in chunks {
+        *c = lanes;
         for x in &mut lanes {
             *x = mulmod(*x as u64, step as u64) as u32;
         }
     }
-    let rest = chunks.into_remainder();
     let n = rest.len();
     rest.copy_from_slice(&lanes[..n]);
 }

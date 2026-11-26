@@ -23,8 +23,9 @@ use dsbgen::table::Table as NullTable;
 use dsbgen::types::Date;
 use dsbgen::types::{Address, Decimal as DsDecimal};
 use populate_builtins::{derive_columns, named_all, range};
+use populate_combinators::dsdgen::Gmt;
 use populate_combinators::lehmer::{A, M, mulmod};
-use populate_combinators::text::{Gmt, Str, StrViews, Word};
+use populate_combinators::views::{self, Listed, Unshared, Views};
 use populate_core::{
     Children, Columnar, Columns, Date32, Decimal, Distribution, Nullable, Sink, Tables,
 };
@@ -37,6 +38,9 @@ use std::fmt::Write as _;
 use std::iter::repeat_n;
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+/// A text value, written per row.
+type Str = views::Str<Unshared>;
 
 // ============================================================================
 // Values: dsbgen's fields and null bitmap, as dsbgen-arrow reads them
@@ -103,13 +107,13 @@ mod addr {
     use super::*;
 
     pub(super) fn street_number(n: i64, base: u32, a: &Address) -> Option<Str> {
-        (!null(n, base)).then(|| Str(a.get_street_number().to_string()))
+        (!null(n, base)).then(|| Str::from(a.get_street_number().to_string()))
     }
     pub(super) fn street_name(n: i64, base: u32, a: &Address) -> Option<Str> {
         (!null(n, base + 1)).then(|| {
             let mut s = String::new();
             write!(s, "{} {}", a.get_street_name1(), a.get_street_name2()).expect("a String");
-            Str(s)
+            Str::from(s)
         })
     }
     pub(super) fn street_type(n: i64, base: u32, a: &Address) -> Option<Str> {
@@ -128,7 +132,7 @@ mod addr {
         text(n, base + 6, a.get_state())
     }
     pub(super) fn zip(n: i64, base: u32, a: &Address) -> Option<Str> {
-        (!null(n, base + 7)).then(|| Str(format!("{:05}", a.get_zip())))
+        (!null(n, base + 7)).then(|| Str::from(format!("{:05}", a.get_zip())))
     }
     pub(super) fn country(n: i64, base: u32, a: &Address) -> Option<Str> {
         text(n, base + 8, a.get_country())
@@ -827,8 +831,8 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
     if NullTable::CustomerDemographics.get_null_basis_points() != 0 {
         return customer_demographics_rows(s);
     }
-    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Word]> {
-        (0..n as i64).map(|i| Word::new(f(i))).collect()
+    let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Listed]> {
+        (0..n as i64).map(|i| Listed::new(f(i))).collect()
     };
     let gender = list(Demo::get_gender_size(), Demo::get_gender_for_index_mod_size);
     let marital = list(
@@ -896,7 +900,7 @@ fn customer_demographics(s: &Session) -> Box<dyn Gen> {
                 let i = first - 1;
                 out.0.extend(rows.iter().map(|&r| r as i32));
                 // each word's bytes once per block, not once per row
-                let words = |col: &mut Nullable<StrViews>, list: &[Word], d: usize| {
+                let words = |col: &mut Nullable<Views<Unshared>>, list: &[Listed], d: usize| {
                     Sink::<Str>::reserve(&mut col.values, n);
                     col.values.push_indexed(list, digits(i, n, d));
                     col.valid.push_valid(n);

@@ -284,12 +284,6 @@ impl DsTable {
         let mut table = self.clone();
         let threads = resolve_threads(threads);
         if threads > 1 {
-            // Keep already well-partitioned channels together to amortize scheduling.
-            if channel_of(self.name).is_some()
-                && self.num_chunks() >= (threads as u64).saturating_mul(4)
-            {
-                return table;
-            }
             let batch = self.batch_source_rows();
             // A few cheap batches do not amortize starting extra workers.
             if self.source_rows <= batch.saturating_mul(4) {

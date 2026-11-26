@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Declare a table once — named, typed columns of any width, each from a
 //! populate distribution, a row function or other columns — and generate it
 //! as Arrow `RecordBatch`es, sequentially or on all cores, deterministically.

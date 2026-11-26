@@ -161,10 +161,12 @@ impl Table {
         }
     }
 
+    /// The table's name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// The table's rows.
     pub fn rows(&self) -> u64 {
         self.rows
     }

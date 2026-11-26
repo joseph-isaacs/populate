@@ -1,6 +1,7 @@
 /// Something values of type `T` are appended to: a column buffer, or a tuple
 /// of them taking tuples.
 pub trait Sink<T> {
+    /// Append one value.
     fn push(&mut self, value: T);
 
     /// Hint that `additional` more values are about to be pushed. Columnar

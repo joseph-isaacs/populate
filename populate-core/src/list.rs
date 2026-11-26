@@ -14,6 +14,18 @@ pub(crate) fn offset(len: usize) -> i32 {
 ///
 /// `Vec<(A, B)>` rows are a `ListCol<(A`'s columns`, B`'s columns`)>`, and
 /// `Vec<Vec<T>>` rows a `ListCol<ListCol<..>>`.
+///
+/// ```
+/// use populate_core::{Columns, Sink};
+///
+/// let mut tags: Columns<Vec<i64>> = Default::default();
+/// tags.push(vec![1, 2]);
+/// tags.push(vec![]);
+/// tags.push(vec![3]);
+/// let (offsets, values) = tags.into_parts();
+/// assert_eq!(offsets, [0, 2, 2, 3]);
+/// assert_eq!(values, [1, 2, 3]);
+/// ```
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ListCol<V> {
     /// Empty until the first write, so an unused column allocates nothing
@@ -30,6 +42,7 @@ impl<V> ListCol<V> {
         self.offsets.len().saturating_sub(1)
     }
 
+    /// Whether there are no rows.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

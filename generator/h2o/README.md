@@ -150,3 +150,19 @@ What makes the sequential parts fast:
 `GPL-2.0-or-later AND MPL-2.0`, unlike the rest of the workspace (MIT):
 the crate ports R's random number generation and data.table's `fwrite`
 number formatting bit for bit. See [`NOTICE.md`](NOTICE.md).
+
+## Native distributions
+
+`GroupBy::dist()` and each `JoinTable::dist()` expose the generator's native
+`Wide<u32>` columns. `names()` and `column_types()` describe every column:
+integer, an `id` string with its zero-padding width, or fixed-point millionths.
+`raw::NA` is the missing-value sentinel; each descriptor reports nullability.
+No strings or floating-point arrays need to be allocated to consume the data.
+
+`raw()` supplies `populate_core::DistChunks` with the table's chunk size.
+Sorted/unsorted data, missing values, and all join table shapes use the same
+native API. Call `batch`, `chunk`, or `for_each_batch` for native buffers and
+`into_dist()` to recover the distribution.
+
+Set `default-features = false` to exclude Arrow, Parquet, and `populate-table`.
+The default `formats` feature enables adapters and CLI.

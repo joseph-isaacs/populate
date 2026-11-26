@@ -13,8 +13,8 @@ use populate_core::{Columnar, Columns, Distribution, Tables};
 use populate_sink_arrow::{IntoArrowColumns, IntoArrowTables};
 use populate_table::text::{TextChunks, TextColumns, TextTables, write_text_many};
 use populate_table::{
-    Chunks, DistTable, DistTables, MultiChunks, chunks, par_sources, resolve_threads,
-    write_parquet_many_in_batches,
+    Chunks, DEFAULT_CHUNK_ROWS, DistTable, DistTables, MultiChunks, chunks, par_sources,
+    resolve_threads, write_parquet_many_in_batches,
 };
 use std::convert::Infallible;
 use std::fmt;
@@ -23,8 +23,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use tpcdsgen::config::{Session, Table as Ds};
 
-/// Default output rows per chunk (one Parquet row group).
-pub const DEFAULT_CHUNK_ROWS: u64 = 256 * 1024;
 /// Default Arrow batch size, in output rows: small enough that a batch's
 /// columns stay in cache while they are made and written out.
 pub const DEFAULT_BATCH_SIZE: usize = 2048;

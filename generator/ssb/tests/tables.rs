@@ -122,6 +122,55 @@ fn many_tables_on_one_pool() {
     }
 }
 
+#[test]
+fn adaptive_arrow_work_preserves_flat_repeated_and_empty_tables() {
+    let s = Ssb::new(1.0);
+    let mut tables: Vec<_> = TableName::ALL
+        .into_iter()
+        .rev()
+        .chain([LineOrderFlat, LineOrder])
+        .map(|t| s.table(t).limit_source_rows(10_003))
+        .collect();
+    tables.push(s.table(Part).limit_source_rows(0));
+    let expected: Vec<_> = tables
+        .iter()
+        .map(|t| concat_batches(&t.schema(), &t.collect(1)).unwrap())
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_ssb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(
+                &concat_batches(&t.schema(), batches).unwrap(),
+                want,
+                "{}",
+                t.name()
+            );
+        }
+    }
+    populate_ssb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}
+
+#[test]
+fn large_lineorder_work_preserves_batches_and_chunk_limits() {
+    let table = Ssb::new(100.0).table(LineOrder).limit_source_rows(10_003);
+    let want = concat_batches(&table.schema(), &table.collect(1)).unwrap();
+    for batch in [4, 127] {
+        for chunk in [19, 10_000] {
+            let table = table.clone().batch_size(batch).chunk_source_rows(chunk);
+            for threads in [1, 4, 0] {
+                let got = concat_batches(&table.schema(), &table.collect(threads)).unwrap();
+                assert_eq!(got, want);
+                let mut batches = Vec::new();
+                populate_ssb::for_each_batch_many(std::slice::from_ref(&table), threads, |_, b| {
+                    batches.push(b);
+                });
+                assert_eq!(concat_batches(&table.schema(), &batches).unwrap(), want);
+            }
+        }
+    }
+}
+
 fn int(b: &RecordBatch, c: &str, r: usize) -> i32 {
     b.column_by_name(c)
         .unwrap()

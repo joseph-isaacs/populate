@@ -20,6 +20,7 @@
 //!   `Utf8View` into one shared dictionary.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_ssb::{Ssb, TableName};
 //!
 //! let s = Ssb::new(0.01);
@@ -30,6 +31,7 @@
 //! let mut rows = 0;
 //! s.table(TableName::LineOrder).for_each_batch(0, |b| rows += b.num_rows());
 //! assert_eq!(rows, 60_176);
+//! # }
 //! ```
 //!
 //! The sequential run generates the tables in the order part, supplier,
@@ -40,14 +42,18 @@
 
 mod cols;
 mod dict;
+#[cfg(feature = "formats")]
 mod engine;
 mod flat;
 mod tables;
 
+#[cfg(feature = "formats")]
 pub use engine::{
     SsbTable, for_each_batch_many, parquet_props, write_parquet_many, write_tbl_many,
 };
 
+use populate_core::{Children, DistChunks, Distribution};
+#[cfg(feature = "formats")]
 use populate_table::DynTable;
 use std::fmt;
 use std::str::FromStr;
@@ -123,7 +129,9 @@ pub struct Ssb {
     scale: tables::Scale,
     /// `lineorder_flat`'s distribution, built (with the dimension tables)
     /// on first use.
+    #[cfg(feature = "formats")]
     flat: Arc<OnceLock<DynTable>>,
+    native_dims: Arc<OnceLock<Arc<flat::Dims>>>,
 }
 
 impl Ssb {
@@ -138,7 +146,9 @@ impl Ssb {
         );
         Ssb {
             scale: tables::Scale::new(sf),
+            #[cfg(feature = "formats")]
             flat: Arc::default(),
+            native_dims: Arc::default(),
         }
     }
 
@@ -160,12 +170,71 @@ impl Ssb {
     }
 
     /// Table `t`, ready to generate.
+    #[cfg(feature = "formats")]
     pub fn table(&self, t: TableName) -> SsbTable {
         SsbTable::new(t, self.scale, self.source_rows(t), self.flat.clone())
     }
 
     /// The five SSB tables, in [`TableName::ALL`] order.
+    #[cfg(feature = "formats")]
     pub fn tables(&self) -> impl Iterator<Item = SsbTable> + '_ {
         TableName::ALL.into_iter().map(|t| self.table(t))
     }
+    /// Native `part` columns in independent source chunks.
+    pub fn part(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Part> + Clone + Send + Sync + use<>> {
+        tables::part(dict::Dict::get()).chunks(self.source_rows(TableName::Part))
+    }
+
+    /// Native `supplier` columns in independent source chunks.
+    pub fn supplier(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Supplier> + Clone + Send + Sync + use<>> {
+        tables::supplier(dict::Dict::get(), &self.scale)
+            .chunks(self.source_rows(TableName::Supplier))
+    }
+
+    /// Native `customer` columns in independent source chunks.
+    pub fn customer(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Customer> + Clone + Send + Sync + use<>> {
+        tables::customer(dict::Dict::get(), &self.scale)
+            .chunks(self.source_rows(TableName::Customer))
+    }
+
+    /// Native `date` columns in independent source chunks.
+    pub fn date(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = raw::Date> + Clone + Send + Sync + use<>> {
+        tables::date(dict::Dict::get()).chunks(self.source_rows(TableName::Date))
+    }
+
+    /// Native `lineorder` columns in independent source chunks.
+    pub fn lineorder(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = Children<raw::Line>> + Clone + Send + Sync + use<>>
+    {
+        tables::lineorder(&self.scale).chunks(self.source_rows(TableName::LineOrder))
+    }
+
+    /// Native joined line-order columns. Dimension buffers are built once and shared.
+    pub fn lineorder_flat(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = Children<raw::FlatRow>> + Clone + Send + Sync + use<>>
+    {
+        let dims = self
+            .native_dims
+            .get_or_init(|| Arc::new(flat::Dims::build(&self.scale, 0)))
+            .clone();
+        flat::raw(&self.scale, dims).chunks(self.scale.orders)
+    }
+}
+
+/// Native row shapes, string columns and shared dictionary marker.
+pub mod raw {
+    pub use crate::cols::{Bytes, Shared, SharedCols, Views, Word, Words};
+    pub use crate::dict::Ssb as TextBuffers;
+    pub use crate::flat::{CustomerRow, FlatRow, SupplierRow};
+    pub use crate::tables::{Customer, Date, Line, Part, PartWords, Supplier};
 }

@@ -120,7 +120,7 @@ pub(crate) fn holiday(month: i32, mday: i32) -> bool {
 
 /// SSB's string buffers: each batch's own, then the dictionary.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Ssb;
+pub struct Ssb;
 
 impl Buffers for Ssb {
     fn shared() -> &'static Shared {

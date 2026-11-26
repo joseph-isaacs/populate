@@ -118,3 +118,19 @@ orders); ssb-dbgen is single-threaded.
 | `.tbl`            | 4       | —         | 0.61 s       |
 | Parquet (snappy)  | 4       | —         | 0.54 s       |
 | Arrow only        | 4       | —         | 0.20 s       |
+
+## Native columns
+
+`Ssb` exposes typed `part()`, `supplier()`, `customer()`, `date()`,
+`lineorder()`, and `lineorder_flat()` sources as `populate_core::DistChunks`.
+Use `batch`, `chunk`, or `for_each_batch` to receive native columns, and
+`into_dist()` for the underlying distribution. Both line-order sources
+count source orders and emit child lines. Row aliases are public in `raw`.
+
+Dictionary and joined dimension strings expose `with_str`; owned strings
+expose `get` and `into_parts`. Joined dimension buffers are shared and remain
+alive with their columns. Native flat dimensions are initialized once per
+`Ssb` data set.
+
+Set `default-features = false` for a library without Arrow, Parquet, or
+`populate-table`. The default `formats` feature enables adapters and CLI.

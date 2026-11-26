@@ -143,22 +143,30 @@ fn partitioned_channels_preserve_paired_outputs() {
         WebReturns,
     ]
     .into_iter()
-    .map(|t| {
-        ds.table(t)
-            .limit_source_rows(1_027)
-            .chunk_source_rows(7)
-            .batch_size(127)
-    })
+    .map(|t| ds.table(t).limit_source_rows(1_027))
     .collect();
     let expected: Vec<_> = tables
         .iter()
         .map(|t| concat(&reference_arrow_at(t, 100.0)))
         .collect();
-    for threads in [1, 4, 0] {
-        let mut got = vec![Vec::new(); tables.len()];
-        populate_gen_tpcds::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
-        for ((table, batches), want) in tables.iter().zip(&got).zip(&expected) {
-            assert_eq!(&concat(batches), want, "{}", table.name());
+    // Small batches cover subdivision of channels with many configured chunks.
+    for (source_rows, batch_size) in [(7, 127), (97, 17)] {
+        let configured: Vec<_> = tables
+            .iter()
+            .cloned()
+            .map(|t| t.chunk_source_rows(source_rows).batch_size(batch_size))
+            .collect();
+        for threads in [1, 2, 4, 0] {
+            let mut got = vec![Vec::new(); configured.len()];
+            populate_gen_tpcds::for_each_batch_many(&configured, threads, |i, b| got[i].push(b));
+            for ((table, batches), want) in configured.iter().zip(&got).zip(&expected) {
+                assert_eq!(
+                    &concat(batches),
+                    want,
+                    "{}: {source_rows} source rows, batch {batch_size}, {threads} threads",
+                    table.name()
+                );
+            }
         }
     }
 }

@@ -174,3 +174,30 @@ of each column. At SF 1, summed over the tables:
 Formatting text and encoding Parquet cost more than making the data.
 In Parquet, `lineitem`'s comment column alone is ~0.6 s: 6M unique
 strings, read from random places in the pool and compressed.
+
+## Raw distributions
+
+Use `default-features = false` for a library with no Arrow or Parquet
+dependency. The default `formats` feature supplies the existing output
+adapters and CLI.
+
+`Tpch` exposes `nation`, `region`, `part`, `supplier`, `customer`,
+`partsupp`, `orders` and `lineitem` as typed `DistChunks` sources. They
+support `.batch`, `.chunk`, ordered `.for_each_batch`, and `.into_dist()`
+for the underlying `Distribution`. Source rows are parts for `partsupp`,
+orders for `lineitem`, and output rows elsewhere.
+
+```rust
+use populate_gen_tpch::Tpch;
+let h = Tpch::new(0.01);
+let columns = h.nation().batch(0, 3);
+assert_eq!(columns.0, [0, 1, 2]);
+columns.1.with_str(0, |name| assert_eq!(name, "ALGERIA"));
+let comment = columns.3.0[0].as_str();
+```
+
+The `raw` module names every row shape. Numbers, dates and fixed-point
+amounts retain their native types. Dictionary strings are read with
+`with_str`; owned strings expose `get` and `into_parts`; comments borrow
+the shared text pool through `as_str`. Generation does not create an
+Arrow schema or serialize text.

@@ -22,7 +22,7 @@ rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow", "snap"] }
-populate-gen-tpch = { path = "../generator/tpch", optional = true, default-features = false }
+populate-gen-tpch = { path = "../generator/tpch", optional = true, default-features = false, features = ["formats"] }
 populate-gen-ssb = { workspace = true, optional = true }
 pyo3 = { version = "0.30", optional = true }
 

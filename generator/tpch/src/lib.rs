@@ -16,10 +16,11 @@
 //! - text is never copied: comments are `Utf8View`s into the shared text
 //!   pool and distribution values views into a shared dictionary;
 //! - chunks of every table run on one pool of threads through
-//!   [`populate_table`]'s ordered drivers, Parquet row groups are encoded
+//!   `populate_table`'s ordered drivers, Parquet row groups are encoded
 //!   on the workers, and `.tbl` text is formatted and written by them.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_tpch::{TableName, Tpch};
 //!
 //! let h = Tpch::new(0.01);
@@ -34,18 +35,22 @@
 //! let mut rows = 0;
 //! h.table(TableName::LineItem).for_each_batch(0, |b| rows += b.num_rows());
 //! assert_eq!(rows, 60_175);
+//! # }
 //! ```
 
 mod cols;
+#[cfg(feature = "formats")]
 mod engine;
 mod tables;
 mod text;
 
+#[cfg(feature = "formats")]
 pub use engine::{
     DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, TpchTable, for_each_batch_many, parquet_props,
     write_parquet_many, write_tbl_many,
 };
 
+use populate_core::{Dist, DistChunks};
 use std::fmt;
 use std::str::FromStr;
 
@@ -148,6 +153,7 @@ impl Tpch {
     }
 
     /// Table `t`, ready to generate.
+    #[cfg(feature = "formats")]
     pub fn table(&self, t: TableName) -> TpchTable {
         TpchTable::new(t, self.scale, self.source_rows(t))
     }
@@ -160,7 +166,73 @@ impl Tpch {
     }
 
     /// Every table, in [`TableName::ALL`] order.
+    #[cfg(feature = "formats")]
     pub fn tables(&self) -> impl Iterator<Item = TpchTable> + '_ {
         TableName::ALL.into_iter().map(|t| self.table(t))
+    }
+}
+
+/// Native row shapes and string buffers.
+pub mod raw {
+    pub use crate::cols::{Bytes, Comment, Comments, Word};
+    pub use crate::tables::{
+        Customer, Dec, Line, LineItem, Nation, Orders, Part, PartSupp, Region, Supplier,
+    };
+    pub use crate::text::Tpch as TextBuffers;
+}
+
+impl Tpch {
+    /// Raw `nation` columns, in source-row chunks.
+    pub fn nation(&self) -> DistChunks<impl Dist<raw::Nation> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::Nation),
+            tables::nation_table_dist(),
+        )
+    }
+    /// Raw `region` columns, in source-row chunks.
+    pub fn region(&self) -> DistChunks<impl Dist<raw::Region> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::Region),
+            tables::region_table_dist(),
+        )
+    }
+    /// Raw `part` columns, in source-row chunks.
+    pub fn part(&self) -> DistChunks<impl Dist<raw::Part> + use<>> {
+        DistChunks::new(self.source_rows(TableName::Part), tables::part_dist())
+    }
+    /// Raw `supplier` columns, in source-row chunks.
+    pub fn supplier(&self) -> DistChunks<impl Dist<raw::Supplier> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::Supplier),
+            tables::supplier_dist(),
+        )
+    }
+    /// Raw `customer` columns, in source-row chunks.
+    pub fn customer(&self) -> DistChunks<impl Dist<raw::Customer> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::Customer),
+            tables::customer_dist(),
+        )
+    }
+    /// Raw `partsupp` columns, in source-row chunks.
+    pub fn partsupp(&self) -> DistChunks<impl Dist<raw::PartSupp> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::PartSupp),
+            tables::partsupp_dist(&self.scale),
+        )
+    }
+    /// Raw `orders` columns, in source-row chunks.
+    pub fn orders(&self) -> DistChunks<impl Dist<raw::Orders> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::Orders),
+            tables::orders_dist(&self.scale),
+        )
+    }
+    /// Raw `lineitem` columns, in source-row chunks.
+    pub fn lineitem(&self) -> DistChunks<impl Dist<raw::LineItem> + use<>> {
+        DistChunks::new(
+            self.source_rows(TableName::LineItem),
+            tables::lineitem_dist(&self.scale),
+        )
     }
 }

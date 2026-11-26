@@ -1,5 +1,6 @@
 [package]
-name = "populate-tsbs"
+name = "populate-gen-tsbs"
+publish = false
 description = "TSBS devops and IoT data byte-identical to tsbs_generate_data, on all cores: text formats, Arrow and Parquet"
 version.workspace = true
 edition.workspace = true

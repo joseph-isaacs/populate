@@ -8,7 +8,7 @@
 //! ```
 //!
 //! The rules follow the specs (TPC-H 4.2.3, TPC-DS store_sales pricing). The
-//! values aren't dbgen/dsdgen's: see `populate-tpcds` for byte-identical
+//! values aren't dbgen/dsdgen's: see `populate-gen-tpcds` for byte-identical
 //! output. This shows how the dependencies read as combinators.
 
 use arrow_array::RecordBatch;

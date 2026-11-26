@@ -23,7 +23,7 @@
 //! sequential run, and the same seed always gives the same data.
 //!
 //! ```
-//! use populate_synth::{Shape, Taxi};
+//! use populate_gen_synth::{Shape, Taxi};
 //!
 //! let trips = Taxi::new(42).table(10_000);
 //! let mut rows = 0;

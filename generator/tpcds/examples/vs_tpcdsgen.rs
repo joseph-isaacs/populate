@@ -1,16 +1,16 @@
-//! populate-tpcds vs tpcdsgen-arrow (the TPC-DS generator from the
+//! populate-gen-tpcds vs tpcdsgen-arrow (the TPC-DS generator from the
 //! tpcgen-rs project), SF 1, Arrow output only (no files).
 //!
-//! `cargo run -p populate-tpcds --release --example vs_tpcdsgen [-- <threads>]`
+//! `cargo run -p populate-gen-tpcds --release --example vs_tpcdsgen [-- <threads>]`
 //!
-//! Both produce the same data (populate-tpcds runs tpcdsgen's generators).
+//! Both produce the same data (populate-gen-tpcds runs tpcdsgen's generators).
 //! Each table is generated in full, batches of 8192 rows dropped as they
 //! come. tpcdsgen runs one session chunk per thread (how `tpcgen-cli`
 //! splits a table: dsdgen's rule, so tables under 1M source rows are not
-//! split); populate-tpcds splits every table into ~256Ki-row chunks on the
+//! split); populate-gen-tpcds splits every table into ~256Ki-row chunks on the
 //! same thread count. Best of 3 runs.
 
-use populate_tpcds::{TableName, Tpcds};
+use populate_gen_tpcds::{TableName, Tpcds};
 use std::time::{Duration, Instant};
 use tpcdsgen::config::{Session, SessionBuilder};
 use tpcdsgen::table::Table as DsTable;

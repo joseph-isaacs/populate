@@ -1,6 +1,6 @@
 //! Times Arrow → `.dat` formatting alone, over batches held in memory.
-use populate_tpcds::dat::write_batch;
-use populate_tpcds::{Encoding, TableName, Tpcds};
+use populate_gen_tpcds::dat::write_batch;
+use populate_gen_tpcds::{Encoding, TableName, Tpcds};
 use std::time::Instant;
 
 fn main() {

@@ -76,7 +76,7 @@ sales.write_parquet(std::fs::File::create("sales.parquet")?, 64 * 1024, 0, None)
 A table can also be a single distribution: `populate::table::DistTable`
 runs one over any range of rows (clone, `skip` to the range, collect), and
 reads its schema off it, the names from `named(...)` and the types from the
-columns its rows are collected into. `populate-tpch` builds all eight
+columns its rows are collected into. `populate-gen-tpch` builds all eight
 tables this way.
 
 Any generator that can produce its rows in independent chunks can use the
@@ -95,21 +95,21 @@ tool.
 
 | benchmark | crate | CLI | matches |
 |---|---|---|---|
-| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `tpch-gen` | `dbgen` / `tpchgen-cli`, byte for byte |
-| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `tpcds-gen` | `dsdgen`, byte for byte |
-| DSB | [`populate-dsb`](generator/dsb/README.md) | `dsb-gen` | DSB's `dsdgen`, byte for byte |
-| SSB (and SSB-flat) | [`populate-ssb`](generator/ssb/README.md) | `ssb-gen` | `ssb-dbgen`, byte for byte |
-| H2O db-benchmark | [`populate-h2o`](generator/h2o/README.md) | `h2o-gen` | its R datagen, byte for byte |
-| TSBS devops / IoT | [`populate-tsbs`](generator/tsbs/README.md) | `tsbs-gen` | `tsbs_generate_data`, byte for byte |
-| LDBC SNB | [`populate-ldbc`](generator/ldbc/README.md) | `ldbc-gen` | the LDBC Spark datagen |
-| YCSB | [`populate-ycsb`](generator/ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
-| TPC-C | [`populate-tpcc`](generator/tpcc/README.md) | `tpcc-gen` | the spec's population rules |
-| synthetic shapes | [`populate-synth`](generator/synth/README.md) | `synth-gen` | (no reference) |
+| TPC-H | [`populate-gen-tpch`](generator/tpch/README.md) | `tpch-gen` | `dbgen` / `tpchgen-cli`, byte for byte |
+| TPC-DS | [`populate-gen-tpcds`](generator/tpcds/README.md) | `tpcds-gen` | `dsdgen`, byte for byte |
+| DSB | [`populate-gen-dsb`](generator/dsb/README.md) | `dsb-gen` | DSB's `dsdgen`, byte for byte |
+| SSB (and SSB-flat) | [`populate-gen-ssb`](generator/ssb/README.md) | `ssb-gen` | `ssb-dbgen`, byte for byte |
+| H2O db-benchmark | [`populate-gen-h2o`](generator/h2o/README.md) | `h2o-gen` | its R datagen, byte for byte |
+| TSBS devops / IoT | [`populate-gen-tsbs`](generator/tsbs/README.md) | `tsbs-gen` | `tsbs_generate_data`, byte for byte |
+| LDBC SNB | [`populate-gen-ldbc`](generator/ldbc/README.md) | `ldbc-gen` | the LDBC Spark datagen |
+| YCSB | [`populate-gen-ycsb`](generator/ycsb/README.md) | `ycsb-gen` | YCSB 0.17.0, byte for byte |
+| TPC-C | [`populate-gen-tpcc`](generator/tpcc/README.md) | `tpcc-gen` | the spec's population rules |
+| synthetic shapes | [`populate-gen-synth`](generator/synth/README.md) | `synth-gen` | (no reference) |
 
 Install the TPC-H command from Git:
 
 ```sh
-cargo install --git https://github.com/joseph-isaacs/populate.git populate-tpch
+cargo install --git https://github.com/joseph-isaacs/populate.git populate-gen-tpch
 ```
 
 The installed executable is `tpch-gen`:
@@ -121,8 +121,8 @@ tpch-gen --sf 1 --out tpch --format parquet
 From a checkout, run the same generator with Cargo:
 
 ```sh
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl # dbgen text
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch              # Parquet
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl # dbgen text
 ```
 
 TPC-H, TPC-DS and TPC-C are trademarks of the Transaction Processing
@@ -157,7 +157,7 @@ notices identify those components and their licences:
 [DSB](generator/dsb/NOTICE.md), [LDBC](generator/ldbc/NOTICE.md),
 [TPC-DS](generator/tpcds/NOTICE.md), [TSBS](generator/tsbs/NOTICE.md) and
 [YCSB](generator/ycsb/NOTICE.md). Each crate's `Cargo.toml` records its
-SPDX licence expression. One crate is not MIT: `populate-h2o` ports R and
+SPDX licence expression. One crate is not MIT: `populate-gen-h2o` ports R and
 data.table code bit for bit, so it is `GPL-2.0-or-later AND MPL-2.0`
 ([notice](generator/h2o/NOTICE.md)); nothing else in the workspace depends
 on it.

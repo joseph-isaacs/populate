@@ -1,5 +1,5 @@
 [package]
-name = "populate-tpcds"
+name = "populate-gen-tpcds"
 description = "TPC-DS data byte-identical to dsdgen, on all cores: Arrow, Parquet or .dat"
 version.workspace = true
 edition.workspace = true

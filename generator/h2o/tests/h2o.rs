@@ -6,14 +6,14 @@
 //! `Rscript groupby-datagen.R N K nas sort` / `Rscript join-datagen.R N 0
 //! nas sort` (h2oai/db-benchmark `_data/`) wrote. The 1e7 cases are
 //! `#[ignore]`d (several seconds each); run them with
-//! `cargo test -p populate-h2o --release -- --ignored`.
+//! `cargo test -p populate-gen-h2o --release -- --ignored`.
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type};
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
-use populate_h2o::fwrite::write_f64;
-use populate_h2o::{GroupBy, Join};
+use populate_gen_h2o::fwrite::write_f64;
+use populate_gen_h2o::{GroupBy, Join};
 use populate_table::chunks::for_each_batch;
 use populate_table::text::TextChunks;
 use populate_table::{Chunks, fnv1a64};

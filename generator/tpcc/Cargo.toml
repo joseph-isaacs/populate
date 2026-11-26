@@ -1,5 +1,6 @@
 [package]
-name = "populate-tpcc"
+name = "populate-gen-tpcc"
+publish = false
 description = "The TPC-C initial database (TPC-C 5.11 clause 4.3.3.1), on all cores: Arrow, Parquet or CSV"
 version.workspace = true
 edition.workspace = true

@@ -74,19 +74,19 @@ populate-sink-arrow = { path = "sink/arrow", version = "0.1.0" }
 populate-sink-parquet = { path = "sink/parquet", version = "0.1.0" }
 populate-table = { path = "populate-table", version = "0.1.0" }
 populate-combinators = { path = "generator/combinators", version = "0.1.0" }
-populate-tpcds = { path = "generator/tpcds", version = "0.1.0" }
-populate-tpch = { path = "generator/tpch", version = "0.1.0" }
-populate-tsbs = { path = "generator/tsbs", version = "0.1.0" }
-populate-ssb = { path = "generator/ssb", version = "0.1.0" }
-populate-h2o = { path = "generator/h2o", version = "0.1.0" }
-populate-tpcc = { path = "generator/tpcc", version = "0.1.0" }
-populate-ycsb = { path = "generator/ycsb", version = "0.1.0" }
-populate-synth = { path = "generator/synth", version = "0.1.0" }
-populate-ldbc = { path = "generator/ldbc", version = "0.1.0" }
+populate-gen-tpcds = { path = "generator/tpcds", version = "0.1.0" }
+populate-gen-tpch = { path = "generator/tpch", version = "0.1.0" }
+populate-gen-tsbs = { path = "generator/tsbs", version = "0.1.0" }
+populate-gen-ssb = { path = "generator/ssb", version = "0.1.0" }
+populate-gen-h2o = { path = "generator/h2o", version = "0.1.0" }
+populate-gen-tpcc = { path = "generator/tpcc", version = "0.1.0" }
+populate-gen-ycsb = { path = "generator/ycsb", version = "0.1.0" }
+populate-gen-synth = { path = "generator/synth", version = "0.1.0" }
+populate-gen-ldbc = { path = "generator/ldbc", version = "0.1.0" }
 
-# populate-ldbc's tests generate ~2 GB of data: optimise the crate itself
+# populate-gen-ldbc's tests generate ~2 GB of data: optimise the crate itself
 # in test builds too (its dependencies stay as they are)
-[profile.dev.package.populate-ldbc]
+[profile.dev.package.populate-gen-ldbc]
 opt-level = 3
 
 # Thin LTO: lets small hot functions of dependencies (tpcdsgen's random
@@ -102,7 +102,7 @@ lto = "thin"
 codegen-units = 1
 debug = true
 
-# populate-h2o's tests generate the 1e7-row join tables (the smallest the
+# populate-gen-h2o's tests generate the 1e7-row join tables (the smallest the
 # datagen allows); unoptimised that takes minutes.
-[profile.test.package.populate-h2o]
+[profile.test.package.populate-gen-h2o]
 opt-level = 3

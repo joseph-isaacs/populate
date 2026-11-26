@@ -14,7 +14,7 @@
 //! [`populate_table`]'s drivers.
 //!
 //! ```
-//! use populate_ycsb::Ycsb;
+//! use populate_gen_ycsb::Ycsb;
 //!
 //! let load = Ycsb::new(1000).data_integrity(true);
 //! let mut rows = 0;

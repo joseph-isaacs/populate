@@ -9,10 +9,10 @@ use rand::Rng;
 use std::sync::Arc;
 
 /// A string (ASCII): every YCSB string is written per row.
-pub(crate) type Text = Str<Unshared>;
+pub type Text = Str<Unshared>;
 
 /// A `Utf8View` column of [`Text`].
-pub(crate) type TextCol = Views<Unshared>;
+pub type TextCol = Views<Unshared>;
 
 /// The `usertable` records: the key, then a column per field.
 ///

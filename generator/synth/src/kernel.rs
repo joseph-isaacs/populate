@@ -9,14 +9,32 @@
 //! quantiles ([`Quantiles`]): one hash, one lookup and one lerp per value,
 //! with no `exp`/`ln` in the hot loop.
 
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, StringViewArray};
+#[cfg(feature = "formats")]
 use arrow_buffer::{Buffer, ScalarBuffer};
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_core::RowCount;
+use populate_core::Stream;
 use populate_core::{Columnar, Nullable, Sink, Validity};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
-use populate_table::Stream;
+use std::str::from_utf8;
 use std::sync::Arc;
+#[cfg(not(feature = "formats"))]
+type Buffer = Arc<[u8]>;
+
+fn buffer(bytes: Vec<u8>) -> Buffer {
+    #[cfg(feature = "formats")]
+    {
+        Buffer::from_vec(bytes)
+    }
+    #[cfg(not(feature = "formats"))]
+    {
+        bytes.into()
+    }
+}
 
 /// `[0, 1)` from the top 53 bits.
 #[inline(always)]
@@ -282,6 +300,20 @@ pub struct Views {
 }
 
 impl Views {
+    /// Read a string while retaining shared backing buffers.
+    pub fn with_str<R>(&self, i: usize, f: impl FnOnce(&str) -> R) -> R {
+        let v = self.views[i];
+        let len = v as u32 as usize;
+        if len <= 12 {
+            let bytes = v.to_le_bytes();
+            f(from_utf8(&bytes[4..4 + len]).expect("UTF-8 string"))
+        } else {
+            let buffer = (v >> 64) as u32 as usize;
+            let offset = (v >> 96) as u32 as usize;
+            f(from_utf8(&self.buffers[buffer][offset..offset + len]).expect("UTF-8 string"))
+        }
+    }
+
     /// Append `views` whose long strings are in `buffers`, renumbering
     /// their buffer indexes past the buffers already here.
     fn append(&mut self, views: impl Iterator<Item = u128>, buffers: &[Buffer]) {
@@ -319,6 +351,7 @@ impl RowCount for Views {
     }
 }
 
+#[cfg(feature = "formats")]
 impl IntoArrowArray for Views {
     fn data_type() -> DataType {
         DataType::Utf8View
@@ -347,11 +380,29 @@ pub struct Pool {
 
 impl Pool {
     pub fn new<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> Self {
-        let a = StringViewArray::from_iter_values(values);
-        let (views, buffers, _) = a.into_parts();
-        Pool {
-            views: views.to_vec(),
-            buffers,
+        #[cfg(feature = "formats")]
+        {
+            let a = StringViewArray::from_iter_values(values);
+            let (views, buffers, _) = a.into_parts();
+            Pool {
+                views: views.to_vec(),
+                buffers,
+            }
+        }
+        #[cfg(not(feature = "formats"))]
+        {
+            let mut writer = ViewWriter::default();
+            for value in values {
+                let start = writer.bytes.len();
+                writer.bytes.extend_from_slice(value.as_ref().as_bytes());
+                writer.finish_value(start);
+            }
+            let mut out = Views::default();
+            writer.write_to(&mut out);
+            Pool {
+                views: out.views,
+                buffers: out.buffers.into(),
+            }
         }
     }
 
@@ -438,7 +489,7 @@ impl ViewWriter {
         let buffers = if self.bytes.is_empty() {
             vec![]
         } else {
-            vec![Buffer::from_vec(self.bytes)]
+            vec![buffer(self.bytes)]
         };
         out.append(self.views.into_iter(), &buffers);
     }
@@ -530,9 +581,9 @@ mod tests {
         let mut col = Views::default();
         Pool::new(["pooled, and long enough"]).write(&[0, Pool::EMPTY], &mut col);
         w.write_to(&mut col);
-        let a = col.into_array();
-        let a = a.as_any().downcast_ref::<StringViewArray>().unwrap();
-        let got: Vec<&str> = a.iter().map(|v| v.unwrap()).collect();
+        let got: Vec<String> = (0..col.rows())
+            .map(|i| col.with_str(i, str::to_owned))
+            .collect();
         assert_eq!(
             got,
             [

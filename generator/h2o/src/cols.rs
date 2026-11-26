@@ -4,16 +4,20 @@
 //! Shared pieces: NA-able `u32` columns, bit sets, the stable parallel
 //! sort data.table's `setkey` amounts to, and Arrow arrays from columns.
 
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, Float64Array, Int32Array, StringViewArray};
+#[cfg(feature = "formats")]
 use arrow_buffer::{NullBuffer, ScalarBuffer};
 use std::cmp::Reverse;
 use std::ptr::copy_nonoverlapping;
+#[cfg(feature = "formats")]
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{Arc, Mutex};
 use std::thread::scope;
 
-use populate_table::resolve_threads;
+use populate_core::sched::resolve_threads;
 
 use crate::fwrite::{write_micros, write_u32, write_u32_padded};
 
@@ -57,12 +61,14 @@ pub fn gather(col: &[u32], perm: &[u32]) -> Vec<u32> {
     perm.iter().map(|&r| col[r as usize]).collect()
 }
 
+#[cfg(feature = "formats")]
 fn nulls(col: &[u32]) -> Option<NullBuffer> {
     col.contains(&NA)
         .then(|| NullBuffer::from_iter(col.iter().map(|&v| v != NA)))
 }
 
 /// `Int32` array of `col`, NA as null, in `col`'s buffer.
+#[cfg(feature = "formats")]
 pub fn int32(col: Vec<u32>) -> ArrayRef {
     let nulls = nulls(&col);
     // same-sized values: collected in place, no new buffer
@@ -74,6 +80,7 @@ pub fn int32(col: Vec<u32>) -> ArrayRef {
 }
 
 /// `Float64` array of `col` as micros (`k / 1e6`), NA as null.
+#[cfg(feature = "formats")]
 pub fn micros(col: &[u32]) -> ArrayRef {
     let v: Vec<f64> = col
         .iter()
@@ -85,6 +92,7 @@ pub fn micros(col: &[u32]) -> ArrayRef {
 /// `Utf8View` array of `prefix` and `v` zero-padded to `width` digits
 /// (`width` 0: no padding), NA as null. Every value fits a view inline
 /// (at most 12 bytes), so there are no data buffers.
+#[cfg(feature = "formats")]
 pub fn id_strings(col: &[u32], prefix: &[u8], width: usize) -> ArrayRef {
     // a u32 has at most 10 digits
     assert!(
@@ -110,6 +118,7 @@ pub fn id_strings(col: &[u32], prefix: &[u8], width: usize) -> ArrayRef {
 /// The inline view (length, then the bytes, zero after them) of `prefix`
 /// and `v` zero-padded to `width` digits.
 #[inline(always)]
+#[cfg(feature = "formats")]
 fn inline_view(prefix: &[u8], v: u32, width: usize) -> u128 {
     // the length's 4 bytes, the string, and room for the digit writes
     let mut b = [0u8; 32];
@@ -410,6 +419,7 @@ impl<T> SharedSlice<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "formats")]
     use arrow_array::Array;
 
     #[test]
@@ -421,6 +431,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "formats")]
     fn inline_id_views() {
         let a = id_strings(&[1, NA, 12345], b"id", 10);
         let a = a.as_any().downcast_ref::<StringViewArray>().unwrap();

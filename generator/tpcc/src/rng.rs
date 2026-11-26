@@ -1,6 +1,6 @@
 //! Randomness: stateless per-row streams, and random-string fills.
 
-use populate_table::Stream;
+use populate_core::Stream;
 
 /// SplitMix64's increment.
 pub(crate) const GOLDEN_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;

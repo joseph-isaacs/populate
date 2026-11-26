@@ -13,13 +13,17 @@ license.workspace = true
 [dependencies]
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-table = { workspace = true }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-table = { workspace = true, optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-buffer = { workspace = true }
-arrow-schema = { workspace = true }
+arrow-array = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 
 [dev-dependencies]
 # dbgen's streams as ported by tpchgen, to check against
 tpchgen = "4.0"
+
+[features]
+default = ["formats"]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-buffer", "dep:arrow-schema"]

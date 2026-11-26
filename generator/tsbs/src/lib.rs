@@ -14,9 +14,10 @@
 //! amd64 assembly does. The run is split into resumable chunks (see
 //! [`chunked`]): one frontier skips ahead and leaves checkpoints, and
 //! workers generate and format the chunks on all cores through
-//! [`populate_table`]'s ordered drivers.
+//! `populate_table`'s ordered drivers.
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_tsbs::{Config, Format, Tsbs, UseCase};
 //!
 //! let mut cfg = Config::new(UseCase::CpuOnly, 2, 123);
@@ -26,11 +27,16 @@
 //! assert!(text.starts_with(b"cpu,hostname=host_0,"));
 //! assert_eq!(text.split(|&b| b == b'\n').count(), 5);
 //! assert_eq!(text, t.write_text_sequential(Format::Influx, Vec::new()).unwrap());
+//! # }
 //! ```
 
+#[cfg(feature = "formats")]
 pub mod arrow;
 pub mod binary;
 pub mod chunked;
+pub mod raw;
+use populate_core::DistChunks;
+use raw::PointChunks;
 pub mod config;
 pub mod devops;
 pub mod gorand;
@@ -40,19 +46,29 @@ pub mod model;
 pub mod sim;
 pub mod text;
 
+#[cfg(feature = "formats")]
 pub use arrow::TsbsArrow;
+#[cfg(feature = "formats")]
 use binary::PROMETHEUS_HEADER;
 pub use chunked::{Chunked, DEFAULT_CHUNK_POINTS};
 pub use config::{Config, UseCase};
 pub use text::Format;
 
+#[cfg(feature = "formats")]
 use model::{Point, Statics};
+#[cfg(feature = "formats")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "formats")]
 use parquet::file::properties::WriterProperties;
+#[cfg(feature = "formats")]
 use populate_table::MultiChunks;
+#[cfg(feature = "formats")]
 use populate_table::text::{TextChunks, write_text_many};
+#[cfg(feature = "formats")]
 use sim::{AnySim, Sim};
+#[cfg(feature = "formats")]
 use std::io::{self, Write};
+#[cfg(feature = "formats")]
 use std::sync::Arc;
 
 /// A validated TSBS configuration, ready to generate.
@@ -80,9 +96,21 @@ impl Tsbs {
         Chunked::new(&self.cfg, chunk_points)
     }
 
+    /// Native points grouped by simulator chunks. Each source row is one
+    /// simulator chunk and contains all emitted points of this interleaved group.
+    pub fn raw(&self, chunk_points: u64) -> DistChunks<PointChunks> {
+        self.raw_dist(chunk_points).into_chunks()
+    }
+
+    /// The native point distribution, including metadata for every tag and field.
+    pub fn raw_dist(&self, chunk_points: u64) -> PointChunks {
+        PointChunks::new(self.chunks(chunk_points))
+    }
+
     /// `format`'s text as a [`TextChunks`] source. For prometheus the
     /// chunks hold the points only: write [`binary::PROMETHEUS_HEADER`]
     /// before the first byte, as [`Tsbs::write_text`] does.
+    #[cfg(feature = "formats")]
     pub fn text(&self, format: Format, chunk_points: u64) -> Result<TsbsText, String> {
         TsbsText::new(self.chunks(chunk_points), format)
     }
@@ -90,6 +118,7 @@ impl Tsbs {
     /// Write `format`'s text to `w` on `threads` threads (0 = all cores)
     /// in chunks of about `chunk_points` points (0 = the default). The
     /// bytes are the same for any thread count and chunk size.
+    #[cfg(feature = "formats")]
     pub fn write_text<W: Write + Send>(
         &self,
         format: Format,
@@ -111,6 +140,8 @@ impl Tsbs {
     /// `format`'s text from one simulator, point by point, exactly as
     /// `tsbs_generate_data`'s `runSimulator` loop: the reference the
     /// chunked output is tested against.
+    #[cfg(feature = "formats")]
+    #[cfg(feature = "formats")]
     pub fn write_text_sequential<W: Write>(&self, format: Format, w: W) -> io::Result<W> {
         let mut w = HeaderOnFirstWrite::new(w, format);
         let mut sim = AnySim::new(&self.cfg);
@@ -141,6 +172,7 @@ impl Tsbs {
     }
 
     /// The run as Arrow tables, one per measurement.
+    #[cfg(feature = "formats")]
     pub fn arrow(&self, chunk_points: u64) -> TsbsArrow {
         let iot = self.cfg.use_case == UseCase::Iot;
         let generic = self.cfg.use_case == UseCase::DevopsGeneric;
@@ -150,6 +182,7 @@ impl Tsbs {
     /// Write one Parquet file per measurement (`writers` in
     /// [`TsbsArrow::table_names`] order), one row group per chunk,
     /// generated and encoded on `threads` threads.
+    #[cfg(feature = "formats")]
     pub fn write_parquet<W: Write + Send>(
         &self,
         writers: Vec<W>,
@@ -164,11 +197,13 @@ impl Tsbs {
 
 /// Writes prometheus's version header just before the first byte of the
 /// first point, as Go does (no points, no header).
+#[cfg(feature = "formats")]
 struct HeaderOnFirstWrite<W> {
     w: W,
     header: &'static [u8],
 }
 
+#[cfg(feature = "formats")]
 impl<W: Write> HeaderOnFirstWrite<W> {
     fn new(w: W, format: Format) -> Self {
         let header = if format == Format::Prometheus {
@@ -180,6 +215,7 @@ impl<W: Write> HeaderOnFirstWrite<W> {
     }
 }
 
+#[cfg(feature = "formats")]
 impl<W: Write> Write for HeaderOnFirstWrite<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if !buf.is_empty() && !self.header.is_empty() {
@@ -195,12 +231,14 @@ impl<W: Write> Write for HeaderOnFirstWrite<W> {
 }
 
 /// A run's text in one format, chunk by chunk ([`TextChunks`]).
+#[cfg(feature = "formats")]
 pub struct TsbsText {
     chunks: Chunked,
     format: Format,
     statics: Arc<Statics>,
 }
 
+#[cfg(feature = "formats")]
 impl TsbsText {
     /// `format`'s text of `chunks`; an error where Go would panic (cassandra
     /// with IoT's numeric tags).
@@ -215,6 +253,7 @@ impl TsbsText {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for TsbsText {
     fn outputs(&self) -> usize {
         1

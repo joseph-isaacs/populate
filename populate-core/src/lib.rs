@@ -69,12 +69,14 @@
 //! ```
 
 mod children;
+pub mod chunks;
 mod columnar;
 mod list;
 mod local;
 mod logical;
 mod nullable;
 mod rows;
+pub mod sched;
 mod seek;
 mod sink;
 mod spread;
@@ -83,6 +85,7 @@ pub mod tuple;
 mod wide;
 
 pub use children::{ChildCols, Children, TableCols, Tables};
+pub use chunks::DistChunks;
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
@@ -163,6 +166,12 @@ pub trait Distribution: Sized {
         Columns::<Self::Item>::default()
     }
 
+    /// Split `rows` source rows into independent chunks of raw columns.
+    /// No output backend or Arrow schema is required.
+    fn chunks(self, rows: u64) -> DistChunks<Self> {
+        DistChunks::new(rows, self)
+    }
+
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item> {
         let mut cols = self.columns();
@@ -177,3 +186,7 @@ pub trait Distribution: Sized {
 pub trait Dist<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
 
 impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Dist<T> for D {}
+
+/// Stateless per-row random streams.
+pub mod stream;
+pub use stream::Stream;

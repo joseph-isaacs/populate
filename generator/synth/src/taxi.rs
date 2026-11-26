@@ -22,9 +22,8 @@ use crate::kernel::{
     Pool, Quantiles, View, Views, Weighted, Zipf, cents, put, put_nullable, threshold, unit,
 };
 use populate_builtins::{Rows, derive_columns, named_all, row_numbers};
-use populate_core::{Columnar, Distribution, Nullable, Timestamp, Validity, time_unit};
-use populate_sink_arrow::IntoArrowColumns;
-use populate_table::Stream;
+use populate_core::Stream;
+use populate_core::{Distribution, Nullable, Timestamp, Validity, time_unit};
 use std::sync::Arc;
 
 const MICROS_PER_DAY: f64 = 86_400e6;
@@ -46,7 +45,7 @@ const SPEED: [f64; 24] = [
     9.0, 9.0, 9.5, 11.0, 12.5, 13.5, 14.5, 15.0,
 ];
 
-type Micros = Timestamp<{ time_unit::MICROSECOND }>;
+pub type Micros = Timestamp<{ time_unit::MICROSECOND }>;
 
 /// Taxi trips. See the [module docs](self).
 #[derive(Debug, Clone)]
@@ -183,7 +182,7 @@ impl Taxi {
 }
 
 /// The columns, in schema order.
-type Trip = (
+pub type Trip = (
     (
         i32,
         Micros,
@@ -198,7 +197,7 @@ type Trip = (
     ),
     (f64, f64, f64, f64, f64, f64, f64, Option<f64>, Option<f64>),
 );
-type TripCols = (
+pub type TripCols = (
     (
         Vec<i32>,
         Vec<Micros>,
@@ -424,6 +423,7 @@ impl Inner {
 }
 
 impl Shape for Taxi {
+    type Row = Trip;
     fn name(&self) -> &'static str {
         "taxi"
     }
@@ -432,10 +432,7 @@ impl Shape for Taxi {
         column.ends_with("_datetime")
     }
 
-    fn dist(
-        &self,
-    ) -> impl Distribution<Item: Columnar<Columns: IntoArrowColumns>> + Clone + Send + Sync + use<>
-    {
+    fn dist(&self) -> impl Distribution<Item = Self::Row> + Clone + Send + Sync + use<> {
         let t = self.inner.clone();
         named_all(
             &COLUMNS,

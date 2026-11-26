@@ -38,19 +38,29 @@
 use crate::cols::Text;
 use crate::rng::JavaTlr;
 use crate::ycsb::{Ycsb, deterministic_value, fnv_hash64, java_hash, java_hashmap_order, six};
+#[cfg(feature = "formats")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "formats")]
 use arrow_schema::SchemaRef;
+#[cfg(feature = "formats")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "formats")]
 use parquet::file::properties::WriterProperties;
+#[cfg(feature = "formats")]
 use parquet::file::properties::WriterPropertiesBuilder;
+#[cfg(feature = "formats")]
 use parquet::schema::types::ColumnPath;
+use populate_core::DistChunks;
+use populate_core::chunks::DEFAULT_BATCH_ROWS;
 use populate_core::{Children, Columns, Distribution, Nullable, Sink, StrSink, Wide, WideCols};
+#[cfg(feature = "formats")]
 use populate_table::text::TextChunks;
+#[cfg(feature = "formats")]
 use populate_table::text::write_text_many;
-use populate_table::{
-    Chunks, DEFAULT_BATCH_ROWS, DistTable, MultiChunks, chunks, write_parquet_many,
-};
+#[cfg(feature = "formats")]
+use populate_table::{Chunks, DistTable, MultiChunks, chunks, write_parquet_many};
 use rand::Rng;
+#[cfg(feature = "formats")]
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -84,12 +94,14 @@ pub enum RequestDistribution {
 /// The operations of `ycsb run` with `CoreWorkload`, on top of a load.
 ///
 /// ```
+/// # #[cfg(feature = "formats")] {
 /// use populate_gen_ycsb::{Ycsb, YcsbRun};
 ///
 /// // workload A: 50% reads, 50% updates, zipfian keys
 /// let run = YcsbRun::workload('a', Ycsb::new(1000), 10_000);
 /// let tsv = run.write_tsv(Vec::new(), 0).unwrap();
 /// assert_eq!(tsv.split(|&b| b == b'\n').count() - 1, 10_000);
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct YcsbRun {
@@ -258,6 +270,7 @@ impl YcsbRun {
 
     /// Parquet properties for [`YcsbRun::schema`]: dictionaries for the
     /// operation and fields-read columns only.
+    #[cfg(feature = "formats")]
     pub fn parquet_props() -> WriterPropertiesBuilder {
         Ycsb::parquet_props()
             .set_column_dictionary_enabled(ColumnPath::from("op"), true)
@@ -325,18 +338,38 @@ impl YcsbRun {
     /// `op`, `ycsb_key`, `scan_length` (scans), `read_fields` (the fields
     /// a read or scan asks for, comma-separated; NULL for all), then the
     /// values written (NULL where not written).
+    #[cfg(feature = "formats")]
     pub fn schema(&self) -> SchemaRef {
         self.table().schema().clone()
     }
 
     /// The operations as one distribution ([`Ops`]): a row per operation,
     /// each the one or two binding calls it makes.
-    fn table(&self) -> DistTable<Ops> {
-        let ops = Ops {
+    #[cfg(feature = "formats")]
+    fn table(
+        &self,
+    ) -> DistTable<impl Distribution<Item = Children<CallRow>> + Clone + Send + Sync + use<>> {
+        DistTable::new("run", self.operation_count, self.dist())
+            .chunk_rows(self.chunk_ops)
+            .batch_rows(self.batch as u64)
+    }
+
+    /// Native binding calls; read-modify-write operations produce two children.
+    pub fn dist(
+        &self,
+    ) -> impl Distribution<Item = Children<CallRow>> + Clone + Send + Sync + use<> {
+        Ops {
             run: Arc::new(self.clone()),
             next: 0,
-        };
-        DistTable::new("run", self.operation_count, ops)
+        }
+    }
+
+    /// Native operation chunks, preserving the configured checkpoint and batch sizes.
+    pub fn raw(
+        &self,
+    ) -> DistChunks<impl Distribution<Item = Children<CallRow>> + Clone + Send + Sync + use<>> {
+        self.dist()
+            .chunks(self.operation_count)
             .chunk_rows(self.chunk_ops)
             .batch_rows(self.batch as u64)
     }
@@ -441,12 +474,14 @@ impl YcsbRun {
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
     /// batch, in order, on the calling thread.
+    #[cfg(feature = "formats")]
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
         chunks::for_each_batch(self, threads, f)
     }
 
     /// Write the operations as one Parquet file, one row group per chunk
     /// (`props: None` means [`YcsbRun::parquet_props`]).
+    #[cfg(feature = "formats")]
     pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
@@ -466,13 +501,16 @@ impl YcsbRun {
     /// Write the operations as TSV, one line per binding call:
     /// `OP\tkey\tscanlength\treadfields\tfield0...`, empty where NULL (the
     /// format of `ycsb-ref`'s `RefDB` with `refdb.run=true`).
+    #[cfg(feature = "formats")]
     pub fn write_tsv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
         let mut w = write_text_many(&[self as &dyn TextChunks], vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
 
+#[cfg(feature = "formats")]
 impl Chunks for YcsbRun {
+    #[cfg(feature = "formats")]
     fn schema(&self) -> SchemaRef {
         YcsbRun::schema(self)
     }
@@ -486,6 +524,7 @@ impl Chunks for YcsbRun {
     }
 }
 
+#[cfg(feature = "formats")]
 impl TextChunks for YcsbRun {
     fn outputs(&self) -> usize {
         1
@@ -565,7 +604,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// One binding call as a row: `op`, `ycsb_key`, `scan_length`,
 /// `read_fields`, then the values written.
-type CallRow = (Text, Text, Option<i32>, Option<Text>, Wide<Option<Text>>);
+pub type CallRow = (Text, Text, Option<i32>, Option<Text>, Wide<Option<Text>>);
 
 /// The run's operations, each a row of its binding calls (a
 /// read-modify-write makes two). Skipping finds the generator state from

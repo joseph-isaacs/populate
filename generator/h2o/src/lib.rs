@@ -6,12 +6,14 @@
 //! (the scripts' CSV, on all cores).
 //!
 //! ```
+//! # #[cfg(feature = "formats")] {
 //! use populate_gen_h2o::GroupBy;
 //!
 //! let g = GroupBy::new(1_000, 10, 0, false);
 //! assert_eq!(g.file_name(), "G1_1e3_1e1_0_0.csv");
 //! let csv = g.write_csv(Vec::new(), 0).unwrap();
 //! assert!(csv.starts_with(b"id1,id2,id3,id4,id5,id6,v1,v2,v3\nid010,id009,"));
+//! # }
 //! ```
 
 mod cols;
@@ -19,6 +21,7 @@ pub mod fwrite;
 mod fwrite_tables;
 pub mod groupby;
 pub mod join;
+pub mod raw;
 pub mod rng;
 pub mod values;
 

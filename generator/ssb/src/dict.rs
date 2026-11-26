@@ -9,15 +9,10 @@
 //! column of them is just a column of precomputed views. Only names,
 //! addresses and phone numbers are written per batch, into [`DATA`].
 
-use arrow_array::StringViewArray;
-use arrow_buffer::{Buffer, ScalarBuffer};
-use populate_combinators::lehmer::scale;
-use std::iter::repeat_n;
-use std::sync::{Arc, LazyLock};
+use populate_combinators::views::{self, Buffers, Picks, Shared, static_buffer};
+use std::sync::LazyLock;
 use tpchgen::distribution::{Distribution, Distributions};
 
-/// Buffer index of a batch's own string bytes.
-pub(crate) const DATA: u32 = 0;
 /// Buffer index of the shared dictionary.
 pub(crate) const DICT: u32 = 1;
 
@@ -28,46 +23,6 @@ pub(crate) const DAYS: usize = 2557;
 pub(crate) const COLORS: usize = 92;
 /// Nations.
 pub(crate) const NATIONS: usize = 25;
-
-/// The view of `bytes`, stored at `offset` of buffer `buffer` (ignored for
-/// strings of up to 12 bytes, which live in the view).
-#[inline(always)]
-pub(crate) fn view(bytes: &[u8], buffer: u32, offset: u32) -> u128 {
-    let len = bytes.len();
-    if len <= 12 {
-        let mut b = [0u8; 16];
-        b[4..4 + len].copy_from_slice(bytes);
-        u128::from_le_bytes(b) | len as u128
-    } else {
-        let prefix = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"));
-        len as u128 | (prefix as u128) << 32 | (buffer as u128) << 64 | (offset as u128) << 96
-    }
-}
-
-/// dbgen's weighted pick (`pick_str`): a draw in `1..=total weight`, then
-/// the first value whose cumulative weight reaches it.
-#[derive(Debug)]
-pub(crate) struct Pick {
-    /// Value index for each unit of weight.
-    picks: Vec<u8>,
-    /// Each value's view.
-    pub(crate) views: Vec<u128>,
-}
-
-impl Pick {
-    /// The value index draw `x` picks.
-    #[inline(always)]
-    pub(crate) fn index(&self, x: u32) -> usize {
-        // weights are small, so the integer mapping is exact
-        self.picks[scale(x, self.picks.len() as u32) as usize] as usize
-    }
-
-    /// The view draw `x` picks.
-    #[inline(always)]
-    pub(crate) fn view(&self, x: u32) -> u128 {
-        self.views[self.index(x)]
-    }
-}
 
 /// One day of the calendar.
 #[derive(Debug, Clone, Copy)]
@@ -163,22 +118,30 @@ pub(crate) fn holiday(month: i32, mday: i32) -> bool {
     HOLIDAYS.contains(&(month, mday))
 }
 
+/// SSB's string buffers: each batch's own, then the dictionary.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Ssb;
+
+impl Buffers for Ssb {
+    fn shared() -> &'static Shared {
+        &Dict::get().shared
+    }
+}
+
 /// The shared dictionary.
 #[derive(Debug)]
 pub(crate) struct Dict {
-    buf: Buffer,
-    /// `[empty, dict]`, for columns with no bytes of their own.
-    shared: Arc<[Buffer]>,
+    shared: Shared,
     pub(crate) nations: Vec<u128>,
     /// Region of each nation.
     pub(crate) regions: Vec<u128>,
     /// `NATIONS * 10`: nation `n`'s city `d` at `n * 10 + d`.
     pub(crate) cities: Vec<u128>,
-    pub(crate) segments: Pick,
-    pub(crate) priorities: Pick,
-    pub(crate) modes: Pick,
-    pub(crate) types: Pick,
-    pub(crate) containers: Pick,
+    pub(crate) segments: Picks,
+    pub(crate) priorities: Picks,
+    pub(crate) modes: Picks,
+    pub(crate) types: Picks,
+    pub(crate) containers: Picks,
     pub(crate) colors: Vec<u128>,
     /// `COLORS^2`: `"a b"` at `a * COLORS + b`.
     pub(crate) names: Vec<u128>,
@@ -205,30 +168,8 @@ pub(crate) struct Dict {
 
 static DICT_: LazyLock<Dict> = LazyLock::new(Dict::build);
 
-struct Builder(Vec<u8>);
-
-impl Builder {
-    fn add(&mut self, s: &str) -> u128 {
-        let v = view(s.as_bytes(), DICT, self.0.len() as u32);
-        if s.len() > 12 {
-            self.0.extend_from_slice(s.as_bytes());
-        }
-        v
-    }
-
-    fn pick(&mut self, d: &Distribution) -> Pick {
-        let mut picks = Vec::new();
-        let mut views = Vec::new();
-        let mut prev = 0;
-        for (i, v) in d.get_values().iter().enumerate() {
-            let w = d.get_weight(i);
-            picks.extend(repeat_n(i as u8, (w - prev).max(0) as usize));
-            prev = w;
-            views.push(self.add(v));
-        }
-        assert!(d.size() <= 256);
-        Pick { picks, views }
-    }
+fn pick(b: &mut views::Dict, d: &Distribution) -> Picks {
+    Picks::new(d.get_values(), |i| d.get_weight(i), b)
 }
 
 impl Dict {
@@ -238,7 +179,7 @@ impl Dict {
 
     fn build() -> Dict {
         let d = Distributions::static_default();
-        let mut b = Builder(Vec::new());
+        let mut b = views::Dict::new(DICT);
         let nation_names: Vec<&str> = d.nations().get_values().to_vec();
         assert_eq!(nation_names.len(), NATIONS);
         let region_names = d.regions().get_values();
@@ -303,15 +244,13 @@ impl Dict {
             .map(|s| b.add(s))
             .collect();
         let flags = [b.add("0"), b.add("1")];
-        let segments = b.pick(d.market_segments());
-        let priorities = b.pick(d.order_priority());
-        let modes = b.pick(d.ship_modes());
-        let types = b.pick(d.part_types());
-        let containers = b.pick(d.part_containers());
-        let buf = Buffer::from_vec(b.0);
+        let segments = pick(&mut b, d.market_segments());
+        let priorities = pick(&mut b, d.order_priority());
+        let modes = pick(&mut b, d.ship_modes());
+        let types = pick(&mut b, d.part_types());
+        let containers = pick(&mut b, d.part_containers());
         Dict {
-            shared: Arc::from(vec![Buffer::from_vec(Vec::<u8>::new()), buf.clone()]),
-            buf,
+            shared: Shared::new(vec![static_buffer(b.leak())]),
             nations,
             regions,
             cities,
@@ -334,18 +273,6 @@ impl Dict {
             seasons,
             flags,
         }
-    }
-
-    /// A string column from views and the batch's own bytes.
-    pub(crate) fn array(&self, views: Vec<u128>, data: Vec<u8>) -> StringViewArray {
-        let buffers = if data.is_empty() {
-            self.shared.clone()
-        } else {
-            Arc::from(vec![Buffer::from_vec(data), self.buf.clone()])
-        };
-        // SAFETY: every view is built by `view` from valid UTF-8 (ASCII)
-        // bytes at the offset of the buffer it names.
-        unsafe { StringViewArray::new_unchecked(ScalarBuffer::from(views), buffers, None) }
     }
 }
 
@@ -384,29 +311,6 @@ fn calendar() -> Vec<Day> {
         }
     }
     v
-}
-
-/// A string column being built from the batch's own bytes.
-#[derive(Default)]
-pub(crate) struct Views {
-    pub(crate) views: Vec<u128>,
-    pub(crate) data: Vec<u8>,
-}
-
-impl Views {
-    /// Append the bytes `data[start..]` (just written) as the next string.
-    #[inline(always)]
-    pub(crate) fn end_string(&mut self, start: usize) {
-        let v = view(&self.data[start..], DATA, start as u32);
-        if self.data.len() - start <= 12 {
-            self.data.truncate(start);
-        }
-        self.views.push(v);
-    }
-
-    pub(crate) fn finish(self, d: &Dict) -> StringViewArray {
-        d.array(self.views, self.data)
-    }
 }
 
 #[cfg(test)]

@@ -14,15 +14,15 @@
 //! dimension's whole buffer.
 
 use crate::TableName;
-use crate::cols::{Shared, SharedCols, SharedText, Word, Words, children_of};
-use crate::dict::{Dict, Views};
+use crate::cols::{Shared, SharedCols, SharedText, Views, Word, Words, children_of};
+use crate::dict::Dict;
 use crate::tables::{
-    LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, TableGen, at,
-    lines, orders, part_codes, party_codes, party_text, segment_codes, table,
+    LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, at, lines, orders,
+    part_codes, party_codes, party_text, segment_codes, table,
 };
 use populate_builtins::{ReadRows, named_all};
 use populate_core::{ChildCols, Children, Columns, Distribution, Sink};
-use populate_table::par_ordered;
+use populate_table::{DynTable, par_ordered};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::convert::Infallible;
@@ -69,17 +69,17 @@ impl Dim {
         city.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.cities[nat(r) * 10 + cities[r] as usize])),
+                .map(|r| Word::new(d.cities[nat(r) * 10 + cities[r] as usize])),
         );
         nation.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.nations[nat(r)])),
+                .map(|r| Word::new(d.nations[nat(r)])),
         );
         region.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.regions[nat(r)])),
+                .map(|r| Word::new(d.regions[nat(r)])),
         );
         p.gather(rows, phone);
     }
@@ -177,38 +177,38 @@ impl Dims {
         o_name.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.names[name[r] as usize])),
+                .map(|r| Word::new(d.names[name[r] as usize])),
         );
         o_mfgr.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.mfgrs[cat(r) / 5])),
+                .map(|r| Word::new(d.mfgrs[cat(r) / 5])),
         );
         o_cat.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.categories[cat(r)])),
+                .map(|r| Word::new(d.categories[cat(r)])),
         );
         o_brand.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.brands[cat(r) * 40 + brand[r] as usize])),
+                .map(|r| Word::new(d.brands[cat(r) * 40 + brand[r] as usize])),
         );
         o_color.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.colors[color[r] as usize])),
+                .map(|r| Word::new(d.colors[color[r] as usize])),
         );
         o_type.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.types.views[kind[r] as usize])),
+                .map(|r| Word::new(d.types.views[kind[r] as usize])),
         );
         o_size.extend(rows.iter().map(|&k| k as usize - 1).map(|r| size[r]));
         o_container.push_n(
             rows.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.containers.views[container[r] as usize])),
+                .map(|r| Word::new(d.containers.views[container[r] as usize])),
         );
     }
 }
@@ -250,7 +250,7 @@ impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
         c.6.push_n(
             cust.iter()
                 .map(|&k| k as usize - 1)
-                .map(|r| Word(d.segments.views[dims.customer.segment[r] as usize])),
+                .map(|r| Word::new(d.segments.views[dims.customer.segment[r] as usize])),
         );
         dims.supplier.gather(
             d,
@@ -275,7 +275,7 @@ impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
 
 /// `lineorder_flat` at scale `s`, joined with `dims` (which may be empty
 /// for its schema alone).
-pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> Arc<dyn TableGen> {
+pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> DynTable {
     let d = Dict::get();
     let names: Vec<&str> = LINEORDER
         .into_iter()

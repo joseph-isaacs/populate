@@ -267,6 +267,7 @@ impl<B> Sink<Word<B>> for Words<B> {
         self.0.reserve(n);
     }
 
+    #[inline(always)]
     fn push_n(&mut self, values: impl Iterator<Item = Word<B>>) {
         self.0.extend(values.map(|w| w.0));
     }
@@ -332,6 +333,11 @@ impl<B> Views<B> {
 
     pub fn is_empty(&self) -> bool {
         self.views.is_empty()
+    }
+
+    /// The views and the batch's own bytes they point into.
+    pub fn into_parts(self) -> (Vec<u128>, Vec<u8>) {
+        (self.views, self.data)
     }
 
     /// A copy of string `i`.

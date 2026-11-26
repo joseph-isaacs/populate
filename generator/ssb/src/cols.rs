@@ -1,9 +1,11 @@
 //! SSB's string row types and the `Utf8View` columns they collect into.
 //!
 //! - a [`Word`] is a precomputed view into the shared dictionary
-//!   ([`Dict`]): every string that is not unique to a row;
+//!   ([`Dict`](crate::dict::Dict)): every string that is not unique to a
+//!   row;
 //! - [`Bytes`] is a string with bytes of its own (names, addresses, phone
-//!   numbers), written by [`format()`] straight into the column's buffer;
+//!   numbers), written by [`format`](populate_builtins::format()) straight
+//!   into the column's buffer;
 //! - a [`Shared`] is a view into buffers the column is given
 //!   ([`SharedCols::buffers`]): `lineorder_flat`'s names, addresses and
 //!   phone numbers, which point into the dimension tables' text.
@@ -11,11 +13,12 @@
 //! The column types say they are `Utf8View`, which is where the tables'
 //! schemas get their string types from.
 
-use crate::dict::{DATA, Dict, Views};
+use crate::dict::Ssb;
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
 use populate_builtins::ReadRows;
+use populate_combinators::views::{self, DATA};
 use populate_core::{ChildCols, Children, Columnar, Columns, Distribution, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
@@ -23,129 +26,16 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// A string that is a view into the dictionary.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Word(pub(crate) u128);
+pub(crate) type Word = views::Word<Ssb>;
 
-/// Columns of [`Word`]s: their views.
-#[derive(Debug, Default)]
-pub(crate) struct Words(Vec<u128>);
-
-impl Columnar for Word {
-    type Columns = Words;
-}
-
-impl Sink<Word> for Words {
-    #[inline(always)]
-    fn push(&mut self, w: Word) {
-        self.0.push(w.0);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n);
-    }
-
-    fn push_n(&mut self, values: impl Iterator<Item = Word>) {
-        self.0.extend(values.map(|w| w.0));
-    }
-}
-
-impl ReadRows for Words {
-    type Row = Word;
-
-    fn rows(&self) -> usize {
-        self.0.len()
-    }
-
-    fn rows_from(&self, start: usize) -> impl Iterator<Item = Word> + '_ {
-        self.0[start..].iter().map(|&v| Word(v))
-    }
-}
-
-impl IntoArrowArray for Words {
-    fn data_type() -> DataType {
-        DataType::Utf8View
-    }
-
-    fn into_array(self) -> ArrayRef {
-        Arc::new(Dict::get().array(self.0, Vec::new()))
-    }
-}
+/// Columns of [`Word`]s.
+pub(crate) type Words = views::Words<Ssb>;
 
 /// A string with bytes of its own.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct Bytes(pub(crate) Vec<u8>);
+pub(crate) type Bytes = views::Str<Ssb>;
 
-impl Columnar for Bytes {
-    type Columns = Views;
-}
-
-impl Sink<Bytes> for Views {
-    fn push(&mut self, b: Bytes) {
-        let start = self.data.len();
-        self.data.extend_from_slice(&b.0);
-        self.end_string(start);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.views.reserve(n);
-    }
-}
-
-impl IntoArrowArray for Views {
-    fn data_type() -> DataType {
-        DataType::Utf8View
-    }
-
-    fn into_array(self) -> ArrayRef {
-        Arc::new(self.finish(Dict::get()))
-    }
-}
-
-/// A string written by `f` from each row of `source`. See [`format()`].
-#[derive(Debug, Clone)]
-pub(crate) struct Format<D, F> {
-    source: D,
-    f: F,
-}
-
-/// `f(row, out)` appends each row's string to `out`. Collected, it writes
-/// straight into the column's bytes.
-pub(crate) fn format<D, F>(source: D, f: F) -> Format<D, F>
-where
-    D: Distribution,
-    F: Fn(D::Item, &mut Vec<u8>),
-{
-    Format { source, f }
-}
-
-impl<D, F> Distribution for Format<D, F>
-where
-    D: Distribution,
-    Columns<D::Item>: ReadRows<Row = D::Item>,
-    F: Fn(D::Item, &mut Vec<u8>),
-{
-    type Item = Bytes;
-
-    fn sample(&mut self, rng: &mut impl Rng) -> Bytes {
-        let mut out = Vec::new();
-        (self.f)(self.source.sample(rng), &mut out);
-        Bytes(out)
-    }
-
-    fn collect_into(&mut self, cols: &mut Views, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
-        cols.views.reserve(n);
-        for row in src.rows_from(0) {
-            let start = cols.data.len();
-            (self.f)(row, &mut cols.data);
-            cols.end_string(start);
-        }
-    }
-
-    fn skip(&mut self, n: u64) {
-        self.source.skip(n);
-    }
-}
+/// A column of [`Bytes`].
+pub(crate) type Views = views::Views<Ssb>;
 
 /// A view into the buffers of a [`SharedCols`]. Only [`SharedCols`]
 /// hands them out (reading its rows back).
@@ -169,12 +59,13 @@ impl SharedText {
     /// If any string is not ASCII, or a view is not within its bytes: what
     /// makes every in-bounds view of these buffers valid UTF-8.
     pub(crate) fn new(parts: Vec<Views>) -> SharedText {
-        let mut views = Vec::with_capacity(parts.iter().map(|p| p.views.len()).sum());
+        let mut views = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
         let mut buffers = Vec::with_capacity(parts.len());
         for (k, p) in parts.into_iter().enumerate() {
-            assert!(p.data.is_ascii(), "dimension text is ASCII");
+            let (p_views, data) = p.into_parts();
+            assert!(data.is_ascii(), "dimension text is ASCII");
             let k = u128::from(u32::try_from(k).expect("buffers fit in u32"));
-            for v in p.views {
+            for v in p_views {
                 let len = v as u32;
                 if len <= 12 {
                     let inline = v.to_le_bytes();
@@ -186,14 +77,14 @@ impl SharedText {
                 } else {
                     let (buffer, offset) = ((v >> 64) as u32, (v >> 96) as u32);
                     assert!(
-                        buffer == DATA && offset as usize + len as usize <= p.data.len(),
+                        buffer == DATA && offset as usize + len as usize <= data.len(),
                         "a view within its job's bytes"
                     );
                     // the buffer index is bits 64..96 of a long view
                     views.push(v & !(u128::from(u32::MAX) << 64) | k << 64);
                 }
             }
-            buffers.push(Buffer::from_vec(p.data));
+            buffers.push(Buffer::from_vec(data));
         }
         SharedText {
             views,

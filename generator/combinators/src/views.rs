@@ -8,6 +8,11 @@
 //! [`Buffers`]; the column types are generic over it, so the schema still
 //! comes from the types alone.
 //!
+//! A string from a fixed list that is not in a shared buffer is a
+//! [`Listed`]: its view is made once, and a batch copies the bytes of the
+//! long ones (dsdgen's distributions, in TPC-DS and DSB). Every column
+//! also writes itself as a text field ([`TextField`]).
+//!
 //! ```
 //! use populate_combinators::views::{Buffers, Dict, Shared, Word, Picks, static_buffer};
 //! use std::sync::LazyLock;
@@ -36,8 +41,9 @@
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_core::{Append, Columnar, RowCount, Sink, StrBuf, StrSink};
+use populate_core::{Append, Columnar, Nullable, RowCount, Sink, StrBuf, StrSink};
 use populate_sink_arrow::IntoArrowArray;
+use populate_table::text::{Cursor, Encoding, TextField};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -249,7 +255,7 @@ impl<B> Word<B> {
 }
 
 /// Columns of [`Word`]s: their views.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Words<B>(Vec<u128>, PhantomData<B>);
 
 impl<B: Buffers> Columnar for Word<B> {
@@ -305,12 +311,18 @@ impl<B> From<String> for Str<B> {
     }
 }
 
+impl<B> From<&str> for Str<B> {
+    fn from(s: &str) -> Self {
+        Str(s.to_owned(), PhantomData)
+    }
+}
+
 impl<B: Buffers> Columnar for Str<B> {
     type Columns = Views<B>;
 }
 
 /// A string column being built: views, and the batch's own bytes.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Views<B> {
     views: Vec<u128>,
     data: Vec<u8>,
@@ -352,6 +364,29 @@ impl<B> Views<B> {
         String::from_utf8(bytes).expect("views hold UTF-8")
     }
 
+    /// Append `s`.
+    #[inline]
+    pub fn push_str(&mut self, s: &str) {
+        let s = s.as_bytes();
+        let offset = if s.len() > 12 {
+            let offset = u32::try_from(self.data.len()).expect("string data exceeds 4GiB");
+            self.data.extend_from_slice(s);
+            offset
+        } else {
+            0
+        };
+        self.views.push(view(s, DATA, offset));
+    }
+
+    /// Append `list[i]` for each `i`: the list's long strings are copied
+    /// once, and every row shares them, so a row costs a view rather than
+    /// its bytes.
+    pub fn push_indexed(&mut self, list: &[Listed], idx: impl Iterator<Item = usize>) {
+        let data = &mut self.data;
+        let views: Vec<u128> = list.iter().map(|w| w.view_in(data)).collect();
+        self.views.extend(idx.map(|i| views[i]));
+    }
+
     /// Append the bytes `data[start..]` (just written) as the next string.
     #[inline(always)]
     fn end_string(&mut self, start: usize) {
@@ -373,10 +408,9 @@ impl<B> StrSink for Views<B> {
 }
 
 impl<B> Sink<Str<B>> for Views<B> {
+    #[inline]
     fn push(&mut self, s: Str<B>) {
-        let start = self.data.len();
-        self.data.extend_from_slice(s.0.as_bytes());
-        self.end_string(start);
+        self.push_str(&s.0);
     }
 
     fn reserve(&mut self, n: usize) {
@@ -397,6 +431,125 @@ impl<B: Buffers> IntoArrowArray for Views<B> {
 
     fn into_array(self) -> ArrayRef {
         Arc::new(B::shared().array(self.views, self.data))
+    }
+}
+
+impl<B> TextField for Views<B> {
+    fn text_rows(&self) -> usize {
+        self.views.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        // per row, as a view may share another's bytes; 12 for the store
+        // of a short one
+        self.views
+            .iter()
+            .map(|&v| (v as u32 as usize).max(12))
+            .sum()
+    }
+
+    #[inline(always)]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: `r` is a row; a view's bytes are UTF-8, inline or at its
+        // offset in `data` (a column's views are all into [`DATA`]).
+        unsafe {
+            let v = *self.views.get_unchecked(r);
+            let len = v as u32 as usize;
+            if len <= 12 {
+                let inline: [u8; 12] = (v >> 32).to_le_bytes()[..12].try_into().expect("12");
+                if encoding == Encoding::Utf8 || inline.is_ascii() {
+                    return w.short(&inline, len);
+                }
+                return w.text(std::str::from_utf8_unchecked(&inline[..len]), encoding);
+            }
+            let offset = (v >> 96) as u32 as usize;
+            let s = self.data.get_unchecked(offset..offset + len);
+            w.text(std::str::from_utf8_unchecked(s), encoding)
+        }
+    }
+}
+
+/// Nullable text written in place.
+pub trait PushText {
+    /// `s`, or NULL.
+    fn push_text(&mut self, s: Option<&str>);
+
+    /// The text `f` writes, or NULL if not `valid`.
+    fn push_text_with(&mut self, valid: bool, f: impl FnOnce(&mut StrBuf<'_>));
+}
+
+impl<B> PushText for Nullable<Views<B>> {
+    #[inline]
+    fn push_text(&mut self, s: Option<&str>) {
+        self.valid.push(s.is_some());
+        match s {
+            Some(s) => self.values.push_str(s),
+            None => self.values.views.push(0),
+        }
+    }
+
+    #[inline]
+    fn push_text_with(&mut self, valid: bool, f: impl FnOnce(&mut StrBuf<'_>)) {
+        self.valid.push(valid);
+        if valid {
+            self.values.push_with(f);
+        } else {
+            self.values.views.push(0);
+        }
+    }
+}
+
+/// A string from a fixed list (a distribution's values) with no shared
+/// buffer, collected into [`Views`]. Its view is made once, with the list,
+/// so a row costs a copy of it (and of the bytes, past 12).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Listed {
+    s: &'static str,
+    /// The view, with buffer offset 0.
+    view: u128,
+}
+
+impl Listed {
+    /// `s`, its view made once here.
+    pub fn new(s: &'static str) -> Self {
+        Listed {
+            s,
+            view: view(s.as_bytes(), DATA, 0),
+        }
+    }
+
+    /// Its view in a column whose own bytes are `data`, its bytes
+    /// appended there past 12.
+    #[inline(always)]
+    fn view_in(self, data: &mut Vec<u8>) -> u128 {
+        if self.s.len() <= 12 {
+            self.view
+        } else {
+            let offset = u32::try_from(data.len()).expect("string data exceeds 4GiB");
+            data.extend_from_slice(self.s.as_bytes());
+            self.view | (offset as u128) << 96
+        }
+    }
+}
+
+impl Columnar for Listed {
+    type Columns = Views<Unshared>;
+}
+
+impl<B> Sink<Listed> for Views<B> {
+    #[inline]
+    fn push(&mut self, w: Listed) {
+        let v = w.view_in(&mut self.data);
+        self.views.push(v);
+    }
+
+    fn push_n(&mut self, words: impl Iterator<Item = Listed>) {
+        let data = &mut self.data;
+        self.views.extend(words.map(|w| w.view_in(data)));
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.views.reserve(n);
     }
 }
 

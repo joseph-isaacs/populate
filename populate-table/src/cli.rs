@@ -17,8 +17,9 @@ use crate::text::{TextChunks, write_text_many};
 use crate::{Chunks, DEFAULT_BATCH_ROWS, MultiChunks, write_parquet_many};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
+use arrow_schema::SchemaRef;
 use parquet::basic::Compression;
-use parquet::file::properties::WriterPropertiesBuilder;
+use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
 use std::fmt::Display;
@@ -325,48 +326,96 @@ pub fn write<T, S: Chunks + TextChunks>(
     props: WriterPropertiesBuilder,
 ) -> (Vec<u64>, Vec<u64>) {
     assert_eq!(tables.len(), paths.len(), "one path per table");
+    let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
     match a.format {
         Format::Parquet => {
-            let mut props = props.set_compression(a.compression);
-            if !a.dictionary {
-                props = props.set_dictionary_enabled(false);
-                for t in tables {
-                    for f in Chunks::schema(t).fields() {
-                        props = props.set_column_dictionary_enabled(
-                            ColumnPath::from(f.name().as_str()),
-                            false,
-                        );
-                    }
-                }
-            }
-            let srcs: Vec<&dyn MultiChunks> =
-                tables.iter().map(|t| t as &dyn MultiChunks).collect();
-            write_parquet_many(&srcs, create(paths), a.threads, Some(props.build()))
+            let props = parquet_props(a, props, tables.iter().map(Chunks::schema));
+            write_parquet_many(&srcs, create(paths), a.threads, Some(props))
                 .unwrap_or_else(|e| fail(&"parquet", &e));
-            paths
-                .iter()
-                .map(|p| (parquet_rows(p), file_size(p)))
-                .unzip()
+            parquet_counts(paths)
         }
         Format::Text => {
-            let w: Vec<_> = create(paths).into_iter().map(Lines::new).collect();
             let srcs: Vec<&dyn TextChunks> = tables.iter().map(|t| t as &dyn TextChunks).collect();
-            let w = write_text_many(&srcs, w, a.threads).unwrap_or_else(|e| fail(&a.ext, &e));
-            w.iter()
-                .zip(paths)
-                .map(|(l, p)| (l.lines(), file_size(p)))
-                .unzip()
+            let w = write_text_many(&srcs, text_writers(paths), a.threads)
+                .unwrap_or_else(|e| fail(&a.ext, &e));
+            text_counts(&w, paths)
         }
         Format::None => {
-            let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
-            let srcs: Vec<&dyn MultiChunks> =
-                tables.iter().map(|t| t as &dyn MultiChunks).collect();
-            for_each_batch_many(&srcs, a.threads, |t, b| {
-                rows[t] += b.num_rows() as u64;
-                bytes[t] += batch_bytes(&b);
-            });
-            (rows, bytes)
+            let mut c = Counts::new(tables.len());
+            for_each_batch_many(&srcs, a.threads, |t, b| c.add(t, &b));
+            c.into_parts()
         }
+    }
+}
+
+/// The tool's Parquet properties `props` with `--compression` and
+/// `--no-dictionary` on top, for tables of `schemas`.
+pub fn parquet_props<T>(
+    a: &Args<T>,
+    props: WriterPropertiesBuilder,
+    schemas: impl IntoIterator<Item = SchemaRef>,
+) -> WriterProperties {
+    let mut props = props.set_compression(a.compression);
+    if !a.dictionary {
+        props = props.set_dictionary_enabled(false);
+        for s in schemas {
+            for f in s.fields() {
+                props =
+                    props.set_column_dictionary_enabled(ColumnPath::from(f.name().as_str()), false);
+            }
+        }
+    }
+    props.build()
+}
+
+/// Rows (from the footer) and size of each Parquet file.
+pub fn parquet_counts(paths: &[PathBuf]) -> (Vec<u64>, Vec<u64>) {
+    paths
+        .iter()
+        .map(|p| (parquet_rows(p), file_size(p)))
+        .unzip()
+}
+
+/// A text file per path, created and buffered, counting its lines.
+pub fn text_writers(paths: &[PathBuf]) -> Vec<Lines<BufWriter<File>>> {
+    create(paths).into_iter().map(Lines::new).collect()
+}
+
+/// Lines written to and size of each text file.
+pub fn text_counts<W>(writers: &[Lines<W>], paths: &[PathBuf]) -> (Vec<u64>, Vec<u64>) {
+    writers
+        .iter()
+        .zip(paths)
+        .map(|(l, p)| (l.lines(), file_size(p)))
+        .unzip()
+}
+
+/// Rows and Arrow bytes ([`batch_bytes`]) of each table's batches, for
+/// `--format none`.
+#[derive(Debug, Clone)]
+pub struct Counts {
+    rows: Vec<u64>,
+    bytes: Vec<u64>,
+}
+
+impl Counts {
+    /// Counts of `tables` tables, all 0.
+    pub fn new(tables: usize) -> Self {
+        Counts {
+            rows: vec![0; tables],
+            bytes: vec![0; tables],
+        }
+    }
+
+    /// Count batch `b` of table `t`.
+    pub fn add(&mut self, t: usize, b: &RecordBatch) {
+        self.rows[t] += b.num_rows() as u64;
+        self.bytes[t] += batch_bytes(b);
+    }
+
+    /// Each table's rows and bytes.
+    pub fn into_parts(self) -> (Vec<u64>, Vec<u64>) {
+        (self.rows, self.bytes)
     }
 }
 

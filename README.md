@@ -113,4 +113,7 @@ notices identify those components and their licences:
 [DSB](generator/dsb/NOTICE.md), [LDBC](generator/ldbc/NOTICE.md),
 [TPC-DS](generator/tpcds/NOTICE.md), [TSBS](generator/tsbs/NOTICE.md) and
 [YCSB](generator/ycsb/NOTICE.md). Each crate's `Cargo.toml` records its
-SPDX licence expression.
+SPDX licence expression. One crate is not MIT: `populate-h2o` ports R and
+data.table code bit for bit, so it is `GPL-2.0-or-later AND MPL-2.0`
+([notice](generator/h2o/NOTICE.md)); nothing else in the workspace depends
+on it.

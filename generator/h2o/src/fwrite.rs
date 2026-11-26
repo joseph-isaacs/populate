@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// writeFloat64 is ported from data.table (src/fwrite.c); round6 follows
+// R 4.x's fround (GPL-2.0-or-later). See ../NOTICE.md.
+
 //! The text R writes: `round(x, 6)` (R 4.x's `fround`) and data.table
 //! `fwrite`'s number formatting.
 //!

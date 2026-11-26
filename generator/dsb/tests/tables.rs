@@ -39,6 +39,31 @@ fn chunks_and_threads_do_not_change_the_data() {
 }
 
 #[test]
+fn adaptive_arrow_work_preserves_all_tables_and_fused_outputs() {
+    let ds = Dsb::new(10.0);
+    let mut tables: Vec<_> = TableName::ALL
+        .iter()
+        .rev()
+        .map(|&t| ds.table(t).limit_source_rows(10_003))
+        .collect();
+    tables.push(ds.table(StoreSales).limit_source_rows(10_003));
+    tables.push(ds.table(Inventory).limit_source_rows(0));
+    let expected: Vec<_> = tables[..tables.len() - 1]
+        .iter()
+        .map(|t| concat(&t.reference_arrow()))
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_dsb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        assert!(got.last().unwrap().is_empty());
+        for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(&concat(batches), want, "{}", t.name());
+        }
+    }
+    populate_dsb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}
+
+#[test]
 fn dat_is_dsdgen_text_for_any_chunking() {
     let ds = Dsb::new(1.0);
     for t in [CallCenter, StoreSales, WebReturns, Item, DateDim] {

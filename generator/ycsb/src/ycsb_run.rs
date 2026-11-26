@@ -18,18 +18,24 @@
 //! Each row is one call into the binding: a read-modify-write is a `READ`
 //! row then an `UPDATE` row, as the binding sees it.
 
-use crate::engine::DEFAULT_BATCH_SIZE;
+use crate::cols::Text;
 use crate::rng::JavaTlr;
-use crate::strings::Views;
 use crate::ycsb::{Ycsb, deterministic_value, fnv_hash64, java_hash, java_hashmap_order, six};
-use arrow_array::{ArrayRef, Int32Array, RecordBatch};
-use arrow_buffer::{BooleanBuffer, NullBuffer};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use parquet::errors::ParquetError;
+use parquet::file::properties::WriterProperties;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::schema::types::ColumnPath;
+use populate_core::{Children, Columns, Distribution, Nullable, Sink, StrSink, Wide, WideCols};
 use populate_table::text::TextChunks;
-use populate_table::{Chunks, chunks};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use populate_table::text::write_text_many;
+use populate_table::{
+    Chunks, DEFAULT_BATCH_ROWS, DistTable, MultiChunks, chunks, write_parquet_many,
+};
+use rand::Rng;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 /// Default operations per chunk.
 pub const YCSB_RUN_CHUNK_OPS: u64 = 64 * 1024;
@@ -81,8 +87,8 @@ pub struct YcsbRun {
     scan_zipfian: bool,
     chunk_ops: u64,
     batch: usize,
-    /// Generator states at the chunk starts, extended on demand.
-    checkpoints: Arc<Mutex<Vec<State>>>,
+    /// Generator states every `batch` operations, extended on demand.
+    checkpoints: Arc<Checkpoints>,
     /// The zipfian scan lengths' zeta, summed once per run.
     scan_zeta: Arc<OnceLock<f64>>,
 }
@@ -119,7 +125,7 @@ impl YcsbRun {
             scan: (1, 1000),
             scan_zipfian: false,
             chunk_ops: YCSB_RUN_CHUNK_OPS,
-            batch: DEFAULT_BATCH_SIZE,
+            batch: DEFAULT_BATCH_ROWS,
             checkpoints: Arc::default(),
             scan_zeta: Arc::default(),
         }
@@ -209,11 +215,12 @@ impl YcsbRun {
         self.reset()
     }
 
-    /// Rows per Arrow batch (default 8Ki).
+    /// Operations per Arrow batch (default 8Ki; a read-modify-write is
+    /// two rows).
     pub fn batch_size(mut self, n: usize) -> Self {
         assert!(n > 0, "batch_size must be > 0");
         self.batch = n;
-        self
+        self.reset()
     }
 
     /// `readproportion`, `updateproportion`, `insertproportion`,
@@ -302,19 +309,19 @@ impl YcsbRun {
     /// a read or scan asks for, comma-separated; NULL for all), then the
     /// values written (NULL where not written).
     pub fn schema(&self) -> SchemaRef {
-        let mut f = vec![
-            Field::new("op", DataType::Utf8View, false),
-            Field::new("ycsb_key", DataType::Utf8View, false),
-            Field::new("scan_length", DataType::Int32, true),
-            Field::new("read_fields", DataType::Utf8View, true),
-        ];
-        f.extend(
-            self.load
-                .field_names()
-                .into_iter()
-                .map(|n| Field::new(n, DataType::Utf8View, true)),
-        );
-        Arc::new(Schema::new(f))
+        self.table().schema().clone()
+    }
+
+    /// The operations as one distribution ([`Ops`]): a row per operation,
+    /// each the one or two binding calls it makes.
+    fn table(&self) -> DistTable<Ops> {
+        let ops = Ops {
+            run: Arc::new(self.clone()),
+            next: 0,
+        };
+        DistTable::new("run", self.operation_count, ops)
+            .chunk_rows(self.chunk_ops)
+            .batch_rows(self.batch as u64)
     }
 
     fn insert_count(&self) -> i64 {
@@ -367,59 +374,51 @@ impl YcsbRun {
         }
     }
 
-    /// The generator state at the start of every chunk: one pass over the
-    /// operations without building keys or values.
-    /// The generator state at the start of chunk `i`. The states are found
-    /// by a cheap pass that only advances the generators, one chunk at a
-    /// time under a lock, by whichever thread first needs one: so the pass
-    /// runs alongside the other threads' chunks instead of before them.
-    fn checkpoint(&self, i: u64) -> State {
-        let mut v = self
-            .checkpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if v.is_empty() {
-            v.push(self.initial());
-        }
-        if v.len() as u64 <= i {
-            let g = Gen::new(self);
-            while v.len() as u64 <= i {
-                let k = v.len() as u64 - 1;
-                let mut st = v[k as usize].clone();
-                let first = k * self.chunk_ops;
-                for _ in first..(first + self.chunk_ops).min(self.operation_count) {
-                    g.op(&mut st, None);
+    /// The generator state before operation `op`. States every `batch`
+    /// operations are found by a cheap pass that only advances the
+    /// generators, a step at a time, by whichever thread first needs one:
+    /// so the pass runs alongside the other threads' batches instead of
+    /// before them. The rest is replayed from the state before.
+    fn state_at(&self, g: &Gen, op: u64) -> State {
+        let step = self.batch as u64;
+        let k = (op / step) as usize;
+        let c = &*self.checkpoints;
+        let found = |c: &Checkpoints| lock(&c.states).get(k).cloned();
+        let mut st = match found(c) {
+            Some(st) => st,
+            None => {
+                // one thread extends; the states stay readable meanwhile
+                let _extending = lock(&c.extend);
+                loop {
+                    if let Some(st) = found(c) {
+                        break st;
+                    }
+                    let mut st = lock(&c.states)
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| self.initial());
+                    if !lock(&c.states).is_empty() {
+                        for _ in 0..step {
+                            g.op(&mut st, None);
+                        }
+                    }
+                    lock(&c.states).push(st);
                 }
-                v.push(st);
             }
+        };
+        for _ in k as u64 * step..op {
+            g.op(&mut st, None);
         }
-        v[i as usize].clone()
+        st
     }
 
-    /// Operations `first..end` of chunk `i`, as rows passed to `row`.
-    fn run_chunk(&self, i: u64, row: &mut dyn FnMut(&Row)) {
+    /// Operations `first..end`, as rows passed to `row`.
+    fn run_ops(&self, first: u64, end: u64, row: &mut dyn FnMut(&Row)) {
         let g = Gen::new(self);
-        let mut st = self.checkpoint(i);
-        let first = i * self.chunk_ops;
-        let end = (first + self.chunk_ops).min(self.operation_count);
+        let mut st = self.state_at(&g, first);
         let mut rows = [g.new_row(), g.new_row()];
         for _ in first..end {
             g.op(&mut st, Some((&mut rows, &mut *row)));
-        }
-    }
-
-    fn generate(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let schema = self.schema();
-        let new = || Builder::new(self.load.field_names(), self.batch, self.load.field_length);
-        let mut b = new();
-        self.run_chunk(i, &mut |r| {
-            b.push(r);
-            if b.rows == self.batch {
-                emit(std::mem::replace(&mut b, new()).finish(&schema));
-            }
-        });
-        if b.rows > 0 {
-            emit(b.finish(&schema));
         }
     }
 
@@ -431,15 +430,15 @@ impl YcsbRun {
 
     /// Write the operations as one Parquet file, one row group per chunk
     /// (`props: None` means [`YcsbRun::parquet_props`]).
-    pub fn write_parquet<W: std::io::Write + Send>(
+    pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
-        props: Option<parquet::file::properties::WriterProperties>,
-    ) -> Result<W, parquet::errors::ParquetError> {
+        props: Option<WriterProperties>,
+    ) -> Result<W, ParquetError> {
         let props = props.unwrap_or_else(|| Self::parquet_props().build());
-        let mut w = crate::write_parquet_many(
-            std::slice::from_ref(self),
+        let mut w = write_parquet_many(
+            &[self as &dyn MultiChunks],
             vec![writer],
             threads,
             Some(props),
@@ -450,12 +449,8 @@ impl YcsbRun {
     /// Write the operations as TSV, one line per binding call:
     /// `OP\tkey\tscanlength\treadfields\tfield0...`, empty where NULL (the
     /// format of `ycsb-ref`'s `RefDB` with `refdb.run=true`).
-    pub fn write_tsv<W: std::io::Write + Send>(
-        &self,
-        writer: W,
-        threads: usize,
-    ) -> std::io::Result<W> {
-        let mut w = crate::write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
+    pub fn write_tsv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
+        let mut w = write_text_many(&[self as &dyn TextChunks], vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
@@ -470,7 +465,7 @@ impl Chunks for YcsbRun {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        self.generate(i, emit)
+        Chunks::chunk(&self.table(), i, emit)
     }
 }
 
@@ -487,7 +482,9 @@ impl TextChunks for YcsbRun {
         let out = &mut bufs[0];
         let names = self.load.field_names();
         let mut b = itoa::Buffer::new();
-        self.run_chunk(i, &mut |r| {
+        let first = i * self.chunk_ops;
+        let end = (first + self.chunk_ops).min(self.operation_count);
+        self.run_ops(first, end, &mut |r| {
             out.extend_from_slice(r.op.as_bytes());
             out.push(b'\t');
             out.extend_from_slice(r.key.as_bytes());
@@ -537,70 +534,115 @@ impl Row {
     }
 }
 
-/// Arrow columns being built.
-struct Builder {
-    rows: usize,
-    op: Views,
-    key: Views,
-    scan: Vec<i32>,
-    scan_valid: Vec<bool>,
-    read: Views,
-    read_valid: Vec<bool>,
-    fields: Vec<(Views, Vec<bool>)>,
-    names: Vec<String>,
+/// The run's generator states every `batch` operations, found on demand.
+#[derive(Debug, Default)]
+struct Checkpoints {
+    states: Mutex<Vec<State>>,
+    /// Held by the thread extending `states`.
+    extend: Mutex<()>,
 }
 
-impl Builder {
-    fn new(names: Vec<String>, n: usize, len: usize) -> Self {
-        let fc = names.len();
-        Builder {
-            rows: 0,
-            op: Views::with_capacity(n, 0),
-            key: Views::with_capacity(n, n * 24),
-            scan: Vec::with_capacity(n),
-            scan_valid: Vec::with_capacity(n),
-            read: Views::with_capacity(n, 0),
-            read_valid: Vec::with_capacity(n),
-            fields: (0..fc)
-                .map(|_| {
-                    (
-                        Views::with_capacity(n, len.min(4096) * 8),
-                        Vec::with_capacity(n),
-                    )
-                })
-                .collect(),
-            names,
-        }
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `b` (ASCII) as a [`Text`].
+fn text(b: Vec<u8>) -> Text {
+    Text::from(String::from_utf8(b).expect("YCSB strings are ASCII"))
+}
+
+/// One binding call as a row: `op`, `ycsb_key`, `scan_length`,
+/// `read_fields`, then the values written.
+type CallRow = (Text, Text, Option<i32>, Option<Text>, Wide<Option<Text>>);
+
+/// The run's operations, each a row of its binding calls (a
+/// read-modify-write makes two). Skipping finds the generator state from
+/// the run's checkpoints ([`YcsbRun::state_at`]).
+#[derive(Clone)]
+pub(crate) struct Ops {
+    run: Arc<YcsbRun>,
+    next: u64,
+}
+
+impl Ops {
+    /// Operations `next..next + n`, each call passed to `call`.
+    fn run(&mut self, n: usize, call: &mut dyn FnMut(&Row)) {
+        let first = self.next;
+        self.next += n as u64;
+        self.run.run_ops(first, self.next, call);
+    }
+}
+
+impl Distribution for Ops {
+    type Item = Children<CallRow>;
+
+    fn sample(&mut self, _rng: &mut impl Rng) -> Self::Item {
+        let names = self.run.load.field_names();
+        let mut calls = Vec::new();
+        self.run(1, &mut |r| {
+            let mut read = Vec::new();
+            r.read_fields(&names, &mut read);
+            let values = (0..names.len())
+                .map(|f| r.written[f].then(|| text(r.values[f].clone())))
+                .collect();
+            calls.push((
+                Text::from(r.op.to_string()),
+                Text::from(r.key.clone()),
+                r.scan,
+                r.read.is_some().then(|| text(read)),
+                Wide(values),
+            ));
+        });
+        Children(calls)
     }
 
-    fn push(&mut self, r: &Row) {
-        self.rows += 1;
-        self.op.push(r.op.as_bytes());
-        self.key.push(r.key.as_bytes());
-        self.scan.push(r.scan.unwrap_or(0));
-        self.scan_valid.push(r.scan.is_some());
+    fn collect_into(&mut self, cols: &mut Columns<Self::Item>, _rng: &mut impl Rng, n: usize) {
+        let names = self.run.load.field_names();
+        let (op, key, scan, read, WideCols(fields)) = &mut cols.values;
+        let len = self.run.load.field_length;
+        op.reserve_bytes(n, 0);
+        key.reserve_bytes(n, n * 24);
+        for f in fields.iter_mut() {
+            f.values.reserve_bytes(n, len.min(4096) * 8);
+        }
         let mut s = Vec::new();
-        r.read_fields(&self.names, &mut s);
-        self.read.push(&s);
-        self.read_valid.push(r.read.is_some());
-        for (f, (v, valid)) in self.fields.iter_mut().enumerate() {
-            v.push(if r.written[f] { &r.values[f] } else { b"" });
-            valid.push(r.written[f]);
-        }
+        self.run(n, &mut |r| {
+            op.push_with(|o| o.push_str(r.op));
+            key.push_with(|k| k.push_str(&r.key));
+            scan.push(r.scan);
+            s.clear();
+            r.read_fields(&names, &mut s);
+            read.values.push_with(|v| v.push_ascii_bytes(&s));
+            read.valid.push(r.read.is_some());
+            for (f, c) in fields.iter_mut().enumerate() {
+                let v: &[u8] = if r.written[f] { &r.values[f] } else { b"" };
+                c.values.push_with(|s| s.push_ascii_bytes(v));
+                c.valid.push(r.written[f]);
+            }
+        });
+        cols.sources += n;
     }
 
-    fn finish(self, schema: &SchemaRef) -> RecordBatch {
-        let nulls = |v: Vec<bool>| Some(NullBuffer::new(BooleanBuffer::from(v)));
-        let mut cols: Vec<ArrayRef> = vec![
-            self.op.finish(),
-            self.key.finish(),
-            Arc::new(Int32Array::new(self.scan.into(), nulls(self.scan_valid))),
-            self.read.finish_nulls(nulls(self.read_valid)),
-        ];
-        for (v, valid) in self.fields {
-            cols.push(v.finish_nulls(nulls(valid)));
-        }
-        RecordBatch::try_new(schema.clone(), cols).expect("columns match schema")
+    fn skip(&mut self, n: u64) {
+        self.next += n;
+    }
+
+    fn column_names(&self, out: &mut Vec<String>) {
+        out.extend(["op", "ycsb_key", "scan_length", "read_fields"].map(String::from));
+        out.extend(self.run.load.field_names());
+    }
+
+    fn columns(&self) -> Columns<Self::Item> {
+        let fields = self
+            .run
+            .load
+            .field_names()
+            .iter()
+            .map(|_| Nullable::default())
+            .collect();
+        let mut c = <Columns<Self::Item>>::default();
+        c.values.4 = WideCols(fields);
+        c
     }
 }
 

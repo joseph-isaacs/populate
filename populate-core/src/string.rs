@@ -23,8 +23,10 @@ pub struct StrCol {
 }
 
 /// `v.extend_from_slice(s)`, with strings up to 16 bytes copied by two
-/// overlapping fixed-size loads into a 16-byte block (no `memcpy` call,
-/// which dominates for short values like category names).
+/// overlapping fixed-size loads (no `memcpy` call, which dominates for
+/// short values like category names). The loads are combined in registers,
+/// not through a stack buffer: a 16-byte read of bytes just written as
+/// smaller pieces stalls on store forwarding.
 #[inline(always)]
 fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
     let n = s.len();
@@ -32,25 +34,64 @@ fn extend_small(v: &mut Vec<u8>, s: &[u8]) {
         v.extend_from_slice(s);
         return;
     }
-    let mut b = [0u8; 16];
-    if n >= 8 {
-        b[..8].copy_from_slice(&s[..8]);
-        b[n - 8..n].copy_from_slice(&s[n - 8..]);
+    let block: u128 = if n >= 8 {
+        let lo = u64::from_le_bytes(s[..8].try_into().expect("8 bytes"));
+        let hi = u64::from_le_bytes(s[n - 8..].try_into().expect("8 bytes"));
+        // the two loads overlap on equal bytes, so OR keeps them
+        lo as u128 | (hi as u128) << (8 * (n - 8))
     } else if n >= 4 {
-        b[..4].copy_from_slice(&s[..4]);
-        b[n - 4..n].copy_from_slice(&s[n - 4..]);
+        let lo = u32::from_le_bytes(s[..4].try_into().expect("4 bytes"));
+        let hi = u32::from_le_bytes(s[n - 4..].try_into().expect("4 bytes"));
+        (lo as u64 | (hi as u64) << (8 * (n - 4))) as u128
     } else if n > 0 {
-        b[0] = s[0];
-        b[n / 2] = s[n / 2];
-        b[n - 1] = s[n - 1];
-    }
+        s[0] as u128 | (s[n / 2] as u128) << (8 * (n / 2)) | (s[n - 1] as u128) << (8 * (n - 1))
+    } else {
+        0
+    };
     let start = v.len();
-    v.extend_from_slice(&b);
+    v.extend_from_slice(&block.to_le_bytes());
     v.truncate(start + n);
+}
+
+/// Whether every byte of `b` is ASCII: an OR of its 8-byte words, which
+/// vectorises. `<[u8]>::is_ascii` made YCSB's load (100-byte values) 40%
+/// slower; this costs it a few percent.
+#[inline(always)]
+fn is_ascii(b: &[u8]) -> bool {
+    let (words, rest) = b.as_chunks::<8>();
+    let w = words
+        .iter()
+        .fold(0u64, |acc, w| acc | u64::from_ne_bytes(*w));
+    let r = rest.iter().fold(0u8, |acc, &x| acc | x);
+    w & 0x8080_8080_8080_8080 == 0 && r < 0x80
 }
 
 /// Write access to the value being appended by [`StrCol::push_with`].
 pub struct StrBuf<'a>(&'a mut Vec<u8>, usize);
+
+/// A string column a value can be written into in place: [`StrCol`], or a
+/// generator's own string column.
+pub trait StrSink {
+    /// Append one value whose bytes `f` writes.
+    fn push_with(&mut self, f: impl FnOnce(&mut StrBuf<'_>));
+}
+
+impl StrSink for StrCol {
+    #[inline]
+    fn push_with(&mut self, f: impl FnOnce(&mut StrBuf<'_>)) {
+        StrCol::push_with(self, f)
+    }
+}
+
+impl<'a> StrBuf<'a> {
+    /// A value appended to the end of `buf`, which must hold valid UTF-8
+    /// (every write keeps it so).
+    #[inline]
+    pub fn appending(buf: &'a mut Vec<u8>) -> Self {
+        let start = buf.len();
+        StrBuf(buf, start)
+    }
+}
 
 impl StrBuf<'_> {
     #[inline]
@@ -75,7 +116,7 @@ impl StrBuf<'_> {
     /// Append ASCII bytes. Panics if any byte is not ASCII.
     #[inline]
     pub fn push_ascii_bytes(&mut self, bytes: &[u8]) {
-        assert!(bytes.is_ascii(), "push_ascii_bytes: input is not ASCII");
+        assert!(is_ascii(bytes), "push_ascii_bytes: input is not ASCII");
         self.0.extend_from_slice(bytes);
     }
 
@@ -87,9 +128,51 @@ impl StrBuf<'_> {
     pub fn extend_ascii(&mut self, bytes: impl Iterator<Item = u8>) {
         let start = self.0.len();
         self.0.extend(bytes);
-        if !self.0[start..].is_ascii() {
+        if !is_ascii(&self.0[start..]) {
             self.0.truncate(start);
             panic!("extend_ascii: input is not ASCII");
+        }
+    }
+
+    /// Append `len` ASCII bytes that `fill` writes into place (a random
+    /// string drawn from a character set, say), then check them in one
+    /// vectorised pass. Panics, with the buffer as it was, if any byte is
+    /// not ASCII.
+    #[inline]
+    pub fn push_ascii_with(&mut self, len: usize, fill: impl FnOnce(&mut [u8])) {
+        let start = self.0.len();
+        self.0.resize(start + len, 0);
+        fill(&mut self.0[start..]);
+        if !is_ascii(&self.0[start..]) {
+            self.0.truncate(start);
+            panic!("push_ascii_with: input is not ASCII");
+        }
+    }
+
+    /// Append `len` bytes, `N` at a time from `next` (the last block cut
+    /// short), each masked to 7 bits: for a source whose blocks are ASCII
+    /// by construction, written in one pass with no check. A non-ASCII
+    /// byte panics in debug builds.
+    #[inline]
+    pub fn push_ascii_blocks<const N: usize>(
+        &mut self,
+        len: usize,
+        mut next: impl FnMut() -> [u8; N],
+    ) {
+        let start = self.0.len();
+        self.0.resize(start + len, 0);
+        let mask = |b: [u8; N]| {
+            debug_assert!(b.is_ascii(), "push_ascii_blocks: input is not ASCII");
+            b.map(|x| x & 0x7f)
+        };
+        let mut blocks = self.0[start..].chunks_exact_mut(N);
+        for c in &mut blocks {
+            c.copy_from_slice(&mask(next()));
+        }
+        let rest = blocks.into_remainder();
+        if !rest.is_empty() {
+            let n = rest.len();
+            rest.copy_from_slice(&mask(next())[..n]);
         }
     }
 
@@ -119,18 +202,23 @@ impl StrBuf<'_> {
 
     /// Append `v` in decimal.
     #[inline]
-    pub fn push_u64(&mut self, mut v: u64) {
-        let mut b = [0u8; 20];
+    pub fn push_u64(&mut self, v: u64) {
+        self.push_u64_padded(v, 1);
+    }
+
+    /// Append `v` in decimal, zero-padded to at least `width` digits (at
+    /// most 20).
+    #[inline]
+    pub fn push_u64_padded(&mut self, mut v: u64, width: usize) {
+        let mut b = [b'0'; 20];
         let mut i = b.len();
-        loop {
+        while v > 0 {
             i -= 1;
             b[i] = b'0' + (v % 10) as u8;
             v /= 10;
-            if v == 0 {
-                break;
-            }
         }
-        self.0.extend_from_slice(&b[i..]);
+        self.0
+            .extend_from_slice(&b[i.min(b.len() - width.clamp(1, 20))..]);
     }
 
     /// Bytes in the whole column's buffer so far: every earlier value's
@@ -213,6 +301,30 @@ impl StrCol {
         self.offsets = offsets;
     }
 
+    /// Append value `i` of `src` for every `(src, i)` of `picks`, in order:
+    /// a gather from one or more columns. The bytes are counted first, so
+    /// both buffers are allocated once.
+    ///
+    /// # Panics
+    ///
+    /// If the column would pass 2 GiB of string data.
+    pub fn extend_picked<'a>(&mut self, picks: impl Iterator<Item = (&'a StrCol, usize)> + Clone) {
+        let span = |c: &StrCol, i: usize| c.offsets[i] as usize..c.offsets[i + 1] as usize;
+        let (n, bytes) = picks
+            .clone()
+            .fold((0, 0), |(n, b), (c, i)| (n + 1, b + span(c, i).len()));
+        offset(self.data.len() + bytes);
+        self.start();
+        self.offsets.reserve(n);
+        self.data.reserve(bytes);
+        for (c, i) in picks {
+            self.data.extend_from_slice(&c.data[span(c, i)]);
+            // checked again: a clone of `picks` need not yield the same
+            // values, and the offsets are trusted unchecked
+            self.offsets.push(offset(self.data.len()));
+        }
+    }
+
     /// Offsets so far (`len() + 1` entries once anything is written).
     pub fn offsets(&self) -> &[i32] {
         &self.offsets
@@ -293,6 +405,33 @@ mod tests {
     }
 
     #[test]
+    fn padded_digits() {
+        let mut c = StrCol::new();
+        for (v, w) in [
+            (7, 9),
+            (0, 1),
+            (0, 3),
+            (1_234_567_890, 9),
+            (u64::MAX, 20),
+            (5, 0),
+        ] {
+            c.push_with(|b| b.push_u64_padded(v, w));
+        }
+        let got: Vec<&str> = (0..c.len()).map(|i| c.get(i)).collect();
+        assert_eq!(
+            got,
+            [
+                "000000007",
+                "0",
+                "000",
+                "1234567890",
+                "18446744073709551615",
+                "5"
+            ]
+        );
+    }
+
+    #[test]
     fn small_copies_every_length() {
         let text = "abcdefghijklmnopqrstuvwxyzé0123";
         let mut c = StrCol::new();
@@ -329,6 +468,32 @@ mod tests {
             got,
             ["red", "", "green", "blue", "one onex", "one onex", ""]
         );
+    }
+
+    #[test]
+    fn push_ascii_with_fills_in_place() {
+        let mut c = StrCol::new();
+        c.push_with(|b| b.push_ascii_with(3, |s| s.copy_from_slice(b"abc")));
+        assert_eq!(c.get(0), "abc");
+    }
+
+    #[test]
+    fn push_ascii_blocks_cuts_the_last() {
+        let mut c = StrCol::new();
+        let mut i = 0u8;
+        c.push_with(|b| {
+            b.push_ascii_blocks(5, || {
+                i += 1;
+                [b'a' + i, b'-', b'z']
+            })
+        });
+        assert_eq!(c.get(0), "b-zc-");
+    }
+
+    #[test]
+    #[should_panic(expected = "not ASCII")]
+    fn push_ascii_with_checks() {
+        StrCol::new().push_with(|b| b.push_ascii_with(1, |s| s[0] = 0xc3));
     }
 
     #[test]

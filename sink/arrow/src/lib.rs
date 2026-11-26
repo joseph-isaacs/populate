@@ -545,7 +545,7 @@ where
     schema_from(names, types)
 }
 
-/// Fields `names` with `types`' data types and nullability.
+/// Fields `names` of `types`' types and nullability.
 fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
     assert_eq!(
         names.len(),

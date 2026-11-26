@@ -1,86 +1,378 @@
-//! Column buffers for the generated tables, and their schemas.
+//! The generated tables: their row types, which are the schema, and
+//! [`Col`] / [`Rows`], the same columns held by kind for the transforms
+//! (layouts, BI batches, factor tables) and the CSV writer.
+//!
+//! A dynamic table's row is a tuple: the Arrow schema of
+//! [`crate::Ldbc::raw`] is read off these types and [`DYNAMIC_COLUMNS`]
+//! (`populate_sink_arrow::schemas_of`), and [`DYNAMIC`] (the same tables
+//! as [`TableDef`]s) is derived from them too.
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use std::sync::Arc;
+use crate::java::MS_PER_DAY;
+use arrow_array::ArrayRef;
+use arrow_schema::{Field, Schema, SchemaRef};
+use populate_core::{
+    ChildCols, Children, Columns, Date32, Nullable, StrBuf, StrCol, Timestamp, Validity, time_unit,
+};
+use populate_sink_arrow::IntoArrowArray;
+use std::borrow::Cow;
+use std::sync::{Arc, LazyLock};
 
-/// Logical type of a column.
+/// A timestamp: epoch milliseconds, UTC.
+pub type Ts = Timestamp<{ time_unit::MILLISECOND }, true>;
+
+/// `creationDate`, `deletionDate`, `explicitlyDeleted`: nested so a row
+/// stays within a tuple's 12 fields (Arrow flattens it).
+pub type Life = (Ts, Ts, bool);
+
+pub type PersonRow = (
+    Life,
+    i64,
+    String,
+    String,
+    String,
+    Date32,
+    String,
+    String,
+    i32,
+    String,
+    String,
+);
+/// `Person_hasInterest_Tag`, and every `..._hasTag_Tag`.
+pub type TagEdgeRow = (Ts, Ts, i64, i32);
+/// `Person_studyAt_University` and `Person_workAt_Company`.
+pub type OrgEdgeRow = (Ts, Ts, i64, i64, i32);
+/// `Person_knows_Person`, `Forum_hasMember_Person` and the likes.
+pub type EdgeRow = (Ts, Ts, bool, i64, i64);
+pub type ForumRow = (Ts, Ts, bool, i64, String, i64);
+pub type PostRow = (
+    Life,
+    i64,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i32,
+    i64,
+    i64,
+    i64,
+);
+pub type CommentRow = (
+    Ts,
+    Ts,
+    bool,
+    i64,
+    String,
+    String,
+    String,
+    i32,
+    i64,
+    i32,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// One chunk of the 14 dynamic tables, in [`DYNAMIC_NAMES`] order: persons
+/// and their edges, forums, then messages and likes.
+pub type Raw = (
+    (
+        Children<PersonRow>,
+        Children<TagEdgeRow>,
+        Children<OrgEdgeRow>,
+        Children<OrgEdgeRow>,
+        Children<EdgeRow>,
+    ),
+    (Children<ForumRow>, Children<TagEdgeRow>, Children<EdgeRow>),
+    (
+        Children<PostRow>,
+        Children<TagEdgeRow>,
+        Children<CommentRow>,
+        Children<TagEdgeRow>,
+        Children<EdgeRow>,
+        Children<EdgeRow>,
+    ),
+);
+
+/// The columns of [`Raw`].
+pub type RawCols = Columns<Raw>;
+
+/// The tables of [`RawCols`] by name, for writers.
+pub mod raw {
+    use super::*;
+
+    pub fn person(o: &mut RawCols) -> &mut Columns<PersonRow> {
+        &mut o.0.0.values
+    }
+    pub fn has_interest(o: &mut RawCols) -> &mut Columns<TagEdgeRow> {
+        &mut o.0.1.values
+    }
+    pub fn study_at(o: &mut RawCols) -> &mut Columns<OrgEdgeRow> {
+        &mut o.0.2.values
+    }
+    pub fn work_at(o: &mut RawCols) -> &mut Columns<OrgEdgeRow> {
+        &mut o.0.3.values
+    }
+    pub fn knows(o: &mut RawCols) -> &mut Columns<EdgeRow> {
+        &mut o.0.4.values
+    }
+    pub fn forum(o: &mut RawCols) -> &mut Columns<ForumRow> {
+        &mut o.1.0.values
+    }
+    pub fn forum_tag(o: &mut RawCols) -> &mut Columns<TagEdgeRow> {
+        &mut o.1.1.values
+    }
+    pub fn forum_member(o: &mut RawCols) -> &mut Columns<EdgeRow> {
+        &mut o.1.2.values
+    }
+    pub fn post(o: &mut RawCols) -> &mut Columns<PostRow> {
+        &mut o.2.0.values
+    }
+    pub fn post_tag(o: &mut RawCols) -> &mut Columns<TagEdgeRow> {
+        &mut o.2.1.values
+    }
+    pub fn comment(o: &mut RawCols) -> &mut Columns<CommentRow> {
+        &mut o.2.2.values
+    }
+    pub fn comment_tag(o: &mut RawCols) -> &mut Columns<TagEdgeRow> {
+        &mut o.2.3.values
+    }
+    pub fn likes_post(o: &mut RawCols) -> &mut Columns<EdgeRow> {
+        &mut o.2.4.values
+    }
+    pub fn likes_comment(o: &mut RawCols) -> &mut Columns<EdgeRow> {
+        &mut o.2.5.values
+    }
+}
+
+/// The dynamic tables' names (the datagen's directories), in [`Raw`] order.
+pub const DYNAMIC_NAMES: [&str; 14] = [
+    "Person",
+    "Person_hasInterest_Tag",
+    "Person_studyAt_University",
+    "Person_workAt_Company",
+    "Person_knows_Person",
+    "Forum",
+    "Forum_hasTag_Tag",
+    "Forum_hasMember_Person",
+    "Post",
+    "Post_hasTag_Tag",
+    "Comment",
+    "Comment_hasTag_Tag",
+    "Person_likes_Post",
+    "Person_likes_Comment",
+];
+
+/// Each dynamic table's column names, in [`Raw`] order.
+pub const DYNAMIC_COLUMNS: [&[&str]; 14] = [
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "id",
+        "firstName",
+        "lastName",
+        "gender",
+        "birthday",
+        "locationIP",
+        "browserUsed",
+        "LocationCityId",
+        "language",
+        "email",
+    ],
+    &["creationDate", "deletionDate", "PersonId", "TagId"],
+    &[
+        "creationDate",
+        "deletionDate",
+        "PersonId",
+        "UniversityId",
+        "classYear",
+    ],
+    &[
+        "creationDate",
+        "deletionDate",
+        "PersonId",
+        "CompanyId",
+        "workFrom",
+    ],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "Person1Id",
+        "Person2Id",
+    ],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "id",
+        "title",
+        "ModeratorPersonId",
+    ],
+    &["creationDate", "deletionDate", "ForumId", "TagId"],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "ForumId",
+        "PersonId",
+    ],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "id",
+        "imageFile",
+        "locationIP",
+        "browserUsed",
+        "language",
+        "content",
+        "length",
+        "CreatorPersonId",
+        "ContainerForumId",
+        "LocationCountryId",
+    ],
+    &["creationDate", "deletionDate", "PostId", "TagId"],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "id",
+        "locationIP",
+        "browserUsed",
+        "content",
+        "length",
+        "CreatorPersonId",
+        "LocationCountryId",
+        "ParentPostId",
+        "ParentCommentId",
+    ],
+    &["creationDate", "deletionDate", "CommentId", "TagId"],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "PersonId",
+        "PostId",
+    ],
+    &[
+        "creationDate",
+        "deletionDate",
+        "explicitlyDeleted",
+        "PersonId",
+        "CommentId",
+    ],
+];
+
+pub type OrganisationRow = (i32, String, String, String, i32);
+pub type PlaceRow = (i32, String, String, String, Option<i32>);
+pub type TagRow = (i32, String, String, i32);
+pub type TagClassRow = (i32, String, String, Option<i32>);
+
+/// The static tables' names and column names.
+pub const STATIC_TABLES: [(&str, &[&str]); 4] = [
+    (
+        "Organisation",
+        &["id", "type", "name", "url", "LocationPlaceId"],
+    ),
+    ("Place", &["id", "name", "url", "type", "PartOfPlaceId"]),
+    ("Tag", &["id", "name", "url", "TypeTagClassId"]),
+    ("TagClass", &["id", "name", "url", "SubclassOfTagClassId"]),
+];
+
+// ============================================================================
+// Columns by kind
+// ============================================================================
+
+/// Which column buffer a column is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// Epoch milliseconds, written as a timestamp.
     Ts,
-    /// Epoch milliseconds of a midnight, written as a date.
     Date,
     I64,
     I32,
     Bool,
     Str,
-    /// Nullable `i64`.
     OptI64,
-    /// Nullable `i32`.
     OptI32,
-    /// Nullable string.
     OptStr,
 }
 
-/// Column storage.
+impl Kind {
+    /// The Arrow type and nullability of the column, as its buffer's sink
+    /// reports them.
+    fn field(self, name: &str) -> Field {
+        fn f<C: IntoArrowArray>(name: &str) -> Field {
+            Field::new(name, C::data_type(), C::nullable())
+        }
+        match self {
+            Kind::Ts => f::<Vec<Ts>>(name),
+            Kind::Date => f::<Vec<Date32>>(name),
+            Kind::I64 => f::<Vec<i64>>(name),
+            Kind::I32 => f::<Vec<i32>>(name),
+            Kind::Bool => f::<Vec<bool>>(name),
+            Kind::Str => f::<StrCol>(name),
+            Kind::OptI64 => f::<Nullable<Vec<i64>>>(name),
+            Kind::OptI32 => f::<Nullable<Vec<i32>>>(name),
+            Kind::OptStr => f::<Nullable<StrCol>>(name),
+        }
+    }
+}
+
+/// A column, held by kind.
 #[derive(Debug, Clone)]
 pub enum Col {
+    Ts(Vec<Ts>),
+    Date(Vec<Date32>),
     I64(Vec<i64>),
     I32(Vec<i32>),
     Bool(Vec<bool>),
-    /// UTF-8 bytes and end offsets.
-    Str(Vec<u8>, Vec<u32>),
-    OptI64(Vec<i64>, Vec<bool>),
-    OptI32(Vec<i32>, Vec<bool>),
-    OptStr(Vec<u8>, Vec<u32>, Vec<bool>),
+    Str(StrCol),
+    OptI64(Nullable<Vec<i64>>),
+    OptI32(Nullable<Vec<i32>>),
+    OptStr(Nullable<StrCol>),
 }
 
 impl Col {
-    fn new(k: Kind) -> Self {
+    pub fn new(k: Kind) -> Self {
         match k {
-            Kind::Ts | Kind::Date | Kind::I64 => Col::I64(Vec::new()),
+            Kind::Ts => Col::Ts(Vec::new()),
+            Kind::Date => Col::Date(Vec::new()),
+            Kind::I64 => Col::I64(Vec::new()),
             Kind::I32 => Col::I32(Vec::new()),
             Kind::Bool => Col::Bool(Vec::new()),
-            Kind::Str => Col::Str(Vec::new(), Vec::new()),
-            Kind::OptI64 => Col::OptI64(Vec::new(), Vec::new()),
-            Kind::OptI32 => Col::OptI32(Vec::new(), Vec::new()),
-            Kind::OptStr => Col::OptStr(Vec::new(), Vec::new(), Vec::new()),
+            Kind::Str => Col::Str(StrCol::new()),
+            Kind::OptI64 => Col::OptI64(Nullable::default()),
+            Kind::OptI32 => Col::OptI32(Nullable::default()),
+            Kind::OptStr => Col::OptStr(Nullable::default()),
         }
     }
 
-    fn clear(&mut self) {
+    pub fn kind(&self) -> Kind {
         match self {
-            Col::I64(v) => v.clear(),
-            Col::I32(v) => v.clear(),
-            Col::Bool(v) => v.clear(),
-            Col::Str(d, o) => {
-                d.clear();
-                o.clear()
-            }
-            Col::OptI64(v, n) => {
-                v.clear();
-                n.clear()
-            }
-            Col::OptI32(v, n) => {
-                v.clear();
-                n.clear()
-            }
-            Col::OptStr(d, o, n) => {
-                d.clear();
-                o.clear();
-                n.clear()
-            }
+            Col::Ts(_) => Kind::Ts,
+            Col::Date(_) => Kind::Date,
+            Col::I64(_) => Kind::I64,
+            Col::I32(_) => Kind::I32,
+            Col::Bool(_) => Kind::Bool,
+            Col::Str(_) => Kind::Str,
+            Col::OptI64(_) => Kind::OptI64,
+            Col::OptI32(_) => Kind::OptI32,
+            Col::OptStr(_) => Kind::OptStr,
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
+            Col::Ts(v) => v.len(),
+            Col::Date(v) => v.len(),
             Col::I64(v) => v.len(),
             Col::I32(v) => v.len(),
             Col::Bool(v) => v.len(),
-            Col::Str(_, o) | Col::OptStr(_, o, _) => o.len(),
-            Col::OptI64(v, _) => v.len(),
-            Col::OptI32(v, _) => v.len(),
+            Col::Str(v) => v.len(),
+            Col::OptI64(v) => v.len(),
+            Col::OptI32(v) => v.len(),
+            Col::OptStr(v) => v.len(),
         }
     }
 
@@ -88,100 +380,38 @@ impl Col {
         self.len() == 0
     }
 
-    #[inline(always)]
-    pub fn i64(&mut self, x: i64) {
+    /// The Arrow array: the buffers move into it.
+    pub fn into_array(self) -> ArrayRef {
         match self {
-            Col::I64(v) => v.push(x),
-            _ => unreachable!("not an i64 column"),
+            Col::Ts(v) => IntoArrowArray::into_array(v),
+            Col::Date(v) => IntoArrowArray::into_array(v),
+            Col::I64(v) => IntoArrowArray::into_array(v),
+            Col::I32(v) => IntoArrowArray::into_array(v),
+            Col::Bool(v) => IntoArrowArray::into_array(v),
+            Col::Str(v) => IntoArrowArray::into_array(v),
+            Col::OptI64(v) => IntoArrowArray::into_array(v),
+            Col::OptI32(v) => IntoArrowArray::into_array(v),
+            Col::OptStr(v) => IntoArrowArray::into_array(v),
         }
     }
 
-    #[inline(always)]
-    pub fn i32(&mut self, x: i32) {
+    /// The same values as epoch milliseconds, for the `--epoch-millis`
+    /// layout: timestamps as they are, dates at their midnight.
+    pub fn into_epoch_millis(self) -> Col {
         match self {
-            Col::I32(v) => v.push(x),
-            _ => unreachable!("not an i32 column"),
+            Col::Ts(v) => Col::I64(v.iter().map(|t| t.0).collect()),
+            Col::Date(v) => Col::I64(v.iter().map(|d| d.0 as i64 * MS_PER_DAY).collect()),
+            c => c,
         }
     }
 
-    #[inline(always)]
-    pub fn bool(&mut self, x: bool) {
+    /// Epoch milliseconds of a timestamp column (held as timestamps, or as
+    /// numbers by the `--epoch-millis` layout).
+    pub fn epoch_ms(&self) -> Cow<'_, [i64]> {
         match self {
-            Col::Bool(v) => v.push(x),
-            _ => unreachable!("not a bool column"),
-        }
-    }
-
-    #[inline(always)]
-    pub fn opt_i64(&mut self, x: Option<i64>) {
-        match self {
-            Col::OptI64(v, n) => {
-                v.push(x.unwrap_or(0));
-                n.push(x.is_some());
-            }
-            _ => unreachable!("not an optional i64 column"),
-        }
-    }
-
-    #[inline(always)]
-    pub fn opt_i32(&mut self, x: Option<i32>) {
-        match self {
-            Col::OptI32(v, n) => {
-                v.push(x.unwrap_or(0));
-                n.push(x.is_some());
-            }
-            _ => unreachable!("not an optional i32 column"),
-        }
-    }
-
-    /// The byte buffer of a string column, to append one value to; finish
-    /// it with [`Col::end_str`].
-    #[inline(always)]
-    pub fn str_buf(&mut self) -> &mut Vec<u8> {
-        match self {
-            Col::Str(d, _) | Col::OptStr(d, _, _) => d,
-            _ => unreachable!("not a string column"),
-        }
-    }
-
-    #[inline(always)]
-    pub fn end_str(&mut self) {
-        match self {
-            Col::Str(d, o) => {
-                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"))
-            }
-            Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
-                n.push(true);
-            }
-            _ => unreachable!("not a string column"),
-        }
-    }
-
-    #[inline(always)]
-    pub fn str(&mut self, s: &[u8]) {
-        self.str_buf().extend_from_slice(s);
-        self.end_str();
-    }
-
-    #[inline(always)]
-    pub fn null_str(&mut self) {
-        match self {
-            Col::OptStr(d, o, n) => {
-                o.push(u32::try_from(d.len()).expect("a string column is over 4 GiB"));
-                n.push(false);
-            }
-            _ => unreachable!("not an optional string column"),
-        }
-    }
-}
-
-impl Col {
-    /// The values of an `i64` column.
-    pub fn i64s(&self) -> &[i64] {
-        match self {
-            Col::I64(v) => v,
-            _ => unreachable!("not an i64 column"),
+            Col::Ts(v) => Cow::Owned(v.iter().map(|t| t.0).collect()),
+            Col::I64(v) => Cow::Borrowed(v),
+            _ => unreachable!("not a timestamp column"),
         }
     }
 
@@ -202,120 +432,191 @@ impl Col {
     }
 
     /// Row `r` of a string column (`None` if null).
-    pub fn str_at(&self, r: usize) -> Option<&[u8]> {
-        let at = |o: &[u32]| {
-            let s = if r == 0 { 0 } else { o[r - 1] as usize };
-            (s, o[r] as usize)
-        };
+    pub fn str_at(&self, r: usize) -> Option<&str> {
         match self {
-            Col::Str(d, o) => {
-                let (a, b) = at(o);
-                Some(&d[a..b])
-            }
-            Col::OptStr(d, o, n) => {
-                let (a, b) = at(o);
-                n[r].then(|| &d[a..b])
-            }
+            Col::Str(v) => Some(v.get(r)),
+            Col::OptStr(v) => v.valid.get(r).then(|| v.values.get(r)),
             _ => unreachable!("not a string column"),
-        }
-    }
-
-    /// Append row `r` of `other` (a column of the same kind).
-    pub fn push_from(&mut self, other: &Col, r: usize) {
-        match (self, other) {
-            (Col::I64(a), Col::I64(b)) => a.push(b[r]),
-            (Col::I32(a), Col::I32(b)) => a.push(b[r]),
-            (Col::Bool(a), Col::Bool(b)) => a.push(b[r]),
-            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
-                a.push(b[r]);
-                n.push(m[r]);
-            }
-            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
-                a.push(b[r]);
-                n.push(m[r]);
-            }
-            (c @ Col::Str(..), o @ Col::Str(..)) => c.str(o.str_at(r).expect("str")),
-            (c @ Col::OptStr(..), o @ Col::OptStr(..)) => match o.str_at(r) {
-                Some(v) => c.str(v),
-                None => c.null_str(),
-            },
-            _ => unreachable!("columns of different kinds"),
         }
     }
 
     /// Row `r` of an optional `i32` column.
     pub fn opt_i32_at(&self, r: usize) -> Option<i32> {
         match self {
-            Col::OptI32(v, n) => n[r].then_some(v[r]),
+            Col::OptI32(v) => v.valid.get(r).then(|| v.values[r]),
             Col::I32(v) => Some(v[r]),
             _ => unreachable!("not an i32 column"),
         }
     }
-}
 
-impl Col {
     /// The values at rows `idx`, in that order.
     pub fn gather(&self, idx: &[u32]) -> Col {
-        fn strs(d: &[u8], o: &[u32], idx: &[u32]) -> (Vec<u8>, Vec<u32>) {
-            let (mut nd, mut no) = (Vec::new(), Vec::with_capacity(idx.len()));
-            for &i in idx {
-                let i = i as usize;
-                let s = if i == 0 { 0 } else { o[i - 1] as usize };
-                nd.extend_from_slice(&d[s..o[i] as usize]);
-                no.push(u32::try_from(nd.len()).expect("a string column is over 4 GiB"));
-            }
-            (nd, no)
+        Col::picked(self.kind(), idx.iter().map(|&i| (self, i as usize)))
+    }
+
+    /// Value `r` of column `c` for every `(c, r)` of `picks`, in order: a
+    /// gather from one or more columns of kind `kind`.
+    pub fn picked<'a>(kind: Kind, picks: impl Iterator<Item = (&'a Col, usize)> + Clone) -> Col {
+        macro_rules! pick {
+            ($v:ident) => {
+                picks
+                    .map(|(c, r)| match c {
+                        Col::$v(v) => v[r],
+                        _ => unreachable!("columns of different kinds"),
+                    })
+                    .collect()
+            };
         }
-        fn pick<T: Copy>(v: &[T], idx: &[u32]) -> Vec<T> {
-            idx.iter().map(|&i| v[i as usize]).collect()
+        macro_rules! opt {
+            ($v:ident) => {{
+                let mut valid = Validity::default();
+                valid.reserve(picks.clone().count());
+                let values = picks
+                    .map(|(c, r)| match c {
+                        Col::$v(v) => {
+                            valid.push(v.valid.get(r));
+                            v.values[r]
+                        }
+                        _ => unreachable!("columns of different kinds"),
+                    })
+                    .collect();
+                Nullable { values, valid }
+            }};
         }
-        match self {
-            Col::I64(v) => Col::I64(pick(v, idx)),
-            Col::I32(v) => Col::I32(pick(v, idx)),
-            Col::Bool(v) => Col::Bool(pick(v, idx)),
-            Col::Str(d, o) => {
-                let (d, o) = strs(d, o, idx);
-                Col::Str(d, o)
+        let strs = |c: &'a Col| match c {
+            Col::Str(v) => v,
+            Col::OptStr(v) => &v.values,
+            _ => unreachable!("columns of different kinds"),
+        };
+        match kind {
+            Kind::Ts => Col::Ts(pick!(Ts)),
+            Kind::Date => Col::Date(pick!(Date)),
+            Kind::I64 => Col::I64(pick!(I64)),
+            Kind::I32 => Col::I32(pick!(I32)),
+            Kind::Bool => Col::Bool(pick!(Bool)),
+            Kind::OptI64 => Col::OptI64(opt!(OptI64)),
+            Kind::OptI32 => Col::OptI32(opt!(OptI32)),
+            Kind::Str => {
+                let mut v = StrCol::new();
+                v.extend_picked(picks.map(|(c, r)| (strs(c), r)));
+                Col::Str(v)
             }
-            Col::OptI64(v, n) => Col::OptI64(pick(v, idx), pick(n, idx)),
-            Col::OptI32(v, n) => Col::OptI32(pick(v, idx), pick(n, idx)),
-            Col::OptStr(d, o, n) => {
-                let (d, o) = strs(d, o, idx);
-                Col::OptStr(d, o, pick(n, idx))
+            Kind::OptStr => {
+                let mut values = StrCol::new();
+                values.extend_picked(picks.clone().map(|(c, r)| (strs(c), r)));
+                let mut valid = Validity::default();
+                for (c, r) in picks {
+                    match c {
+                        Col::OptStr(v) => valid.push(v.valid.get(r)),
+                        _ => unreachable!("columns of different kinds"),
+                    }
+                }
+                Col::OptStr(Nullable { values, valid })
             }
         }
     }
 
-    /// Append `other`'s values (a column of the same kind).
-    pub fn append(&mut self, other: &Col) {
-        fn strs(d: &mut Vec<u8>, o: &mut Vec<u32>, od: &[u8], oo: &[u32]) {
-            let base = u32::try_from(d.len()).expect("a string column is over 4 GiB");
-            d.extend_from_slice(od);
-            o.extend(
-                oo.iter()
-                    .map(|&e| base.checked_add(e).expect("a string column is over 4 GiB")),
-            );
-        }
-        match (self, other) {
-            (Col::I64(a), Col::I64(b)) => a.extend_from_slice(b),
-            (Col::I32(a), Col::I32(b)) => a.extend_from_slice(b),
-            (Col::Bool(a), Col::Bool(b)) => a.extend_from_slice(b),
-            (Col::Str(d, o), Col::Str(od, oo)) => strs(d, o, od, oo),
-            (Col::OptI64(a, n), Col::OptI64(b, m)) => {
-                a.extend_from_slice(b);
-                n.extend_from_slice(m);
-            }
-            (Col::OptI32(a, n), Col::OptI32(b, m)) => {
-                a.extend_from_slice(b);
-                n.extend_from_slice(m);
-            }
-            (Col::OptStr(d, o, n), Col::OptStr(od, oo, m)) => {
-                strs(d, o, od, oo);
-                n.extend_from_slice(m);
-            }
-            _ => unreachable!("columns of different kinds"),
+    /// Bytes of row `r` of a string column (0 for other columns).
+    pub fn value_bytes(&self, r: usize) -> usize {
+        let len = |v: &StrCol| (v.offsets()[r + 1] - v.offsets()[r]) as usize;
+        match self {
+            Col::Str(v) => len(v),
+            Col::OptStr(v) => len(&v.values),
+            _ => 0,
         }
     }
+}
+
+/// Append a present string value that `f` writes in place.
+#[inline]
+pub fn push_some_with(col: &mut Nullable<StrCol>, f: impl FnOnce(&mut StrBuf<'_>)) {
+    col.values.push_with(f);
+    col.valid.push(true);
+}
+
+/// Columns that are one or more [`Col`]s: every typed column buffer, and
+/// tuples of them (flattened, as Arrow flattens them).
+pub trait IntoCols {
+    fn into_cols(self, out: &mut Vec<Col>);
+}
+
+macro_rules! into_col {
+    ($($t:ty => $v:ident),* $(,)?) => {
+        $(impl IntoCols for $t {
+            fn into_cols(self, out: &mut Vec<Col>) {
+                out.push(Col::$v(self));
+            }
+        })*
+    };
+}
+
+into_col!(
+    Vec<Ts> => Ts,
+    Vec<Date32> => Date,
+    Vec<i64> => I64,
+    Vec<i32> => I32,
+    Vec<bool> => Bool,
+    StrCol => Str,
+    Nullable<Vec<i64>> => OptI64,
+    Nullable<Vec<i32>> => OptI32,
+    Nullable<StrCol> => OptStr,
+);
+
+macro_rules! tuple_cols {
+    ($($T:ident $i:tt),+) => {
+        impl<$($T: IntoCols),+> IntoCols for ($($T,)+) {
+            fn into_cols(self, out: &mut Vec<Col>) {
+                $(self.$i.into_cols(out);)+
+            }
+        }
+    };
+}
+
+tuple_cols!(A 0, B 1);
+tuple_cols!(A 0, B 1, C 2);
+tuple_cols!(A 0, B 1, C 2, D 3);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10);
+tuple_cols!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+/// Several tables' columns (a [`ChildCols`] is one table, a tuple of them
+/// its fields' tables in order) as one [`Rows`] per table.
+pub trait IntoRows {
+    fn into_rows(self, out: &mut Vec<Rows>);
+}
+
+impl<V: IntoCols> IntoRows for ChildCols<V> {
+    fn into_rows(self, out: &mut Vec<Rows>) {
+        let mut cols = Vec::new();
+        self.values.into_cols(&mut cols);
+        out.push(Rows { cols });
+    }
+}
+
+macro_rules! tuple_rows {
+    ($($T:ident $i:tt),+) => {
+        impl<$($T: IntoRows),+> IntoRows for ($($T,)+) {
+            fn into_rows(self, out: &mut Vec<Rows>) {
+                $(self.$i.into_rows(out);)+
+            }
+        }
+    };
+}
+
+tuple_rows!(A 0, B 1, C 2);
+tuple_rows!(A 0, B 1, C 2, D 3);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9);
+tuple_rows!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
+
+/// Tables' columns as one [`Rows`] per table.
+pub fn rows_of(cols: impl IntoRows) -> Vec<Rows> {
+    let mut out = Vec::new();
+    cols.into_rows(&mut out);
+    out
 }
 
 /// A table's columns for one chunk.
@@ -338,12 +639,6 @@ impl Rows {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-
-    pub fn clear(&mut self) {
-        for c in &mut self.cols {
-            c.clear();
-        }
-    }
 }
 
 /// A table: its name (directory of the datagen's output) and columns.
@@ -354,286 +649,54 @@ pub struct TableDef {
 }
 
 impl TableDef {
-    /// Arrow schema: timestamps as `Timestamp(ms, UTC)`, dates as `Date32`.
+    /// Its Arrow schema: each column's type and nullability are its
+    /// buffer's, as an Arrow sink makes it.
     pub fn schema(&self) -> SchemaRef {
-        let fields: Vec<Field> = self
-            .cols
-            .iter()
-            .map(|&(n, k)| {
-                let (t, null) = match k {
-                    Kind::Ts => (
-                        DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
-                        false,
-                    ),
-                    Kind::Date => (DataType::Date32, false),
-                    Kind::I64 => (DataType::Int64, false),
-                    Kind::I32 => (DataType::Int32, false),
-                    Kind::Bool => (DataType::Boolean, false),
-                    Kind::Str => (DataType::Utf8, false),
-                    Kind::OptI64 => (DataType::Int64, true),
-                    Kind::OptI32 => (DataType::Int32, true),
-                    Kind::OptStr => (DataType::Utf8, true),
-                };
-                Field::new(n, t, null)
-            })
-            .collect();
+        let fields: Vec<Field> = self.cols.iter().map(|&(n, k)| k.field(n)).collect();
         Arc::new(Schema::new(fields))
+    }
+
+    /// The table of `name` whose columns are `cols`, named `names`.
+    pub(crate) fn of(name: &'static str, names: &[&'static str], cols: &[Col]) -> TableDef {
+        assert_eq!(names.len(), cols.len(), "{name}: a name per column");
+        let cols: Vec<(&'static str, Kind)> = names
+            .iter()
+            .zip(cols)
+            .map(|(&n, c)| (n, c.kind()))
+            .collect();
+        TableDef {
+            name,
+            cols: Box::leak(cols.into_boxed_slice()),
+        }
     }
 }
 
-use Kind::*;
+/// The dynamic tables, in [`Raw`] order: their columns are the kinds of
+/// [`RawCols`]' buffers.
+pub static DYNAMIC: LazyLock<Vec<TableDef>> = LazyLock::new(|| {
+    rows_of(RawCols::default())
+        .iter()
+        .zip(DYNAMIC_NAMES.iter().zip(DYNAMIC_COLUMNS))
+        .map(|(r, (name, names))| TableDef::of(name, names, &r.cols))
+        .collect()
+});
 
-pub const PERSON: TableDef = TableDef {
-    name: "Person",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("id", I64),
-        ("firstName", Str),
-        ("lastName", Str),
-        ("gender", Str),
-        ("birthday", Date),
-        ("locationIP", Str),
-        ("browserUsed", Str),
-        ("LocationCityId", I32),
-        ("language", Str),
-        ("email", Str),
-    ],
-};
+/// The static tables, in [`STATIC_TABLES`] order.
+pub type Statics = (
+    Children<OrganisationRow>,
+    Children<PlaceRow>,
+    Children<TagRow>,
+    Children<TagClassRow>,
+);
 
-pub const PERSON_HAS_INTEREST: TableDef = TableDef {
-    name: "Person_hasInterest_Tag",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("PersonId", I64),
-        ("TagId", I32),
-    ],
-};
+/// The columns of [`Statics`].
+pub type StaticCols = Columns<Statics>;
 
-pub const PERSON_STUDY_AT: TableDef = TableDef {
-    name: "Person_studyAt_University",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("PersonId", I64),
-        ("UniversityId", I64),
-        ("classYear", I32),
-    ],
-};
-
-pub const PERSON_WORK_AT: TableDef = TableDef {
-    name: "Person_workAt_Company",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("PersonId", I64),
-        ("CompanyId", I64),
-        ("workFrom", I32),
-    ],
-};
-
-pub const PERSON_KNOWS: TableDef = TableDef {
-    name: "Person_knows_Person",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("Person1Id", I64),
-        ("Person2Id", I64),
-    ],
-};
-
-pub const FORUM: TableDef = TableDef {
-    name: "Forum",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("id", I64),
-        ("title", Str),
-        ("ModeratorPersonId", I64),
-    ],
-};
-
-pub const FORUM_HAS_TAG: TableDef = TableDef {
-    name: "Forum_hasTag_Tag",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("ForumId", I64),
-        ("TagId", I32),
-    ],
-};
-
-pub const FORUM_HAS_MEMBER: TableDef = TableDef {
-    name: "Forum_hasMember_Person",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("ForumId", I64),
-        ("PersonId", I64),
-    ],
-};
-
-pub const POST: TableDef = TableDef {
-    name: "Post",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("id", I64),
-        ("imageFile", OptStr),
-        ("locationIP", Str),
-        ("browserUsed", Str),
-        ("language", OptStr),
-        ("content", OptStr),
-        ("length", I32),
-        ("CreatorPersonId", I64),
-        ("ContainerForumId", I64),
-        ("LocationCountryId", I64),
-    ],
-};
-
-pub const POST_HAS_TAG: TableDef = TableDef {
-    name: "Post_hasTag_Tag",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("PostId", I64),
-        ("TagId", I32),
-    ],
-};
-
-pub const COMMENT: TableDef = TableDef {
-    name: "Comment",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("id", I64),
-        ("locationIP", Str),
-        ("browserUsed", Str),
-        ("content", Str),
-        ("length", I32),
-        ("CreatorPersonId", I64),
-        ("LocationCountryId", I32),
-        ("ParentPostId", OptI64),
-        ("ParentCommentId", OptI64),
-    ],
-};
-
-pub const COMMENT_HAS_TAG: TableDef = TableDef {
-    name: "Comment_hasTag_Tag",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("CommentId", I64),
-        ("TagId", I32),
-    ],
-};
-
-pub const PERSON_LIKES_POST: TableDef = TableDef {
-    name: "Person_likes_Post",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("PersonId", I64),
-        ("PostId", I64),
-    ],
-};
-
-pub const PERSON_LIKES_COMMENT: TableDef = TableDef {
-    name: "Person_likes_Comment",
-    cols: &[
-        ("creationDate", Ts),
-        ("deletionDate", Ts),
-        ("explicitlyDeleted", Bool),
-        ("PersonId", I64),
-        ("CommentId", I64),
-    ],
-};
-
-pub const ORGANISATION: TableDef = TableDef {
-    name: "Organisation",
-    cols: &[
-        ("id", I32),
-        ("type", Str),
-        ("name", Str),
-        ("url", Str),
-        ("LocationPlaceId", I32),
-    ],
-};
-
-pub const PLACE: TableDef = TableDef {
-    name: "Place",
-    cols: &[
-        ("id", I32),
-        ("name", Str),
-        ("url", Str),
-        ("type", Str),
-        ("PartOfPlaceId", OptI32),
-    ],
-};
-
-pub const TAG: TableDef = TableDef {
-    name: "Tag",
-    cols: &[
-        ("id", I32),
-        ("name", Str),
-        ("url", Str),
-        ("TypeTagClassId", I32),
-    ],
-};
-
-pub const TAG_CLASS: TableDef = TableDef {
-    name: "TagClass",
-    cols: &[
-        ("id", I32),
-        ("name", Str),
-        ("url", Str),
-        ("SubclassOfTagClassId", OptI32),
-    ],
-};
-
-/// The dynamic tables, in the order [`crate::Ldbc`] emits them.
-pub const DYNAMIC: [&TableDef; 14] = [
-    &PERSON,
-    &PERSON_HAS_INTEREST,
-    &PERSON_STUDY_AT,
-    &PERSON_WORK_AT,
-    &PERSON_KNOWS,
-    &FORUM,
-    &FORUM_HAS_TAG,
-    &FORUM_HAS_MEMBER,
-    &POST,
-    &POST_HAS_TAG,
-    &COMMENT,
-    &COMMENT_HAS_TAG,
-    &PERSON_LIKES_POST,
-    &PERSON_LIKES_COMMENT,
-];
-
-/// The static tables.
-pub const STATIC: [&TableDef; 4] = [&ORGANISATION, &PLACE, &TAG, &TAG_CLASS];
-
-/// Indices into [`DYNAMIC`].
-pub mod t {
-    pub const PERSON: usize = 0;
-    pub const HAS_INTEREST: usize = 1;
-    pub const STUDY_AT: usize = 2;
-    pub const WORK_AT: usize = 3;
-    pub const KNOWS: usize = 4;
-    pub const FORUM: usize = 5;
-    pub const FORUM_TAG: usize = 6;
-    pub const FORUM_MEMBER: usize = 7;
-    pub const POST: usize = 8;
-    pub const POST_TAG: usize = 9;
-    pub const COMMENT: usize = 10;
-    pub const COMMENT_TAG: usize = 11;
-    pub const LIKES_POST: usize = 12;
-    pub const LIKES_COMMENT: usize = 13;
-}
+/// The static tables, as [`STATIC_TABLES`] names them.
+pub static STATIC: LazyLock<Vec<TableDef>> = LazyLock::new(|| {
+    rows_of(StaticCols::default())
+        .iter()
+        .zip(STATIC_TABLES)
+        .map(|(r, (name, names))| TableDef::of(name, names, &r.cols))
+        .collect()
+});

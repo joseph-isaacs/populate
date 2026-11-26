@@ -9,7 +9,12 @@ license.workspace = true
 # the CLI's allocator (feature `mimalloc`, on by default; the library
 # itself doesn't use it)
 mimalloc = { version = "0.1", default-features = false, optional = true }
+populate-core = { workspace = true }
+populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
+populate-combinators = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
+rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }

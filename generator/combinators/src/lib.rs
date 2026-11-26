@@ -5,5 +5,9 @@
 //!
 //! - [`lehmer`]: the Park–Miller stream of dbgen and dsdgen (TPC-H, SSB,
 //!   TPC-DS, DSB), positioned anywhere in `O(log n)` and drawn in lanes.
+//! - [`views`]: `Utf8View` columns over buffers shared between batches
+//!   (a dictionary, a text pool), dbgen's weighted picks as views into
+//!   them, and strings written per row (TPC-H, SSB).
 
 pub mod lehmer;
+pub mod views;

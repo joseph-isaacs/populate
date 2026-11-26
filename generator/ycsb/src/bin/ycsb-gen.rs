@@ -26,25 +26,14 @@
 //! (default: all cores); the data is the same for any thread count and
 //! `--row-group`.
 
-use arrow_array::cast::AsArray;
-use arrow_array::{Array, RecordBatch};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
-use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::schema::types::ColumnPath;
 use populate_table::Chunks;
+use populate_table::cli::{Args, Tool, num, report, write};
 use populate_table::text::TextChunks;
-use populate_ycsb::{
-    JavaTlr, RequestDistribution, Ycsb, YcsbRun, for_each_batch_many, write_parquet_many,
-    write_text_many,
-};
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use populate_ycsb::{JavaTlr, RequestDistribution, Ycsb, YcsbRun};
 use std::process::exit;
-use std::str::FromStr;
 use std::time::Instant;
 
 /// mimalloc: buffers are reused instead of returned to the OS and faulted
@@ -67,29 +56,14 @@ ycsb-gen run  [load flags] [--operations 1000] [--workload a-f]
 common: [--out DIR] [--format parquet|text|none] [--threads N] [--batch ROWS]
         [--row-group ROWS] [--compression snappy|none] [--no-dictionary]";
 
-#[derive(Clone, Copy, PartialEq)]
-enum Format {
-    Parquet,
-    Text,
-    None,
-}
+const LOAD_FLAGS: &str = "[--records 1000] [--insert-start 0] [--insert-count N] \
+[--field-count 10] [--field-length 100] [--field-prefix field] [--ordered] [--zero-padding 1] \
+[--data-integrity] [--java-seed 0] [--java-thread 1]";
 
-struct Common {
-    out: Option<PathBuf>,
-    format: Format,
-    threads: usize,
-    batch: Option<usize>,
-    row_group: Option<u64>,
-    compression: Compression,
-    dictionary: bool,
-}
-
-fn num<T: FromStr>(flag: &str, v: String) -> Result<T, String>
-where
-    T::Err: std::fmt::Display,
-{
-    v.parse().map_err(|e| format!("{flag}: {e}"))
-}
+const RUN_FLAGS: &str = "[load flags] [--operations 1000] [--workload a-f] [--read P] \
+[--update P] [--insert P] [--scan P] [--rmw P] [--distribution uniform|zipfian|latest|hotspot] \
+[--hotspot-data 0.2] [--hotspot-ops 0.8] [--read-one-field] [--write-all-fields] \
+[--scan-length MIN,MAX] [--scan-zipfian]";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -107,61 +81,6 @@ fn main() {
         eprintln!("{e}\n{USAGE}");
         exit(2);
     }
-}
-
-/// Parse the flags: `own` handles the command's own, returning false for
-/// flags it doesn't know.
-fn parse(
-    mut it: impl Iterator<Item = String>,
-    mut own: impl FnMut(&str, &mut dyn FnMut() -> Result<String, String>) -> Result<bool, String>,
-) -> Result<Common, String> {
-    let mut c = Common {
-        out: None,
-        format: Format::Parquet,
-        threads: 0,
-        batch: None,
-        row_group: None,
-        compression: Compression::SNAPPY,
-        dictionary: true,
-    };
-    while let Some(flag) = it.next() {
-        let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--out" => c.out = Some(val()?.into()),
-            "--format" => {
-                c.format = match val()?.as_str() {
-                    "parquet" => Format::Parquet,
-                    "text" => Format::Text,
-                    "none" => Format::None,
-                    f => return Err(format!("unknown format `{f}`")),
-                }
-            }
-            "--threads" => c.threads = num(&flag, val()?)?,
-            "--batch" => c.batch = Some(num(&flag, val()?)?),
-            "--row-group" => c.row_group = Some(num(&flag, val()?)?),
-            "--compression" => {
-                c.compression = match val()?.as_str() {
-                    "snappy" => Compression::SNAPPY,
-                    "none" => Compression::UNCOMPRESSED,
-                    x => return Err(format!("unknown compression `{x}`")),
-                }
-            }
-            "--no-dictionary" => c.dictionary = false,
-            "-h" | "--help" => {
-                println!("{HELP}");
-                exit(0);
-            }
-            f => {
-                if !own(f, &mut val)? {
-                    return Err(format!("unknown flag `{f}`"));
-                }
-            }
-        }
-    }
-    if c.batch == Some(0) || c.row_group == Some(0) {
-        return Err("--batch and --row-group must be > 0".into());
-    }
-    Ok(c)
 }
 
 fn ycsb(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -189,7 +108,21 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
     let mut distribution: Option<String> = None;
     let mut hotspot = (0.2, 0.8);
     let mut hotspot_set = false;
-    let c = parse(args, |flag, val| {
+    let tool = Tool {
+        ext: "tsv",
+        max_sf: None,
+        tables: false,
+        flags: if transactions { RUN_FLAGS } else { LOAD_FLAGS },
+        ..if transactions {
+            Tool {
+                out: "ycsb-run",
+                ..Tool::new("ycsb-gen run", "text", 0.0)
+            }
+        } else {
+            Tool::new("ycsb-gen load", "text", 0.0)
+        }
+    };
+    let own = |flag: &str, val: &mut dyn FnMut() -> Result<String, String>| {
         let mut prop = |k: usize, v: f64| {
             proportions[k] = Some(v);
         };
@@ -273,7 +206,8 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
             _ => return Ok(false),
         }
         Ok(true)
-    })?;
+    };
+    let a = Args::<String>::parse_from(tool, Vec::new, own, args)?;
     let mut y = Ycsb::new(records);
     for s in sets {
         y = s(y);
@@ -281,20 +215,12 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
     y = y.java_random(tlr);
     y.check()?;
     if !transactions {
-        if let Some(b) = c.batch {
-            y = y.batch_size(b);
-        }
-        if let Some(r) = c.row_group {
+        y = y.batch_size(a.batch);
+        if let Some(r) = a.row_group {
             y = y.chunk_rows(r);
         }
-        return run(
-            &c,
-            &[y],
-            &["usertable".to_string()],
-            "tsv",
-            "ycsb",
-            Ycsb::parquet_props(),
-        );
+        run(&a, "usertable", y, Ycsb::parquet_props());
+        return Ok(());
     }
     let mut r = match workload {
         Some(w) => YcsbRun::workload(w, y, operations),
@@ -335,155 +261,24 @@ fn ycsb_cmd(args: impl Iterator<Item = String>, transactions: bool) -> Result<()
     for s in run_sets {
         r = s(r);
     }
-    if let Some(b) = c.batch {
-        r = r.batch_size(b);
-    }
-    if let Some(n) = c.row_group {
+    r = r.batch_size(a.batch);
+    if let Some(n) = a.row_group {
         r = r.chunk_ops(n);
     }
     r.check()?;
-    run(
-        &c,
-        &[r],
-        &["transactions".to_string()],
-        "tsv",
-        "ycsb-run",
-        YcsbRun::parquet_props(),
-    )
-}
-
-fn run<T: Chunks + TextChunks>(
-    c: &Common,
-    tables: &[T],
-    names: &[String],
-    text_ext: &str,
-    default_dir: &str,
-    props: WriterPropertiesBuilder,
-) -> Result<(), String> {
-    let out = c.out.clone().unwrap_or_else(|| default_dir.into());
-    let fail = |what: &dyn std::fmt::Display, e: &dyn std::fmt::Display| -> ! {
-        eprintln!("{what}: {e}");
-        exit(1);
-    };
-    if c.format != Format::None {
-        std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(&out.display(), &e));
-    }
-    let ext = if c.format == Format::Parquet {
-        "parquet"
-    } else {
-        text_ext
-    };
-    let paths: Vec<PathBuf> = names
-        .iter()
-        .map(|n| out.join(format!("{n}.{ext}")))
-        .collect();
-    let create = || -> Vec<BufWriter<File>> {
-        paths
-            .iter()
-            .map(|p| {
-                let f = File::create(p).unwrap_or_else(|e| fail(&p.display(), &e));
-                BufWriter::with_capacity(1 << 20, f)
-            })
-            .collect()
-    };
-    let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
-    let start = Instant::now();
-    let (rows, bytes): (Vec<u64>, Vec<u64>) = match c.format {
-        Format::Parquet => {
-            let mut props = props.set_compression(c.compression);
-            if !c.dictionary {
-                for t in tables {
-                    for f in t.schema().fields() {
-                        props = props.set_column_dictionary_enabled(
-                            ColumnPath::from(f.name().as_str()),
-                            false,
-                        );
-                    }
-                }
-            }
-            let props = props.build();
-            write_parquet_many(tables, create(), c.threads, Some(props))
-                .unwrap_or_else(|e| fail(&"parquet", &e));
-            paths.iter().map(|p| (parquet_rows(p), size(p))).unzip()
-        }
-        Format::Text => {
-            let w: Vec<_> = create().into_iter().map(|f| Lines(f, 0)).collect();
-            let w = write_text_many(tables, w, c.threads).unwrap_or_else(|e| fail(&"text", &e));
-            w.iter().zip(&paths).map(|(l, p)| (l.1, size(p))).unzip()
-        }
-        Format::None => {
-            let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
-            for_each_batch_many(tables, c.threads, |t, b| {
-                rows[t] += b.num_rows() as u64;
-                bytes[t] += batch_bytes(&b);
-            });
-            (rows, bytes)
-        }
-    };
-    let secs = start.elapsed().as_secs_f64();
-    let unit = if c.format == Format::None {
-        "Arrow"
-    } else {
-        "file"
-    };
-    for ((n, r), b) in names.iter().zip(&rows).zip(&bytes) {
-        println!(
-            "{n:>12} {r:>12} rows {:>10.1} MiB ({unit})",
-            *b as f64 / 1048576.0
-        );
-    }
-    let total: u64 = bytes.iter().sum();
-    println!(
-        "{:>12} {:>12} rows {:>10.1} MiB in {secs:.2} s ({:.0} MiB/s)",
-        "total",
-        rows.iter().sum::<u64>(),
-        total as f64 / 1048576.0,
-        total as f64 / 1048576.0 / secs
-    );
+    run(&a, "transactions", r, YcsbRun::parquet_props());
     Ok(())
 }
 
-/// Rows of a Parquet file, from its footer.
-fn parquet_rows(p: &Path) -> u64 {
-    File::open(p)
-        .ok()
-        .and_then(|f| SerializedFileReader::new(f).ok())
-        .map_or(0, |r| r.metadata().file_metadata().num_rows() as u64)
-}
-
-/// Arrow bytes of a batch: value buffers, and string views plus their data.
-fn batch_bytes(b: &RecordBatch) -> u64 {
-    b.columns()
-        .iter()
-        .map(|a| match a.as_string_view_opt() {
-            Some(s) => {
-                (s.len() * 16 + s.data_buffers().iter().map(|d| d.len()).sum::<usize>()) as u64
-            }
-            None => a.get_array_memory_size() as u64,
-        })
-        .sum()
-}
-
-/// A writer that counts lines.
-struct Lines<W>(W, u64);
-
-impl<W: Write> Write for Lines<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.0.write(buf)?;
-        self.1 += newlines(&buf[..n]);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
-}
-
-/// Newlines in `b`: counted in `u8` lanes per 255 bytes, which
-/// vectorises (a `u64` count per byte ran at ~1.4 GB/s, serially, on the
-/// file's writer).
-fn newlines(b: &[u8]) -> u64 {
-    b.chunks(255)
-        .map(|c| c.iter().fold(0u8, |n, &x| n + (x == b'\n') as u8) as u64)
-        .sum()
+/// Write `table` as `a` says, and report.
+fn run<T: Chunks + TextChunks>(
+    a: &Args<String>,
+    name: &str,
+    table: T,
+    props: WriterPropertiesBuilder,
+) {
+    let paths = a.paths(&[name]);
+    let start = Instant::now();
+    let (rows, bytes) = write(a, &paths, &[table], props);
+    report(&[name], &rows, &bytes, start.elapsed().as_secs_f64(), "");
 }

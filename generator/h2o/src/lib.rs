@@ -20,6 +20,7 @@ mod fwrite_tables;
 pub mod groupby;
 pub mod join;
 pub mod rng;
+pub mod values;
 
 pub use groupby::GroupBy;
 pub use join::{Join, JoinTable};

@@ -38,6 +38,7 @@
 //! default run of all five tables. (`dbgen -T c` alone, say, gives other
 //! customer cities and phone numbers.)
 
+mod cols;
 mod dict;
 mod engine;
 mod flat;
@@ -48,10 +49,10 @@ pub use engine::{
     write_parquet_many, write_tbl_many,
 };
 
-use flat::Dims;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
+use tables::TableGen;
 
 /// Every SSB table, and `lineorder_flat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -121,7 +122,9 @@ pub const MAX_SCALE_FACTOR: f64 = 30_000.0;
 #[derive(Debug, Clone)]
 pub struct Ssb {
     scale: tables::Scale,
-    dims: Arc<OnceLock<Dims>>,
+    /// `lineorder_flat`'s distribution, built (with the dimension tables)
+    /// on first use.
+    flat: Arc<OnceLock<Arc<dyn TableGen>>>,
 }
 
 impl Ssb {
@@ -136,7 +139,7 @@ impl Ssb {
         );
         Ssb {
             scale: tables::Scale::new(sf),
-            dims: Arc::default(),
+            flat: Arc::default(),
         }
     }
 
@@ -159,7 +162,7 @@ impl Ssb {
 
     /// Table `t`, ready to generate.
     pub fn table(&self, t: TableName) -> SsbTable {
-        SsbTable::new(t, self.scale, self.source_rows(t), self.dims.clone())
+        SsbTable::new(t, self.scale, self.source_rows(t), self.flat.clone())
     }
 
     /// The five SSB tables, in [`TableName::ALL`] order.

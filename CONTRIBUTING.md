@@ -18,6 +18,11 @@ cargo test --workspace --all-features
 Clippy's `--all-targets` checks that the benches compile; CI does not
 build or run them in the optimised `bench` profile.
 
+CI disables debug symbols for development and test builds with
+`CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0` to reduce
+code generation and artifact size. Tests retain debug assertions and
+overflow checks. Local builds keep their normal debug symbols.
+
 Plain `cargo build` / `cargo test` cover only the workspace
 `default-members`, which leave out `populate-bench` and the `parquet`
 feature.

@@ -103,11 +103,29 @@ where
 // Derive
 // ============================================================================
 
+/// A source's columns, kept between collects so their buffers are reused;
+/// empty between collects. A clone starts with none.
+#[derive(Default)]
+struct Scratch<C>(C);
+
+impl<C: Default> Clone for Scratch<C> {
+    fn clone(&self) -> Self {
+        Scratch::default()
+    }
+}
+
+impl<C> std::fmt::Debug for Scratch<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Scratch")
+    }
+}
+
 /// `f` of every row of `source`, collected columnar. See [`derive()`].
 #[derive(Debug, Clone)]
-pub struct Derive<D, F, Out> {
+pub struct Derive<D: Distribution, F, Out> {
     pub source: D,
     pub f: F,
+    scratch: Scratch<Columns<D::Item>>,
     /// Fixed here rather than read off `F`, so a source's `Item` is a
     /// plain type wherever it is used.
     _out: PhantomData<fn() -> Out>,
@@ -130,6 +148,7 @@ where
     Derive {
         source,
         f,
+        scratch: Scratch::default(),
         _out: PhantomData,
     }
 }
@@ -144,9 +163,11 @@ where
     type Item = Out;
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
+        let src = &mut self.scratch.0;
+        self.source.collect_into(src, rng, n);
         cols.reserve(n);
         cols.push_n(src.row_refs().map(&self.f));
+        src.clear();
     }
 
     fn skip(&mut self, n: u64) {
@@ -265,15 +286,16 @@ where
 
 /// Child rows that `f` writes for each source row. See [`flat_map`].
 #[derive(Debug, Clone)]
-pub struct FlatMap<D, F, Out> {
+pub struct FlatMap<D: Distribution, F, Out> {
     pub source: D,
     pub f: F,
+    scratch: Scratch<Columns<D::Item>>,
     /// Children to reserve per source row, per table ([`FlatMap::reserving`]).
     pub reserve: Vec<f64>,
     _out: PhantomData<fn() -> Out>,
 }
 
-impl<D, F, Out> FlatMap<D, F, Out> {
+impl<D: Distribution, F, Out> FlatMap<D, F, Out> {
     /// Reserve `per_source[k]` children per source row in table `k` before
     /// collecting, so the columns are allocated once instead of grown (each
     /// growth copies them). A table's mean children per source row, with a
@@ -310,6 +332,7 @@ where
     FlatMap {
         source,
         f,
+        scratch: Scratch::default(),
         reserve: Vec::new(),
         _out: PhantomData,
     }
@@ -325,7 +348,8 @@ where
     type Item = Out;
 
     fn collect_into(&mut self, cols: &mut Columns<Out>, rng: &mut impl Rng, n: usize) {
-        let src = self.source.collect(rng, n);
+        let src = &mut self.scratch.0;
+        self.source.collect_into(src, rng, n);
         if !self.reserve.is_empty() {
             let per: Vec<usize> = self
                 .reserve
@@ -337,6 +361,7 @@ where
         for row in src.row_refs() {
             (self.f)(row, cols);
         }
+        src.clear();
         Out::add_sources(cols, n);
     }
 

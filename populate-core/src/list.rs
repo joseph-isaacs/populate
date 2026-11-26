@@ -103,7 +103,22 @@ impl<V> ListCol<V> {
         write(&mut self.offsets);
         let mut end = start;
         let mut negative = false;
-        for o in &mut self.offsets[rows..] {
+        // Sums within a block don't wait on the running total, so the
+        // serial chain is one add per block rather than one per row.
+        const B: usize = 8;
+        let (blocks, rest) = self.offsets[rows..].as_chunks_mut::<B>();
+        for b in blocks {
+            negative |= b.iter().fold(0, |m, &l| m | l) < 0;
+            let mut sums = [0usize; B];
+            let mut acc = 0usize;
+            for (s, &l) in sums.iter_mut().zip(b.iter()) {
+                acc = acc.wrapping_add(l as usize);
+                *s = acc;
+            }
+            *b = sums.map(|s| end.wrapping_add(s) as i32);
+            end = end.wrapping_add(acc);
+        }
+        for o in rest {
             negative |= *o < 0;
             end = end.wrapping_add(*o as usize);
             *o = end as i32;
@@ -162,5 +177,48 @@ mod tests {
         c.push_lengths(std::iter::repeat_n(0, 7));
         assert_eq!(c.offsets().as_ptr(), ptr);
         assert_eq!(c.offsets().len(), 8);
+    }
+
+    /// Lengths written in place, across whole blocks of the prefix sum and
+    /// the rows after them, onto rows already there.
+    #[test]
+    fn lengths_in_place_are_offsets() {
+        let mut c = ListCol::<Vec<i32>>::default();
+        c.push_lengths([2].into_iter());
+        let lengths: Vec<i32> = (0..19).map(|i| i % 5).collect();
+        let total = c.push_lengths_in_place(|o| o.extend(&lengths));
+        assert_eq!(total, lengths.iter().sum::<i32>() as usize);
+        let mut want = vec![0, 2];
+        for l in &lengths {
+            want.push(want.last().unwrap() + l);
+        }
+        assert_eq!(c.offsets(), want);
+    }
+
+    fn panics_and_keeps_rows(lengths: &[i32]) -> String {
+        let mut c = ListCol::<Vec<i32>>::default();
+        c.push_lengths([3].into_iter());
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.push_lengths_in_place(|o| o.extend(lengths))
+        }))
+        .expect_err("bad lengths panic");
+        assert_eq!(c.offsets(), [0, 3]);
+        err.downcast_ref::<&str>().map_or_else(
+            || err.downcast_ref::<String>().cloned().unwrap_or_default(),
+            |s| s.to_string(),
+        )
+    }
+
+    #[test]
+    fn negative_length_in_a_block_panics() {
+        let mut lengths = vec![1; 9];
+        lengths[5] = -1;
+        assert!(panics_and_keeps_rows(&lengths).contains("negative"));
+    }
+
+    #[test]
+    fn offsets_past_i32_max_panic() {
+        let lengths = vec![i32::MAX / 4; 10];
+        assert!(!panics_and_keeps_rows(&lengths).contains("negative"));
     }
 }

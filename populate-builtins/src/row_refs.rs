@@ -15,6 +15,9 @@ pub trait RowRefs {
 
     /// Every row, in order.
     fn row_refs(&self) -> impl Iterator<Item = Self::Ref<'_>> + '_;
+
+    /// Drop every row, keeping the buffers to collect into again.
+    fn clear(&mut self);
 }
 
 impl<T> RowRefs for Vec<T> {
@@ -25,6 +28,10 @@ impl<T> RowRefs for Vec<T> {
 
     fn row_refs(&self) -> impl Iterator<Item = &T> + '_ {
         self.iter()
+    }
+
+    fn clear(&mut self) {
+        Vec::clear(self);
     }
 }
 
@@ -41,6 +48,11 @@ impl<C: RowRefs> RowRefs for Nullable<C> {
             .zip(self.valid.iter())
             .map(|(v, ok)| ok.then_some(v))
     }
+
+    fn clear(&mut self) {
+        self.values.clear();
+        self.valid.clear();
+    }
 }
 
 macro_rules! tuple_refs {
@@ -51,6 +63,11 @@ macro_rules! tuple_refs {
             fn row_refs(&self) -> impl Iterator<Item = Self::Ref<'_>> + '_ {
                 let ($($v,)+) = self;
                 zip_refs!($($v),+)
+            }
+
+            fn clear(&mut self) {
+                let ($($v,)+) = self;
+                $($v.clear();)+
             }
         }
     };

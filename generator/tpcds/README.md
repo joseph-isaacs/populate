@@ -17,7 +17,10 @@ cargo run -p populate-gen-tpcds --release --bin tpcds-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|dat|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`,
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table; a returns table is chunked as its sales table, so the two
+are generated in one pass), `--compression snappy|none`, `--no-dictionary`,
 `--encoding latin1|utf8` (`.dat` only).
 
 From Rust:
@@ -139,25 +142,28 @@ command line.
 
 SF 1 (19.6M rows, 24 tables) and SF 10 (192M rows) on a 4-core cloud VM,
 `cargo xtask bench --generators tpcds --scale 1,10` (see
-[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds`. The
-VM is noisy (±10% run to run, and it drifts), so both tools run
-interleaved and each keeps its best time: best of 3 at SF 1 (output to
-tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
-`--encoding utf8`, so the files are `cmp`-identical to tpcgen-cli's.
+[BENCHMARKS.md](../../BENCHMARKS.md)) against `tpcgen-cli tpcds` 4.0,
+both with the same thread count, and for Parquet both with Snappy and
+`--row-group-bytes 7340032` (tpcgen-cli's default). The VM is noisy (±10%
+run to run, and it drifts), so both tools run interleaved and each keeps
+its best time: best of 3 at SF 1 (output to tmpfs), best of 2 at SF 10
+(output to disk). `.dat` runs use `--encoding utf8`, so the files are the
+same bytes as tpcgen-cli's (the bench checks them).
 
 | SF | output           | threads | tpcgen-cli | populate-gen-tpcds | speedup |
 |---:|------------------|--------:|-----------:|---------------:|--------:|
-| 1  | `.dat`           | 1       | 9.51 s     | 3.04 s         | 3.1x    |
-| 1  | `.dat`           | 4       | 3.05 s     | 0.92 s         | 3.3x    |
-| 1  | Parquet (snappy) | 1       | 10.50 s    | 4.47 s         | 2.3x    |
-| 1  | Parquet (snappy) | 4       | 3.38 s     | 1.21 s         | 2.8x    |
-| 10 | `.dat`           | 1       | 92.4 s     | 30.1 s         | 3.1x    |
-| 10 | `.dat`           | 4       | 28.6 s     | 11.5 s         | 2.5x    |
-| 10 | Parquet (snappy) | 1       | 102.0 s    | 43.5 s         | 2.3x    |
-| 10 | Parquet (snappy) | 4       | 27.9 s     | 11.6 s         | 2.4x    |
+| 1  | `.dat`           | 1       | 13.51 s    | 3.16 s         | 4.3x    |
+| 1  | `.dat`           | 4       | 3.84 s     | 0.81 s         | 4.7x    |
+| 1  | Parquet (snappy) | 1       | 11.61 s    | 3.91 s         | 3.0x    |
+| 1  | Parquet (snappy) | 4       | 3.82 s     | 1.20 s         | 3.2x    |
+| 10 | `.dat`           | 1       | 124.5 s    | 39.2 s         | 3.2x    |
+| 10 | `.dat`           | 4       | 41.3 s     | 12.0 s         | 3.4x    |
+| 10 | Parquet (snappy) | 1       | 116.6 s    | 39.2 s         | 3.0x    |
+| 10 | Parquet (snappy) | 4       | 34.3 s     | 9.83 s         | 3.5x    |
 
-Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
-4,199 MB at SF 10.
+Parquet files have the same schema and rows; with each tool's own
+dictionary choices they come to 393 MB vs tpcgen-cli's 418 MB at SF 1,
+4,075 MB vs 4,200 MB at SF 10.
 
 ### Where the time goes
 

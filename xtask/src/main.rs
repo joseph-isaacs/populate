@@ -5,6 +5,8 @@
 //! prints a Markdown table. Where a reference tool is installed
 //! (`tpcgen-cli` for TPC-H and TPC-DS, `tsbs_generate_data` for TSBS) it
 //! runs alternately with ours, so drift on a noisy machine hits both alike.
+//! Both sides get the same settings: thread count, Snappy, and Parquet row
+//! groups of `ROW_GROUP_BYTES`; text output is checked to be the same bytes.
 //! Usage is in `USAGE` and BENCHMARKS.md.
 
 use std::collections::HashMap;
@@ -62,6 +64,10 @@ impl Format {
         }
     }
 }
+
+/// Parquet row groups for the comparisons with `tpcgen-cli`: its default,
+/// passed to both tools.
+const ROW_GROUP_BYTES: &str = "7340032";
 
 /// Generator name, cargo package, binary, and what `--scale 1` means.
 const GENERATORS: &[(&str, &str, &str, &str)] = &[
@@ -285,14 +291,31 @@ fn case(o: &Opts, bin: &Path, g: &str, scale: f64, f: Format, threads: usize) ->
     };
     let tpcgen = |suite: &str, ff: &str, sf: f64| {
         let p = o.tpcgen_cli.as_ref().filter(|_| f != Format::Arrow)?;
-        let c = Cmd::new(p, &[suite, ff, "-s", &sf.to_string(), "--output-dir", out])
+        let mut c = Cmd::new(p, &[suite, ff, "-s", &sf.to_string(), "--output-dir", out])
             .arg("--num-threads")
             .arg(&t);
+        if f == Format::Parquet {
+            c = c
+                .arg("--compression")
+                .arg("SNAPPY")
+                .arg("--row-group-bytes")
+                .arg(ROW_GROUP_BYTES);
+        }
         Some(("tpcgen-cli", c))
+    };
+    // the settings `tpcgen` gives tpcgen-cli
+    let same_parquet = |c: Cmd| match f {
+        Format::Parquet => c
+            .arg("--compression")
+            .arg("snappy")
+            .arg("--row-group-bytes")
+            .arg(ROW_GROUP_BYTES),
+        _ => c,
     };
     Some(match g {
         "tpch" => {
             let (size, ff, ours) = tpc("tpch-gen", scale, "tbl");
+            let ours = same_parquet(ours);
             let reference = tpcgen("tpch", ff, scale);
             Case {
                 size,
@@ -302,7 +325,8 @@ fn case(o: &Opts, bin: &Path, g: &str, scale: f64, f: Format, threads: usize) ->
             }
         }
         "tpcds" => {
-            let (size, ff, mut ours) = tpc("tpcds-gen", scale, "dat");
+            let (size, ff, ours) = tpc("tpcds-gen", scale, "dat");
+            let mut ours = same_parquet(ours);
             // tpcgen-cli writes UTF-8; dsdgen's default is Latin-1
             if f == Format::Text {
                 ours = ours.arg("--encoding").arg("utf8");
@@ -438,7 +462,7 @@ fn case(o: &Opts, bin: &Path, g: &str, scale: f64, f: Format, threads: usize) ->
                         r.args.extend(common.iter().cloned());
                         r = r.arg("--format=influx");
                         r.stdout = Some("data.influx");
-                        ("tsbs_generate_data", r)
+                        ("tsbs_generate_data (1 thread)", r)
                     });
                     ("influx", ours, reference)
                 }
@@ -484,8 +508,46 @@ fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
+/// FNV-1a of the names and contents of the files under `p`, in name order,
+/// leaving out TPC-DS's `dbgen_version.dat`: `tpcgen-cli` writes it, with
+/// the generation time in it, and populate does not.
+fn digest(p: &Path) -> u64 {
+    fn walk(p: &Path, files: &mut Vec<PathBuf>) {
+        for e in read_dir(p).into_iter().flatten().flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&e.path(), files),
+                _ if e.file_name() == "dbgen_version.dat" => {}
+                _ => files.push(e.path()),
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(p, &mut files);
+    files.sort();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    let mut buf = vec![0; 1 << 20];
+    for f in files {
+        eat(f.strip_prefix(p).unwrap_or(&f).to_string_lossy().as_bytes());
+        let Ok(mut r) = File::open(&f) else { continue };
+        while let Ok(n @ 1..) = r.read(&mut buf) {
+            eat(&buf[..n]);
+        }
+    }
+    h
+}
+
 /// Wall time and output bytes of one run, output wiped before and after.
-fn run(c: &Cmd, out: &Path) -> Result<(Duration, u64), String> {
+/// With `digests`, the output's [`digest`] goes in it under the command.
+fn run(
+    c: &Cmd,
+    out: &Path,
+    digests: Option<&mut HashMap<String, u64>>,
+) -> Result<(Duration, u64), String> {
     let _ = remove_dir_all(out);
     create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let stdout = match c.stdout {
@@ -506,6 +568,11 @@ fn run(c: &Cmd, out: &Path) -> Result<(Duration, u64), String> {
     let status = child.wait().map_err(|e| e.to_string())?;
     let elapsed = t0.elapsed();
     let bytes = dir_size(out);
+    if let Some(d) = digests
+        && status.success()
+    {
+        d.insert(c.key(), digest(out));
+    }
     let _ = remove_dir_all(out);
     if status.success() {
         Ok((elapsed, bytes))
@@ -609,6 +676,8 @@ fn bench(o: Opts) -> Result<(), String> {
 
     // a reference tool without a thread flag runs once per configuration
     let mut ref_cache: HashMap<String, Result<(Duration, u64), String>> = HashMap::new();
+    // text output of each command run against a reference tool
+    let mut digests: HashMap<String, u64> = HashMap::new();
     let mut rows = Vec::new();
     let mut errors = Vec::new();
     for &scale in &o.scales {
@@ -625,12 +694,23 @@ fn bench(o: Opts) -> Result<(), String> {
                         .and_then(|(_, r)| ref_cache.get(&r.key()).cloned());
                     let mut ours = Vec::new();
                     let mut theirs = Vec::new();
-                    for _ in 0..o.runs {
+                    // the text formats are the reference's own: compare the bytes
+                    let check = f == Format::Text && c.reference.is_some();
+                    for i in 0..o.runs {
+                        let d = (check && i == 0).then_some(&mut digests);
                         if let (Some((_, r)), None) = (&c.reference, &cached) {
-                            theirs.push(run(r, &o.out));
+                            theirs.push(run(r, &o.out, d));
                         }
-                        ours.push(run(&c.ours, &o.out));
+                        let d = (check && i == 0).then_some(&mut digests);
+                        ours.push(run(&c.ours, &o.out, d));
                     }
+                    let same = c.reference.as_ref().map(|(_, r)| {
+                        match (digests.get(&c.ours.key()), digests.get(&r.key())) {
+                            (Some(a), Some(b)) if a == b => "yes",
+                            (Some(_), Some(_)) => "no",
+                            _ => "",
+                        }
+                    });
                     let ours = best(&ours);
                     let theirs = match (&c.reference, cached) {
                         (Some(_), Some(r)) => Some(r),
@@ -662,6 +742,7 @@ fn bench(o: Opts) -> Result<(), String> {
                     match (&c.reference, theirs) {
                         (Some((name, _)), Some(Ok((d, b)))) => {
                             row.extend([name.to_string(), secs(d), mb(b)]);
+                            row.push(same.unwrap_or_default().into());
                             row.push(match &ours {
                                 Ok((o, _)) => format!("{:.1}x", d.as_secs_f64() / o.as_secs_f64()),
                                 Err(_) => String::new(),
@@ -669,16 +750,10 @@ fn bench(o: Opts) -> Result<(), String> {
                         }
                         (Some((name, _)), Some(Err(e))) => {
                             errors.push(e);
-                            row.extend([
-                                name.to_string(),
-                                "error".into(),
-                                String::new(),
-                                String::new(),
-                            ]);
+                            row.extend([name.to_string(), "error".into()]);
+                            row.extend([String::new(), String::new(), String::new()]);
                         }
-                        _ => {
-                            row.extend([String::new(), String::new(), String::new(), String::new()])
-                        }
+                        _ => row.extend(vec![String::new(); 5]),
                     }
                     rows.push(row);
                 }
@@ -689,15 +764,16 @@ fn bench(o: Opts) -> Result<(), String> {
 
     println!();
     println!(
-        "Best of {} run(s), output to {}. Speedup is reference time / populate time.",
+        "Best of {} run(s), output to {}. Speedup is reference time / populate time. \
+         Parquet against tpcgen-cli: Snappy, {ROW_GROUP_BYTES}-byte row groups on both sides.",
         o.runs,
         o.out.parent().unwrap_or(&o.out).display()
     );
     println!();
     println!(
-        "| generator | size | format | threads | populate (s) | MB | reference | reference (s) | reference MB | speedup |"
+        "| generator | size | format | threads | populate (s) | MB | reference | reference (s) | reference MB | same bytes | speedup |"
     );
-    println!("|---|---|---|---:|---:|---:|---|---:|---:|---:|");
+    println!("|---|---|---|---:|---:|---:|---|---:|---:|---|---:|");
     for r in rows {
         println!("| {} |", r.join(" | "));
     }

@@ -1006,6 +1006,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-schema",
+ "populate-builtins",
  "populate-core",
  "rand",
 ]
@@ -1019,6 +1020,7 @@ dependencies = [
  "arrow-schema",
  "bytes",
  "parquet",
+ "populate-builtins",
  "populate-core",
  "rand",
  "snap",

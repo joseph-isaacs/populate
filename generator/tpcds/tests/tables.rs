@@ -16,7 +16,11 @@ macro_rules! references {
     ($($t:ident => $arrow:ident, $rows:ident;)*) => {
         /// The table as tpcdsgen-arrow makes it, sequentially, at SF 1.
         fn reference_arrow(t: &DsTable) -> Vec<RecordBatch> {
-            let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+            reference_arrow_at(t, 1.0)
+        }
+
+        fn reference_arrow_at(t: &DsTable, sf: f64) -> Vec<RecordBatch> {
+            let s = SessionBuilder::new().with_scale_factor(sf).build().unwrap();
             match t.name() {
                 $($t => $arrow::new(s)
                     .with_source_row_range(1, t.source_rows())
@@ -99,6 +103,63 @@ fn chunks_and_threads_do_not_change_the_data() {
             .collect(4);
         assert!(rows(&one) > 0, "{t}");
         assert_eq!(concat(&one), concat(&many), "{t}");
+    }
+}
+
+#[test]
+fn adaptive_arrow_work_preserves_all_tables_and_fused_outputs() {
+    let ds = Tpcds::new(10.0);
+    let mut tables: Vec<_> = TableName::ALL
+        .iter()
+        .rev()
+        .map(|&t| ds.table(t).limit_source_rows(5_000))
+        .collect();
+    tables.push(ds.table(StoreSales).limit_source_rows(5_000));
+    tables.push(ds.table(Inventory).limit_source_rows(0));
+    let expected: Vec<_> = tables[..tables.len() - 1]
+        .iter()
+        .map(|t| concat(&reference_arrow_at(t, 10.0)))
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_tpcds::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        assert!(got.last().unwrap().is_empty());
+        for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(&concat(batches), want, "{}", t.name());
+        }
+    }
+    populate_gen_tpcds::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}
+
+#[test]
+fn partitioned_channels_preserve_paired_outputs() {
+    let ds = Tpcds::new(100.0);
+    let tables: Vec<_> = [
+        StoreSales,
+        StoreReturns,
+        CatalogSales,
+        CatalogReturns,
+        WebSales,
+        WebReturns,
+    ]
+    .into_iter()
+    .map(|t| {
+        ds.table(t)
+            .limit_source_rows(1_027)
+            .chunk_source_rows(7)
+            .batch_size(127)
+    })
+    .collect();
+    let expected: Vec<_> = tables
+        .iter()
+        .map(|t| concat(&reference_arrow_at(t, 100.0)))
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_tpcds::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        for ((table, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(&concat(batches), want, "{}", table.name());
+        }
     }
 }
 

@@ -9,6 +9,9 @@ license = "Apache-2.0"
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "dsbgen_arrow"
+
 [features]
 default = ["arrow_60"]
 arrow_60 = []

@@ -54,13 +54,13 @@ fn adaptive_arrow_work_preserves_all_tables_and_fused_outputs() {
         .collect();
     for threads in [1, 4, 0] {
         let mut got = vec![Vec::new(); tables.len()];
-        populate_dsb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        populate_gen_dsb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
         assert!(got.last().unwrap().is_empty());
         for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
             assert_eq!(&concat(batches), want, "{}", t.name());
         }
     }
-    populate_dsb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+    populate_gen_dsb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
 }
 
 #[test]

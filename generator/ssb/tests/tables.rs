@@ -138,7 +138,7 @@ fn adaptive_arrow_work_preserves_flat_repeated_and_empty_tables() {
         .collect();
     for threads in [1, 4, 0] {
         let mut got = vec![Vec::new(); tables.len()];
-        populate_ssb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        populate_gen_ssb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
         for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
             assert_eq!(
                 &concat_batches(&t.schema(), batches).unwrap(),
@@ -148,7 +148,7 @@ fn adaptive_arrow_work_preserves_flat_repeated_and_empty_tables() {
             );
         }
     }
-    populate_ssb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+    populate_gen_ssb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
 }
 
 #[test]
@@ -162,9 +162,13 @@ fn large_lineorder_work_preserves_batches_and_chunk_limits() {
                 let got = concat_batches(&table.schema(), &table.collect(threads)).unwrap();
                 assert_eq!(got, want);
                 let mut batches = Vec::new();
-                populate_ssb::for_each_batch_many(std::slice::from_ref(&table), threads, |_, b| {
-                    batches.push(b);
-                });
+                populate_gen_ssb::for_each_batch_many(
+                    std::slice::from_ref(&table),
+                    threads,
+                    |_, b| {
+                        batches.push(b);
+                    },
+                );
                 assert_eq!(concat_batches(&table.schema(), &batches).unwrap(), want);
             }
         }

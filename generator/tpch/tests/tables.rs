@@ -232,10 +232,10 @@ fn arrow_many_preserves_each_output_with_repeated_and_empty_tables() {
     tables.push(h.table(TableName::LineItem).batch_size(137));
     for threads in [1, 4, 0] {
         let mut got = vec![Vec::new(); tables.len()];
-        populate_tpch::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        populate_gen_tpch::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
         for (t, batches) in tables.iter().zip(&got) {
             assert_eq!(cat(t, batches), cat(t, &t.collect(1)), "{}", t.name());
         }
     }
-    populate_tpch::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+    populate_gen_tpch::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
 }

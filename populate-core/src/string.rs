@@ -10,6 +10,7 @@
 use crate::columnar::Columnar;
 use crate::list::offset;
 use crate::sink::Sink;
+use std::fmt;
 
 /// String column in Arrow `Utf8` layout.
 ///
@@ -136,6 +137,15 @@ impl<'a> StrBuf<'a> {
     pub fn appending(buf: &'a mut Vec<u8>) -> Self {
         let start = buf.len();
         StrBuf(buf, start)
+    }
+}
+
+/// `write!` into a value, as `format!` would write it.
+impl fmt::Write for StrBuf<'_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
     }
 }
 

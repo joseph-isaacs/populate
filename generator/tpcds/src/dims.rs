@@ -8,15 +8,19 @@
 //! `Utf8View`, and an address is ten columns ([`Address`]).
 
 use populate_builtins::named_all;
-use populate_combinators::text::{Gmt, PushText, Str};
+use populate_combinators::dsdgen::Gmt;
+use populate_combinators::views::{self, PushText, Unshared};
 use populate_core::{Columnar, Columns, Date32, Decimal as Fixed, Distribution, Sink};
 use rand::Rng;
 use std::borrow::Borrow;
-use std::io::Write as _;
+use std::fmt::Write as _;
 use std::marker::PhantomData;
 use tpcdsgen::config::{Session, Table as Ds};
 use tpcdsgen::row::*;
 use tpcdsgen::types::{Address as DsAddress, Date, Decimal};
+
+/// A text value, written per row.
+type Str = views::Str<Unshared>;
 
 /// Julian day of 1970-01-01, Arrow's day 0.
 const UNIX_EPOCH_JULIAN: i32 = 2_440_588;
@@ -85,10 +89,10 @@ fn push_address(c: &mut Columns<Address>, nbm: i64, base: u32, a: &DsAddress) {
     let ok = |k: u32| valid(nbm, base + k);
     let (number, name, kind, suite, city, county, state, zip, country, gmt) = c;
     // as `Address::get_street_name`, without allocating
-    number.push_with(ok(0), |o| {
+    number.push_text_with(ok(0), |o| {
         write!(o, "{}", a.get_street_number()).expect("to memory")
     });
-    name.push_with(ok(1), |o| {
+    name.push_text_with(ok(1), |o| {
         write!(o, "{} {}", a.get_street_name1(), a.get_street_name2()).expect("to memory")
     });
     kind.push_text(ok(2).then(|| a.get_street_type()));
@@ -96,7 +100,7 @@ fn push_address(c: &mut Columns<Address>, nbm: i64, base: u32, a: &DsAddress) {
     city.push_text(ok(4).then(|| a.get_city()));
     county.push_text(if ok(5) { a.get_county() } else { None });
     state.push_text(ok(6).then(|| a.get_state()));
-    zip.push_with(ok(7), |o| {
+    zip.push_text_with(ok(7), |o| {
         write!(o, "{:05}", a.get_zip()).expect("to memory")
     });
     country.push_text(ok(8).then(|| a.get_country()));

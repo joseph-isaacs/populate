@@ -15,3 +15,6 @@ arrow-schema = { workspace = true }
 bytes = "1"
 snap = "1"
 parquet = { workspace = true, features = ["arrow"] }
+
+[dev-dependencies]
+populate-builtins = { workspace = true }

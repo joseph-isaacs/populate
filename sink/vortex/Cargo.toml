@@ -1,0 +1,22 @@
+[package]
+name = "populate-sink-vortex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Native Vortex array output for Populate distributions"
+publish = false
+
+# Vortex develop requires a newer toolchain than the Populate workspace.
+[workspace]
+
+[dependencies]
+populate-core = { path = "../../populate-core" }
+rand = "0.9"
+vortex-array = { git = "https://github.com/vortex-data/vortex", rev = "c98cc7ee4afa6126a6a6795362c2c78b0725593b" }
+vortex-buffer = { git = "https://github.com/vortex-data/vortex", rev = "c98cc7ee4afa6126a6a6795362c2c78b0725593b" }
+vortex-error = { git = "https://github.com/vortex-data/vortex", rev = "c98cc7ee4afa6126a6a6795362c2c78b0725593b" }
+
+[dev-dependencies]
+populate-builtins = { path = "../../populate-builtins" }
+vortex-session = { git = "https://github.com/vortex-data/vortex", rev = "c98cc7ee4afa6126a6a6795362c2c78b0725593b" }

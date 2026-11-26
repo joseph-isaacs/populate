@@ -22,6 +22,7 @@
 
 use populate_core::{Columnar, Columns, Distribution, Sink};
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -35,6 +36,13 @@ pub struct Column<T, Out = T> {
     values: Arc<Vec<T>>,
     at: usize,
     _out: PhantomData<fn() -> Out>,
+}
+
+impl<T, Out> Column<T, Out> {
+    /// Rows still available for collection.
+    pub fn remaining(&self) -> usize {
+        self.values.len().saturating_sub(self.at)
+    }
 }
 
 impl<T, Out> Clone for Column<T, Out> {
@@ -57,6 +65,35 @@ impl<T, Out> Clone for Column<T, Out> {
 /// Reading past the end.
 pub fn column<T: Copy + Columnar>(values: Arc<Vec<T>>) -> Column<T> {
     column_as(values)
+}
+
+fn ordered_values<T: Ord>(values: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut values: Vec<T> = values.into_iter().collect();
+    values.sort_unstable();
+    values
+}
+
+/// A sorted column with the source multiplicities preserved.
+pub fn sorted<T: Ord + Copy + Columnar>(values: impl IntoIterator<Item = T>) -> Column<T> {
+    column(Arc::new(ordered_values(values)))
+}
+
+/// Distinct source values in ascending order. Use [`Column::remaining`] for
+/// the resulting cardinality after duplicates are removed.
+pub fn sorted_unique<T: Ord + Copy + Columnar>(values: impl IntoIterator<Item = T>) -> Column<T> {
+    let mut values = ordered_values(values);
+    values.dedup();
+    column(Arc::new(values))
+}
+
+/// A random permutation, sampled once so all chunks read the same shuffled column.
+pub fn shuffled<T: Copy + Columnar>(
+    values: impl IntoIterator<Item = T>,
+    rng: &mut impl Rng,
+) -> Column<T> {
+    let mut values: Vec<T> = values.into_iter().collect();
+    values.shuffle(rng);
+    column(Arc::new(values))
 }
 
 /// [`column`], each value converted to `Out` as it is collected: one

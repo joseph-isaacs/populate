@@ -10,6 +10,11 @@ use rand::Rng;
 use std::ops::Add;
 
 mod compose;
+mod pattern;
+pub use pattern::{
+    DrawIf, FixedSizeList, Indexed, IterRows, Masked, Runs, draw_if, fixed_size_list, from_iter,
+    indexed, nullable, runs,
+};
 mod row_refs;
 mod stored;
 pub use compose::{
@@ -17,13 +22,24 @@ pub use compose::{
     derive, derive_columns, draws, draws_reserving, flat_map, format, named, named_all,
 };
 pub use row_refs::RowRefs;
-pub use stored::{Checkpointed, Column, checkpointed, column, column_as};
+pub use stored::{
+    Checkpointed, Column, checkpointed, column, column_as, shuffled, sorted, sorted_unique,
+};
 
 pub mod bounded;
 pub mod random;
 pub use random::{
-    Chars, Choose, Text, Uniform, UniformValue, Weighted, chars, choose, text, uniform, weighted,
+    Chars, Choose, Sample, Text, Uniform, UniformValue, Weighted, bernoulli, chars, choose, sample,
+    sample_range, text, uniform, weighted,
 };
+
+// A destination can stop reading early. Advance a stateful source through
+// the entire requested batch, just as Distribution::collect does.
+fn collect_batch<T, B: FromIterator<T>>(mut rows: impl Iterator<Item = T>) -> B {
+    let result = B::from_iter(&mut rows);
+    rows.for_each(drop);
+    result
+}
 
 // ============================================================================
 // Constant

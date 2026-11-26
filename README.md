@@ -140,6 +140,7 @@ and the data-set generators under `generator/`.
 | `populate-core`         | `Distribution`, `Columnar`, `Sink`, `StrCol`, `ListCol`, tuples |
 | `populate-builtins`     | `constant`, `range`, `list`, `derive`, `flat_map`, `uniform`, `choose`, `weighted`, `text`, `chars` |
 | `populate-sink-arrow`   | Arrow arrays and `RecordBatch` output               |
+| [`populate-sink-vortex`](sink/vortex/) | Native Vortex array output |
 | `populate-sink-parquet` | Parquet encoder for collected columns and Arrow arrays (`parquet` feature) |
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-bench`        | [benchmarks](populate-bench/README.md) against tpchgen and arrow-rs |

@@ -136,6 +136,17 @@ pub trait Distribution: Sized {
         Columns::<Self::Item>::default()
     }
 
+    /// Collect the next `n` scalar rows into the requested destination.
+    /// The destination can be inferred from the caller or given explicitly.
+    /// Leaves with a direct iterator can fill it in a single pass. Other
+    /// distributions consume their collected columns.
+    fn collect_as<B: FromIterator<Self::Item>>(&mut self, rng: &mut impl Rng, n: usize) -> B
+    where
+        Columns<Self::Item>: IntoIterator<Item = Self::Item>,
+    {
+        self.collect(rng, n).into_iter().collect()
+    }
+
     /// The next `n` rows as new columns.
     fn collect(&mut self, rng: &mut impl Rng, n: usize) -> Columns<Self::Item> {
         let mut cols = self.columns();

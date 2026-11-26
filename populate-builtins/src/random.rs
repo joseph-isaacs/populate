@@ -7,10 +7,68 @@
 //! so no per-value `String` is ever allocated.
 
 use crate::bounded::Bounded;
+use crate::collect_batch;
 use populate_core::{Columnar, Columns, Distribution, Padded, Sink, StrBuf, StrCol, in_local};
 use rand::Rng;
+use rand::distr::Bernoulli;
+use rand::distr::uniform::{SampleRange, SampleUniform};
 use rand::distr::{Distribution as RandDistribution, Uniform as RandUniform};
+use std::marker::PhantomData;
 use std::sync::Arc;
+
+/// Use a rand distribution as a column, sampling once per row.
+pub fn sample<T: Columnar, D: RandDistribution<T>>(distribution: D) -> Sample<T, D> {
+    Sample(distribution, PhantomData)
+}
+
+pub struct Sample<T, D>(D, PhantomData<fn() -> T>);
+
+// The sampler is stored by value. Its output type is only a marker.
+impl<T, D: Clone> Clone for Sample<T, D> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), PhantomData)
+    }
+}
+
+impl<T: Columnar, D: RandDistribution<T>> Distribution for Sample<T, D> {
+    type Item = T;
+
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
+        cols.reserve(n);
+        cols.push_n((&self.0).sample_iter(rng).take(n));
+    }
+
+    fn collect_as<B: FromIterator<T>>(&mut self, rng: &mut impl Rng, n: usize) -> B {
+        collect_batch((&self.0).sample_iter(rng).take(n))
+    }
+
+    fn skip(&mut self, _: u64) {}
+}
+
+#[derive(Clone)]
+struct SingleRange<R>(R);
+
+impl<T: SampleUniform, R: SampleRange<T> + Clone> RandDistribution<T> for SingleRange<R> {
+    fn sample<G: Rng + ?Sized>(&self, rng: &mut G) -> T {
+        rng.random_range(self.0.clone())
+    }
+}
+
+/// Draw each row as `rng.random_range(bounds)` would, including its RNG
+/// consumption. Accepts both inclusive and half-open ranges.
+pub fn sample_range<T, R>(bounds: R) -> impl Distribution<Item = T> + Clone
+where
+    T: Columnar + SampleUniform,
+    R: SampleRange<T> + Clone,
+{
+    assert!(!bounds.is_empty(), "sample range must contain a value");
+    sample(SingleRange(bounds))
+}
+
+/// Independent true bits with probability `p` (between zero and one inclusive).
+pub fn bernoulli(p: f64) -> Sample<bool, Bernoulli> {
+    sample(Bernoulli::new(p).expect("Bernoulli probability in [0, 1]"))
+}
 
 // ============================================================================
 // Columnar fill
@@ -151,7 +209,7 @@ macro_rules! uniform_rand {
     )*};
 }
 
-uniform_rand!(f32, f64, char);
+uniform_rand!(i128, u128, f32, f64, char);
 
 /// Uniform over `lo..=hi`.
 #[derive(Clone)]

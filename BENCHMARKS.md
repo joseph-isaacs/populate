@@ -90,8 +90,15 @@ cargo xtask bench --json /tmp/benchmark.json
 ```
 
 The Markdown table is still printed. The report (`schema_version: 1`) is
-saved again after each configuration, so `complete: false` marks an
-interrupted run. Build time is not measured. It holds:
+compact JSON, saved again after each configuration, so `complete: false`
+marks an interrupted run. Build time is not measured. Its JSON Schema
+comes from the Rust types that write it:
+
+```bash
+cargo xtask bench-schema > benchmark-report.schema.json
+```
+
+The report holds:
 
 - `engines`: each implementation's ID, version and source revision
   (`null` when unknown).

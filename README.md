@@ -144,6 +144,7 @@ and the data-set generators under `generator/`.
 | `populate-table`        | `Table`: named, typed, any-width tables; `Chunks`: parallel Arrow/Parquet output for any chunked generator |
 | `populate-bench`        | [benchmarks](populate-bench/README.md) against tpchgen and arrow-rs |
 | `populate-combinators`  | distributions the generators share: dbgen's and dsdgen's skip-ahead Lehmer streams ([README](generator/combinators/README.md)) |
+| `populate-py`           | [Python bindings](python/README.md) (feature `python`): distributions, `table`, TPC-H and SSB as Arrow streams |
 
 The generator crates are listed [above](#benchmark-generators). See
 [`populate/DESIGN.md`](populate/DESIGN.md) for the design.

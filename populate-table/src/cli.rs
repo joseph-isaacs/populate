@@ -1,20 +1,26 @@
 //! What the benchmark generators' command-line tools share (feature
 //! `parquet`): the common flags, output files, row and byte counts, and
-//! the closing report. Each tool keeps its table list, its text format's
-//! name and its Parquet properties.
+//! writing every table on one pool, and the closing report. Each tool keeps
+//! its own flags, its table list, its text format and its Parquet
+//! properties.
 //!
 //! ```no_run
-//! use populate_table::cli::{Args, Format};
+//! use populate_table::cli::{Args, Format, Tool, no_flags};
 //!
-//! let a: Args<String> = Args::parse("my-gen", "tbl", 1000.0, || vec!["t".into()], 8192)
+//! let a: Args<String> = Args::parse(Tool::new("my-gen", "tbl", 1000.0), || vec!["t".into()], no_flags)
 //!     .unwrap_or_else(|e| Args::<String>::exit_usage(&e));
 //! if a.format == Format::Text { /* ... */ }
 //! ```
 
+use crate::chunks::for_each_batch_many;
+use crate::text::{TextChunks, write_text_many};
+use crate::{Chunks, DEFAULT_BATCH_ROWS, MultiChunks, write_parquet_many};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use parquet::basic::Compression;
+use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::schema::types::ColumnPath;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -32,6 +38,66 @@ pub enum Format {
     None,
 }
 
+/// A tool's command line beyond the flags every generator takes.
+#[derive(Debug, Clone, Copy)]
+pub struct Tool {
+    /// The command as the usage line shows it (`tpch-gen`, `ycsb-gen
+    /// load`).
+    pub name: &'static str,
+    /// The default `--out`.
+    pub out: &'static str,
+    /// `--format`'s value for the text format (`tbl`, `text`).
+    pub text: &'static str,
+    /// The text files' extension.
+    pub ext: &'static str,
+    /// The largest `--sf`, or `None` for a tool sized by flags of its own
+    /// (it then takes no `--sf`).
+    pub max_sf: Option<f64>,
+    /// Whether the tool takes `--tables`.
+    pub tables: bool,
+    /// The default `--batch`.
+    pub batch: usize,
+    /// The tool's own flags, for the usage line.
+    pub flags: &'static str,
+}
+
+impl Tool {
+    /// The tool `name` whose text format is `text`, written to `.{text}`
+    /// files, with `--sf` up to `max_sf` and `--tables`. `--out` defaults
+    /// to the name's first word without `-gen`.
+    pub fn new(name: &'static str, text: &'static str, max_sf: f64) -> Self {
+        let first = name.split(' ').next().unwrap_or(name);
+        Tool {
+            name,
+            out: first.trim_end_matches("-gen"),
+            text,
+            ext: text,
+            max_sf: Some(max_sf),
+            tables: true,
+            batch: DEFAULT_BATCH_ROWS,
+            flags: "",
+        }
+    }
+}
+
+/// A tool's own flags: called with each flag the common ones don't
+/// cover and a function that takes its value; returns whether it knew
+/// the flag.
+pub trait OwnFlags:
+    FnMut(&str, &mut dyn FnMut() -> Result<String, String>) -> Result<bool, String>
+{
+}
+
+impl<F> OwnFlags for F where
+    F: FnMut(&str, &mut dyn FnMut() -> Result<String, String>) -> Result<bool, String>
+{
+}
+
+/// For a tool with no flags of its own.
+pub fn no_flags(_: &str, _: &mut dyn FnMut() -> Result<String, String>) -> Result<bool, String> {
+    Ok(false)
+}
+
 /// The flags every generator takes: `--sf`, `--out`, `--format
 /// parquet|<text>|none`, `--tables`, `--threads`, `--batch`,
 /// `--row-group`, `--compression snappy|none` and `--no-dictionary`.
@@ -40,96 +106,112 @@ pub struct Args<T> {
     pub sf: f64,
     pub out: PathBuf,
     pub format: Format,
+    /// The tables asked for, each once, in the order given.
     pub tables: Vec<T>,
     pub threads: usize,
     pub batch: usize,
     pub row_group: Option<u64>,
     pub compression: Compression,
     pub dictionary: bool,
-    /// The text format's name and file extension (`tbl`, `dat`).
-    pub text: &'static str,
+    /// The text files' extension.
+    pub ext: &'static str,
     usage: String,
 }
 
-impl<T: FromStr<Err: Display>> Args<T> {
-    /// Parse the process's arguments for the tool `name`. `--out`
-    /// defaults to the tool's name without `-gen`; `--tables` to
-    /// `all_tables()`.
+/// `v` parsed, or an error naming `flag`.
+pub fn num<N: FromStr<Err: Display>>(flag: &str, v: String) -> Result<N, String> {
+    v.parse().map_err(|e| format!("{flag}: {e}"))
+}
+
+impl<T: FromStr<Err: Display> + PartialEq> Args<T> {
+    /// Parse the process's arguments for `tool`; `own` takes the tool's
+    /// own flags. `--tables` defaults to `all_tables()`.
     pub fn parse(
-        name: &str,
-        text: &'static str,
-        max_sf: f64,
+        tool: Tool,
         all_tables: impl FnOnce() -> Vec<T>,
-        batch: usize,
+        own: impl OwnFlags,
     ) -> Result<Self, String> {
-        Self::parse_from(
-            name,
-            text,
-            max_sf,
-            all_tables,
-            batch,
-            std::env::args().skip(1),
-        )
+        Self::parse_from(tool, all_tables, own, std::env::args().skip(1))
     }
 
     /// [`parse`](Self::parse) of `args` (without the program name).
     pub fn parse_from(
-        name: &str,
-        text: &'static str,
-        max_sf: f64,
+        tool: Tool,
         all_tables: impl FnOnce() -> Vec<T>,
-        batch: usize,
+        own: impl OwnFlags,
         args: impl IntoIterator<Item = String>,
     ) -> Result<Self, String> {
+        let name = tool.name;
+        let text = tool.text;
+        let sf = if tool.max_sf.is_some() {
+            " [--sf 1]"
+        } else {
+            ""
+        };
+        let flags = if tool.flags.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", tool.flags)
+        };
+        let tables = if tool.tables {
+            " [--tables a,b,...]"
+        } else {
+            ""
+        };
         let mut a = Args {
             sf: 1.0,
-            out: PathBuf::from(name.trim_end_matches("-gen")),
+            out: PathBuf::from(tool.out),
             format: Format::Parquet,
             tables: all_tables(),
             threads: 0,
-            batch,
+            batch: tool.batch,
             row_group: None,
             compression: Compression::SNAPPY,
             dictionary: true,
-            text,
+            ext: tool.ext,
             usage: format!(
-                "usage: {name} [--sf 1] [--out DIR] [--format parquet|{text}|none] \
-[--tables a,b,...] [--threads N] [--batch ROWS] [--row-group ROWS] \
-[--compression snappy|none] [--no-dictionary]"
+                "usage: {name}{flags}{sf} [--out DIR] [--format parquet|{text}|none]{tables} \
+[--threads N] [--batch ROWS] [--row-group ROWS] [--compression snappy|none] [--no-dictionary]"
             ),
         };
-        let r = a.read(max_sf, args);
+        let r = a.read(&tool, own, args);
         r.map_err(|e| format!("{e}\n{}", a.usage))?;
         Ok(a)
     }
 
-    fn read(&mut self, max_sf: f64, args: impl IntoIterator<Item = String>) -> Result<(), String> {
+    fn read(
+        &mut self,
+        tool: &Tool,
+        mut own: impl OwnFlags,
+        args: impl IntoIterator<Item = String>,
+    ) -> Result<(), String> {
         let a = self;
-        let text = a.text;
         let mut it = args.into_iter();
         while let Some(flag) = it.next() {
             let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
-            let num = |v: String| v.parse::<u64>().map_err(|e| format!("{flag}: {e}"));
             match flag.as_str() {
-                "--sf" => a.sf = val()?.parse().map_err(|e| format!("--sf: {e}"))?,
+                "--sf" if tool.max_sf.is_some() => a.sf = num(&flag, val()?)?,
                 "--out" => a.out = val()?.into(),
                 "--format" => {
                     a.format = match val()?.as_str() {
                         "parquet" => Format::Parquet,
                         "none" => Format::None,
-                        f if f == text => Format::Text,
+                        f if f == tool.text => Format::Text,
                         f => return Err(format!("unknown format `{f}`")),
                     }
                 }
-                "--tables" => {
-                    a.tables = val()?
-                        .split(',')
-                        .map(|t| t.parse().map_err(|e| format!("--tables: {e}")))
-                        .collect::<Result<_, _>>()?;
+                "--tables" if tool.tables => {
+                    a.tables.clear();
+                    for t in val()?.split(',') {
+                        let t = t.parse().map_err(|e| format!("--tables: {e}"))?;
+                        if !a.tables.contains(&t) {
+                            a.tables.push(t);
+                        }
+                    }
                 }
-                "--threads" => a.threads = num(val()?)? as usize,
-                "--batch" => a.batch = num(val()?)? as usize,
-                "--row-group" => a.row_group = Some(num(val()?)?),
+                "--threads" => a.threads = num(&flag, val()?)?,
+                "--batch" => a.batch = num(&flag, val()?)?,
+                "--row-group" => a.row_group = Some(num(&flag, val()?)?),
                 "--compression" => {
                     a.compression = match val()?.as_str() {
                         "snappy" => Compression::SNAPPY,
@@ -142,11 +224,17 @@ impl<T: FromStr<Err: Display>> Args<T> {
                     println!("{}", a.usage);
                     exit(0);
                 }
-                f => return Err(format!("unknown flag `{f}`")),
+                f => {
+                    if !own(f, &mut val)? {
+                        return Err(format!("unknown flag `{f}`"));
+                    }
+                }
             }
         }
-        if !(a.sf > 0.0 && a.sf <= max_sf) {
-            return Err(format!("--sf must be in (0, {max_sf}]"));
+        if let Some(max) = tool.max_sf
+            && !(a.sf > 0.0 && a.sf <= max)
+        {
+            return Err(format!("--sf must be in (0, {max}]"));
         }
         if a.batch == 0 || a.row_group == Some(0) {
             return Err("--batch and --row-group must be > 0".into());
@@ -176,7 +264,7 @@ impl<T> Args<T> {
         }
         let ext = match self.format {
             Format::Parquet => "parquet",
-            _ => self.text,
+            _ => self.ext,
         };
         names
             .iter()
@@ -213,6 +301,63 @@ pub fn parquet_rows(path: &Path) -> u64 {
         .ok()
         .and_then(|f| SerializedFileReader::new(f).ok())
         .map_or(0, |r| r.metadata().file_metadata().num_rows() as u64)
+}
+
+/// Write `tables` as `a.format` says, `tables[i]` to `paths[i]` (from
+/// [`Args::paths`]), every chunk of every table a job on one pool of
+/// `a.threads` threads. `props` are the tool's Parquet properties;
+/// `--compression` and `--no-dictionary` go on top. Returns each table's
+/// rows and bytes: of its file, or of its Arrow batches for `none`.
+pub fn write<T, S: Chunks + TextChunks>(
+    a: &Args<T>,
+    paths: &[PathBuf],
+    tables: &[S],
+    props: WriterPropertiesBuilder,
+) -> (Vec<u64>, Vec<u64>) {
+    assert_eq!(tables.len(), paths.len(), "one path per table");
+    match a.format {
+        Format::Parquet => {
+            let mut props = props.set_compression(a.compression);
+            if !a.dictionary {
+                props = props.set_dictionary_enabled(false);
+                for t in tables {
+                    for f in Chunks::schema(t).fields() {
+                        props = props.set_column_dictionary_enabled(
+                            ColumnPath::from(f.name().as_str()),
+                            false,
+                        );
+                    }
+                }
+            }
+            let srcs: Vec<&dyn MultiChunks> =
+                tables.iter().map(|t| t as &dyn MultiChunks).collect();
+            write_parquet_many(&srcs, create(paths), a.threads, Some(props.build()))
+                .unwrap_or_else(|e| fail(&"parquet", &e));
+            paths
+                .iter()
+                .map(|p| (parquet_rows(p), file_size(p)))
+                .unzip()
+        }
+        Format::Text => {
+            let w: Vec<_> = create(paths).into_iter().map(Lines::new).collect();
+            let srcs: Vec<&dyn TextChunks> = tables.iter().map(|t| t as &dyn TextChunks).collect();
+            let w = write_text_many(&srcs, w, a.threads).unwrap_or_else(|e| fail(&a.ext, &e));
+            w.iter()
+                .zip(paths)
+                .map(|(l, p)| (l.lines(), file_size(p)))
+                .unzip()
+        }
+        Format::None => {
+            let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
+            let srcs: Vec<&dyn MultiChunks> =
+                tables.iter().map(|t| t as &dyn MultiChunks).collect();
+            for_each_batch_many(&srcs, a.threads, |t, b| {
+                rows[t] += b.num_rows() as u64;
+                bytes[t] += batch_bytes(&b);
+            });
+            (rows, bytes)
+        }
+    }
 }
 
 /// Arrow bytes of `b`, without the buffers string views share between
@@ -296,11 +441,9 @@ mod tests {
 
     fn args(v: &[&str]) -> Result<Args<String>, String> {
         Args::parse_from(
-            "x-gen",
-            "dat",
-            100.0,
+            Tool::new("x-gen", "dat", 100.0),
             || vec!["a".into(), "b".into()],
-            8192,
+            no_flags,
             v.iter().map(|s| s.to_string()),
         )
     }
@@ -331,6 +474,37 @@ mod tests {
         assert!(args(&["--sf", "1000"]).is_err());
         assert!(args(&["--batch", "0"]).is_err());
         assert!(args(&["--bogus"]).is_err());
+        assert_eq!(args(&["--tables", "b,a,b"]).unwrap().tables, ["b", "a"]);
+    }
+
+    #[test]
+    fn own_flags() {
+        let tool = Tool {
+            max_sf: None,
+            tables: false,
+            ext: "csv",
+            ..Tool::new("y-gen run", "text", 1.0)
+        };
+        let mut n = 0u32;
+        let a = Args::<String>::parse_from(
+            tool,
+            Vec::new,
+            |f: &str, v: &mut dyn FnMut() -> Result<String, String>| {
+                Ok(f == "--n" && {
+                    n = num(f, v()?)?;
+                    true
+                })
+            },
+            ["--n", "3", "--format", "none"].map(String::from),
+        )
+        .unwrap();
+        assert_eq!((n, a.format, a.out.to_str()), (3, Format::None, Some("y")));
+        assert_eq!(a.paths(&["t"])[0].extension().unwrap(), "csv");
+        let none = |v: &[&str]| {
+            Args::<String>::parse_from(tool, Vec::new, no_flags, v.iter().map(|s| s.to_string()))
+        };
+        assert!(none(&["--sf", "1"]).is_err());
+        assert!(none(&["--tables", "a"]).is_err());
     }
 
     #[test]

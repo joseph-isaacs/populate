@@ -38,6 +38,13 @@ let head = sales.limit_source_rows(1000).collect(0);
 `write_parquet_many`, `write_dat_many` and `for_each_batch_many` run
 several tables on one shared pool (what `tpcds-gen` does).
 
+Parallel Arrow iteration subdivides chunks to spread smaller tables over
+workers and reduce the data buffered for ordered delivery. It aims for
+four jobs per worker, capped at 32 batches of work per job. Sales and
+returns use the same work estimate and remain paired when requested
+together. Parquet row groups and text writer chunks use the configured
+chunk size.
+
 ## Where the data comes from
 
 The values are computed by [`tpcdsgen`](https://crates.io/crates/tpcdsgen),

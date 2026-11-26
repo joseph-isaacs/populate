@@ -43,8 +43,8 @@ mod gen_tables;
 
 pub use dat::Encoding;
 pub use gen_tables::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, DsTable, for_each_batch_many, parquet_props,
-    write_dat_many, write_parquet_many,
+    DEFAULT_BATCH_SIZE, DsTable, for_each_batch_many, parquet_props, write_dat_many,
+    write_parquet_many,
 };
 
 use dsbgen::config::{Session, SessionBuilder};

@@ -121,10 +121,11 @@ impl TpchTable {
     }
 
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
-    /// batch, in table order, on the calling thread.
+    /// batch, in table order, on the calling thread. Parallel generation
+    /// may subdivide chunks to balance work and limit buffered Arrow data.
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
         Text::init(threads);
-        chunks::for_each_batch(self, threads, f)
+        chunks::for_each_batch(&self.table.clone().parallel_chunks(threads), threads, f)
     }
 
     /// The whole table, in order.
@@ -274,12 +275,17 @@ pub fn write_tbl_many<W: Write + Send>(
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
+/// Parallel generation may subdivide chunks, as in [`TpchTable::for_each_batch`].
 pub fn for_each_batch_many(
     tables: &[TpchTable],
     threads: usize,
     f: impl FnMut(usize, RecordBatch),
 ) {
     Text::init(threads);
+    let tables: Vec<_> = tables
+        .iter()
+        .map(|t| t.table.clone().parallel_chunks(threads))
+        .collect();
     let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
     chunks::for_each_batch_many(&srcs, threads, f)
 }

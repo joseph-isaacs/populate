@@ -42,6 +42,7 @@ use populate_core::{Columns, Distribution};
 use populate_sink_arrow::IntoArrowColumns;
 #[cfg(feature = "formats")]
 use populate_table::DynTable;
+use std::iter::repeat_n;
 use std::sync::LazyLock;
 use tpchgen::dates::{MIN_GENERATE_DATE, TOTAL_DATE_RANGE, TPCHDate};
 
@@ -572,44 +573,62 @@ pub(crate) fn lineitem_dist(s: &Scale) -> impl Dist<LineItem> + use<> {
             (flag_x, instr_x, mode_x, cx),
         ),
               out| {
-            let (key, od) = (*key, *od);
-            // the return flag stream is drawn only for lines already received
+            let (key, od, lines) = (*key, *od, *lines);
+            let shipped = ship.map(|delay| delay + od);
+            let received: Slots<i32> = std::array::from_fn(|j| receipt[j] + shipped[j]);
+            let (numbers, other) = &mut out.values;
+            // Each append has an exact length, so capacity is checked once
+            // per order and the column's line slots form one tight loop.
+            numbers.0.extend(repeat_n(key, lines));
+            numbers.1.extend(part[..lines].iter().map(|&p| p as i64));
+            numbers.2.extend(
+                (0..lines).map(|j| part_supplier(part[j] as i64, supp[j] as i64, suppliers)),
+            );
+            numbers.3.extend((1..=lines).map(|j| j as i32));
+            numbers
+                .4
+                .extend(qty[..lines].iter().map(|&q| dec(q as i64 * 100)));
+            numbers
+                .5
+                .extend((0..lines).map(|j| dec(part_price(part[j] as i64) * qty[j] as i64)));
+            numbers
+                .6
+                .extend(disc[..lines].iter().map(|&v| dec(v as i64)));
+            numbers
+                .7
+                .extend(tax[..lines].iter().map(|&v| dec(v as i64)));
+            // Only received lines consume a return-flag draw.
             let mut returned = 0;
-            for j in 0..*lines {
-                let p = part[j] as i64;
-                let q = qty[j] as i64;
-                let shipped = ship[j] + od;
-                let received = receipt[j] + shipped;
-                let flag = if received <= past {
+            other.0.push_n(received[..lines].iter().map(|&received| {
+                if received <= past {
                     let x = flag_x[returned];
                     returned += 1;
                     Word::new(d.return_flags.view(x))
                 } else {
                     n
-                };
-                out.values.push((
-                    (
-                        key,
-                        p,
-                        part_supplier(p, supp[j] as i64, suppliers),
-                        j as i32 + 1,
-                        dec(q * 100),
-                        dec(part_price(p) * q),
-                        dec(disc[j] as i64),
-                        dec(tax[j] as i64),
-                    ),
-                    (
-                        flag,
-                        if shipped <= past { f } else { o },
-                        date(shipped),
-                        date(commit[j] + od),
-                        date(received),
-                        Word::new(d.instructions.view(instr_x[j])),
-                        Word::new(d.modes.view(mode_x[j])),
-                        len.make(cx[2 * j], cx[2 * j + 1]),
-                    ),
-                ));
-            }
+                }
+            }));
+            other.1.push_n(
+                shipped[..lines]
+                    .iter()
+                    .map(|&s| if s <= past { f } else { o }),
+            );
+            other.2.extend(shipped[..lines].iter().map(|&s| date(s)));
+            other
+                .3
+                .extend(commit[..lines].iter().map(|&c| date(c + od)));
+            other.4.extend(received[..lines].iter().map(|&r| date(r)));
+            other.5.push_n(
+                instr_x[..lines]
+                    .iter()
+                    .map(|&x| Word::new(d.instructions.view(x))),
+            );
+            other
+                .6
+                .push_n(mode_x[..lines].iter().map(|&x| Word::new(d.modes.view(x))));
+            other
+                .7
+                .push_n((0..lines).map(|j| len.make(cx[2 * j], cx[2 * j + 1])));
         },
     )
     // 1 to 7 lines an order, 4 on average; a batch of 8Ki orders is within

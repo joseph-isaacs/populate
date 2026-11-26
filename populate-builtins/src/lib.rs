@@ -30,6 +30,7 @@
 //! |-----------------------------------------|--------------------------------------|--------------------------------|
 //! | the same value in every row             | [`constant`]                         | nothing                        |
 //! | a counter                               | [`range`]                            | adds `n * step`                |
+//! | each row's own number, as a `u64`       | [`row_numbers`]                      | moves the start                |
 //! | uniform numbers, picks from a list      | [`uniform`], [`choose`], [`weighted`] | nothing                       |
 //! | random strings                          | [`text`], [`chars`]                  | nothing                        |
 //! | a value that depends only on its row    | [`draws`] over a [`SeekRng`](populate_core::SeekRng) | jumps the stream |
@@ -58,12 +59,14 @@ use std::ops::Add;
 
 mod compose;
 mod row_refs;
+mod rows;
 mod stored;
 pub use compose::{
     ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FlatMap, Format, Named, children,
     derive, derive_columns, draws, draws_reserving, flat_map, format, named, named_all,
 };
 pub use row_refs::RowRefs;
+pub use rows::{Col, Row, RowNumbers, Rows, row_numbers};
 pub use stored::{Checkpointed, Column, checkpointed, column, column_as};
 
 pub mod bounded;

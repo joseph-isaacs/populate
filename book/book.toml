@@ -1,0 +1,8 @@
+[book]
+title = "populate"
+authors = ["populate contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/joseph-isaacs/populate"

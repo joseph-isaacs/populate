@@ -20,9 +20,13 @@ pub struct Decimal<const P: u8, const S: i8>(pub i128);
 
 /// Arrow's time units, as [`Timestamp`]'s `UNIT`.
 pub mod time_unit {
+    /// Seconds.
     pub const SECOND: u8 = 0;
+    /// Milliseconds.
     pub const MILLISECOND: u8 = 1;
+    /// Microseconds.
     pub const MICROSECOND: u8 = 2;
+    /// Nanoseconds.
     pub const NANOSECOND: u8 = 3;
 }
 

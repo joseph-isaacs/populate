@@ -1,9 +1,57 @@
-//! Built-in distributions: [`constant`], [`range`], [`list`], [`draws`],
-//! [`derive()`], [`derive_columns`], [`children`], [`flat_map`], [`named`],
-//! [`column`], [`checkpointed`], [`row_numbers`],
-//! and the random leaves in [`random`] ([`uniform`], [`choose`],
-//! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in
-//! `populate-core` (orphan rule).
+#![warn(missing_docs)]
+//! The built-in distributions: leaves that make a column from nothing, and
+//! combinators that make one from other distributions. A tuple of
+//! distributions is a distribution too (implemented in `populate-core`), so
+//! a row of several columns is a tuple of these.
+//!
+//! ```
+//! use populate_builtins::{choose, derive, list, named, range, uniform};
+//! use populate_core::Distribution;
+//!
+//! let mut orders = (
+//!     named("id", range(1i64, 1)),
+//!     named("status", choose(&["open", "shipped"])),
+//!     named("qty", uniform(1i64, 10)),
+//!     // a list of 0 to 3 line ids per row
+//!     named("lines", list(uniform(0i32, 3), range(0i64, 1))),
+//!     named("even", derive(range(1i64, 1), |&id: &i64| id % 2 == 0)),
+//! );
+//! let (ids, status, qty, lines, even) = orders.collect(&mut rand::rng(), 4);
+//! assert_eq!(ids, [1, 2, 3, 4]);
+//! assert_eq!(status.len(), 4);
+//! assert!(qty.iter().all(|q| (1..=10).contains(q)));
+//! assert_eq!(lines.len(), 4);
+//! assert_eq!(even, [false, true, false, true]);
+//! ```
+//!
+//! # Which one to use
+//!
+//! | to make                                 | use                                  | `skip(n)`                      |
+//! |-----------------------------------------|--------------------------------------|--------------------------------|
+//! | the same value in every row             | [`constant`]                         | nothing                        |
+//! | a counter                               | [`range`]                            | adds `n * step`                |
+//! | each row's own number, as a `u64`       | [`row_numbers`]                      | moves the start                |
+//! | uniform numbers, picks from a list      | [`uniform`], [`choose`], [`weighted`] | nothing                       |
+//! | random strings                          | [`text`], [`chars`]                  | nothing                        |
+//! | a value that depends only on its row    | [`draws`] over a [`SeekRng`](populate_core::SeekRng) | jumps the stream |
+//! | a column already in memory              | [`column()`], [`column_as`]            | moves the cursor               |
+//! | a stream that can't jump                | [`checkpointed`]                     | from the last saved state      |
+//! | a list per row                          | [`list`]                             | skips the lengths only         |
+//! | one column from a row of others         | [`derive()`]                         | passes `n` on                  |
+//! | a string from a row of others           | [`format()`]                         | passes `n` on                  |
+//! | several columns that share work         | [`derive_columns`]                   | passes `n` on                  |
+//! | child rows, one stream per column       | [`children`]                         | passes `n` on                  |
+//! | child rows written by a closure, or several child tables | [`flat_map`]        | passes `n` on                  |
+//! | column names, for a schema              | [`named`], [`named_all`]             | passes `n` on                  |
+//!
+//! A table starts each batch by cloning its distribution and skipping to
+//! the batch's first row, so the `skip` column is what a batch costs to
+//! start and whether it starts in the right place. Random leaves don't
+//! depend on their position, so they skip by doing nothing. A [`list`]
+//! can't know how many elements `n` rows hold without drawing their
+//! lengths, so it leaves its elements where they are: use elements that
+//! don't depend on their position, or [`flat_map`] with a
+//! [`draws`]-based source.
 
 use populate_core::{Columnar, Columns, Distribution, ListCol, Sink, in_local};
 use rand::Rng;
@@ -34,9 +82,18 @@ pub use random::{
 /// The same value in every row.
 #[derive(Clone)]
 pub struct Constant<T> {
+    /// The value.
     pub value: T,
 }
 
+/// `value` in every row.
+///
+/// ```
+/// use populate_builtins::constant;
+/// use populate_core::Distribution;
+///
+/// assert_eq!(constant(7u8).collect(&mut rand::rng(), 3), [7, 7, 7]);
+/// ```
 pub fn constant<T>(value: T) -> Constant<T> {
     Constant { value }
 }
@@ -61,9 +118,22 @@ impl<T: Copy + Columnar<Columns: Sink<T>>> Distribution for Constant<T> {
 pub struct Range<T> {
     /// The value of the next row.
     pub next: T,
+    /// Added after every row.
     pub step: T,
 }
 
+/// `start`, `start + step`, `start + 2 * step`, ...: a row number when
+/// `step` is 1, for any integer or float type ([`RangeValue`]).
+///
+/// ```
+/// use populate_builtins::range;
+/// use populate_core::Distribution;
+///
+/// let mut ids = range(10i64, 5);
+/// assert_eq!(ids.collect(&mut rand::rng(), 3), [10, 15, 20]);
+/// ids.skip(2);
+/// assert_eq!(ids.collect(&mut rand::rng(), 1), [35]);
+/// ```
 pub fn range<T: Add>(start: T, step: T) -> Range<T> {
     Range { next: start, step }
 }
@@ -132,7 +202,9 @@ impl<T: Columnar + RangeValue> Distribution for Range<T> {
 /// A list per row: its length from `lengths`, its elements from `elements`.
 #[derive(Clone)]
 pub struct List<L: Distribution, E> {
+    /// Each row's length.
     pub lengths: L,
+    /// Every element of every row, end to end.
     pub elements: E,
     /// Lengths of a type other than `i32`, collected before they become
     /// offsets ([`ListLength`]); empty between collects.
@@ -142,6 +214,20 @@ pub struct List<L: Distribution, E> {
 /// A list per row: `lengths` sets each row's length, `elements` fills them.
 /// `i32` lengths are collected straight into the offsets buffer; other
 /// integer types go through a buffer the list keeps.
+///
+/// All `n` lengths are collected first, then `elements` collects their sum
+/// in one go, so nested lists and lists of tuples stay columnar all the way
+/// down. Skipping skips the lengths only (see the [crate docs](crate)).
+///
+/// ```
+/// use populate_builtins::{constant, list, range};
+/// use populate_core::Distribution;
+///
+/// let mut pairs = list(constant(2i32), range(0i64, 1));
+/// let (offsets, values) = pairs.collect(&mut rand::rng(), 3).into_parts();
+/// assert_eq!(offsets, [0, 2, 4, 6]);
+/// assert_eq!(values, [0, 1, 2, 3, 4, 5]);
+/// ```
 pub fn list<L: Distribution, E>(lengths: L, elements: E) -> List<L, E> {
     List {
         lengths,

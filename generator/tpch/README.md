@@ -40,6 +40,13 @@ several tables on one shared pool (what `tpch-gen` does). The Arrow
 schemas are tpchgen-arrow's: `Int64` keys, `Decimal128(15, 2)` money,
 `Date32` dates and `Utf8View` text.
 
+Parallel Arrow iteration subdivides work into at most eight batches per
+job, aiming for four jobs per worker on smaller tables. This limits the
+Arrow data buffered for ordered delivery and spreads small tables over
+more workers. Batch order within each table is preserved; tables may
+interleave. Parquet row groups and text writer chunks use the configured
+chunk size.
+
 ## Where the data comes from
 
 The values are dbgen's, as ported by

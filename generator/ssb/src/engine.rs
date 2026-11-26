@@ -12,7 +12,7 @@ use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
 use populate_table::text::{Encoding, TextChunks, write_batch, write_text_many};
 use populate_table::{
-    Chunks, DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS, DynTable, MultiChunks, chunks,
+    Chunks, DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS, DynTable, MultiChunks, chunks, resolve_threads,
 };
 use std::io::{self, Write};
 use std::sync::{Arc, LazyLock, OnceLock};
@@ -171,11 +171,29 @@ impl SsbTable {
             .batch_rows(per.max(1))
     }
 
+    fn arrow_table(&self, threads: usize) -> DynTable {
+        let threads = resolve_threads(threads);
+        let table = self.table(threads);
+        if threads > 1 && self.name == TableName::LineOrder {
+            // Narrow line orders amortize scheduling across larger chunks.
+            // Wide flattened rows retain the shared buffering limit.
+            let per = (self.batch_size as u64).div_ceil(4);
+            let batches = self
+                .source_rows
+                .div_ceil((threads as u64).saturating_mul(32))
+                .div_ceil(per);
+            if batches > 8 {
+                return table.chunk_rows(self.chunk_source_rows.min(batches.saturating_mul(per)));
+            }
+        }
+        table.parallel_chunks(threads)
+    }
+
     /// Generate on `threads` threads (0 = all cores) and call `f` with each
-    /// batch, in table order, on the calling thread.
+    /// batch, in table order, on the calling thread. Parallel generation
+    /// may subdivide chunks to balance work and limit buffered Arrow data.
     pub fn for_each_batch(&self, threads: usize, f: impl FnMut(RecordBatch)) {
-        self.prepare(threads);
-        chunks::for_each_batch(self, threads, f)
+        chunks::for_each_batch(&self.arrow_table(threads), threads, f)
     }
 
     /// The whole table, in order.
@@ -322,8 +340,9 @@ pub fn write_tbl_many<W: Write + Send>(
 
 /// Generate several tables on one shared pool and call `f(i, batch)` with
 /// each batch of `tables[i]`, in order per table, on the calling thread.
+/// Parallel generation may subdivide chunks, as in [`SsbTable::for_each_batch`].
 pub fn for_each_batch_many(tables: &[SsbTable], threads: usize, f: impl FnMut(usize, RecordBatch)) {
-    prepare_all(tables, threads);
+    let tables: Vec<_> = tables.iter().map(|t| t.arrow_table(threads)).collect();
     let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
     chunks::for_each_batch_many(&srcs, threads, f)
 }

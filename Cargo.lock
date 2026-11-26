@@ -791,7 +791,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-dsb"
+name = "populate-gen-dsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -813,7 +813,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-h2o"
+name = "populate-gen-h2o"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -829,7 +829,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-ldbc"
+name = "populate-gen-ldbc"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -843,6 +843,146 @@ dependencies = [
 ]
 
 [[package]]
+name = "populate-gen-ssb"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "mimalloc",
+ "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+ "tpchgen",
+]
+
+[[package]]
+name = "populate-gen-synth"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-data",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "mimalloc",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+]
+
+[[package]]
+name = "populate-gen-tpcc"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "divan",
+ "itoa",
+ "mimalloc",
+ "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+]
+
+[[package]]
+name = "populate-gen-tpcds"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "mimalloc",
+ "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+ "tpcdsgen",
+ "tpcdsgen-arrow",
+]
+
+[[package]]
+name = "populate-gen-tpch"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "divan",
+ "libc",
+ "mimalloc",
+ "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+ "tpchgen",
+ "tpchgen-arrow",
+]
+
+[[package]]
+name = "populate-gen-tsbs"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "itoa",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-table",
+ "rand",
+ "ryu",
+]
+
+[[package]]
+name = "populate-gen-ycsb"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "divan",
+ "itoa",
+ "mimalloc",
+ "parquet",
+ "populate-combinators",
+ "populate-core",
+ "populate-table",
+ "rand",
+]
+
+[[package]]
 name = "populate-py"
 version = "0.1.0"
 dependencies = [
@@ -851,10 +991,10 @@ dependencies = [
  "parquet",
  "populate-builtins",
  "populate-core",
+ "populate-gen-ssb",
+ "populate-gen-tpch",
  "populate-sink-arrow",
- "populate-ssb",
  "populate-table",
- "populate-tpch",
  "pyo3",
  "rand",
 ]
@@ -885,46 +1025,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-ssb"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "mimalloc",
- "parquet",
- "populate-builtins",
- "populate-combinators",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
- "tpchgen",
-]
-
-[[package]]
-name = "populate-synth"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "divan",
- "mimalloc",
- "parquet",
- "populate-builtins",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
-]
-
-[[package]]
 name = "populate-table"
 version = "0.1.0"
 dependencies = [
@@ -939,106 +1039,6 @@ dependencies = [
  "populate-core",
  "populate-sink-arrow",
  "populate-sink-parquet",
- "rand",
-]
-
-[[package]]
-name = "populate-tpcc"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "arrow-select",
- "divan",
- "itoa",
- "mimalloc",
- "parquet",
- "populate-builtins",
- "populate-combinators",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
-]
-
-[[package]]
-name = "populate-tpcds"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "divan",
- "mimalloc",
- "parquet",
- "populate-builtins",
- "populate-combinators",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
- "tpcdsgen",
- "tpcdsgen-arrow",
-]
-
-[[package]]
-name = "populate-tpch"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "divan",
- "libc",
- "mimalloc",
- "parquet",
- "populate-builtins",
- "populate-combinators",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
- "tpchgen",
- "tpchgen-arrow",
-]
-
-[[package]]
-name = "populate-tsbs"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "itoa",
- "parquet",
- "populate-builtins",
- "populate-core",
- "populate-sink-arrow",
- "populate-table",
- "rand",
- "ryu",
-]
-
-[[package]]
-name = "populate-ycsb"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "divan",
- "itoa",
- "mimalloc",
- "parquet",
- "populate-combinators",
- "populate-core",
- "populate-table",
  "rand",
 ]
 

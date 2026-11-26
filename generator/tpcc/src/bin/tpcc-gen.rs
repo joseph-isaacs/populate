@@ -15,8 +15,8 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+use populate_gen_tpcc::{Tpcc, TpccTable, TpccTableName, tpcc};
 use populate_table::cli::{Args, Tool, num, report, write};
-use populate_tpcc::{Tpcc, TpccTable, TpccTableName, tpcc};
 use std::time::Instant;
 
 /// mimalloc: buffers are reused instead of returned to the OS and faulted

@@ -611,7 +611,7 @@ fn table(
 #[pyfunction]
 #[pyo3(signature = (table, sf = 1.0))]
 fn tpch(table: &str, sf: f64) -> PyResult<Source> {
-    use populate_tpch::{MAX_SCALE_FACTOR, TableName, Tpch, parquet_props};
+    use populate_gen_tpch::{MAX_SCALE_FACTOR, TableName, Tpch, parquet_props};
     if !(sf > 0.0 && sf <= MAX_SCALE_FACTOR) {
         return Err(PyValueError::new_err(format!(
             "sf must be in (0, {MAX_SCALE_FACTOR}]"
@@ -627,7 +627,7 @@ fn tpch(table: &str, sf: f64) -> PyResult<Source> {
 #[pyfunction]
 #[pyo3(signature = (table, sf = 1.0))]
 fn ssb(table: &str, sf: f64) -> PyResult<Source> {
-    use populate_ssb::{MAX_SCALE_FACTOR, Ssb, TableName, parquet_props};
+    use populate_gen_ssb::{MAX_SCALE_FACTOR, Ssb, TableName, parquet_props};
     if !(sf > 0.0 && sf <= MAX_SCALE_FACTOR) {
         return Err(PyValueError::new_err(format!(
             "sf must be in (0, {MAX_SCALE_FACTOR}]"

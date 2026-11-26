@@ -208,7 +208,7 @@ impl RMt {
                         *t = temper(y);
                     }
                     let mut vals = [0u32; N / 2];
-                    for (v, p) in vals.iter_mut().zip(t.chunks_exact(2)) {
+                    for (v, p) in vals.iter_mut().zip(t.as_chunks::<2>().0) {
                         *v = ((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask;
                     }
                     let vals = &vals[..pairs];
@@ -269,7 +269,9 @@ impl RMt {
                         *t = temper(y);
                     }
                     let hit = t[..2 * pairs]
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|p| ((((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask) < r) as u32)
                         .sum::<u32>() as u64;
                     if hit < n {
@@ -279,7 +281,7 @@ impl RMt {
                     }
                 }
                 let mut used = 0;
-                for p in ys.chunks_exact(2) {
+                for p in ys.as_chunks::<2>().0 {
                     used += 2;
                     let v = (((temper(p[0]) >> 16) << 16) | (temper(p[1]) >> 16)) & mask;
                     n -= (v < r) as u64;
@@ -470,7 +472,7 @@ pub fn shuffle_draws(rng: &mut RMt, n: usize) -> Vec<u32> {
                 *t = temper(y);
             }
             let mut used = 0;
-            for p in t[..ys.len() / 2 * 2].chunks_exact(2) {
+            for p in t[..ys.len() / 2 * 2].as_chunks::<2>().0 {
                 used += 2;
                 let v = ((p[0] & 0xffff_0000) | (p[1] >> 16)) & mask;
                 let hit = (v as u64) < m;

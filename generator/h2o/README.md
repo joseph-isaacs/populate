@@ -1,4 +1,4 @@
-# populate-h2o
+# populate-gen-h2o
 
 The [H2O db-benchmark](https://github.com/h2oai/db-benchmark) data sets,
 byte-identical to the CSV its R datagen scripts write
@@ -7,16 +7,16 @@ on all cores, as CSV, Arrow `RecordBatch`es or Parquet.
 
 ```sh
 # G1_1e7_1e2_0_0.csv: 1e7 rows, K = 100, no NAs, unsorted
-cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2
+cargo run -p populate-gen-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2
 
 # 5% NAs, sorted by id1..id6
-cargo run -p populate-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 5 --sort 1
+cargo run -p populate-gen-h2o --release --bin h2o-gen -- groupby --n 1e7 --k 1e2 --nas 5 --sort 1
 
 # J1_1e7_NA_0_0.csv and its right-hand tables J1_1e7_{1e1,1e4,1e7}_0_0.csv
-cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7
+cargo run -p populate-gen-h2o --release --bin h2o-gen -- join --n 1e7
 
 # the same tables as Parquet
-cargo run -p populate-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
+cargo run -p populate-gen-h2o --release --bin h2o-gen -- join --n 1e7 --format parquet
 ```
 
 Flags: `--n`, `--k` (groupby), `--nas` (percent), `--sort 0|1`, `--out`
@@ -27,7 +27,7 @@ names are the scripts' own.
 From Rust:
 
 ```rust
-use populate_h2o::{GroupBy, Join};
+use populate_gen_h2o::{GroupBy, Join};
 
 let g = GroupBy::new(10_000_000, 100, 0, false);
 g.write_csv(std::fs::File::create(g.file_name())?, 0)?;

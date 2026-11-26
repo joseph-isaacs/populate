@@ -1,13 +1,13 @@
 //! TPC-C generation throughput.
 //!
-//! `cargo bench -p populate-tpcc`. Samples generate a prefix of a table at
+//! `cargo bench -p populate-gen-tpcc`. Samples generate a prefix of a table at
 //! 1 warehouse (16Ki source rows, ~160Ki lines of `order_line`).
 //! Throughput is in output rows/s, and bytes/s for Parquet and CSV.
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
-use populate_tpcc::TpccTableName::{self, *};
-use populate_tpcc::{Tpcc, TpccTable};
+use populate_gen_tpcc::TpccTableName::{self, *};
+use populate_gen_tpcc::{Tpcc, TpccTable};
 
 fn main() {
     divan::main();

@@ -20,7 +20,7 @@
 //!   on the workers, and `.tbl` text is formatted and written by them.
 //!
 //! ```
-//! use populate_tpch::{TableName, Tpch};
+//! use populate_gen_tpch::{TableName, Tpch};
 //!
 //! let h = Tpch::new(0.01);
 //! let nation = h.table(TableName::Nation);

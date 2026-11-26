@@ -7,9 +7,9 @@
 //! With `TSBS_GENERATE_DATA` set to a `tsbs_generate_data` binary,
 //! `against_go_binary` also compares a wider set of runs byte for byte.
 
+use populate_gen_tsbs::config::{parse_duration, parse_rfc3339};
+use populate_gen_tsbs::{Config, Format, Tsbs};
 use populate_table::fnv1a64;
-use populate_tsbs::config::{parse_duration, parse_rfc3339};
-use populate_tsbs::{Config, Format, Tsbs};
 
 // (use case, format, scale, seed, end, extra flags, bytes, FNV-1a 64)
 /// `(use case, format, scale, seed, end, extra flags, bytes, FNV-1a 64)`.

@@ -10,6 +10,7 @@
 use crate::columnar::Columnar;
 use crate::list::offset;
 use crate::sink::Sink;
+use std::fmt;
 
 /// String column in Arrow `Utf8` layout.
 ///
@@ -139,6 +140,15 @@ impl<'a> StrBuf<'a> {
     }
 }
 
+/// `write!` into a value, as `format!` would write it.
+impl fmt::Write for StrBuf<'_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
+    }
+}
+
 impl StrBuf<'_> {
     #[inline]
     pub fn push_str(&mut self, s: &str) {
@@ -211,11 +221,10 @@ impl StrBuf<'_> {
             debug_assert!(b.is_ascii(), "push_ascii_blocks: input is not ASCII");
             b.map(|x| x & 0x7f)
         };
-        let mut blocks = self.0[start..].chunks_exact_mut(N);
-        for c in &mut blocks {
+        let (blocks, rest) = self.0[start..].as_chunks_mut::<N>();
+        for c in blocks {
             c.copy_from_slice(&mask(next()));
         }
-        let rest = blocks.into_remainder();
         if !rest.is_empty() {
             let n = rest.len();
             rest.copy_from_slice(&mask(next())[..n]);

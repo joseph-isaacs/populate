@@ -146,12 +146,12 @@ impl<const DIM: usize> Shape for Embeddings<DIM> {
 /// chain the compiler may not reorder).
 fn sum_squares(v: &[f32]) -> f32 {
     let mut acc = [0.0f32; 8];
-    let mut chunks = v.chunks_exact(8);
-    for c in &mut chunks {
+    let (chunks, rest) = v.as_chunks::<8>();
+    for c in chunks {
         for (a, x) in acc.iter_mut().zip(c) {
             *a += x * x;
         }
     }
-    let tail: f32 = chunks.remainder().iter().map(|x| x * x).sum();
+    let tail: f32 = rest.iter().map(|x| x * x).sum();
     acc.iter().sum::<f32>() + tail
 }

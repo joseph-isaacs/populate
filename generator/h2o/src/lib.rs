@@ -6,7 +6,7 @@
 //! (the scripts' CSV, on all cores).
 //!
 //! ```
-//! use populate_h2o::GroupBy;
+//! use populate_gen_h2o::GroupBy;
 //!
 //! let g = GroupBy::new(1_000, 10, 0, false);
 //! assert_eq!(g.file_name(), "G1_1e3_1e1_0_0.csv");

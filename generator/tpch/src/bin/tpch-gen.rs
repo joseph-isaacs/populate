@@ -60,7 +60,8 @@ fn main() {
                 (_, Some(bytes)) => {
                     let n = SAMPLE_SOURCE_ROWS.min(t.source_rows());
                     let sample = t.clone().limit_source_rows(n).chunk_source_rows(n);
-                    let props = a.parquet_props(parquet_props(), [t.schema()]);
+                    let props =
+                        populate_table::cli::parquet_props(&a, parquet_props(), [t.schema()]);
                     t.chunk_source_rows(source_rows_per_group(&sample, n, props, bytes))
                 }
                 (None, None) => t,

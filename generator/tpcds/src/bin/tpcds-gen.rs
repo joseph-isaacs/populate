@@ -29,8 +29,8 @@ use populate_gen_tpcds::{
     write_parquet_many,
 };
 use populate_table::cli::{
-    Args, Format, Lines, Tool, batch_bytes, create, fail, file_size, parquet_rows, report,
-    source_rows_per_group,
+    self, Args, Counts, Format, Tool, create, fail, parquet_counts, report, source_rows_per_group,
+    text_counts, text_writers,
 };
 use std::time::Instant;
 
@@ -82,7 +82,7 @@ fn main() {
         let t = ds.table(sales_of(t).unwrap_or(t)).batch_size(a.batch);
         let n = SAMPLE_SOURCE_ROWS.min(t.source_rows());
         let sample = t.clone().limit_source_rows(n).chunk_source_rows(n);
-        let props = a.parquet_props(parquet_props(), [t.schema()]);
+        let props = cli::parquet_props(&a, parquet_props(), [t.schema()]);
         Some(source_rows_per_group(&sample, n, props, bytes))
     };
     let tables: Vec<DsTable> = names
@@ -100,30 +100,20 @@ fn main() {
     // table with its returns in one pass
     let (rows, bytes): (Vec<u64>, Vec<u64>) = match a.format {
         Format::Parquet => {
-            let props = a.parquet_props(parquet_props(), tables.iter().map(DsTable::schema));
+            let props = cli::parquet_props(&a, parquet_props(), tables.iter().map(DsTable::schema));
             write_parquet_many(&tables, create(&paths), a.threads, Some(props))
                 .unwrap_or_else(|e| fail(&"parquet", &e));
-            paths
-                .iter()
-                .map(|p| (parquet_rows(p), file_size(p)))
-                .unzip()
+            parquet_counts(&paths)
         }
         Format::Text => {
-            let w: Vec<_> = create(&paths).into_iter().map(Lines::new).collect();
-            let w = write_dat_many(&tables, w, a.threads, encoding)
+            let w = write_dat_many(&tables, text_writers(&paths), a.threads, encoding)
                 .unwrap_or_else(|e| fail(&"dat", &e));
-            w.iter()
-                .zip(&paths)
-                .map(|(l, p)| (l.lines(), file_size(p)))
-                .unzip()
+            text_counts(&w, &paths)
         }
         Format::None => {
-            let (mut rows, mut bytes) = (vec![0; tables.len()], vec![0; tables.len()]);
-            for_each_batch_many(&tables, a.threads, |t, b| {
-                rows[t] += b.num_rows() as u64;
-                bytes[t] += batch_bytes(&b);
-            });
-            (rows, bytes)
+            let mut c = Counts::new(tables.len());
+            for_each_batch_many(&tables, a.threads, |t, b| c.add(t, &b));
+            c.into_parts()
         }
     };
     report(&names, &rows, &bytes, start.elapsed().as_secs_f64(), "");

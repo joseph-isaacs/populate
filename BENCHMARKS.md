@@ -48,9 +48,9 @@ files by schema, values, codecs and dictionary use. The `output` column
 says `same`; a difference fails the run. Tables whose row-group counts still
 differ by more than 2x are listed under the table. Go's
 `tsbs_generate_data` and SSB's `dbgen` are single-threaded, so each one's
-time is the reference for every thread count, and the table says so. The default run
-takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
-minute.
+time is the reference for every thread count, and the table says so. The
+default run takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes
+under a minute.
 
 | flag | default | |
 |---|---|---|
@@ -80,118 +80,37 @@ table above:
 cargo xtask bench --generators tpch --scale 1,10 --formats text,parquet --out /var/tmp
 ```
 
+The numbers are printed, not committed: a crate README keeps its current
+performance section, and run results go in the PR description.
+
 ### JSON reports
 
 ```bash
 cargo xtask bench --json /tmp/benchmark.json
 ```
 
-The Markdown table is still printed. JSON follows
-[`xtask/benchmark-report.schema.json`](xtask/benchmark-report.schema.json)
-(JSON Schema draft 2020-12). The report is checkpointed atomically after
-each configuration; `complete: false` identifies an interrupted run.
-`complete: true` means the matrix finished, even if samples failed or
-unavailable tools were skipped. Failed samples still make the command exit
-with a nonzero status. Build time is excluded from measurements.
+The Markdown table is still printed. The report (`schema_version: 1`) is
+saved again after each configuration, so `complete: false` marks an
+interrupted run. Build time is not measured. It holds:
 
-Version 2 uses the following conventions. The schema also accepts version 1 reports, which retain minimum-time summaries and their original fixed sample counts:
+- `engines`: each implementation's ID, version and source revision
+  (`null` when unknown).
+- `measurements`: one per engine and configuration, with the exact
+  command and environment. `samples` keeps every timed attempt in order,
+  as wall time in seconds and output size in bytes, or an error string.
+  With `--sync-output` a sample also has its flush time. `summary` is the
+  median wall time with its minimum and maximum, and is `null` if any
+  attempt failed. `validation_status` is `passed` or `mismatch` from the
+  output comparison above, else `not_run`. Single-threaded references are
+  recorded once per command.
+- `source`, `environment`, `configuration` and `invocation`: revision,
+  host, compiler settings and the requested matrix. `skipped` lists
+  missing tools and unsupported formats.
 
-- `engines` identifies implementations by an open string ID, version and
-  source revision. Unknown versions/revisions are `null`. Add an engine
-  here and append its `measurements`; the format has no fixed engine list.
-- Each measurement identifies the engine, workload, requested scale,
-  resolved size, output format and actual thread argument. `size` is a
-  display label; `command.args` records the exact resolved parameters,
-  including seeds when explicitly passed. Optional `command.env` records
-  environment overrides (such as SSB's `DSS_PATH` output directory); an
-  absent object means no overrides. Generator defaults are pinned
-  by the source revision. Single-threaded Go and C references are recorded
-  once per unique command, even when compared to several populate thread
-  counts in the Markdown table.
-- `samples` retains every timed attempt in execution order for that
-  measurement. Successful samples store process wall time in **seconds**
-  and output-file size in **bytes**, without display rounding. This
-  includes process startup and writing, but excludes directory setup,
-  size collection, final file sync and cleanup. With `--sync-output`,
-  `flush_time_seconds` measures the subsequent file sync and
-  `flushed_wall_time_seconds` is the sum for that sample. Both are `null`
-  when not measured, including Arrow-only runs. Directory metadata is not
-  synced; this is a file-flush measurement, not a crash-recovery guarantee.
-  Failed samples carry an error string, never a fabricated zero timing.
-- `summary` reports the median wall time and its observed minimum/maximum.
-  Bytes and flush times have independent medians; an even byte count is
-  rounded down. The flushed total is the median of per-sample totals,
-  rather than the sum of two medians. A failed attempt stops that engine
-  and makes its summary `null`. There are no separate warmups
-  (`warmup_runs: 0`) or global page-cache drops. Engine order reverses
-  each trial; only an engine with excessive spread gets extra attempts.
-- `arrow` means batches generated and dropped in memory, not Arrow IPC
-  files. Its `output_bytes: 0` is a file count, not a memory or throughput
-  measurement. No peak-memory or generated-row-count metric is inferred.
-- `source`, `environment`, `configuration` and `invocation` record
-  provenance, host details, compiler settings and the requested matrix.
-  Unavailable metadata is `null`. Timestamps are Unix seconds in UTC.
-  `skipped` distinguishes unavailable resources/tools and unsupported
-  formats from successful measurements.
-
-Compare engines only when workload parameters, output semantics, hardware
-and thread counts match; this runner does not verify output equivalence.
-Keep separate reports for different machines or invocations, rather than
-appending measurements under another run's environment. Consumers should
-reject unknown `schema_version` values and check that engine IDs are unique,
-every measurement references a declared engine, and successful sample counts
-are between `configuration.runs` and `configuration.max_runs` (exactly
-`runs` for version 1). A failed engine may stop before the minimum count. Additional engines can emit this format from
-their own harness; running them through `xtask` requires a command adapter.
-
-`specification` contains the measurement method, storage setup and validation
-evidence as JSON. External harnesses can add build details and resource
-limits there. Optional per-measurement `sink`, `variant`, `validation_status`
-and `notes` distinguish discard controls and output mismatches; optional
-per-sample CPU times, peak RSS, file manifests and timestamps preserve
-external measurements without inferring missing values. Execution success
-and output equivalence are separate facts.
-
-For a repeated SF10 file-output measurement with final sync recorded:
-
-```bash
-cargo xtask bench --generators tpch,tpcds,ssb,dsb --scale 10 --threads 32 \
-  --runs 3 --max-runs 5 --sync-output --out /path/to/local-ssd \
-  --json /tmp/sf10.json
-```
-
-Use a scratch filesystem with capacity for the largest output plus working
-memory. The runner removes each attempt’s output; it does not enforce a
-free-space or memory reserve. External Arrow adapters, DSB native references,
-and encoding-to-discard controls must record their own exact commands.
-
-The [Apple M3 Max baseline](benchmarks/results/2026-11-25-m3-max.json)
-records the default matrix at the source revision named in the file.
-The [reference comparison](benchmarks/results/2026-11-25-m3-max-references.json)
-runs populate interleaved with tpcgen-rs 4.0.0 (TPC-H and TPC-DS), Go TSBS,
-and C SSB. Reference versions/revisions are annotated from installation
-and build metadata. Both TPC Parquet writers use Snappy with their own
-default layouts; this measures the complete tools, including their
-writer settings, rather than isolating generator kernels.
-The TPC-DS reference also writes a small, timestamped `dbgen_version` file;
-populate writes the 24 data tables. That metadata file is included in the
-reference's measured time and bytes, and excluded from data-equivalence checks.
-Validate reports with a draft 2020-12 validator, for example:
-
-```bash
-uv run --with jsonschema python - <<'PY'
-import json
-from pathlib import Path
-from jsonschema import Draft202012Validator
-
-schema = json.loads(Path("xtask/benchmark-report.schema.json").read_text())
-Draft202012Validator.check_schema(schema)
-validator = Draft202012Validator(schema)
-for path in Path("benchmarks/results").glob("*.json"):
-    validator.validate(json.loads(path.read_text()))
-    print(f"valid: {path}")
-PY
-```
+Each trial reverses the engine order, and only an engine whose spread
+exceeds `--noise-threshold` gets more runs, up to `--max-runs`. `arrow`
+means batches generated and dropped in memory, so its output size is 0.
+Compare reports only from the same machine and invocation.
 
 ## Not built
 

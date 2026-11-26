@@ -1,4 +1,4 @@
-//! Engine-neutral benchmark interchange format; see benchmark-report.schema.json.
+//! Engine-neutral benchmark interchange format, written by `--json`; BENCHMARKS.md describes it.
 
 use std::env::consts::{ARCH, OS};
 use std::env::{args, current_dir, var};
@@ -123,7 +123,7 @@ impl Report {
         let report = Self {
             path,
             data: json!({
-                "schema_version": 2,
+                "schema_version": 1,
                 "started_at_unix_seconds": unix_seconds(),
                 "finished_at_unix_seconds": null,
                 "complete": false,

@@ -25,8 +25,9 @@ use std::sync::Arc;
 /// `rows` source rows of `dist`, as Arrow batches.
 ///
 /// Rows `first..first + n` are `dist`, cloned, skipped `first` rows and
-/// collected `n`, so any range is the same rows whichever order and
-/// thread they are made on. A distribution of
+/// collected `n`. For a distribution whose `skip` lands exactly where
+/// running would (every built-in does), any range is the same rows
+/// whichever order and thread they are made on. A distribution of
 /// [`Children`](populate_core::Children) makes a child table: its rows are
 /// the children of the source rows.
 ///
@@ -96,6 +97,11 @@ where
     pub fn batch(&self, first: u64, n: u64) -> RecordBatch {
         let mut d = self.dist.clone();
         d.skip(first);
+        self.next_batch(&mut d, first, n)
+    }
+
+    /// The next `n` rows of `d`, which is at row `first`.
+    fn next_batch(&self, d: &mut D, first: u64, n: u64) -> RecordBatch {
         // for distributions that draw from the caller: seeded by position,
         // so a range is the same wherever it is made
         let mut rng = SmallRng::seed_from_u64(mix64(first));
@@ -107,11 +113,16 @@ where
     }
 
     /// Source rows `first..end` as batches of [`batch_rows`](Self::batch_rows).
+    /// The distribution skips to `first` once and runs on from there: the
+    /// same rows as a [`batch`](Self::batch) per range when its `skip`
+    /// lands exactly where running would.
     pub fn range(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
+        let mut d = self.dist.clone();
+        d.skip(first);
         let mut at = first;
         while at < end {
             let n = self.batch_rows.min(end - at);
-            emit(self.batch(at, n));
+            emit(self.next_batch(&mut d, at, n));
             at += n;
         }
     }

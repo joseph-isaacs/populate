@@ -1,6 +1,6 @@
 //! Built-in distributions: [`constant`], [`range`], [`list`], [`draws`],
 //! [`derive()`], [`derive_columns`], [`children`], [`flat_map`], [`named`],
-//! [`column`], [`checkpointed`],
+//! [`column`], [`checkpointed`], [`row_numbers`],
 //! and the random leaves in [`random`] ([`uniform`], [`choose`],
 //! [`weighted`], [`text`], [`chars`]). Tuples of distributions are implemented in
 //! `populate-core` (orphan rule).
@@ -11,12 +11,14 @@ use std::ops::Add;
 
 mod compose;
 mod row_refs;
+mod rows;
 mod stored;
 pub use compose::{
     ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FlatMap, Format, Named, children,
     derive, derive_columns, draws, draws_reserving, flat_map, format, named, named_all,
 };
 pub use row_refs::RowRefs;
+pub use rows::{Col, Row, RowNumbers, Rows, row_numbers};
 pub use stored::{Checkpointed, Column, checkpointed, column, column_as};
 
 pub mod bounded;

@@ -137,7 +137,11 @@ pub fn compare(ours: &Path, theirs: &Path) -> Result<Vec<String>, String> {
     let mut diffs: Vec<String> = na
         .symmetric_difference(&nb)
         .map(|n| {
-            let who = if na.contains(n) { "us" } else { "the reference" };
+            let who = if na.contains(n) {
+                "us"
+            } else {
+                "the reference"
+            };
             format!("{n}: written only by {who}")
         })
         .collect();
@@ -161,7 +165,10 @@ pub fn row_groups(ours: &Path, theirs: &Path) -> Result<Vec<String>, String> {
         if !q.is_file() {
             continue;
         }
-        let (a, b) = (metadata(&p)?.num_row_groups(), metadata(&q)?.num_row_groups());
+        let (a, b) = (
+            metadata(&p)?.num_row_groups(),
+            metadata(&q)?.num_row_groups(),
+        );
         if a.max(b) > 2 * a.min(b) {
             let stem = p.file_stem().unwrap_or_default().to_string_lossy();
             v.push(format!("{stem} {a}/{b}"));
@@ -182,11 +189,18 @@ fn text_diff(a: &Path, b: &Path) -> Result<Option<String>, String> {
     loop {
         let n = fill(&mut ra, &mut ba)?;
         let m = fill(&mut rb, &mut bb)?;
-        if let Some(i) = ba[..n.min(m)].iter().zip(&bb[..m.min(n)]).position(|(x, y)| x != y) {
+        if let Some(i) = ba[..n.min(m)]
+            .iter()
+            .zip(&bb[..m.min(n)])
+            .position(|(x, y)| x != y)
+        {
             return Ok(Some(format!("bytes differ at offset {}", at + i as u64)));
         }
         if n != m {
-            return Ok(Some(format!("lengths differ after {} bytes", at + n.min(m) as u64)));
+            return Ok(Some(format!(
+                "lengths differ after {} bytes",
+                at + n.min(m) as u64
+            )));
         }
         if n == 0 {
             return Ok(None);

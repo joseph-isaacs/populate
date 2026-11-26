@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 arrow-array.workspace = true
 parquet = { workspace = true, features = ["arrow", "snap"] }
+serde_json = "1"

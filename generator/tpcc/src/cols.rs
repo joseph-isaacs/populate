@@ -10,10 +10,10 @@ use populate_core::{Columnar, Distribution, Sink, StrBuf, StrSink};
 use rand::Rng;
 
 /// A string (ASCII): every TPC-C string is written per row.
-pub(crate) type Text = Str<Unshared>;
+pub type Text = Str<Unshared>;
 
 /// A `Utf8View` column of [`Text`].
-pub(crate) type TextCol = Views<Unshared>;
+pub type TextCol = Views<Unshared>;
 
 /// `f(row)` for every row. See [`per_row`].
 #[derive(Clone)]

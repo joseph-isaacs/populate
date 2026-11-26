@@ -21,7 +21,7 @@
 //! - `.dat` output is the exact dsdgen text format, for diffing.
 //!
 //! ```
-//! use populate_dsb::{Encoding, TableName, Dsb};
+//! use populate_gen_dsb::{Encoding, TableName, Dsb};
 //!
 //! let ds = Dsb::new(1.0);
 //! let ship_mode = ds.table(TableName::ShipMode);

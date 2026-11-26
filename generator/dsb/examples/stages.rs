@@ -2,10 +2,10 @@
 //! generation alone, then our Arrow, `.dat` and Parquet output (each
 //! includes the stages before it), in ms, best of 3.
 //!
-//! `cargo run -p populate-dsb --release --example stages`
+//! `cargo run -p populate-gen-dsb --release --example stages`
 use dsbgen::config::{SessionBuilder, Table as T};
 use dsbgen::row::*;
-use populate_dsb::{Dsb, Encoding, TableName};
+use populate_gen_dsb::{Dsb, Encoding, TableName};
 use populate_table::Chunks;
 use std::hint::black_box;
 use std::io::sink;

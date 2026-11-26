@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(got, [45_505_804, 40_396_106, 35_129_767]);
     }
 
-    /// Every `k` the scripts can write: `cargo test -p populate-h2o --release
+    /// Every `k` the scripts can write: `cargo test -p populate-gen-h2o --release
     /// -- --ignored exhaustive_micros` (~10 s).
     #[test]
     #[ignore]

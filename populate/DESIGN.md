@@ -198,7 +198,7 @@ straight into the `StrCol` buffer.
 | `populate`              | facade re-exporting the above                         |
 | `populate-combinators`  | what several generators share (`generator/combinators`): dbgen's and dsdgen's Lehmer streams, `Utf8View` columns over shared buffers |
 
-TPC-H (`populate-tpch`) and H2O (`populate-h2o`) are built on
+TPC-H (`populate-gen-tpch`) and H2O (`populate-gen-h2o`) are built on
 `Distribution`: each table is one distribution run by `DynTable` (TPC-H)
 or `DistTable` (H2O), its schema read off it. The other
 benchmark generators (TPC-DS and the rest) implement `Chunks` from

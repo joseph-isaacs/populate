@@ -24,7 +24,7 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use populate_dsb::{
+use populate_gen_dsb::{
     DsTable, Dsb, Encoding, TableName, for_each_batch_many, parquet_props, write_dat_many,
     write_parquet_many,
 };
@@ -49,7 +49,7 @@ const MAX_SCALE_FACTOR: f64 = 100_000.0;
 
 fn main() {
     let tool = Tool {
-        batch: populate_dsb::DEFAULT_BATCH_SIZE,
+        batch: populate_gen_dsb::DEFAULT_BATCH_SIZE,
         flags: "[--encoding latin1|utf8]",
         row_group_bytes: true,
         ..Tool::new("dsb-gen", "dat", MAX_SCALE_FACTOR)

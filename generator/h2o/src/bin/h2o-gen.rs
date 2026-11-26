@@ -12,7 +12,7 @@
 //! tables), `parquet` the same tables as `.parquet`, and `none` generates
 //! Arrow batches and drops them.
 
-use populate_h2o::{GroupBy, Join};
+use populate_gen_h2o::{GroupBy, Join};
 use populate_table::chunks::for_each_batch;
 use populate_table::cli::{create, fail, file_size};
 use populate_table::text::{TextChunks, write_text_many};

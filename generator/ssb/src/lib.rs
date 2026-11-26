@@ -20,7 +20,7 @@
 //!   `Utf8View` into one shared dictionary.
 //!
 //! ```
-//! use populate_ssb::{Ssb, TableName};
+//! use populate_gen_ssb::{Ssb, TableName};
 //!
 //! let s = Ssb::new(0.01);
 //! let date = s.table(TableName::Date);

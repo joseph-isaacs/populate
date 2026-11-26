@@ -5,9 +5,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use dsbgen::config::{SessionBuilder, Table as Ds};
 use dsbgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
-use populate_dsb::Dsb;
-use populate_dsb::Encoding::{Latin1, Utf8};
-use populate_dsb::TableName::{self, *};
+use populate_gen_dsb::Dsb;
+use populate_gen_dsb::Encoding::{Latin1, Utf8};
+use populate_gen_dsb::TableName::{self, *};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 
@@ -20,7 +20,7 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
 }
 
 /// Small enough to run unoptimised: whole dimensions, prefixes of facts.
-fn small(ds: &Dsb, t: TableName) -> populate_dsb::DsTable {
+fn small(ds: &Dsb, t: TableName) -> populate_gen_dsb::DsTable {
     ds.table(t).limit_source_rows(3_000)
 }
 
@@ -247,16 +247,16 @@ fn channels_in_many() {
     ];
     let n = tables.len();
     let mut got: Vec<Vec<RecordBatch>> = vec![Vec::new(); n];
-    populate_dsb::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
+    populate_gen_dsb::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
     for (i, table) in tables.iter().enumerate() {
-        let want = populate_dsb::DsTable::reference_arrow(table);
+        let want = populate_gen_dsb::DsTable::reference_arrow(table);
         assert_eq!(concat(&got[i]), concat(&want), "{}", table.name());
     }
-    let dats = populate_dsb::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
+    let dats = populate_gen_dsb::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
     for (dat, table) in dats.iter().zip(&tables) {
         assert_eq!(dat, &table.reference_dat(Utf8), "{}", table.name());
     }
-    let pq = populate_dsb::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
+    let pq = populate_gen_dsb::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
     for (file, table) in pq.into_iter().zip(&tables) {
         let back: Vec<RecordBatch> =
             parquet::arrow::arrow_reader::ParquetRecordBatchReader::try_new(
@@ -299,7 +299,7 @@ fn dat_write_error_is_returned() {
     let t = |n| ds.table(n).limit_source_rows(3_000).chunk_source_rows(100);
     let tables = [t(StoreSales), t(Customer)];
     let writers = vec![Failing(100_000), Failing(usize::MAX)];
-    let err = populate_dsb::write_dat_many(&tables, writers, 4, Utf8).err();
+    let err = populate_gen_dsb::write_dat_many(&tables, writers, 4, Utf8).err();
     assert_eq!(err.map(|e| e.to_string()), Some("disk full".into()));
 }
 
@@ -308,9 +308,9 @@ fn dat_write_error_is_returned() {
 #[test]
 fn paired_channels_batch_like_single_tables() {
     let ds = Dsb::new(1.0);
-    let sizes = |tables: &[populate_dsb::DsTable]| {
+    let sizes = |tables: &[populate_gen_dsb::DsTable]| {
         let mut v = vec![Vec::new(); tables.len()];
-        populate_dsb::for_each_batch_many(tables, 4, |i, b| v[i].push(b.num_rows()));
+        populate_gen_dsb::for_each_batch_many(tables, 4, |i, b| v[i].push(b.num_rows()));
         v
     };
     for batch in [1000, 3000, 8192] {

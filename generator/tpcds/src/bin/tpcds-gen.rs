@@ -24,13 +24,13 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+use populate_gen_tpcds::{
+    DsTable, Encoding, TableName, Tpcds, for_each_batch_many, parquet_props, write_dat_many,
+    write_parquet_many,
+};
 use populate_table::cli::{
     Args, Format, Lines, Tool, batch_bytes, create, fail, file_size, parquet_rows, report,
     source_rows_per_group,
-};
-use populate_tpcds::{
-    DsTable, Encoding, TableName, Tpcds, for_each_batch_many, parquet_props, write_dat_many,
-    write_parquet_many,
 };
 use std::time::Instant;
 
@@ -49,7 +49,7 @@ const MAX_SCALE_FACTOR: f64 = 100_000.0;
 
 fn main() {
     let tool = Tool {
-        batch: populate_tpcds::DEFAULT_BATCH_SIZE,
+        batch: populate_gen_tpcds::DEFAULT_BATCH_SIZE,
         flags: "[--encoding latin1|utf8]",
         row_group_bytes: true,
         ..Tool::new("tpcds-gen", "dat", MAX_SCALE_FACTOR)

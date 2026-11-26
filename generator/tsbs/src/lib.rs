@@ -17,7 +17,7 @@
 //! [`populate_table`]'s ordered drivers.
 //!
 //! ```
-//! use populate_tsbs::{Config, Format, Tsbs, UseCase};
+//! use populate_gen_tsbs::{Config, Format, Tsbs, UseCase};
 //!
 //! let mut cfg = Config::new(UseCase::CpuOnly, 2, 123);
 //! cfg.end = cfg.start + 20_000_000_000; // two 10 s epochs

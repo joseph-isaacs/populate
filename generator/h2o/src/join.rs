@@ -17,7 +17,7 @@ use arrow_schema::SchemaRef;
 use populate_builtins::{checkpointed, column_as, named};
 use populate_core::Distribution;
 use populate_table::text::TextChunks;
-use populate_table::{Chunks, resolve_threads};
+use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, resolve_threads};
 use std::fmt::{self, Debug, Formatter};
 use std::mem::take;
 use std::sync::mpsc::channel;
@@ -25,7 +25,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{ScopedJoinHandle, scope};
 
 use crate::cols::{Bits, first_appearance, gather, sort_rows, sort_u64};
-use crate::groupby::{DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS};
+use crate::groupby::DEFAULT_BATCH_SIZE;
 use crate::rng::{RMt, Runif100, apply_shuffle, sample_int, shuffle_draws};
 use crate::values::{Id, Int, Micros, NaSet, Table, header, na_rows, na_values, table};
 use crate::{SEED, pretty_sci};

@@ -14,12 +14,11 @@
 
 use populate_h2o::{GroupBy, Join};
 use populate_table::chunks::for_each_batch;
+use populate_table::cli::{create, fail, file_size};
 use populate_table::text::{TextChunks, write_text_many};
-use populate_table::{Chunks, write_parquet};
+use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, write_parquet};
 use std::env::args;
-use std::fmt::Display;
-use std::fs::{File, create_dir_all, metadata};
-use std::io::BufWriter;
+use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::process::exit;
 use std::time::Instant;
@@ -74,7 +73,7 @@ fn parse() -> Result<Args, String> {
         out: PathBuf::from("."),
         format: Format::Csv,
         threads: 0,
-        chunk: populate_h2o::groupby::DEFAULT_CHUNK_ROWS,
+        chunk: DEFAULT_CHUNK_ROWS,
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -114,11 +113,6 @@ fn parse() -> Result<Args, String> {
     Ok(a)
 }
 
-fn fail(what: &dyn Display, e: &dyn Display) -> ! {
-    eprintln!("{what}: {e}");
-    exit(1);
-}
-
 /// Write one table as `a.format` asks.
 fn emit<T: Chunks + TextChunks>(a: &Args, name: &str, t: &T) {
     let t1 = Instant::now();
@@ -126,10 +120,7 @@ fn emit<T: Chunks + TextChunks>(a: &Args, name: &str, t: &T) {
         Format::Parquet => a.out.join(name.replace(".csv", ".parquet")),
         _ => a.out.join(name),
     };
-    let create = || {
-        let f = File::create(&path).unwrap_or_else(|e| fail(&path.display(), &e));
-        BufWriter::with_capacity(1 << 20, f)
-    };
+    let create = || create(std::slice::from_ref(&path)).pop().expect("one file");
     match a.format {
         Format::Csv => {
             write_text_many(&[t as &dyn TextChunks], vec![create()], a.threads)
@@ -144,7 +135,7 @@ fn emit<T: Chunks + TextChunks>(a: &Args, name: &str, t: &T) {
             for_each_batch(t, a.threads, |b| rows += b.num_rows());
         }
     }
-    let size = metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let size = file_size(&path);
     eprintln!(
         "{name}: {:.2}s, {:.1} MB",
         t1.elapsed().as_secs_f64(),

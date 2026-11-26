@@ -26,7 +26,7 @@ use std::arch::asm;
 #[cfg(feature = "formats")]
 use std::sync::Arc;
 
-/// A string that is a precomputed view into [`Text`]'s buffers.
+/// A string that is a precomputed view into shared TPC-H text buffers.
 pub type Word = views::Word<Tpch>;
 
 /// A string with bytes of its own (names, addresses, phone numbers).

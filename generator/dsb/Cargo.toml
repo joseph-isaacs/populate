@@ -6,7 +6,6 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 license.workspace = true
@@ -54,9 +53,9 @@ name = "tables"
 required-features = ["formats"]
 
 [[example]]
-name = "vs_tpcdsgen"
+name = "dsb_vs_tpcdsgen"
 required-features = ["formats"]
 
 [[example]]
-name = "stages"
+name = "dsb_stages"
 required-features = ["formats"]

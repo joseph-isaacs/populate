@@ -22,9 +22,6 @@
 //! | [`Tables<T>`](Tables)       | [`TableCols`]: one [`ChildCols`] per table    |
 //! | `(A, B, ...)`               | `(A`'s columns`, B`'s columns`, ...)`         |
 //!
-//! Every one of these is already in Arrow's memory layout;
-//! `populate-sink-arrow` lists the Arrow type each becomes.
-//!
 //! A tuple of distributions is a distribution of tuples (see [`mod@tuple`]), so
 //! a row of several columns is written as a tuple:
 //!

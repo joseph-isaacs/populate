@@ -227,7 +227,7 @@ impl Distribution for Demographics {
 }
 
 /// `customer_demographics`. The table has no nulls
-/// ([`demographics_have_nulls`]), so no random draw reaches it.
+/// (`demographics_have_nulls` in the tests), so no random draw reaches it.
 pub fn customer_demographics() -> impl Distribution<Item = DemoRow> + Clone + Sync {
     let list = |n: usize, f: fn(i64) -> &'static str| -> Arc<[Listed]> {
         (0..n as i64).map(|i| Listed::new(f(i))).collect()

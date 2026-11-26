@@ -4,48 +4,26 @@
 
 use crate::cols::{Text, per_row, text};
 use crate::rng::{ALNUM, Charset, DIGITS, Draws, LETTERS, below, nurand};
-use crate::strings::Views;
 use crate::tpcc::{
     CUSTOMERS, DISTRICTS, FIRST_NEW_ORDER, ITEMS, NEW_ORDERS, ORDERS, STOCK_PER_WAREHOUSE,
     SYLLABLES, Tpcc, TpccTableName,
 };
-use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use populate_builtins::{flat_map, named, named_all};
-use populate_core::{Children, Columns, Decimal, Distribution, Sink, Timestamp, time_unit};
+use populate_core::{
+    Children, Columns, Decimal, Distribution, Sink, StrBuf, StrSink, Timestamp, time_unit,
+};
 use populate_sink_arrow::IntoArrowColumns;
-use populate_table::{DistTable, Stream};
+use populate_table::{DynTable, Stream};
 use rand::Rng;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
-/// A table, generated from any range of its source rows.
-pub(crate) trait TableGen: Send + Sync {
-    fn schema(&self) -> SchemaRef;
-
-    /// Source rows `first..first + n`.
-    fn batch(&self, first: u64, n: u64) -> RecordBatch;
-}
-
-impl<D> TableGen for DistTable<D>
-where
-    D: Distribution + Clone + Send + Sync,
-    Columns<D::Item>: IntoArrowColumns,
-{
-    fn schema(&self) -> SchemaRef {
-        DistTable::schema(self).clone()
-    }
-
-    fn batch(&self, first: u64, n: u64) -> RecordBatch {
-        DistTable::batch(self, first, n)
-    }
-}
-
-fn table<D>(t: TpccTableName, rows: u64, dist: D) -> Arc<dyn TableGen>
+fn table<D>(t: TpccTableName, rows: u64, dist: D) -> DynTable
 where
     D: Distribution + Clone + Send + Sync + 'static,
     Columns<D::Item>: IntoArrowColumns,
 {
-    Arc::new(DistTable::new(t.as_str(), rows, dist))
+    DynTable::new(t.as_str(), rows, dist)
 }
 
 /// Every table's schema, read off its distribution (no rows generated).
@@ -53,12 +31,12 @@ pub(crate) static SCHEMAS: LazyLock<Vec<SchemaRef>> = LazyLock::new(|| {
     let c = Tpcc::new(1);
     TpccTableName::ALL
         .iter()
-        .map(|&t| generator(t, &c).schema())
+        .map(|&t| generator(t, &c).schema().clone())
         .collect()
 });
 
 /// Table `t` of `cfg`.
-pub(crate) fn generator(t: TpccTableName, cfg: &Tpcc) -> Arc<dyn TableGen> {
+pub(crate) fn generator(t: TpccTableName, cfg: &Tpcc) -> DynTable {
     let g = Gen::new(cfg);
     let rows = cfg.source_rows(t);
     use TpccTableName::*;
@@ -118,7 +96,7 @@ fn rand_str(s: Stream, min: usize, max: usize, cs: Charset) -> impl Leaf<Text> {
     text(avg, move |r, v| {
         let mut d = Draws::new(s, r);
         let len = d.int(min as i64, max as i64) as usize;
-        v.push_with(len, |b| cs.fill(&mut d, b));
+        v.push_ascii_with(len, |b| cs.fill(&mut d, b));
     })
 }
 
@@ -130,7 +108,7 @@ fn data_str(s: Stream) -> impl Leaf<Text> {
         let len = d.int(26, 50) as usize;
         let original = below(d.next(), 10) == 0;
         let at = d.int(0, len as i64 - 8) as usize;
-        v.push_with(len, |b| {
+        v.push_ascii_with(len, |b| {
             ALNUM.fill(&mut d, b);
             if original {
                 b[at..at + 8].copy_from_slice(b"ORIGINAL");
@@ -143,7 +121,7 @@ fn data_str(s: Stream) -> impl Leaf<Text> {
 fn zip(s: Stream) -> impl Leaf<Text> {
     text(0, move |r, v| {
         let mut d = Draws::new(s, r);
-        v.push_with(9, |b| {
+        v.push_ascii_with(9, |b| {
             DIGITS.fill(&mut d, &mut b[..4]);
             b[4..].copy_from_slice(b"11111");
         });
@@ -151,25 +129,20 @@ fn zip(s: Stream) -> impl Leaf<Text> {
 }
 
 /// The same short string in every row.
-fn word(w: &'static [u8]) -> impl Leaf<Text> {
-    text(0, move |_, v| v.push(w))
+fn word(w: &'static str) -> impl Leaf<Text> {
+    text(0, move |_, v| v.push_str(w))
 }
 
 /// `c_last` of number `n` in `0..=999` (4.3.2.3).
-fn last_name(n: usize, v: &mut Views) {
+fn last_name(n: usize, v: &mut StrBuf<'_>) {
     let parts = [
         SYLLABLES[n / 100],
         SYLLABLES[n / 10 % 10],
         SYLLABLES[n % 10],
     ];
-    let len = parts.iter().map(|p| p.len()).sum();
-    v.push_with(len, |b| {
-        let mut at = 0;
-        for p in parts {
-            b[at..at + p.len()].copy_from_slice(p.as_bytes());
-            at += p.len();
-        }
-    });
+    for p in parts {
+        v.push_str(p);
+    }
 }
 
 /// `o_c_id`: per district, a Fisher-Yates shuffle of `1..=3000` (one
@@ -273,7 +246,7 @@ impl Gen {
         )
     }
 
-    fn warehouse(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn warehouse(&self, rows: u64) -> DynTable {
         table(
             TpccTableName::Warehouse,
             rows,
@@ -287,7 +260,7 @@ impl Gen {
         )
     }
 
-    fn district(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn district(&self, rows: u64) -> DynTable {
         table(
             TpccTableName::District,
             rows,
@@ -303,7 +276,7 @@ impl Gen {
         )
     }
 
-    fn customer(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn customer(&self, rows: u64) -> DynTable {
         let s = |c: &str| self.s(c);
         let (last, c_load) = (s("c_last"), self.c_load);
         let credit = s("c_credit");
@@ -316,7 +289,7 @@ impl Gen {
                     named("c_d_id", id::<CUSTOMERS, DISTRICTS>()),
                     named("c_w_id", id::<{ CUSTOMERS * DISTRICTS }, { u64::MAX }>()),
                     named("c_first", rand_str(s("c_first"), 8, 16, ALNUM)),
-                    named("c_middle", word(b"OE")),
+                    named("c_middle", word("OE")),
                     named(
                         "c_last",
                         text(0, move |r, v| {
@@ -342,7 +315,7 @@ impl Gen {
                         "c_credit",
                         text(0, move |r, v| {
                             let bad = below(Draws::new(credit, r).next(), 10) == 0;
-                            v.push(if bad { b"BC" } else { b"GC" });
+                            v.push_str(if bad { "BC" } else { "GC" });
                         }),
                     ),
                     named("c_credit_lim", dec::<12, 2>(5_000_000)),
@@ -357,7 +330,7 @@ impl Gen {
         )
     }
 
-    fn history(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn history(&self, rows: u64) -> DynTable {
         table(
             TpccTableName::History,
             rows,
@@ -374,7 +347,7 @@ impl Gen {
         )
     }
 
-    fn new_order(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn new_order(&self, rows: u64) -> DynTable {
         table(
             TpccTableName::NewOrder,
             rows,
@@ -395,7 +368,7 @@ impl Gen {
         rand_int(self.s("o_ol_cnt"), 5, 15)
     }
 
-    fn orders(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn orders(&self, rows: u64) -> DynTable {
         let carrier = self.s("o_carrier_id");
         table(
             TpccTableName::Orders,
@@ -424,7 +397,7 @@ impl Gen {
         )
     }
 
-    fn order_line(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn order_line(&self, rows: u64) -> DynTable {
         let (item, amount, dist) = (
             self.s("ol_i_id"),
             self.s("ol_amount"),
@@ -457,7 +430,8 @@ impl Gen {
                         Draws::new(amount, k).int(1, 999_999) as i128
                     }));
                     let mut x = Draws::new(dist, k);
-                    out.9.0.push_with(24, |b| ALNUM.fill(&mut x, b));
+                    out.9
+                        .push_with(|s| s.push_ascii_with(24, |b| ALNUM.fill(&mut x, b)));
                 }
             },
         )
@@ -484,7 +458,7 @@ impl Gen {
         )
     }
 
-    fn item(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn item(&self, rows: u64) -> DynTable {
         table(
             TpccTableName::Item,
             rows,
@@ -498,7 +472,7 @@ impl Gen {
         )
     }
 
-    fn stock(&self, rows: u64) -> Arc<dyn TableGen> {
+    fn stock(&self, rows: u64) -> DynTable {
         let dist = |k: u32| {
             let name = format!("s_dist_{k:02}");
             named(&name, rand_str(self.s(&name), 24, 24, ALNUM))

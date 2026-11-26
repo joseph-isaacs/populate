@@ -38,8 +38,8 @@
 
 use crate::RowRefs;
 use populate_core::{
-    ChildCols, Children, Columnar, Columns, Distribution, RowCount, SeekRng, Sink, TableCols,
-    Tables,
+    ChildCols, Children, Columnar, Columns, Distribution, RowCount, SeekRng, Sink, StrBuf, StrSink,
+    TableCols, Tables,
 };
 use rand::Rng;
 use std::marker::PhantomData;
@@ -437,6 +437,60 @@ impl<T: ChildTables> ChildTables for Tables<T> {
         children: &'a [usize],
     ) -> &'a [usize] {
         T::reserve_children(&mut cols.tables, children)
+    }
+}
+
+// ============================================================================
+// Format
+// ============================================================================
+
+/// A string per row, written by `f`. See [`format()`].
+#[derive(Debug, Clone)]
+pub struct Format<D, F, T> {
+    pub source: D,
+    pub f: F,
+    _item: PhantomData<fn() -> T>,
+}
+
+/// A string column: `f(row, out)` writes each row's string from a row of
+/// `source`, straight into the column's bytes (no `String` per row).
+///
+/// `T` is the row type, whose columns take strings written in place
+/// ([`StrSink`]): `String` for [`StrCol`](populate_core::StrCol), or a
+/// generator's own string column. Rows are read in place ([`RowRefs`]).
+pub fn format<D, T, F>(source: D, f: F) -> Format<D, F, T>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut StrBuf<'_>),
+{
+    Format {
+        source,
+        f,
+        _item: PhantomData,
+    }
+}
+
+impl<D, F, T> Distribution for Format<D, F, T>
+where
+    D: Distribution,
+    Columns<D::Item>: RowRefs,
+    F: for<'a> Fn(<Columns<D::Item> as RowRefs>::Ref<'a>, &mut StrBuf<'_>),
+    T: Columnar + From<String>,
+    Columns<T>: StrSink,
+{
+    type Item = T;
+
+    fn collect_into(&mut self, cols: &mut Columns<T>, rng: &mut impl Rng, n: usize) {
+        let src = self.source.collect(rng, n);
+        cols.reserve(n);
+        for row in src.row_refs() {
+            cols.push_with(|out| (self.f)(row, out));
+        }
+    }
+
+    fn skip(&mut self, n: u64) {
+        self.source.skip(n);
     }
 }
 

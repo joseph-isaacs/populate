@@ -4,7 +4,8 @@
 //!
 //! - [`Table`]: the builder and generator (see [`table`] for an example).
 //! - [`DistTable`]: a table that is one distribution, its schema read
-//!   off the distribution (names and column types), not declared.
+//!   off the distribution (names and column types), not declared;
+//!   [`DynTable`] the same with the distribution's type erased.
 //! - [`Stream`]: stateless per-row randomness, for values that several
 //!   tables must agree on (a return and the sale it refers to).
 //! - [`Chunks`]: any generator split into independent chunks gets the same
@@ -17,6 +18,8 @@
 //!   generation *and* encoding streamed into one Parquet file.
 //! - [`write_dist_parquet`] (feature `parquet`): the same, straight from a
 //!   distribution's collected buffers, with no Arrow in between.
+//! - `cli` (feature `parquet`): the flags, files and report the
+//!   generators' command-line tools share.
 
 pub mod chunks;
 pub mod dist;
@@ -26,6 +29,8 @@ pub mod table;
 pub mod text;
 
 #[cfg(feature = "parquet")]
+pub mod cli;
+#[cfg(feature = "parquet")]
 pub mod direct;
 #[cfg(feature = "parquet")]
 mod parquet;
@@ -33,7 +38,7 @@ mod parquet;
 pub use chunks::{Chunks, Jobs, MultiChunks};
 #[cfg(feature = "parquet")]
 pub use direct::{ParquetOptions, write_dist_parquet};
-pub use dist::{DistTable, DistTables};
+pub use dist::{DEFAULT_BATCH_ROWS, DEFAULT_CHUNK_ROWS, DistTable, DistTables, DynTable};
 #[cfg(feature = "parquet")]
 pub use parquet::{write_parquet, write_parquet_many};
 pub use sched::{Schedule, par_ordered, par_sources, resolve_threads};

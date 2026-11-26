@@ -17,7 +17,7 @@ pub const A: u64 = 16807;
 /// The LCG modulus, `2^31 - 1`.
 pub const M: u64 = 2_147_483_647;
 /// Independent chains [`draws`] runs at once.
-pub const LANES: usize = 16;
+const LANES: usize = 16;
 
 /// `a * b mod (2^31 - 1)` for `a, b` in `[1, m)`, with no division and no
 /// compare (so it vectorises).
@@ -71,7 +71,7 @@ pub fn bounded(x: u32, lo: i32, hi: i32) -> i32 {
 }
 
 /// Ranges below this map a draw exactly with integers ([`scale`]).
-pub const INT_RANGE: u32 = 1 << 21;
+const INT_RANGE: u32 = 1 << 21;
 
 /// `floor(x * range / m)` without a division: equal to the `f64` formula
 /// of [`bounded`] for every `x` in `[1, m)` when `range < 2^21`.
@@ -153,6 +153,19 @@ fn fill_any(mut x: u64, out: &mut [u32]) {
     let rest = chunks.into_remainder();
     let n = rest.len();
     rest.copy_from_slice(&lanes[..n]);
+}
+
+/// dbgen's bounded value of draw `x` in `lo..=hi`: [`bound_all`] of one
+/// draw.
+#[inline(always)]
+pub fn bound(x: u32, lo: i32, hi: i32) -> i32 {
+    let range = (hi as i64 - lo as i64 + 1) as u64;
+    if range < INT_RANGE as u64 {
+        // equal to the `f64` formula for these ranges (see `scale`)
+        lo + scale(x, range as u32) as i32
+    } else {
+        bounded(x, lo, hi)
+    }
 }
 
 /// Map draws to dbgen's bounded values in `lo..=hi`, in place.

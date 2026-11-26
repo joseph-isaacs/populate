@@ -2,53 +2,17 @@
 //! many field columns as `fieldcount`, every value a function of its
 //! record number, written straight into its `Utf8View` column.
 
-use crate::strings::Views;
 use crate::ycsb::{RandomLayout, Ycsb, deterministic_value, java_hash};
-use arrow_array::ArrayRef;
-use arrow_schema::DataType;
-use populate_core::RowCount;
-use populate_core::{Columnar, Columns, Distribution, Sink, Wide, WideCols};
-use populate_sink_arrow::IntoArrowArray;
+use populate_combinators::views::{Str, Unshared, Views};
+use populate_core::{Columns, Distribution, StrSink, Wide, WideCols};
 use rand::Rng;
 use std::sync::Arc;
 
-/// A string (ASCII): a row of a [`TextCol`].
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct Text(pub(crate) Vec<u8>);
+/// A string (ASCII): every YCSB string is written per row.
+pub(crate) type Text = Str<Unshared>;
 
 /// A `Utf8View` column of [`Text`].
-#[derive(Default)]
-pub(crate) struct TextCol(pub(crate) Views);
-
-impl Columnar for Text {
-    type Columns = TextCol;
-}
-
-impl Sink<Text> for TextCol {
-    fn push(&mut self, t: Text) {
-        self.0.push(&t.0);
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.0.reserve(n, 0);
-    }
-}
-
-impl RowCount for TextCol {
-    fn rows(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl IntoArrowArray for TextCol {
-    fn data_type() -> DataType {
-        DataType::Utf8View
-    }
-
-    fn into_array(self) -> ArrayRef {
-        self.0.finish()
-    }
-}
+pub(crate) type TextCol = Views<Unshared>;
 
 /// The `usertable` records: the key, then a column per field.
 ///
@@ -81,19 +45,19 @@ impl Distribution for Records {
         let load = &*self.load;
         let y = &load.ycsb;
         let len = y.field_length;
-        keys.0.reserve(n, n * 24);
+        keys.reserve_bytes(n, n * 24);
         for c in fields.iter_mut() {
-            c.0.reserve(n, n * len);
+            c.reserve_bytes(n, n * len);
         }
         let (mut key, mut buf) = (String::new(), Vec::new());
         for j in self.next..self.next + n as u64 {
             key.clear();
             y.push_key(y.insert_start + j, &mut key);
-            keys.0.push(key.as_bytes());
+            keys.push_with(|s| s.push_str(&key));
             match &load.layout {
                 Some(l) => {
                     for (f, c) in fields.iter_mut().enumerate() {
-                        c.0.push_with(len, |b| l.fill(y.tlr, j, f, b));
+                        c.push_with(|s| s.push_ascii_blocks(len, l.blocks(y.tlr, j, f)));
                     }
                 }
                 // `buildDeterministicValue`: from the key and the field name
@@ -102,7 +66,7 @@ impl Distribution for Records {
                     for (name, c) in load.names.iter().zip(fields.iter_mut()) {
                         buf.clear();
                         deterministic_value(key.as_bytes(), h, name.as_bytes(), len, &mut buf);
-                        c.0.push(&buf);
+                        c.push_with(|s| s.push_ascii_bytes(&buf));
                     }
                 }
             }

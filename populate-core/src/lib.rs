@@ -89,7 +89,7 @@ pub use rows::{Append, RowCount};
 pub use seek::SeekRng;
 pub use sink::Sink;
 pub use spread::{Spread, SpreadCols};
-pub use string::{Padded, StrBuf, StrCol};
+pub use string::{Padded, StrBuf, StrCol, StrSink};
 pub use wide::{Wide, WideCols};
 
 /// A stream of rows of type [`Item`](Self::Item), produced a block at a
@@ -143,3 +143,10 @@ pub trait Distribution: Sized {
         cols
     }
 }
+
+/// A distribution of `T` rows that can be cloned and shared between
+/// threads, as every column of a table is: helpers that build a column
+/// return `impl Dist<T>`.
+pub trait Dist<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
+
+impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Dist<T> for D {}

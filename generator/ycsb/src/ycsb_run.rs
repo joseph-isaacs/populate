@@ -19,17 +19,22 @@
 //! row then an `UPDATE` row, as the binding sees it.
 
 use crate::cols::Text;
-use crate::engine::DEFAULT_BATCH_SIZE;
 use crate::rng::JavaTlr;
 use crate::ycsb::{Ycsb, deterministic_value, fnv_hash64, java_hash, java_hashmap_order, six};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use parquet::errors::ParquetError;
+use parquet::file::properties::WriterProperties;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::schema::types::ColumnPath;
-use populate_core::{Children, Columns, Distribution, Nullable, Sink, Wide, WideCols};
+use populate_core::{Children, Columns, Distribution, Nullable, Sink, StrSink, Wide, WideCols};
 use populate_table::text::TextChunks;
-use populate_table::{Chunks, DistTable, chunks};
+use populate_table::text::write_text_many;
+use populate_table::{
+    Chunks, DEFAULT_BATCH_ROWS, DistTable, MultiChunks, chunks, write_parquet_many,
+};
 use rand::Rng;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 /// Default operations per chunk.
@@ -120,7 +125,7 @@ impl YcsbRun {
             scan: (1, 1000),
             scan_zipfian: false,
             chunk_ops: YCSB_RUN_CHUNK_OPS,
-            batch: DEFAULT_BATCH_SIZE,
+            batch: DEFAULT_BATCH_ROWS,
             checkpoints: Arc::default(),
             scan_zeta: Arc::default(),
         }
@@ -425,15 +430,15 @@ impl YcsbRun {
 
     /// Write the operations as one Parquet file, one row group per chunk
     /// (`props: None` means [`YcsbRun::parquet_props`]).
-    pub fn write_parquet<W: std::io::Write + Send>(
+    pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
-        props: Option<parquet::file::properties::WriterProperties>,
-    ) -> Result<W, parquet::errors::ParquetError> {
+        props: Option<WriterProperties>,
+    ) -> Result<W, ParquetError> {
         let props = props.unwrap_or_else(|| Self::parquet_props().build());
-        let mut w = crate::write_parquet_many(
-            std::slice::from_ref(self),
+        let mut w = write_parquet_many(
+            &[self as &dyn MultiChunks],
             vec![writer],
             threads,
             Some(props),
@@ -444,12 +449,8 @@ impl YcsbRun {
     /// Write the operations as TSV, one line per binding call:
     /// `OP\tkey\tscanlength\treadfields\tfield0...`, empty where NULL (the
     /// format of `ycsb-ref`'s `RefDB` with `refdb.run=true`).
-    pub fn write_tsv<W: std::io::Write + Send>(
-        &self,
-        writer: W,
-        threads: usize,
-    ) -> std::io::Result<W> {
-        let mut w = crate::write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
+    pub fn write_tsv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
+        let mut w = write_text_many(&[self as &dyn TextChunks], vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
@@ -464,7 +465,7 @@ impl Chunks for YcsbRun {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        self.table().chunk(i, emit)
+        Chunks::chunk(&self.table(), i, emit)
     }
 }
 
@@ -574,24 +575,23 @@ impl Distribution for Ops {
         let names = self.run.load.field_names();
         let (op, key, scan, read, WideCols(fields)) = &mut cols.values;
         let len = self.run.load.field_length;
-        op.0.reserve(n, 0);
-        key.0.reserve(n, n * 24);
+        op.reserve_bytes(n, 0);
+        key.reserve_bytes(n, n * 24);
         for f in fields.iter_mut() {
-            f.values.0.reserve(n, len.min(4096) * 8);
+            f.values.reserve_bytes(n, len.min(4096) * 8);
         }
         let mut s = Vec::new();
         self.run(n, &mut |r| {
-            op.0.push(r.op.as_bytes());
-            key.0.push(r.key.as_bytes());
+            op.push_with(|o| o.push_str(r.op));
+            key.push_with(|k| k.push_str(&r.key));
             scan.push(r.scan);
             s.clear();
             r.read_fields(&names, &mut s);
-            read.values.0.push(&s);
+            read.values.push_with(|v| v.push_ascii_bytes(&s));
             read.valid.push(r.read.is_some());
             for (f, c) in fields.iter_mut().enumerate() {
-                c.values
-                    .0
-                    .push(if r.written[f] { &r.values[f] } else { b"" });
+                let v: &[u8] = if r.written[f] { &r.values[f] } else { b"" };
+                c.values.push_with(|s| s.push_ascii_bytes(v));
                 c.valid.push(r.written[f]);
             }
         });

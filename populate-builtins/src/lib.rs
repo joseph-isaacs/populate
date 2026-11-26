@@ -13,8 +13,8 @@ mod compose;
 mod row_refs;
 mod stored;
 pub use compose::{
-    ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FlatMap, Named, children, derive,
-    derive_columns, draws, draws_reserving, flat_map, named, named_all,
+    ChildSlots, ChildTables, Derive, DeriveColumns, Draws, FlatMap, Format, Named, children,
+    derive, derive_columns, draws, draws_reserving, flat_map, format, named, named_all,
 };
 pub use row_refs::RowRefs;
 pub use stored::{Checkpointed, Column, checkpointed, column, column_as};

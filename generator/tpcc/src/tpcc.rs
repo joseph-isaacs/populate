@@ -24,20 +24,20 @@
 //! - "current date/time" is one fixed load time ([`Tpcc::load_time`]), so
 //!   the data is reproducible.
 
-use crate::engine::Plan;
 use crate::rng::Draws;
-use crate::tables::{SCHEMAS, TableGen, generator};
+use crate::tables::{SCHEMAS, generator};
 use crate::text::Delimited;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, SchemaRef};
 use parquet::basic::Compression;
+use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
 use parquet::schema::types::ColumnPath;
-use populate_table::text::TextChunks;
-use populate_table::{Chunks, Stream, chunks};
+use populate_table::text::{self, TextChunks};
+use populate_table::{Chunks, DEFAULT_BATCH_ROWS, DynTable, MultiChunks, Stream, chunks};
 use std::fmt;
+use std::io::{self, Write};
 use std::str::FromStr;
-use std::sync::Arc;
 
 /// Rows of `item` (fixed).
 pub const ITEMS: u64 = 100_000;
@@ -219,9 +219,10 @@ impl Tpcc {
     pub fn table(&self, t: TpccTableName) -> TpccTable {
         TpccTable {
             name: t,
-            plan: Plan::new(self.source_rows(t), t.rows_per_source_row()),
-            generator: generator(t, self),
+            table: generator(t, self),
         }
+        .chunk_rows(DEFAULT_CHUNK_ROWS)
+        .batch_size(DEFAULT_BATCH_ROWS)
     }
 
     /// Every table, in [`TpccTableName::ALL`] order.
@@ -230,13 +231,15 @@ impl Tpcc {
     }
 }
 
+/// Default output rows per chunk (one Parquet row group).
+pub const DEFAULT_CHUNK_ROWS: u64 = 128 * 1024;
+
 /// One table of a [`Tpcc`] database, split into chunks of source rows.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TpccTable {
     name: TpccTableName,
-    plan: Plan,
-    /// The table's distribution, run over any range of source rows.
-    generator: Arc<dyn TableGen>,
+    /// The table's distribution, over its source rows.
+    table: DynTable,
 }
 
 impl TpccTable {
@@ -250,53 +253,50 @@ impl TpccTable {
 
     /// Source rows (orders for `order_line`; the row count elsewhere).
     pub fn source_rows(&self) -> u64 {
-        self.plan.source_rows
+        self.table.rows()
     }
 
     /// Expected output rows (exact for all tables but `order_line`).
     pub fn approx_rows(&self) -> u64 {
-        (self.plan.source_rows as f64 * self.name.rows_per_source_row()).round() as u64
+        (self.source_rows() as f64 * self.name.rows_per_source_row()).round() as u64
     }
 
     /// Only the first `n` source rows: a prefix of the full table.
     pub fn limit_source_rows(mut self, n: u64) -> Self {
-        self.plan.source_rows = self.plan.source_rows.min(n);
+        self.table = self.table.limit_rows(n);
         self
     }
 
     /// Aim for about `rows` output rows per chunk (= per Parquet row
     /// group). The values are the same for any chunk size.
-    pub fn chunk_rows(mut self, rows: u64) -> Self {
-        self.plan = self.plan.chunk_rows(rows);
-        self
+    pub fn chunk_rows(self, rows: u64) -> Self {
+        let per = (rows as f64 / self.name.rows_per_source_row()).round() as u64;
+        self.chunk_source_rows(per.max(1))
     }
 
     /// Chunks of exactly `n` source rows (the last may be shorter).
     pub fn chunk_source_rows(mut self, n: u64) -> Self {
-        self.plan = self.plan.chunk_source_rows(n);
+        assert!(n > 0, "chunk_source_rows must be > 0");
+        self.table = self.table.chunk_rows(n);
         self
     }
 
-    /// Rows per Arrow batch (default 8Ki).
+    /// About `n` output rows per Arrow batch (default 8Ki).
     pub fn batch_size(mut self, n: usize) -> Self {
-        self.plan = self.plan.batch_size(n);
+        assert!(n > 0, "batch_size must be > 0");
+        let per = (n as f64 / self.name.rows_per_source_row()).ceil() as u64;
+        self.table = self.table.batch_rows(per.max(1));
         self
     }
 
     pub fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
-    }
-
-    /// Source rows `first..end` as batches.
-    fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        self.plan
-            .batches(first, end, |at, n| emit(self.generator.batch(at, n)));
+        Chunks::num_chunks(&self.table)
     }
 
     /// Source rows `first..end` (0-based), generated on this thread.
     pub fn range(&self, first: u64, end: u64) -> Vec<RecordBatch> {
         let mut v = Vec::new();
-        self.generate(first, end.min(self.plan.source_rows), &mut |b| v.push(b));
+        self.table.range(first, end, &mut |b| v.push(b));
         v
     }
 
@@ -315,19 +315,13 @@ impl TpccTable {
 
     /// Write the table as one Parquet file, one row group per chunk
     /// (`props: None` means [`parquet_props`]).
-    pub fn write_parquet<W: std::io::Write + Send>(
+    pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
-        props: Option<parquet::file::properties::WriterProperties>,
-    ) -> Result<W, parquet::errors::ParquetError> {
-        let props = props.unwrap_or_else(|| parquet_props().build());
-        let mut w = crate::write_parquet_many(
-            std::slice::from_ref(self),
-            vec![writer],
-            threads,
-            Some(props),
-        )?;
+        props: Option<WriterProperties>,
+    ) -> Result<W, ParquetError> {
+        let mut w = write_parquet_many(std::slice::from_ref(self), vec![writer], threads, props)?;
         Ok(w.pop().expect("one writer"))
     }
 
@@ -335,12 +329,8 @@ impl TpccTable {
     /// with their scale, times as `YYYY-MM-DD HH:MM:SS`, no header (the
     /// layout `go-tpc tpcc prepare --output-type csv` writes, ready for
     /// `LOAD DATA` / `COPY`).
-    pub fn write_csv<W: std::io::Write + Send>(
-        &self,
-        writer: W,
-        threads: usize,
-    ) -> std::io::Result<W> {
-        let mut w = crate::write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
+    pub fn write_csv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
+        let mut w = write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
@@ -388,12 +378,11 @@ impl Chunks for TpccTable {
     }
 
     fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
+        TpccTable::num_chunks(self)
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, end) = self.plan.range(i);
-        self.generate(first, end, emit)
+        Chunks::chunk(&self.table, i, emit)
     }
 }
 
@@ -403,11 +392,49 @@ impl TextChunks for TpccTable {
     }
 
     fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
+        TpccTable::num_chunks(self)
     }
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
-        let (first, end) = self.plan.range(i);
-        self.generate(first, end, &mut |b| CSV.write(&b, &mut bufs[0]));
+        Chunks::chunk(&self.table, i, &mut |b| CSV.write(&b, &mut bufs[0]));
     }
+}
+
+/// [`TpccTable::write_parquet`] for several tables, `tables[i]` to
+/// `writers[i]`, on one shared pool of `threads` threads (0 = all cores):
+/// every chunk of every table is one job and one row group. `props: None`
+/// means [`parquet_props`].
+pub fn write_parquet_many<W: Write + Send>(
+    tables: &[TpccTable],
+    writers: Vec<W>,
+    threads: usize,
+    props: Option<WriterProperties>,
+) -> Result<Vec<W>, ParquetError> {
+    assert_eq!(tables.len(), writers.len(), "one writer per table");
+    let props = props.unwrap_or_else(|| parquet_props().build());
+    let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
+    populate_table::write_parquet_many(&srcs, writers, threads, Some(props))
+}
+
+/// [`TpccTable::write_csv`] for several tables on one shared pool, like
+/// [`write_parquet_many`]. The workers write the files themselves.
+pub fn write_text_many<W: Write + Send>(
+    tables: &[TpccTable],
+    writers: Vec<W>,
+    threads: usize,
+) -> io::Result<Vec<W>> {
+    assert_eq!(tables.len(), writers.len(), "one writer per table");
+    let srcs: Vec<&dyn TextChunks> = tables.iter().map(|t| t as &dyn TextChunks).collect();
+    text::write_text_many(&srcs, writers, threads)
+}
+
+/// Generate several tables on one shared pool and call `f(i, batch)` with
+/// each batch of `tables[i]`, in order per table, on the calling thread.
+pub fn for_each_batch_many(
+    tables: &[TpccTable],
+    threads: usize,
+    f: impl FnMut(usize, RecordBatch),
+) {
+    let srcs: Vec<&dyn MultiChunks> = tables.iter().map(|t| t as &dyn MultiChunks).collect();
+    chunks::for_each_batch_many(&srcs, threads, f)
 }

@@ -29,7 +29,7 @@
 pub use populate_builtins as dist;
 pub use populate_core::{
     ChildCols, Children, Columnar, Columns, Date32, Decimal, Distribution, ListCol, SeekRng, Sink,
-    StrBuf, StrCol, in_local,
+    StrBuf, StrCol, TableCols, Tables, in_local,
 };
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as arrow;
@@ -40,3 +40,23 @@ pub use populate_table as table;
 
 #[cfg(test)]
 mod test;
+
+/// The book's chapters (`book/` at the repository root), so their examples
+/// are compiled and run as doctests.
+#[cfg(all(doctest, feature = "table"))]
+mod book {
+    macro_rules! chapters {
+        ($($name:ident = $file:literal),+ $(,)?) => {
+            $(#[doc = include_str!(concat!("../../book/src/", $file))]
+            mod $name {})+
+        };
+    }
+
+    chapters!(
+        model = "model.md",
+        first_table = "first-table.md",
+        row_writers = "row-writers.md",
+        child_tables = "child-tables.md",
+        leaf = "leaf.md",
+    );
+}

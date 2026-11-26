@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! `PersonActivityGenerator` and the `PersonOutputStream` /
 //! `ActivityOutputStream` serializers: one block of persons (sorted by
 //! account id) to rows of the 14 dynamic tables.

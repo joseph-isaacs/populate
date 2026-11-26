@@ -3,6 +3,7 @@ name = "populate-builtins"
 description = "Built-in populate distributions: constant, range, map, list, with_column, and random leaves"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

@@ -1,3 +1,6 @@
+// Modified from tpcdsgen-arrow 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 //! Routines to convert TPC-DS types to Arrow types
 
 use arrow::array::builder::make_view;

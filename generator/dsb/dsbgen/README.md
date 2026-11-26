@@ -1,3 +1,5 @@
+<!-- Modified from tpcdsgen 4.0.0 for the data-comb DSB variant. -->
+
 # dsbgen
 
 tpcdsgen 4.0 (the Apache-2.0 Rust port of TPC-DS dsdgen from

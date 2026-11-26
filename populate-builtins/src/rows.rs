@@ -16,10 +16,12 @@ pub struct Row(pub u64);
 pub struct Rows(pub Range<u64>);
 
 impl Rows {
+    /// How many row numbers.
     pub fn len(&self) -> usize {
         (self.0.end - self.0.start) as usize
     }
 
+    /// Whether there are none.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

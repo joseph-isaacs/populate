@@ -1,12 +1,12 @@
 //! YCSB generation throughput.
 //!
-//! `cargo bench -p populate-ycsb`. Samples 16Ki records of the default
+//! `cargo bench -p populate-gen-ycsb`. Samples 16Ki records of the default
 //! `usertable`, and 256Ki operations of workloads A and E on 100,000
 //! records. Throughput is in output rows/s, and bytes/s for Parquet and TSV.
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
-use populate_ycsb::{Ycsb, YcsbRun};
+use populate_gen_ycsb::{Ycsb, YcsbRun};
 
 fn main() {
     divan::main();

@@ -24,7 +24,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
-use populate_dsb::{
+use populate_gen_dsb::{
     DsTable, Dsb, Encoding, TableName, for_each_batch_many, parquet_props, write_dat_many,
     write_parquet_many,
 };
@@ -70,7 +70,7 @@ fn parse() -> Result<Args, String> {
         format: Format::Parquet,
         tables: TableName::ALL.to_vec(),
         threads: 0,
-        batch: populate_dsb::DEFAULT_BATCH_SIZE,
+        batch: populate_gen_dsb::DEFAULT_BATCH_SIZE,
         row_group: None,
         compression: Compression::SNAPPY,
         dictionary: true,

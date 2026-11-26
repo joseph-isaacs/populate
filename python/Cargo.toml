@@ -22,12 +22,12 @@ rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, features = ["arrow", "snap"] }
-populate-tpch = { path = "../generator/tpch", optional = true, default-features = false }
-populate-ssb = { workspace = true, optional = true }
+populate-gen-tpch = { path = "../generator/tpch", optional = true, default-features = false }
+populate-gen-ssb = { workspace = true, optional = true }
 pyo3 = { version = "0.30", optional = true }
 
 [features]
 # Everything Python, and the Arrow C interfaces it hands data over with.
 python = ["dep:pyo3", "arrow-array/ffi", "arrow-schema/ffi"]
-tpch = ["dep:populate-tpch"]
-ssb = ["dep:populate-ssb"]
+tpch = ["dep:populate-gen-tpch"]
+ssb = ["dep:populate-gen-ssb"]

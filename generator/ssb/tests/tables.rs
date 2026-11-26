@@ -1,4 +1,4 @@
-//! populate-ssb against ssb-dbgen, and chunked output against sequential.
+//! populate-gen-ssb against ssb-dbgen, and chunked output against sequential.
 //!
 //! The reference hashes are FNV-1a 64 of `.tbl` files (or ranges of their
 //! lines) written by eyalroz/ssb-dbgen's `dbgen -s <sf>` (default build: all
@@ -12,8 +12,8 @@ use arrow_array::types::Int32Type;
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use populate_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
-use populate_ssb::{Ssb, TableName, write_tbl_many};
+use populate_gen_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
+use populate_gen_ssb::{Ssb, TableName, write_tbl_many};
 use populate_table::fnv1a64;
 use std::path::PathBuf;
 use std::process::Command;
@@ -272,14 +272,14 @@ fn parquet_round_trips() {
 }
 
 /// Every table at several scale factors against a local ssb-dbgen build:
-/// `SSB_DBGEN=/path/to/dbgen cargo test --release -p populate-ssb -- --ignored`.
+/// `SSB_DBGEN=/path/to/dbgen cargo test --release -p populate-gen-ssb -- --ignored`.
 #[test]
 #[ignore = "needs ssb-dbgen: set SSB_DBGEN to its dbgen binary"]
 fn whole_files_match_ssb_dbgen() {
     let dbgen = PathBuf::from(std::env::var("SSB_DBGEN").expect("SSB_DBGEN"));
     let dists = dbgen.with_file_name("dists.dss");
     for sf in ["0.05", "0.5", "1", "4"] {
-        let dir = std::env::temp_dir().join(format!("populate-ssb-dbgen-{sf}"));
+        let dir = std::env::temp_dir().join(format!("populate-gen-ssb-dbgen-{sf}"));
         std::fs::create_dir_all(&dir).unwrap();
         let ok = Command::new(&dbgen)
             .args(["-q", "-f", "-s", sf, "-b"])

@@ -1,4 +1,4 @@
-# populate-dsb
+# populate-gen-dsb
 
 [DSB](https://github.com/microsoft/dsb) data (Microsoft's TPC-DS with skewed
 distributions and cross-column correlations) byte-identical to DSB's own
@@ -7,13 +7,13 @@ dsdgen's `.dat` text.
 
 ```sh
 # all tables at SF 1 as Parquet in ./dsb (one file per table)
-cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb
+cargo run -p populate-gen-dsb --release --bin dsb-gen -- --sf 1 --out dsb
 
 # DSB dsdgen's .dat files, byte for byte
-cargo run -p populate-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat
+cargo run -p populate-gen-dsb --release --bin dsb-gen -- --sf 1 --out dsb --format dat
 ```
 
-Flags as `tpcds-gen` (see [`populate-tpcds`](../tpcds/README.md)):
+Flags as `tpcds-gen` (see [`populate-gen-tpcds`](../tpcds/README.md)):
 `--sf` (a whole number, at least 1, as dsdgen takes it), `--out`,
 `--format parquet|dat|none`, `--tables`, `--threads`, `--batch`,
 `--row-group`, `--compression snappy|none`, `--no-dictionary`,
@@ -23,7 +23,7 @@ writes it.
 From Rust:
 
 ```rust
-use populate_dsb::{Dsb, Encoding, TableName};
+use populate_gen_dsb::{Dsb, Encoding, TableName};
 
 let ds = Dsb::new(1.0);
 let sales = ds.table(TableName::StoreSales);
@@ -65,7 +65,7 @@ All 24 `.dat` files `cmp` equal to DSB dsdgen (version 2.11.0, built from
 the DSB repository) at SF 1 and SF 2, with any chunk size and thread
 count. One caveat: dsdgen's first `item` row reads an uninitialised flag
 word, so that row's `i_brand_id` and `i_class_id` change from run to run
-with address space randomisation. `populate-dsb` matches dsdgen run with
+with address space randomisation. `populate-gen-dsb` matches dsdgen run with
 randomisation off (`setarch -R dsdgen ...`).
 
 ## Speed

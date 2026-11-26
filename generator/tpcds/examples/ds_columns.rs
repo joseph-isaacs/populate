@@ -1,12 +1,12 @@
 //! Parquet encoding time and size per column, one thread, with each
 //! column's dictionary on and off.
 //!
-//! `cargo run -p populate-tpcds --release --example ds_columns -- [sf] [table]`
+//! `cargo run -p populate-gen-tpcds --release --example ds_columns -- [sf] [table]`
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, SchemaRef};
 use parquet::schema::types::ColumnPath;
+use populate_gen_tpcds::{TableName, Tpcds, parquet_props};
 use populate_table::{Chunks, write_parquet};
-use populate_tpcds::{TableName, Tpcds, parquet_props};
 use std::sync::Arc;
 use std::time::Instant;
 

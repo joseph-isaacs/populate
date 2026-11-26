@@ -1,6 +1,6 @@
 //! TPC-H generation throughput.
 //!
-//! `cargo bench -p populate-tpch`. Each sample generates a prefix of up to
+//! `cargo bench -p populate-gen-tpch`. Each sample generates a prefix of up to
 //! 16Ki source rows of a table at SF 1 (64Ki rows of `lineitem`); the text
 //! pool is built once, before the first sample. Throughput is in output
 //! rows/s (Arrow sizes would count the shared text pool), and in output
@@ -13,8 +13,8 @@
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
-use populate_tpch::TableName::{self, *};
-use populate_tpch::{Tpch, TpchTable};
+use populate_gen_tpch::TableName::{self, *};
+use populate_gen_tpch::{Tpch, TpchTable};
 
 fn main() {
     Tpch::prepare(0);

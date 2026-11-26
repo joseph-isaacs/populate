@@ -29,10 +29,10 @@
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use parquet::file::properties::WriterPropertiesBuilder;
+use populate_gen_ycsb::{JavaTlr, RequestDistribution, Ycsb, YcsbRun};
 use populate_table::Chunks;
 use populate_table::cli::{Args, Tool, num, report, write};
 use populate_table::text::TextChunks;
-use populate_ycsb::{JavaTlr, RequestDistribution, Ycsb, YcsbRun};
 use std::process::exit;
 use std::time::Instant;
 

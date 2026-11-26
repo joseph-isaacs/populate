@@ -20,7 +20,7 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use populate_ssb::{Ssb, SsbTable, TableName, parquet_props};
+use populate_gen_ssb::{Ssb, SsbTable, TableName, parquet_props};
 use populate_table::cli::{Args, Tool, no_flags, report, write};
 use std::time::Instant;
 
@@ -31,7 +31,7 @@ use std::time::Instant;
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() {
-    let tool = Tool::new("ssb-gen", "tbl", populate_ssb::MAX_SCALE_FACTOR);
+    let tool = Tool::new("ssb-gen", "tbl", populate_gen_ssb::MAX_SCALE_FACTOR);
     let a = Args::parse(tool, || TableName::ALL.to_vec(), no_flags)
         .unwrap_or_else(|e| Args::<TableName>::exit_usage(&e));
     let ds = Ssb::new(a.sf);

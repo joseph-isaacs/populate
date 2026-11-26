@@ -3,9 +3,9 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
-use populate_tpcds::Encoding::{self, Latin1, Utf8};
-use populate_tpcds::TableName::{self, *};
-use populate_tpcds::{DsTable, Tpcds};
+use populate_gen_tpcds::Encoding::{self, Latin1, Utf8};
+use populate_gen_tpcds::TableName::{self, *};
+use populate_gen_tpcds::{DsTable, Tpcds};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use tpcdsgen::config::{SessionBuilder, Table as Ds};
@@ -366,16 +366,16 @@ fn channels_in_many() {
     ];
     let n = tables.len();
     let mut got: Vec<Vec<RecordBatch>> = vec![Vec::new(); n];
-    populate_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
+    populate_gen_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
     for (i, table) in tables.iter().enumerate() {
         let want = reference_arrow(table);
         assert_eq!(concat(&got[i]), concat(&want), "{}", table.name());
     }
-    let dats = populate_tpcds::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
+    let dats = populate_gen_tpcds::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
     for (dat, table) in dats.iter().zip(&tables) {
         assert_eq!(dat, &reference_dat(table, Utf8), "{}", table.name());
     }
-    let pq = populate_tpcds::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
+    let pq = populate_gen_tpcds::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
     for (file, table) in pq.into_iter().zip(&tables) {
         let back: Vec<RecordBatch> =
             parquet::arrow::arrow_reader::ParquetRecordBatchReader::try_new(
@@ -418,6 +418,6 @@ fn dat_write_error_is_returned() {
     let t = |n| ds.table(n).limit_source_rows(3_000).chunk_source_rows(100);
     let tables = [t(StoreSales), t(Customer)];
     let writers = vec![Failing(100_000), Failing(usize::MAX)];
-    let err = populate_tpcds::write_dat_many(&tables, writers, 4, Utf8).err();
+    let err = populate_gen_tpcds::write_dat_many(&tables, writers, 4, Utf8).err();
     assert_eq!(err.map(|e| e.to_string()), Some("disk full".into()));
 }

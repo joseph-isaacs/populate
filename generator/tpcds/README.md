@@ -17,7 +17,10 @@ cargo run -p populate-tpcds --release --bin tpcds-gen -- \
 
 Flags: `--sf`, `--out`, `--format parquet|dat|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`,
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table; a returns table is chunked as its sales table, so the two
+are generated in one pass), `--compression snappy|none`, `--no-dictionary`,
 `--encoding latin1|utf8` (`.dat` only).
 
 From Rust:

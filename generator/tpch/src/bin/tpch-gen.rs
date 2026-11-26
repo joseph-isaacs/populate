@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! tpch-gen [--sf 1] [--out DIR] [--format parquet|tbl|none] [--tables a,b,...]
-//!          [--threads N] [--batch ROWS] [--row-group ROWS]
+//!          [--threads N] [--batch ROWS] [--row-group ROWS | --row-group-bytes BYTES]
 //!          [--compression snappy|none] [--no-dictionary]
 //! ```
 //!
@@ -15,11 +15,13 @@
 //!
 //! Every chunk of every table is a job on one pool of `--threads` threads
 //! (default: all cores). Chunks (= Parquet row groups) hold about
-//! `--row-group` rows (default 256Ki); the data is the same for any value.
+//! `--row-group` rows (default 256Ki), or about `--row-group-bytes`
+//! uncompressed bytes, as `tpchgen-cli --row-group-bytes` sizes them
+//! (measured on a sample of each table); the data is the same for any value.
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use populate_table::cli::{Args, Tool, no_flags, report, write};
+use populate_table::cli::{Args, Tool, no_flags, report, source_rows_per_group, write};
 use populate_tpch::{TableName, Tpch, TpchTable, parquet_props};
 use std::time::Instant;
 
@@ -29,9 +31,13 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+/// Source rows (orders for `lineitem`) written to size `--row-group-bytes`.
+const SAMPLE_SOURCE_ROWS: u64 = 4096;
+
 fn main() {
     let tool = Tool {
         batch: populate_tpch::DEFAULT_BATCH_SIZE,
+        row_group_bytes: true,
         ..Tool::new("tpch-gen", "tbl", populate_tpch::MAX_SCALE_FACTOR)
     };
     let a = Args::parse(tool, || TableName::ALL.to_vec(), no_flags)
@@ -40,21 +46,27 @@ fn main() {
     // Every chunk of every table goes to one pool, biggest tables first.
     let mut names = a.tables.clone();
     names.sort_by_key(|&t| std::cmp::Reverse(ds.table(t).approx_rows()));
-    let tables: Vec<TpchTable> = names
-        .iter()
-        .map(|&t| {
-            let t = ds.table(t).batch_size(a.batch);
-            match a.row_group {
-                Some(rows) => t.chunk_rows(rows),
-                None => t,
-            }
-        })
-        .collect();
     let paths = a.paths(&names);
 
     let start = Instant::now();
     Tpch::prepare(a.threads);
     let pool = start.elapsed().as_secs_f64();
+    let tables: Vec<TpchTable> = names
+        .iter()
+        .map(|&t| {
+            let t = ds.table(t).batch_size(a.batch);
+            match (a.row_group, a.row_group_bytes) {
+                (Some(rows), _) => t.chunk_rows(rows),
+                (_, Some(bytes)) => {
+                    let n = SAMPLE_SOURCE_ROWS.min(t.source_rows());
+                    let sample = t.clone().limit_source_rows(n).chunk_source_rows(n);
+                    let props = a.parquet_props(parquet_props(), [t.schema()]);
+                    t.chunk_source_rows(source_rows_per_group(&sample, n, props, bytes))
+                }
+                (None, None) => t,
+            }
+        })
+        .collect();
     let (rows, bytes) = write(&a, &paths, &tables, parquet_props());
     let secs = start.elapsed().as_secs_f64();
     report(

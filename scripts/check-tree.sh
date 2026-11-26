@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fails if the tree holds things CLAUDE.md's "Docs and comments" rules keep
+# Fails if the tree holds things CONTRIBUTING.md's "Docs and comments" rules keep
 # out of the repository: graphs, planning docs and tool output, and
 # PR-history wording in docs and comments. It catches the common cases, not
 # every one.
@@ -19,11 +19,11 @@ if [ -n "$files" ]; then
   fail=1
 fi
 
-# Vendored code keeps its upstream wording; CLAUDE.md quotes the phrases.
+# Vendored code keeps its upstream wording; CONTRIBUTING.md quotes the phrases.
 phrases='\b(before|after|on) this (PR|change)\b|\b(PR|pull request) #?[0-9]+|\b(before|after) (merging|(the )?review)\b|adversarial review|faster than (on )?main\b|\bused to (be|have)\b|\bsince .* landed\b'
 hits=$(git grep -nIiE "$phrases" -- \
   '*.md' '*.rs' '*.toml' '*.sh' '*.py' '*.yml' '*.txt' '*.java' '*.R' '*.json' \
-  ':(exclude,glob)**/CLAUDE.md' ':!scripts/check-tree.sh' \
+  ':(exclude,glob)**/CLAUDE.md' ':!CONTRIBUTING.md' ':!scripts/check-tree.sh' \
   ':(exclude,glob)**/dsbgen/**' ':(exclude,glob)**/dsbgen-arrow/**' || true)
 if [ -n "$hits" ]; then
   echo "PR-history wording (describe the code as it is):"

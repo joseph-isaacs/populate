@@ -3,6 +3,7 @@ name = "populate-h2o"
 description = "H2O db-benchmark groupby and join data byte-identical to the R datagen scripts, on all cores: Arrow, Parquet or CSV"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license = "GPL-2.0-or-later AND MPL-2.0"
 
 [dependencies]

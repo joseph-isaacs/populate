@@ -141,12 +141,12 @@ not fit in the VM's tmpfs).
 |---:|------------------|--------:|-----------:|--------------:|--------:|
 | 1  | `.tbl`           | 1       | 6.44 s     | 3.47 s        | 1.9x    |
 | 1  | `.tbl`           | 4       | 2.61 s     | 1.02 s        | 2.6x    |
-| 1  | Parquet (snappy) | 1       | 6.71 s     | 5.28 s        | 1.3x    |
-| 1  | Parquet (snappy) | 4       | 3.30 s     | 1.36 s        | 2.4x    |
+| 1  | Parquet (snappy) | 1       | 7.32 s     | 5.70 s        | 1.3x    |
+| 1  | Parquet (snappy) | 4       | 3.18 s     | 1.75 s        | 1.8x    |
 | 10 | `.tbl`           | 1       | 60.4 s     | 35.4 s        | 1.7x    |
 | 10 | `.tbl`           | 4       | 20.3 s     | 9.21 s        | 2.2x    |
-| 10 | Parquet (snappy) | 1       | 53.5 s     | 34.9 s        | 1.5x    |
-| 10 | Parquet (snappy) | 4       | 18.2 s     | 9.95 s        | 1.8x    |
+| 10 | Parquet (snappy) | 1       | 67.4 s     | 39.1 s        | 1.7x    |
+| 10 | Parquet (snappy) | 4       | 19.4 s     | 10.6 s        | 1.8x    |
 
 The `.tbl` files are
 identical (1,100 MB at SF 1). For Parquet, tpcgen-cli is given our codec,

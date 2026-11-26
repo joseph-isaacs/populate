@@ -142,15 +142,21 @@ tmpfs), best of 2 at SF 10 (output to disk). `.dat` runs use
 |---:|------------------|--------:|-----------:|---------------:|--------:|
 | 1  | `.dat`           | 1       | 9.51 s     | 3.04 s         | 3.1x    |
 | 1  | `.dat`           | 4       | 3.05 s     | 0.92 s         | 3.3x    |
-| 1  | Parquet (snappy) | 1       | 10.50 s    | 4.47 s         | 2.3x    |
-| 1  | Parquet (snappy) | 4       | 3.38 s     | 1.21 s         | 2.8x    |
+| 1  | Parquet (snappy) | 1       | 8.94 s     | 4.49 s         | 2.0x    |
+| 1  | Parquet (snappy) | 4       | 2.92 s     | 1.45 s         | 2.0x    |
 | 10 | `.dat`           | 1       | 92.4 s     | 30.1 s         | 3.1x    |
 | 10 | `.dat`           | 4       | 28.6 s     | 11.5 s         | 2.5x    |
-| 10 | Parquet (snappy) | 1       | 102.0 s    | 43.5 s         | 2.3x    |
-| 10 | Parquet (snappy) | 4       | 27.9 s     | 11.6 s         | 2.4x    |
+| 10 | Parquet (snappy) | 1       | 75.5 s     | 32.8 s         | 2.3x    |
+| 10 | Parquet (snappy) | 4       | 22.5 s     | 8.86 s         | 2.5x    |
 
-Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
-4,199 MB at SF 10.
+For Parquet, tpcgen-cli is given our codec, our dictionary settings and
+our `store_sales` row-group size (see [BENCHMARKS.md](../../BENCHMARKS.md)),
+and the files hold the same values: 393 MB vs tpcgen-cli's 394 MB at SF 1,
+4,088 MB vs 3,944 MB at SF 10. The returns tables, `inventory` and
+`customer_demographics` still have several times more row groups here,
+since our row groups count rows and tpcgen-cli's count bytes. The Parquet
+rows were measured on a later, slower day of the same VM than the `.dat`
+rows.
 
 ### Where the time goes
 
@@ -175,9 +181,9 @@ rest:
 
 - **`.dat`:** tpcgen-cli formats each row with `Display`, ~10x the cost of
   generating it.
-- **Parquet:** its 8Ki-row batches fall out of cache during conversion,
-  and it dictionary-encodes decimals and ids (~40% of encoding time, no
-  smaller files).
+- **Parquet:** its 8Ki-row batches fall out of cache during conversion.
+  By default it also dictionary-encodes decimals and ids (~40% of encoding
+  time, no smaller files); the benchmark turns that off to match ours.
 - **Cores:** it doesn't split tables under 1M source rows.
 
 ### The sales channels

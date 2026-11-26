@@ -20,6 +20,7 @@ members = [
     "generator/dsb/dsbgen-arrow",
     "generator/ldbc",
     "populate-bench",
+    "python",
     "xtask",
 ]
 # `cargo build` / `cargo test` at the root skip the tpchgen comparison crate

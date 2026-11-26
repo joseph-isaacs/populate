@@ -101,11 +101,12 @@ type.
 lines (`|` after every field, NULL empty: dbgen's and dsdgen's formats)
 without making Arrow arrays. `TextField` is a column that prints one
 value per row (numbers, `Decimal`, `Date32`, `StrCol`, `Nullable` of
-those) and `TextColumns` a row of them (a field, a tuple, `SpreadCols`),
-so each table's line writer is compiled for its row type.
+those) and `TextColumns` a row of them (a field, a tuple, `SpreadCols`,
+a child table's `ChildCols`), so each table's line writer is compiled for
+its row type. `DistTable::text` writes a range of rows that way.
 `TextColumns::write_row_masked` prints a row with some fields NULL by a
 caller's `null(j)`, for columns whose NULLs live outside them (a row's
-null bitmap). `DistTable::text` writes a range of rows that way.
+null bitmap).
 
 `write_parquet_many_in_batches` writes tables whose generated batches
 vary in length (a ticket's 8 to 16 lines) with pages cut as if the rows
@@ -161,10 +162,10 @@ sale and its return): `flat_map` writes each, and `schemas_of` and
 
 ## Several tables from one pass
 
-`fan_out(source, f)` makes several child tables at once: its rows are a
-tuple of `Children`, one per table, and `f` appends each source row's
-children to any of them (a sale and its occasional return; a graph's
-nodes and edges). `schemas_of(&dist)` splits the names and types into one
+`flat_map::<Tables<(..)>, _, _>(source, f)` makes several child tables at
+once: its rows are `Tables` of a tuple of `Children`, one per table, and
+`f` appends each source row's children to any of them (a sale and its
+occasional return; a graph's nodes and edges). `schemas_of(&dist)` splits the names and types into one
 schema per table, and `DistTables` (`populate-table`) runs it like
 `DistTable`, one batch per table per range of source rows (`text` writes
 each table's lines to its own buffer).

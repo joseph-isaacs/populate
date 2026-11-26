@@ -25,3 +25,5 @@ target
 *.iml
 # Tool output
 .cargo-ok
+__pycache__/
+*.pyc

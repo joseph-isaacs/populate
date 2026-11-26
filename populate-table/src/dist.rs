@@ -110,10 +110,7 @@ where
 
     /// The next `n` rows of `d`, which is at row `first`.
     fn next_batch(&self, d: &mut D, first: u64, n: u64) -> RecordBatch {
-        // for distributions that draw from the caller: seeded by position,
-        // so a range is the same wherever it is made
-        let mut rng = SmallRng::seed_from_u64(mix64(first));
-        let cols = d.collect(&mut rng, usize::try_from(n).expect("batch fits in memory"));
+        let cols = collect_next(d, first, n);
         let mut arrays = Vec::with_capacity(<Columns<D::Item>>::LEN);
         cols.into_arrays(&mut arrays);
         RecordBatch::try_new(self.schema.clone(), arrays)
@@ -149,11 +146,18 @@ where
     }
 }
 
-/// Source rows `first..first + n` of `dist`, as [`DistTable::batch`]
-/// makes them: skipped to `first` and collected with an RNG seeded by it.
+/// Source rows `first..first + n` of `dist`: cloned, skipped `first` rows
+/// and collected with an RNG seeded by `first`, for distributions that draw
+/// from the caller.
 fn collect<D: Distribution + Clone>(dist: &D, first: u64, n: u64) -> Columns<D::Item> {
     let mut d = dist.clone();
     d.skip(first);
+    collect_next(&mut d, first, n)
+}
+
+/// The next `n` rows of `d`, which is at row `first`: the RNG is seeded by
+/// position, so a range is the same wherever it is made.
+fn collect_next<D: Distribution>(d: &mut D, first: u64, n: u64) -> Columns<D::Item> {
     let mut rng = SmallRng::seed_from_u64(mix64(first));
     d.collect(&mut rng, usize::try_from(n).expect("batch fits in memory"))
 }
@@ -255,10 +259,7 @@ where
 
     /// Source rows `first..first + n`: one batch per table, in order.
     pub fn batches(&self, first: u64, n: u64) -> Vec<RecordBatch> {
-        let mut d = self.dist.clone();
-        d.skip(first);
-        let mut rng = SmallRng::seed_from_u64(mix64(first));
-        let cols = d.collect(&mut rng, usize::try_from(n).expect("batch fits in memory"));
+        let cols = collect(&self.dist, first, n);
         let mut tables = Vec::with_capacity(self.schemas.len());
         cols.tables.into_tables(&mut tables);
         tables

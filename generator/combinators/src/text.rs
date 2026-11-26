@@ -1,15 +1,16 @@
-//! [`Str`]: TPC-DS text, collected as an Arrow `Utf8View` column.
+//! The text columns of dsdgen's tables (TPC-DS, DSB), collected as Arrow
+//! `Utf8View` and printed as `.dat` fields.
 //!
-//! A string of up to 12 bytes is stored in its view; longer ones are
-//! copied into the column's one data buffer. The column type says it is
-//! `Utf8View`, which is where the tables' schemas get their text type from.
+//! [`Str`] and [`Word`] go into [`StrViews`]: a string of up to 12 bytes
+//! is stored in its view, longer ones are copied into the column's one
+//! data buffer. [`Gmt`] is dsdgen's GMT offset, a `decimal(5,2)` printed
+//! with no decimals.
 
 use arrow_array::builder::make_view;
 use arrow_array::{ArrayRef, StringViewArray};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
-use populate_core::RowCount;
-use populate_core::{Columnar, Nullable, Sink};
+use populate_core::{Columnar, Decimal as Fixed, Nullable, RowCount, Sink};
 use populate_sink_arrow::IntoArrowArray;
 use populate_table::text::{Cursor, Encoding, TextField};
 use std::sync::Arc;
@@ -63,6 +64,12 @@ impl Columnar for Str {
     type Columns = StrViews;
 }
 
+impl From<&str> for Str {
+    fn from(s: &str) -> Self {
+        Str(s.to_owned())
+    }
+}
+
 /// A string from a fixed list (a distribution's values), collected into
 /// the same columns as [`Str`]. Its view is made once, with the list, so
 /// a row costs a copy of it (and of the bytes, past 12).
@@ -74,6 +81,7 @@ pub struct Word {
 }
 
 impl Word {
+    /// `s`, its view made once here.
     pub fn new(s: &'static str) -> Self {
         Word {
             s,
@@ -196,7 +204,7 @@ impl IntoArrowArray for StrViews {
 }
 
 /// Nullable text written in place.
-pub(crate) trait PushText {
+pub trait PushText {
     /// `s`, or NULL.
     fn push_text(&mut self, s: Option<&str>);
 
@@ -222,5 +230,61 @@ impl PushText for Nullable<StrViews> {
         } else {
             self.values.views.push(0);
         }
+    }
+}
+
+/// A GMT offset in whole hours, kept as `decimal(5,2)` and printed in
+/// `.dat` files with no decimals (`-5`), as dsdgen does.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Gmt(pub i32);
+
+/// The column of [`Gmt`]: the offsets as `decimal(5,2)` units.
+#[derive(Debug, Clone, Default)]
+pub struct GmtCol(Vec<Fixed<5, 2>>);
+
+impl Columnar for Gmt {
+    type Columns = GmtCol;
+}
+
+impl Sink<Gmt> for GmtCol {
+    #[inline]
+    fn push(&mut self, g: Gmt) {
+        self.0.push(Fixed(i128::from(g.0) * 100));
+    }
+
+    fn reserve(&mut self, n: usize) {
+        self.0.reserve(n);
+    }
+}
+
+impl RowCount for GmtCol {
+    fn rows(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl IntoArrowArray for GmtCol {
+    fn data_type() -> DataType {
+        <Vec<Fixed<5, 2>>>::data_type()
+    }
+
+    fn into_array(self) -> ArrayRef {
+        IntoArrowArray::into_array(self.0)
+    }
+}
+
+impl TextField for GmtCol {
+    fn text_rows(&self) -> usize {
+        self.0.len()
+    }
+
+    fn text_bytes(&self) -> usize {
+        TextField::text_bytes(&self.0)
+    }
+
+    #[inline]
+    unsafe fn write_field(&self, r: usize, w: &mut Cursor, _: Encoding) {
+        // SAFETY: as the caller's
+        unsafe { w.int((self.0.get_unchecked(r).0 / 100) as i64) }
     }
 }

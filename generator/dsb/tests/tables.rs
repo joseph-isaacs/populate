@@ -52,7 +52,7 @@ fn dat_is_dsdgen_text_for_any_chunking() {
     }
 }
 
-/// The fast Arrow-to-text path writes exactly what dsbgen's row
+/// The `.dat` writer (from the columns) writes exactly what dsbgen's row
 /// `Display` writes, for every table and both encodings.
 #[test]
 fn dat_matches_dsbgen_display_for_every_table() {

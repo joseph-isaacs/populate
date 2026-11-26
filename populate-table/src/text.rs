@@ -755,7 +755,8 @@ pub trait TextField {
 }
 
 /// Columns that print a row as fields, each followed by `|`: a
-/// [`TextField`], or a tuple or [`SpreadCols`] of them.
+/// [`TextField`], a tuple or [`SpreadCols`] of them, or a child table's
+/// [`ChildCols`].
 pub trait TextColumns {
     fn text_rows(&self) -> usize;
 
@@ -1047,6 +1048,38 @@ tuple_text!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11);
 pub trait TextTables {
     /// Append table `k`'s rows to `bufs[k]`, as [`write_columns`].
     fn write_tables(&self, encoding: Encoding, bufs: &mut [Vec<u8>]);
+}
+
+/// A child table's rows: the children's columns.
+impl<V: TextColumns> TextColumns for ChildCols<V> {
+    const WIDTH: usize = V::WIDTH;
+
+    fn text_rows(&self) -> usize {
+        self.values.text_rows()
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.values.text_bytes()
+    }
+
+    #[inline(always)]
+    unsafe fn write_row(&self, r: usize, w: &mut Cursor, encoding: Encoding) {
+        // SAFETY: as the caller's
+        unsafe { self.values.write_row(r, w, encoding) }
+    }
+
+    #[inline(always)]
+    unsafe fn write_row_masked(
+        &self,
+        r: usize,
+        w: &mut Cursor,
+        encoding: Encoding,
+        first: usize,
+        null: &impl Fn(usize) -> bool,
+    ) {
+        // SAFETY: as the caller's
+        unsafe { self.values.write_row_masked(r, w, encoding, first, null) }
+    }
 }
 
 impl<V: TextColumns> TextTables for ChildCols<V> {

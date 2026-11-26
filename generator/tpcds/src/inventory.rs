@@ -3,9 +3,9 @@
 //! compute. Both are a cross product of keys; inventory adds a random
 //! quantity, nulled by its row's null bitmap.
 
-use crate::cols::{StrViews, Word};
 use crate::seeds::stream;
 use populate_builtins::{derive, draws, named_all};
+use populate_combinators::text::{StrViews, Word};
 use populate_core::{Columns, Distribution, Sink};
 use rand::Rng;
 use std::sync::Arc;

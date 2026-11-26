@@ -16,11 +16,11 @@
 //! generation). `--threads` (default: all cores) and `--chunk-points`
 //! change only the speed.
 
+use populate_gen_tsbs::config::{parse_duration, parse_rfc3339};
+use populate_gen_tsbs::{Config, Format, Tsbs};
 use populate_table::MultiChunks;
 use populate_table::chunks::for_each_batch_many;
 use populate_table::cli::create;
-use populate_tsbs::config::{parse_duration, parse_rfc3339};
-use populate_tsbs::{Config, Format, Tsbs};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
@@ -126,7 +126,7 @@ fn main() {
 fn run(a: Args) -> Result<(), String> {
     let t = Tsbs::new(a.cfg)?;
     let cp = if a.chunk_points == 0 {
-        populate_tsbs::DEFAULT_CHUNK_POINTS
+        populate_gen_tsbs::DEFAULT_CHUNK_POINTS
     } else {
         a.chunk_points
     };

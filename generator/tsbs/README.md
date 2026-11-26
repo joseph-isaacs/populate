@@ -1,4 +1,4 @@
-# populate-tsbs
+# populate-gen-tsbs
 
 [TSBS](https://github.com/timescale/tsbs) data, byte-identical to
 `tsbs_generate_data`, on all cores.
@@ -11,12 +11,12 @@ group, written as TSBS's text formats or as Arrow tables and Parquet files
 
 ```sh
 # the same bytes as tsbs_generate_data with the same flags
-cargo run -p populate-tsbs --release --bin tsbs-gen -- \
+cargo run -p populate-gen-tsbs --release --bin tsbs-gen -- \
     --use-case devops --scale 100 --seed 123 --format influx \
     --timestamp-start 2016-01-01T00:00:00Z --timestamp-end 2016-01-02T00:00:00Z > devops.influx
 
 # one Parquet file per measurement: tsbs/cpu.parquet, tsbs/mem.parquet, ...
-cargo run -p populate-tsbs --release --bin tsbs-gen -- \
+cargo run -p populate-gen-tsbs --release --bin tsbs-gen -- \
     --use-case iot --scale 1000 --seed 123 --format parquet --out tsbs
 ```
 

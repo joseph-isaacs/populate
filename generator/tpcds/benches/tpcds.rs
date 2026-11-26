@@ -1,6 +1,6 @@
 //! TPC-DS generation throughput.
 //!
-//! `cargo bench -p populate-tpcds`. Each sample generates a prefix of up to
+//! `cargo bench -p populate-gen-tpcds`. Each sample generates a prefix of up to
 //! 64Ki source rows of a table at SF 1 from scratch; throughput is in output
 //! rows/s and Arrow bytes/s.
 //!
@@ -11,8 +11,8 @@
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
-use populate_tpcds::TableName::{self, *};
-use populate_tpcds::{DsTable, Encoding, Tpcds, parquet_props};
+use populate_gen_tpcds::TableName::{self, *};
+use populate_gen_tpcds::{DsTable, Encoding, Tpcds, parquet_props};
 
 fn main() {
     divan::main();

@@ -7,8 +7,8 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Int32Type, TimestampMicrosecondType};
 use arrow_array::{Array, RecordBatch};
 use arrow_select::concat::concat_batches;
-use populate_tpcc::tpcc::{DEFAULT_LOAD_TIME, SYLLABLES};
-use populate_tpcc::{Tpcc, TpccTableName};
+use populate_gen_tpcc::tpcc::{DEFAULT_LOAD_TIME, SYLLABLES};
+use populate_gen_tpcc::{Tpcc, TpccTableName};
 use std::collections::{HashMap, HashSet};
 
 use TpccTableName::*;

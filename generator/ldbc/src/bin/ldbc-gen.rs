@@ -22,10 +22,10 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
-use populate_ldbc::bi::{Bi, BiRun, Period};
-use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
-use populate_ldbc::rows::{Rows, TableDef};
-use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
+use populate_gen_ldbc::bi::{Bi, BiRun, Period};
+use populate_gen_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
+use populate_gen_ldbc::rows::{Rows, TableDef};
+use populate_gen_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
 use populate_table::text::write_text_many;
 use populate_table::{Chunks, MultiChunks, par_map, write_parquet_many};
 use std::env::args;

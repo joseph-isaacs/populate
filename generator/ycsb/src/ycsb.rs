@@ -58,7 +58,7 @@ pub const YCSB_CHUNK_ROWS: u64 = 32 * 1024;
 /// `zeropadding=1`, random values.
 ///
 /// ```
-/// use populate_ycsb::Ycsb;
+/// use populate_gen_ycsb::Ycsb;
 ///
 /// let y = Ycsb::new(1000).data_integrity(true);
 /// let tsv = y.write_tsv(Vec::new(), 0).unwrap();

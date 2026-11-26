@@ -1,20 +1,20 @@
-//! populate-dsb vs dsbgen-arrow (the vendored DSB copy of tpcgen-rs's
+//! populate-gen-dsb vs dsbgen-arrow (the vendored DSB copy of tpcgen-rs's
 //! TPC-DS generator), SF 1, Arrow output only (no files).
 //!
-//! `cargo run -p populate-dsb --release --example vs_tpcdsgen [-- <threads>]`
+//! `cargo run -p populate-gen-dsb --release --example vs_tpcdsgen [-- <threads>]`
 //!
-//! Both produce the same data (populate-dsb runs dsbgen's generators).
+//! Both produce the same data (populate-gen-dsb runs dsbgen's generators).
 //! Each table is generated in full, batches of 8192 rows dropped as they
 //! come. dsbgen runs one session chunk per thread (how `tpcgen-cli`
 //! splits a table: dsdgen's rule, so tables under 1M source rows are not
-//! split); populate-dsb splits every table into ~256Ki-row chunks on the
+//! split); populate-gen-dsb splits every table into ~256Ki-row chunks on the
 //! same thread count. Best of 3 runs.
 
 use dsbgen::config::{Session, SessionBuilder};
 use dsbgen::table::Table as DsTable;
 use dsbgen_arrow::arrow::array::RecordBatch as RecordBatch60;
 use dsbgen_arrow::*;
-use populate_dsb::{Dsb, TableName};
+use populate_gen_dsb::{Dsb, TableName};
 use std::time::{Duration, Instant};
 
 const BATCH: usize = 8192;

@@ -1,5 +1,5 @@
 [package]
-name = "populate-tpch"
+name = "populate-gen-tpch"
 description = "TPC-H data byte-identical to dbgen/tpchgen, on all cores: Arrow, Parquet or .tbl"
 version.workspace = true
 edition.workspace = true

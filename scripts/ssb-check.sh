@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# populate-ssb against ssb-dbgen: generate every SSB table at each scale
+# populate-gen-ssb against ssb-dbgen: generate every SSB table at each scale
 # factor with both, `cmp` the .tbl files, and time both.
 #
 #   scripts/ssb-check.sh [--sf "0.01 1 10"] [--threads 0] [--out DIR] [--dbgen PATH]
@@ -32,14 +32,14 @@ if [ -z "$dbgen" ]; then
 fi
 dists="$(dirname "$dbgen")/dists.dss"
 [ -f "$dists" ] || dists="$(dirname "$dbgen")/../dists.dss"
-cargo build --release --quiet --manifest-path "$root/Cargo.toml" -p populate-ssb --bin ssb-gen
+cargo build --release --quiet --manifest-path "$root/Cargo.toml" -p populate-gen-ssb --bin ssb-gen
 ours="$root/target/release/ssb-gen"
 
 command -v bc > /dev/null || { echo "needs bc" >&2; exit 2; }
 secs() { local t0 t1; t0=$(date +%s.%N); "$@" > /dev/null 2>&1 || return 1; t1=$(date +%s.%N); echo "$t1 - $t0" | bc; }
 
 status=0
-echo "| SF | ssb-dbgen | populate-ssb | speedup | identical |"
+echo "| SF | ssb-dbgen | populate-gen-ssb | speedup | identical |"
 echo "|---:|---:|---:|---:|---|"
 for sf in $sfs; do
     rm -rf "$out/ref" "$out/ours"; mkdir -p "$out/ref" "$out/ours"

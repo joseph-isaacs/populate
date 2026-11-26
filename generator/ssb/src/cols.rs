@@ -14,32 +14,39 @@
 //! schemas get their string types from.
 
 use crate::dict::Ssb;
+#[cfg(feature = "formats")]
 use arrow_array::{ArrayRef, StringViewArray};
+#[cfg(feature = "formats")]
 use arrow_buffer::{Buffer, ScalarBuffer};
+#[cfg(not(feature = "formats"))]
+type Buffer = Vec<u8>;
+#[cfg(feature = "formats")]
 use arrow_schema::DataType;
 use populate_combinators::views::{self, DATA};
 use populate_core::{ChildCols, Children, Columnar, Columns, Distribution, RowCount, Sink};
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
 use rand::Rng;
 use std::marker::PhantomData;
+use std::str::from_utf8;
 use std::sync::Arc;
 
 /// A string that is a view into the dictionary.
-pub(crate) type Word = views::Word<Ssb>;
+pub type Word = views::Word<Ssb>;
 
 /// Columns of [`Word`]s.
-pub(crate) type Words = views::Words<Ssb>;
+pub type Words = views::Words<Ssb>;
 
 /// A string with bytes of its own.
-pub(crate) type Bytes = views::Str<Ssb>;
+pub type Bytes = views::Str<Ssb>;
 
 /// A column of [`Bytes`].
-pub(crate) type Views = views::Views<Ssb>;
+pub type Views = views::Views<Ssb>;
 
 /// A view into the buffers of a [`SharedCols`]. Only [`SharedCols`]
 /// hands them out (reading its rows back).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Shared(u128);
+pub struct Shared(u128);
 
 /// One text column of a whole dimension table, made once: its views and
 /// the buffers they point into, every byte ASCII.
@@ -83,7 +90,10 @@ impl SharedText {
                     views.push(v & !(u128::from(u32::MAX) << 64) | k << 64);
                 }
             }
+            #[cfg(feature = "formats")]
             buffers.push(Buffer::from_vec(data));
+            #[cfg(not(feature = "formats"))]
+            buffers.push(data);
         }
         SharedText {
             views,
@@ -106,9 +116,25 @@ impl SharedText {
 /// Columns of [`Shared`] views, and the buffers they point into: those of
 /// the [`SharedText`] the views were gathered from.
 #[derive(Debug, Default)]
-pub(crate) struct SharedCols {
+pub struct SharedCols {
     views: Vec<u128>,
     buffers: Arc<[Buffer]>,
+}
+
+impl SharedCols {
+    /// Read a string without copying shared dimension buffers.
+    pub fn with_str<R>(&self, i: usize, f: impl FnOnce(&str) -> R) -> R {
+        let v = self.views[i];
+        let len = v as u32 as usize;
+        if len <= 12 {
+            let bytes = v.to_le_bytes();
+            f(from_utf8(&bytes[4..4 + len]).expect("ASCII view"))
+        } else {
+            let buffer = (v >> 64) as u32 as usize;
+            let offset = (v >> 96) as u32 as usize;
+            f(from_utf8(&self.buffers[buffer][offset..offset + len]).expect("ASCII view"))
+        }
+    }
 }
 
 impl Columnar for Shared {
@@ -145,6 +171,7 @@ impl RowCount for SharedCols {
     }
 }
 
+#[cfg(feature = "formats")]
 impl IntoArrowArray for SharedCols {
     fn data_type() -> DataType {
         DataType::Utf8View

@@ -1,5 +1,5 @@
 //! `lineorder_flat`: `lineorder` joined with its customer, supplier and
-//! part (the denormalised SSB-flat table, as ClickHouse defines it).
+//! part (the denormalised SSB-flat as ClickHouse defines it).
 //!
 //! The three dimension tables are drawn once (on all cores) and kept as
 //! their code columns ([`part_codes`], [`party_codes`]: about 11 bytes a
@@ -13,27 +13,32 @@
 //! but those columns of every batch share (and keep alive) the
 //! dimension's whole buffer.
 
+#[cfg(feature = "formats")]
 use crate::TableName;
 use crate::cols::{Shared, SharedCols, SharedText, Views, Word, Words, children_of};
 use crate::dict::Dict;
+#[cfg(feature = "formats")]
+use crate::tables::table;
 use crate::tables::{
     LINEORDER, Line, PART_COLUMNS, PartCode, PartWords, Party, PartyCode, Scale, at, lines, orders,
-    part_codes, party_codes, party_text, segment_codes, table,
+    part_codes, party_codes, party_text, segment_codes,
 };
 use populate_builtins::named_all;
+use populate_core::sched::par_ordered;
 use populate_core::{Append, ChildCols, Children, Columns, Distribution, Sink};
-use populate_table::{DynTable, par_ordered};
+#[cfg(feature = "formats")]
+use populate_table::DynTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::convert::Infallible;
 use std::sync::Arc;
 
 /// A customer's columns after its key.
-type CustomerRow = (Shared, Shared, Word, Word, Word, Shared, Word);
+pub type CustomerRow = (Shared, Shared, Word, Word, Word, Shared, Word);
 /// A supplier's columns after its key.
-type SupplierRow = (Shared, Shared, Word, Word, Word, Shared);
+pub type SupplierRow = (Shared, Shared, Word, Word, Word, Shared);
 /// One `lineorder_flat` row.
-type FlatRow = (Line, (CustomerRow, SupplierRow, PartWords));
+pub type FlatRow = (Line, (CustomerRow, SupplierRow, PartWords));
 
 /// A whole supplier or customer table: its codes, its market segments
 /// (customers only), and its name, address and phone columns.
@@ -257,7 +262,10 @@ impl<D: Distribution<Item = Children<Line>>> Distribution for Join<D> {
 
 /// `lineorder_flat` at scale `s`, joined with `dims` (which may be empty
 /// for its schema alone).
-pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> DynTable {
+pub(crate) fn raw(
+    s: &Scale,
+    dims: Arc<Dims>,
+) -> impl Distribution<Item = Children<FlatRow>> + Clone + Send + Sync + use<> {
     let d = Dict::get();
     let names: Vec<&str> = LINEORDER
         .into_iter()
@@ -269,5 +277,10 @@ pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> DynTable {
         lines: children_of::<_, Line, _>(orders(s), lines(d)),
         dims,
     };
-    table(TableName::LineOrderFlat, s.orders, named_all(&names, lines))
+    named_all(&names, lines)
+}
+
+#[cfg(feature = "formats")]
+pub(crate) fn generator(s: &Scale, dims: Arc<Dims>) -> DynTable {
+    table(TableName::LineOrderFlat, s.orders, raw(s, dims))
 }

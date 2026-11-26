@@ -1,6 +1,6 @@
 # Notices
 
-`populate-h2o` is licensed as a whole under `GPL-2.0-or-later AND
+`populate-gen-h2o` is licensed as a whole under `GPL-2.0-or-later AND
 MPL-2.0`, because it ports code from R and from data.table. The rest of
 the populate workspace is MIT; depending on this crate brings these terms
 into whatever links it.

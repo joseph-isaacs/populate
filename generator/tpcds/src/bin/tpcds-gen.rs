@@ -24,7 +24,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterPropertiesBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::schema::types::ColumnPath;
-use populate_tpcds::{
+use populate_gen_tpcds::{
     DsTable, Encoding, TableName, Tpcds, for_each_batch_many, parquet_props, write_dat_many,
     write_parquet_many,
 };
@@ -70,7 +70,7 @@ fn parse() -> Result<Args, String> {
         format: Format::Parquet,
         tables: TableName::ALL.to_vec(),
         threads: 0,
-        batch: populate_tpcds::DEFAULT_BATCH_SIZE,
+        batch: populate_gen_tpcds::DEFAULT_BATCH_SIZE,
         row_group: None,
         compression: Compression::SNAPPY,
         dictionary: true,

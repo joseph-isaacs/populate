@@ -20,8 +20,8 @@ use arrow_select::concat::concat as concat_arrays;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use populate_core::{Columnar, Columns, Distribution};
+use populate_gen_synth::{Embeddings, Features, Hits, Shape, Synth, Taxi};
 use populate_sink_arrow::IntoArrowColumns;
-use populate_synth::{Embeddings, Features, Hits, Shape, Synth, Taxi};
 use populate_table::{Chunks, mix64};
 use std::collections::HashMap;
 

@@ -1,6 +1,6 @@
 //! Time generation and `.tbl` formatting of each SSB table on one thread:
-//! `cargo run -p populate-ssb --release --example ssb_stages -- [SF]`.
-use populate_ssb::{Ssb, TableName};
+//! `cargo run -p populate-gen-ssb --release --example ssb_stages -- [SF]`.
+use populate_gen_ssb::{Ssb, TableName};
 use populate_table::text::{Encoding, write_batch};
 use std::time::Instant;
 

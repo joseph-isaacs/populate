@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Fetch the LDBC Spark datagen's dictionaries (src/main/resources, ~72 MB),
-# which populate-ldbc reads, at the commit populate-ldbc was ported from.
+# which populate-gen-ldbc reads, at the commit populate-gen-ldbc was ported from.
 #
 #   scripts/fetch-ldbc-resources.sh [DEST]
 #
-# DEST defaults to target/ldbc_snb_datagen_spark, where populate-ldbc looks
+# DEST defaults to target/ldbc_snb_datagen_spark, where populate-gen-ldbc looks
 # when LDBC_DATAGEN_RESOURCES is unset.
 set -euo pipefail
 COMMIT=a2210c52ddeceeeafbbdd4d4d166d0d0da82f739

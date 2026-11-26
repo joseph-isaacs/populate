@@ -1,12 +1,12 @@
-# populate-ycsb
+# populate-gen-ycsb
 
 The YCSB load and the YCSB run (its request stream), byte-identical to
 YCSB 0.17.0, on all cores, as Arrow `RecordBatch`es, Parquet, or TSV, on
 `populate-table`'s `Chunks` engine.
 
 ```text
-cargo run --release -p populate-ycsb --bin ycsb-gen -- load --records 10000000 --out ycsb
-cargo run --release -p populate-ycsb --bin ycsb-gen -- run --records 10000000 \
+cargo run --release -p populate-gen-ycsb --bin ycsb-gen -- load --records 10000000 --out ycsb
+cargo run --release -p populate-gen-ycsb --bin ycsb-gen -- run --records 10000000 \
     --operations 10000000 --workload a --out ycsb-run
 ```
 
@@ -107,7 +107,7 @@ one could in principle.
 ## Speed
 
 4 cores, `--release`, best of 5, output to tmpfs (see also `cargo bench -p
-populate-ycsb`):
+populate-gen-ycsb`):
 
 | Workload | Generate (Arrow) | Parquet (snappy) | TSV |
 |---|---|---|---|

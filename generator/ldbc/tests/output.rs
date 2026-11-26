@@ -6,9 +6,9 @@
 //! `--mode raw --format csv --scale-factor 0.1` output directory, byte for
 //! byte.
 
-use populate_ldbc::factors::FACTOR;
-use populate_ldbc::rows::{DYNAMIC, Rows, STATIC};
-use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
+use populate_gen_ldbc::factors::FACTOR;
+use populate_gen_ldbc::rows::{DYNAMIC, Rows, STATIC};
+use populate_gen_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor};
 use populate_sink_arrow::schemas_of;
 use populate_table::text::write_text_many;
 use populate_table::write_parquet_many;

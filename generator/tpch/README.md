@@ -1,4 +1,4 @@
-# populate-tpch
+# populate-gen-tpch
 
 TPC-H data byte-identical to `dbgen` (and `tpchgen-cli`), on all cores: all
 8 tables, every column, at any scale factor up to 10,000, as Arrow
@@ -6,13 +6,13 @@ TPC-H data byte-identical to `dbgen` (and `tpchgen-cli`), on all cores: all
 
 ```sh
 # all tables at SF 1 as Parquet in ./tpch (one file per table)
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch
 
 # dbgen's .tbl files, byte for byte
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl
 
 # a few tables, generation only (no output), 4 threads
-cargo run -p populate-tpch --release --bin tpch-gen -- \
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- \
     --sf 10 --tables lineitem,orders --format none --threads 4
 ```
 
@@ -23,7 +23,7 @@ default 256Ki), `--compression snappy|none`, `--no-dictionary`.
 From Rust:
 
 ```rust
-use populate_tpch::{TableName, Tpch};
+use populate_gen_tpch::{TableName, Tpch};
 
 let h = Tpch::new(10.0);
 let lineitem = h.table(TableName::LineItem);
@@ -137,7 +137,7 @@ two tools run interleaved and each keeps its best time: best of 3 at SF 1
 (output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
 not fit in the VM's tmpfs).
 
-| SF | output           | threads | tpcgen-cli | populate-tpch | speedup |
+| SF | output           | threads | tpcgen-cli | populate-gen-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|
 | 1  | `.tbl`           | 1       | 6.44 s     | 3.47 s        | 1.9x    |
 | 1  | `.tbl`           | 4       | 2.61 s     | 1.02 s        | 2.6x    |
@@ -154,7 +154,7 @@ vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
 
 ### Where the time goes
 
-`cargo run -p populate-tpch --release --example tpch_stages -- 1` times each
+`cargo run -p populate-gen-tpch --release --example tpch_stages -- 1` times each
 stage per table on one thread, and `--example tpch_columns` the Parquet encoding
 of each column. At SF 1, summed over the tables:
 

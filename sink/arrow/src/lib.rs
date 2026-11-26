@@ -607,8 +607,8 @@ fn schema_from(names: Vec<String>, types: Vec<(DataType, bool)>) -> Schema {
 }
 
 /// The columns of several tables made together: a tuple of
-/// [`ChildCols`], one per table, inside the [`TableCols`] of a
-/// [`Tables`](populate_core::Tables) row (`populate_builtins::flat_map`
+/// [`ChildCols`], one per table, inside the [`TableCols`](populate_core::TableCols) of a
+/// [`Tables`] row (`populate_builtins::flat_map`
 /// makes them).
 pub trait IntoArrowTables {
     /// The number of tables.

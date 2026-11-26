@@ -33,7 +33,7 @@
 //! | uniform numbers, picks from a list      | [`uniform`], [`choose`], [`weighted`] | nothing                       |
 //! | random strings                          | [`text`], [`chars`]                  | nothing                        |
 //! | a value that depends only on its row    | [`draws`] over a [`SeekRng`](populate_core::SeekRng) | jumps the stream |
-//! | a column already in memory              | [`column`], [`column_as`]            | moves the cursor               |
+//! | a column already in memory              | [`column()`], [`column_as`]            | moves the cursor               |
 //! | a stream that can't jump                | [`checkpointed`]                     | from the last saved state      |
 //! | a list per row                          | [`list`]                             | skips the lengths only         |
 //! | one column from a row of others         | [`derive()`]                         | passes `n` on                  |

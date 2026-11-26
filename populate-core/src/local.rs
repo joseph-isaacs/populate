@@ -3,13 +3,41 @@ use std::ptr;
 
 /// Run `f` on `*slot` moved into a local variable, then move it back.
 ///
-/// For loops that sample a distribution once per value. Through a `&mut`
-/// the compiler has to assume that every value written to a column might
-/// overwrite the distribution's state, so it stores and reloads that state
-/// on every turn of the loop. A local whose address goes nowhere else has no
-/// such problem: its fields stay in registers and the loop can vectorise.
-/// The default [`collect_into`](crate::Distribution::collect_into) runs its
-/// loop in here.
+/// For a [`collect_into`](crate::Distribution::collect_into) that writes
+/// one value per turn of a loop. Through a `&mut self` the compiler has to
+/// assume that every value written to a column might overwrite the
+/// distribution's state, so it stores and reloads that state on every turn
+/// of the loop. A local whose address goes nowhere else has no such
+/// problem: its fields stay in registers and the loop can vectorise.
+///
+/// ```
+/// use populate_core::{Distribution, in_local};
+/// use rand::Rng;
+///
+/// /// 0, 3, 6, ...
+/// struct Steps { next: i64 }
+///
+/// impl Distribution for Steps {
+///     type Item = i64;
+///
+///     fn collect_into(&mut self, cols: &mut Vec<i64>, _rng: &mut impl Rng, n: usize) {
+///         cols.reserve(n);
+///         in_local(self, |d| {
+///             cols.extend((0..n).map(|_| {
+///                 d.next += 3;
+///                 d.next - 3
+///             }))
+///         });
+///     }
+///
+///     fn skip(&mut self, n: u64) {
+///         self.next += 3 * n as i64;
+///     }
+/// }
+///
+/// let v = Steps { next: 0 }.collect(&mut rand::rng(), 4);
+/// assert_eq!(v, [0, 3, 6, 9]);
+/// ```
 #[inline(always)]
 pub fn in_local<D, R>(slot: &mut D, f: impl FnOnce(&mut D) -> R) -> R {
     /// Moves `local` back into `slot` when dropped, which also covers `f`

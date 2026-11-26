@@ -3,6 +3,26 @@
 //! This is the facade crate: it re-exports the pieces that live in their own
 //! crates so users only depend on `populate`.
 //!
+//! Raw chunked columns work with `default-features = false`, without Arrow:
+//!
+//! ```
+//! use populate::Distribution;
+//! use populate::dist::range;
+//!
+//! let source = (range(0i64, 1), range(100i64, 2))
+//!     .chunks(10)
+//!     .chunk_rows(4)
+//!     .batch_rows(3);
+//! let mut ids = Vec::new();
+//! source.for_each_batch(2, |(id, value)| {
+//!     assert_eq!(value[0], 100 + 2 * id[0]);
+//!     ids.extend(id);
+//! });
+//! assert_eq!(ids, (0..10).collect::<Vec<_>>());
+//! ```
+//!
+//! With the `arrow` feature, distributions can also produce Arrow batches:
+//!
 //! ```
 //! # #[cfg(feature = "arrow")] {
 //! use populate::arrow::DistributionArrow;
@@ -28,8 +48,8 @@
 
 pub use populate_builtins as dist;
 pub use populate_core::{
-    ChildCols, Children, Columnar, Columns, Date32, Decimal, Distribution, ListCol, SeekRng, Sink,
-    StrBuf, StrCol, in_local,
+    ChildCols, Children, Columnar, Columns, Date32, Decimal, DistChunks, Distribution, ListCol,
+    SeekRng, Sink, StrBuf, StrCol, in_local,
 };
 #[cfg(feature = "arrow")]
 pub use populate_sink_arrow as arrow;

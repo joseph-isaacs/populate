@@ -12,14 +12,7 @@
 //! For ordinary independent columns use a populate distribution instead
 //! (`Table::col`); those draw from the per-batch RNG.
 
-/// SplitMix64 finaliser: a fast bijective mix of 64 bits.
-#[inline]
-pub const fn mix64(mut z: u64) -> u64 {
-    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
+pub use populate_core::chunks::mix64;
 
 /// FNV-1a, for turning names into seeds.
 pub const fn hash_str(s: &str) -> u64 {

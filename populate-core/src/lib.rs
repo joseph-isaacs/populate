@@ -65,12 +65,14 @@
 //! ```
 
 mod children;
+pub mod chunks;
 mod columnar;
 mod list;
 mod local;
 mod logical;
 mod nullable;
 mod rows;
+pub mod sched;
 mod seek;
 mod sink;
 mod spread;
@@ -79,6 +81,7 @@ pub mod tuple;
 mod wide;
 
 pub use children::{ChildCols, Children, TableCols, Tables};
+pub use chunks::DistChunks;
 pub use columnar::{Columnar, Columns};
 pub use list::ListCol;
 pub use local::in_local;
@@ -134,6 +137,12 @@ pub trait Distribution: Sized {
     /// schema read off them match the rows.
     fn columns(&self) -> Columns<Self::Item> {
         Columns::<Self::Item>::default()
+    }
+
+    /// Split `rows` source rows into independent chunks of raw columns.
+    /// No output backend or Arrow schema is required.
+    fn chunks(self, rows: u64) -> DistChunks<Self> {
+        DistChunks::new(rows, self)
     }
 
     /// The next `n` rows as new columns.

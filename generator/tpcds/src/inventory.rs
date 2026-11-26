@@ -213,7 +213,7 @@ impl Distribution for Demographics {
     fn collect_into(&mut self, c: &mut Columns<DemoRow>, _: &mut impl Rng, n: usize) {
         let words = |list: &[Word], v: &mut StrViews, d| {
             Sink::<Word>::reserve(v, n);
-            v.push_n(self.digits(d, n).map(|i| list[i]));
+            v.push_indexed(list, self.digits(d, n));
         };
         words(&self.gender, &mut c.1.values, 0);
         words(&self.marital, &mut c.2.values, 1);

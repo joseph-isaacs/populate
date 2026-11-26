@@ -115,6 +115,17 @@ impl Word {
     }
 }
 
+impl StrViews {
+    /// Append `list[i]` for each `i`: the list's long words are copied
+    /// once, and every row shares them, as a row of a fixed list costs a
+    /// view rather than its bytes.
+    pub fn push_indexed(&mut self, list: &[Word], idx: impl Iterator<Item = usize>) {
+        let data = &mut self.data;
+        let views: Vec<u128> = list.iter().map(|w| w.view_in(data)).collect();
+        self.views.extend(idx.map(|i| views[i]));
+    }
+}
+
 impl Sink<Word> for StrViews {
     #[inline]
     fn push(&mut self, w: Word) {

@@ -9,6 +9,7 @@ use populate_core::Nullable;
 /// such rows, so a row too big to copy cheaply (a fixed block of draws
 /// per row) is never copied onto the stack.
 pub trait RowRefs {
+    /// One row, borrowed from the columns.
     type Ref<'a>: Copy
     where
         Self: 'a;

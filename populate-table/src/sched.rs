@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Instant;
@@ -36,6 +36,40 @@ pub fn resolve_threads(threads: usize) -> usize {
         0 => thread::available_parallelism().map_or(1, |t| t.get()),
         t => t,
     }
+}
+
+/// Run `f(i)` for `i in 0..n` on `threads` threads (0 = all cores),
+/// results in order. For many small tasks (one per person, say), where
+/// [`par_ordered`]'s per-task scheduling would cost more
+/// than the work: workers take indices off one counter and keep their
+/// results until the end.
+pub fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let threads = resolve_threads(threads).min(n.max(1));
+    if threads <= 1 {
+        return (0..n).map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut parts: Vec<Vec<(usize, T)>> = thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut v = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Relaxed);
+                        if i >= n {
+                            break;
+                        }
+                        v.push((i, f(i)));
+                    }
+                    v
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().expect("worker")).collect()
+    });
+    let mut all: Vec<(usize, T)> = parts.iter_mut().flat_map(std::mem::take).collect();
+    all.sort_unstable_by_key(|&(i, _)| i);
+    all.into_iter().map(|(_, t)| t).collect()
 }
 
 /// Run `work(0..n)` on `threads` threads (0 = all cores) and feed the

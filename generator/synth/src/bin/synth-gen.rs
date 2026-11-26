@@ -8,12 +8,11 @@
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use populate_synth::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi,
-};
+use populate_synth::{DEFAULT_CHUNK_ROWS, Embeddings, Features, Hits, Shape, ShapeName, Taxi};
+use populate_table::DEFAULT_BATCH_ROWS;
+use populate_table::cli::{create, file_size};
 use std::env::args;
-use std::fs::{File, metadata};
-use std::io::BufWriter;
+use std::path::PathBuf;
 use std::process::exit;
 use std::time::Instant;
 
@@ -56,7 +55,7 @@ fn parse() -> Args {
         rows: 1_000_000,
         seed: 0,
         threads: 0,
-        batch_size: DEFAULT_BATCH_SIZE,
+        batch_size: DEFAULT_BATCH_ROWS,
         chunk_rows: DEFAULT_CHUNK_ROWS,
         dim: 384,
         out: None,
@@ -100,12 +99,13 @@ fn run(shape: impl Shape, a: &Args) {
     let start = Instant::now();
     let what = match &a.out {
         Some(path) => {
-            let f = File::create(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-            t.write_parquet(BufWriter::with_capacity(1 << 20, f), a.threads, None)
+            let path = PathBuf::from(path);
+            let w = create(std::slice::from_ref(&path)).pop().expect("one file");
+            t.write_parquet(w, a.threads, None)
                 .and_then(|w| w.into_inner().map_err(|e| e.into_error().into()))
-                .unwrap_or_else(|e| fail(&format!("writing {path}: {e}")));
-            let bytes = metadata(path).map(|m| m.len()).unwrap_or(0);
-            format!("{path} ({:.1} MB)", bytes as f64 / 1e6)
+                .unwrap_or_else(|e| fail(&format!("writing {}: {e}", path.display())));
+            let bytes = file_size(&path);
+            format!("{} ({:.1} MB)", path.display(), bytes as f64 / 1e6)
         }
         None => {
             t.for_each_batch(a.threads, drop);

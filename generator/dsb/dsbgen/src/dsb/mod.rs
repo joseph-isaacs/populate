@@ -39,6 +39,7 @@ pub const MARKUP_BUCKET_COUNT: i32 = 20;
 /// 31-bit draw at both lambdas: `exp_ratio_is_monotone`), so for ranges up
 /// to [`TABLE_MAX_RANGE`] it is looked up from the draws where it steps
 /// instead of computed with a logarithm. The result is the same.
+#[inline]
 pub fn exp_rank(min: i64, max: i64, lambda: f64, stream: &mut RandomNumberStream) -> i64 {
     let draw = stream.next_random();
     let range = max - min;

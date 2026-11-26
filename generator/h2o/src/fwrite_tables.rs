@@ -1,3 +1,8 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// Generated from data.table (src/fwriteLookups.h). See ../NOTICE.md.
+
 // Generated from data.table's fwriteLookups.h (the literals as a C compiler
 // parses them): for each IEEE exponent e, 2^(e-1023) = EXPSIG[e] * 10^EXPPOW[e].
 

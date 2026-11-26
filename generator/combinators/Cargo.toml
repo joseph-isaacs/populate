@@ -1,13 +1,18 @@
 [package]
 name = "populate-combinators"
-description = "Distributions shared by populate's benchmark generators: dbgen's and dsdgen's skip-ahead Lehmer streams"
+description = "Distributions shared by populate's benchmark generators: dbgen's and dsdgen's skip-ahead Lehmer streams, Utf8View columns over shared buffers"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
+populate-sink-arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]

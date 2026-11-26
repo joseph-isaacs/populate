@@ -1,3 +1,6 @@
+// unique()'s first-appearance order follows R 4.x (src/main/unique.c), GPL-2.0-or-later.
+// See ../NOTICE.md and ../LICENSE-GPL-2.0.txt.
+
 //! Shared pieces: NA-able `u32` columns, bit sets, the stable parallel
 //! sort data.table's `setkey` amounts to, and Arrow arrays from columns.
 
@@ -8,7 +11,9 @@ use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
-use std::thread::{available_parallelism, scope};
+use std::thread::scope;
+
+use populate_table::resolve_threads;
 
 use crate::fwrite::{write_micros, write_u32, write_u32_padded};
 
@@ -57,13 +62,15 @@ fn nulls(col: &[u32]) -> Option<NullBuffer> {
         .then(|| NullBuffer::from_iter(col.iter().map(|&v| v != NA)))
 }
 
-/// `Int32` array of `col`, NA as null.
-pub fn int32(col: &[u32]) -> ArrayRef {
+/// `Int32` array of `col`, NA as null, in `col`'s buffer.
+pub fn int32(col: Vec<u32>) -> ArrayRef {
+    let nulls = nulls(&col);
+    // same-sized values: collected in place, no new buffer
     let v: Vec<i32> = col
-        .iter()
-        .map(|&v| if v == NA { 0 } else { v as i32 })
+        .into_iter()
+        .map(|v| if v == NA { 0 } else { v as i32 })
         .collect();
-    Arc::new(Int32Array::new(ScalarBuffer::from(v), nulls(col)))
+    Arc::new(Int32Array::new(ScalarBuffer::from(v), nulls))
 }
 
 /// `Float64` array of `col` as micros (`k / 1e6`), NA as null.
@@ -79,38 +86,53 @@ pub fn micros(col: &[u32]) -> ArrayRef {
 /// (`width` 0: no padding), NA as null. Every value fits a view inline
 /// (at most 12 bytes), so there are no data buffers.
 pub fn id_strings(col: &[u32], prefix: &[u8], width: usize) -> ArrayRef {
+    // a u32 has at most 10 digits
+    assert!(
+        prefix.len() + width.max(10) <= 12,
+        "id strings longer than an inline view"
+    );
     let views: Vec<u128> = col
         .iter()
         .map(|&v| {
             if v == NA {
-                return 0;
+                0
+            } else {
+                inline_view(prefix, v, width)
             }
-            let mut b = [0u8; 24];
-            b[..prefix.len()].copy_from_slice(prefix);
-            let n = prefix.len()
-                + unsafe {
-                    let p = b.as_mut_ptr().add(prefix.len());
-                    if width == 0 {
-                        write_u32(v, p)
-                    } else {
-                        write_u32_padded(v, width, p)
-                    }
-                };
-            assert!(n <= 12, "id string longer than an inline view");
-            let mut data = [0u8; 12];
-            data[..n].copy_from_slice(&b[..n]);
-            (n as u128)
-                | (u128::from_le_bytes({
-                    let mut w = [0u8; 16];
-                    w[4..].copy_from_slice(&data);
-                    w
-                }))
         })
         .collect();
     // SAFETY: every view is inline, valid UTF-8 (ASCII) of its length.
     Arc::new(unsafe {
         StringViewArray::new_unchecked(ScalarBuffer::from(views), vec![].into(), nulls(col))
     })
+}
+
+/// The inline view (length, then the bytes, zero after them) of `prefix`
+/// and `v` zero-padded to `width` digits.
+#[inline(always)]
+fn inline_view(prefix: &[u8], v: u32, width: usize) -> u128 {
+    // the length's 4 bytes, the string, and room for the digit writes
+    let mut b = [0u8; 32];
+    b[4..4 + prefix.len()].copy_from_slice(prefix);
+    let n = prefix.len()
+        + unsafe {
+            let p = b.as_mut_ptr().add(4 + prefix.len());
+            if width == 0 {
+                write_u32(v, p)
+            } else {
+                write_u32_padded(v, width, p)
+            }
+        };
+    debug_assert!(n <= 12, "id string longer than an inline view");
+    b[..4].copy_from_slice(&(n as u32).to_le_bytes());
+    let view = u128::from_le_bytes(b[..16].try_into().expect("16 bytes"));
+    // the bytes after the string are zero
+    let bits = (4 + n as u32) * 8;
+    if bits >= 128 {
+        view
+    } else {
+        view & ((1u128 << bits) - 1)
+    }
 }
 
 /// A raw output cursor over a `Vec<u8>`'s spare capacity.
@@ -180,14 +202,6 @@ pub fn write_with(out: &mut Vec<u8>, bound: usize, f: impl FnOnce(&mut Cursor)) 
 /// Most buckets [`sort_rows`] splits rows into.
 const MAX_BUCKETS: u64 = 1 << 12;
 
-/// Number of threads for `threads` (0 = all cores).
-pub fn thread_count(threads: usize) -> usize {
-    match threads {
-        0 => available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    }
-}
-
 /// The row order of a stable sort of `n` rows by columns `get(c, r)`
 /// (first most significant), each value mapped by its rank table (if any), NA first.
 ///
@@ -238,7 +252,7 @@ pub fn sort_rows(
         .iter()
         .map(|&d| (d as f64).log2())
         .sum();
-    let threads = thread_count(threads);
+    let threads = resolve_threads(threads);
     let bucket_of = |r: usize| -> usize {
         let mut b = 0;
         for (c, &d) in domains[..lead].iter().enumerate() {
@@ -373,7 +387,7 @@ pub fn sort_u64(keys: &[u64], bits: u32, threads: usize) -> Vec<u64> {
     bucket_sort(
         keys.len(),
         1 << top,
-        thread_count(threads),
+        resolve_threads(threads),
         |r| (keys[r] >> shift) as usize,
         |r| keys[r],
     )

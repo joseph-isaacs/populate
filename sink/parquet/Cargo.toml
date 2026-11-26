@@ -3,6 +3,7 @@ name = "populate-sink-parquet"
 description = "Parquet output for populate: collected columns encoded in place"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

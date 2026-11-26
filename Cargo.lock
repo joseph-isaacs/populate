@@ -772,8 +772,12 @@ dependencies = [
 name = "populate-combinators"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
  "populate-builtins",
  "populate-core",
+ "populate-sink-arrow",
  "rand",
  "tpchgen",
 ]
@@ -812,7 +816,11 @@ dependencies = [
  "arrow-schema",
  "divan",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]
@@ -942,6 +950,7 @@ dependencies = [
  "mimalloc",
  "parquet",
  "populate-builtins",
+ "populate-combinators",
  "populate-core",
  "populate-sink-arrow",
  "populate-table",
@@ -961,7 +970,12 @@ dependencies = [
  "divan",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
  "tpcdsgen",
  "tpcdsgen-arrow",
 ]
@@ -1012,15 +1026,13 @@ name = "populate-ycsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-buffer",
  "arrow-schema",
  "divan",
  "itoa",
  "mimalloc",
  "parquet",
- "populate-builtins",
+ "populate-combinators",
  "populate-core",
- "populate-sink-arrow",
  "populate-table",
  "rand",
 ]

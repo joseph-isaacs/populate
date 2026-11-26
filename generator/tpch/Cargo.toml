@@ -3,6 +3,7 @@ name = "populate-tpch"
 description = "TPC-H data byte-identical to dbgen/tpchgen, on all cores: Arrow, Parquet or .tbl"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -18,7 +19,6 @@ rand = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
-arrow-select = "60"
 parquet = { workspace = true, features = ["arrow", "snap"] }
 # dbgen's distributions and text grammar, and the reference generator the
 # tests compare against (Apache-2.0, tpcgen-rs project)
@@ -33,6 +33,7 @@ default = ["mimalloc"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+arrow-select = "60"
 divan = { workspace = true }
 tpchgen-arrow = "4.0"
 bytes = "1"

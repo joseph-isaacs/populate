@@ -24,6 +24,7 @@ impl<T: Columnar, const N: usize> Columnar for Spread<T, N> {
 }
 
 impl<T, C: Sink<T>, const N: usize> Sink<Spread<T, N>> for SpreadCols<C, N> {
+    #[inline]
     fn push(&mut self, value: Spread<T, N>) {
         for (c, v) in self.0.iter_mut().zip(value.0) {
             c.push(v);

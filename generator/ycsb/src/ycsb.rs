@@ -1,3 +1,20 @@
+// Copyright (c) 2010 Yahoo! Inc., Copyright (c) 2016-2017 YCSB contributors. All rights reserved.
+// Copyright (c) 2010-2016 Yahoo! Inc., 2017 YCSB contributors. All rights reserved.
+// Modified from YCSB 0.17.0: Rust column and operation-stream generation.
+// See ../NOTICE.md and ../LICENSE-Apache-2.0.txt.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! The YCSB load phase (`ycsb load`, `CoreWorkload`): the `usertable`
 //! records, byte-identical to YCSB 0.17.0.
 //!
@@ -19,14 +36,17 @@
 //! records could not be generated independently.
 
 use crate::cols::{Load, Records};
-use crate::engine::{DEFAULT_BATCH_SIZE, Plan};
 use crate::rng::JavaTlr;
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use parquet::basic::Compression;
+use parquet::errors::ParquetError;
 use parquet::file::properties::{WriterProperties, WriterPropertiesBuilder};
-use populate_table::text::TextChunks;
-use populate_table::{Chunks, DistTable, chunks};
+use populate_table::text::{TextChunks, write_text_many};
+use populate_table::{
+    Chunks, DEFAULT_BATCH_ROWS, DynTable, MultiChunks, chunks, write_parquet_many,
+};
+use std::io::{self, Write};
 use std::sync::Arc;
 
 /// Default records per chunk (one Parquet row group): about 32 MiB of
@@ -58,7 +78,6 @@ pub struct Ycsb {
     pub(crate) tlr: JavaTlr,
     pub(crate) chunk_rows: u64,
     pub(crate) batch: usize,
-    pub(crate) plan: Plan,
     pub(crate) schema: SchemaRef,
 }
 
@@ -80,8 +99,7 @@ impl Ycsb {
                 thread_id: 1,
             },
             chunk_rows: YCSB_CHUNK_ROWS,
-            batch: DEFAULT_BATCH_SIZE,
-            plan: Plan::new(0, 1.0),
+            batch: DEFAULT_BATCH_ROWS,
             schema: Arc::new(Schema::empty()),
         };
         y.update();
@@ -89,12 +107,6 @@ impl Ycsb {
     }
 
     fn update(&mut self) {
-        // as YCSB's Client: `insertcount` records if given, else
-        // `recordcount`, starting at `insertstart`
-        let count = self.insert_count.unwrap_or(self.record_count);
-        self.plan = Plan::new(count, 1.0)
-            .chunk_source_rows(self.chunk_rows)
-            .batch_size(self.batch);
         self.schema = self.table().schema().clone();
     }
 
@@ -184,11 +196,13 @@ impl Ycsb {
 
     /// Records this load inserts.
     pub fn rows(&self) -> u64 {
-        self.plan.source_rows
+        // as YCSB's Client: `insertcount` records if given, else
+        // `recordcount`, starting at `insertstart`
+        self.insert_count.unwrap_or(self.record_count)
     }
 
     pub fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
+        self.rows().div_ceil(self.chunk_rows)
     }
 
     /// `ycsb_key` then the fields.
@@ -227,7 +241,7 @@ impl Ycsb {
     }
 
     /// The load as one distribution ([`Records`]).
-    fn table(&self) -> DistTable<Records> {
+    fn table(&self) -> DynTable {
         let load = Load {
             ycsb: self.clone(),
             names: self.field_names(),
@@ -237,7 +251,9 @@ impl Ycsb {
             load: Arc::new(load),
             next: 0,
         };
-        DistTable::new("usertable", self.plan.source_rows, records)
+        DynTable::new("usertable", self.rows(), records)
+            .chunk_rows(self.chunk_rows)
+            .batch_rows(self.batch as u64)
     }
 
     /// Records `first..end` as TSV lines, straight from the generators.
@@ -273,15 +289,10 @@ impl Ycsb {
         }
     }
 
-    fn generate(&self, first: u64, end: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let t = self.table();
-        self.plan.batches(first, end, |at, n| emit(t.batch(at, n)));
-    }
-
     /// Records `first..end` (0-based within this load), on this thread.
     pub fn range(&self, first: u64, end: u64) -> Vec<RecordBatch> {
         let mut v = Vec::new();
-        self.generate(first, end.min(self.plan.source_rows), &mut |b| v.push(b));
+        self.table().range(first, end, &mut |b| v.push(b));
         v
     }
 
@@ -302,15 +313,15 @@ impl Ycsb {
 
     /// Write the records as one Parquet file, one row group per chunk
     /// (`props: None` means [`Ycsb::parquet_props`]).
-    pub fn write_parquet<W: std::io::Write + Send>(
+    pub fn write_parquet<W: Write + Send>(
         &self,
         writer: W,
         threads: usize,
-        props: Option<parquet::file::properties::WriterProperties>,
-    ) -> Result<W, parquet::errors::ParquetError> {
+        props: Option<WriterProperties>,
+    ) -> Result<W, ParquetError> {
         let props = props.unwrap_or_else(|| Self::parquet_props().build());
-        let mut w = crate::write_parquet_many(
-            std::slice::from_ref(self),
+        let mut w = write_parquet_many(
+            &[self as &dyn MultiChunks],
             vec![writer],
             threads,
             Some(props),
@@ -320,12 +331,8 @@ impl Ycsb {
 
     /// Write the records as TSV: `key\tfield0\t...\n`, fields in name
     /// order. YCSB's values never contain a tab or newline.
-    pub fn write_tsv<W: std::io::Write + Send>(
-        &self,
-        writer: W,
-        threads: usize,
-    ) -> std::io::Result<W> {
-        let mut w = crate::write_text_many(std::slice::from_ref(self), vec![writer], threads)?;
+    pub fn write_tsv<W: Write + Send>(&self, writer: W, threads: usize) -> io::Result<W> {
+        let mut w = write_text_many(&[self as &dyn TextChunks], vec![writer], threads)?;
         Ok(w.pop().expect("one writer"))
     }
 }
@@ -336,12 +343,11 @@ impl Chunks for Ycsb {
     }
 
     fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
+        Ycsb::num_chunks(self)
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let (first, end) = self.plan.range(i);
-        self.generate(first, end, emit)
+        Chunks::chunk(&self.table(), i, emit)
     }
 }
 
@@ -351,12 +357,16 @@ impl TextChunks for Ycsb {
     }
 
     fn num_chunks(&self) -> u64 {
-        self.plan.num_chunks()
+        Ycsb::num_chunks(self)
     }
 
     fn chunk_text(&self, i: u64, bufs: &mut [Vec<u8>]) {
-        let (first, end) = self.plan.range(i);
-        self.text(first, end, &mut bufs[0]);
+        let first = i * self.chunk_rows;
+        self.text(
+            first,
+            (first + self.chunk_rows).min(self.rows()),
+            &mut bufs[0],
+        );
     }
 }
 
@@ -434,21 +444,31 @@ impl RandomLayout {
         }
     }
 
-    /// Field `f` of record `j` of the load, into `out`.
+    /// Field `f` of record `j` of the load, 6 bytes per call.
     #[inline]
-    pub(crate) fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
+    pub(crate) fn blocks(&self, tlr: JavaTlr, j: u64, f: usize) -> impl FnMut() -> [u8; 6] {
         let at = j * self.per_record + self.at[f];
         let gamma = tlr.gamma();
         let mut state = tlr.state_at(at);
+        move || {
+            let b = six(JavaTlr::int_of(state)).to_le_bytes();
+            state = state.wrapping_add(gamma);
+            [b[0], b[1], b[2], b[3], b[4], b[5]]
+        }
+    }
+
+    /// Field `f` of record `j` of the load, into `out`.
+    #[inline]
+    pub(crate) fn fill(&self, tlr: JavaTlr, j: u64, f: usize, out: &mut [u8]) {
+        let mut next = self.blocks(tlr, j, f);
         let mut chunks = out.chunks_exact_mut(6);
         for c in &mut chunks {
-            c.copy_from_slice(&six(JavaTlr::int_of(state)).to_le_bytes()[..6]);
-            state = state.wrapping_add(gamma);
+            c.copy_from_slice(&next());
         }
         let rest = chunks.into_remainder();
-        if !rest.is_empty() {
-            let n = rest.len();
-            rest.copy_from_slice(&six(JavaTlr::int_of(state)).to_le_bytes()[..n]);
+        let n = rest.len();
+        if n > 0 {
+            rest.copy_from_slice(&next()[..n]);
         }
     }
 }

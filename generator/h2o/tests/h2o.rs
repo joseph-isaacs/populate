@@ -14,15 +14,9 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 use populate_h2o::fwrite::write_f64;
 use populate_h2o::{GroupBy, Join};
-use populate_table::Chunks;
 use populate_table::chunks::for_each_batch;
 use populate_table::text::TextChunks;
-
-fn fnv(b: &[u8]) -> u64 {
-    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| {
-        (h ^ x as u64).wrapping_mul(0x0100_0000_01b3)
-    })
-}
+use populate_table::{Chunks, fnv1a64};
 
 fn csv(t: &impl TextChunks, threads: usize) -> Vec<u8> {
     populate_table::text::write_text_many(&[t as &dyn TextChunks], vec![Vec::new()], threads)
@@ -78,7 +72,7 @@ fn csv_of_batches(t: &impl Chunks) -> Vec<u8> {
 
 fn check(name: &str, got: &[u8], len: usize, hash: u64) {
     assert_eq!(
-        (got.len(), fnv(got)),
+        (got.len(), fnv1a64(got)),
         (len, hash),
         "{name} differs from R's"
     );

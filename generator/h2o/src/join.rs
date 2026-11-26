@@ -13,29 +13,32 @@
 //! with that row count in place of `NA`.
 
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use populate_table::Chunks;
+use arrow_schema::SchemaRef;
+use populate_builtins::{checkpointed, column_as, named};
+use populate_core::Distribution;
 use populate_table::text::TextChunks;
+use populate_table::{Chunks, DEFAULT_CHUNK_ROWS, resolve_threads};
 use std::fmt::{self, Debug, Formatter};
 use std::mem::take;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, OnceLock};
 use std::thread::{ScopedJoinHandle, scope};
 
-use crate::cols::{
-    Bits, Cursor, NA, first_appearance, gather, id_strings, int32, micros, sort_rows, sort_u64,
-    thread_count, write_with,
-};
-use crate::fwrite::{digits, round6_micros};
-use crate::groupby::{DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS};
-use crate::rng::{RMt, apply_shuffle, sample_int, shuffle_draws};
+use crate::cols::{Bits, first_appearance, gather, sort_rows, sort_u64};
+use crate::groupby::DEFAULT_BATCH_SIZE;
+use crate::rng::{RMt, Runif100, apply_shuffle, sample_int, shuffle_draws};
+use crate::values::{Id, Int, Micros, NaSet, Table, header, na_rows, na_values, table};
 use crate::{SEED, pretty_sci};
 
-/// One generated table: key columns (`id1..`), and its value column.
+/// One generated table: key columns (`id1..`) and their NA'd keys, and
+/// where its value column's draws start, and its NA'd rows.
 struct Tab {
     name: String,
     ids: Vec<Vec<u32>>,
-    v: Vec<u32>,
+    id_na: Vec<NaSet>,
+    v: RMt,
+    rows: u64,
+    v_na: NaSet,
     /// `v1` (left) or `v2` (right).
     v_name: &'static str,
 }
@@ -49,16 +52,16 @@ pub struct Join {
 /// One of the join data set's tables.
 #[derive(Clone)]
 pub struct JoinTable {
-    data: Arc<Vec<Tab>>,
-    which: usize,
+    name: String,
+    rows: u64,
     chunk_rows: u64,
-    batch_size: usize,
+    table: Arc<dyn Table>,
 }
 
 impl Debug for JoinTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("JoinTable")
-            .field("name", &self.tab().name)
+            .field("name", &self.name)
             .finish()
     }
 }
@@ -176,37 +179,6 @@ fn sample_all(rng: &mut RMt, a: &[u32], b: &[u32], size: f64) -> Vec<u32> {
     SampleAll::draw(rng, a.len() + b.len(), size).build(a, b)
 }
 
-/// `round(runif(n, max = 100), 6)` as micros. One draw each, so the
-/// generator skips to each thread's first row and the threads fill their
-/// parts in parallel.
-fn values(mut rng: RMt, n: usize) -> Vec<u32> {
-    let mut out = vec![0u32; n];
-    let per = n.div_ceil(thread_count(0)).max(1);
-    let starts: Vec<RMt> = out
-        .chunks(per)
-        .map(|c| {
-            let at = rng.clone();
-            rng.skip(c.len() as u64);
-            at
-        })
-        .collect();
-    scope(|s| {
-        for (part, mut r) in out.chunks_mut(per).zip(starts) {
-            s.spawn(move || {
-                let mut u = [0f64; 1024];
-                for part in part.chunks_mut(1024) {
-                    let u = &mut u[..part.len()];
-                    r.fill_unif(u);
-                    for (d, &u) in part.iter_mut().zip(u.iter()) {
-                        *d = round6_micros(100.0 * u) as u32;
-                    }
-                }
-            });
-        }
-    });
-    out
-}
-
 /// `setkeyv(d, cols)`: stable sort of the rows by `keys` (indices into
 /// `ids`), first most significant.
 ///
@@ -238,7 +210,7 @@ fn sort_by(ids: &mut [Vec<u32>], keys: &[usize]) {
         return;
     }
     let mut packed = vec![0u64; n];
-    let per = n.div_ceil(thread_count(0)).max(1);
+    let per = n.div_ceil(resolve_threads(0)).max(1);
     scope(|s| {
         for (t, part) in packed.chunks_mut(per).enumerate() {
             let (ids, keys, widths) = (&*ids, keys, &widths);
@@ -306,16 +278,8 @@ impl Join {
             "the join datagen takes N <= 1e8 or N = 1e9"
         );
         assert!(nas <= 100 && chunk_rows > 0);
-        let data = Arc::new(generate(n, nas, sort));
         Join {
-            tables: (0..4)
-                .map(|which| JoinTable {
-                    data: data.clone(),
-                    which,
-                    chunk_rows,
-                    batch_size: DEFAULT_BATCH_SIZE,
-                })
-                .collect(),
+            tables: generate(n, nas, sort, chunk_rows),
         }
     }
 
@@ -350,7 +314,7 @@ struct NaDraws {
 /// which are all of its keys). So one thread makes all the draws, in
 /// order, while the tables are built from them on the others: the
 /// permutations' swaps, the resampled columns, sorting, values and NAs.
-fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
+fn generate(n: u64, nas: u32, sort: bool, chunk_rows: u64) -> Vec<JoinTable> {
     let nf = n as f64;
     let mut rng = RMt::set_seed(SEED);
     let x_name = pretty_sci(n);
@@ -418,17 +382,21 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
             if sort {
                 sort_by(&mut ids, &[0, 1, 2]);
             }
-            let mut v = values(v1, n as usize);
-            if nas > 0 {
-                let na = na_rx.recv().expect("NA draws");
-                set_nas(&mut ids, &mut v, na);
-            }
-            Tab {
+            let (id_na, v_na) = if nas > 0 {
+                nas_of(&ids, n, na_rx.recv().expect("NA draws"))
+            } else {
+                (vec![None; 3], None)
+            };
+            let t = Tab {
                 name: lhs_name,
                 ids,
-                v,
+                id_na,
+                v: v1,
+                rows: n,
+                v_na,
                 v_name: "v1",
-            }
+            };
+            JoinTable::new(t, true, chunk_rows)
         });
         if nas > 0 {
             let ids = (0..3)
@@ -460,7 +428,7 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
                 tabs.extend(
                     rhs_hs
                         .drain(..)
-                        .map(|h: ScopedJoinHandle<Tab>| h.join().expect("right table")),
+                        .map(|h: ScopedJoinHandle<JoinTable>| h.join().expect("right table")),
                 );
             }
             rhs_hs.push({
@@ -479,13 +447,16 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
                     if sort {
                         sort_by(&mut ids, &[t]);
                     }
-                    let v = values(v2, rows);
-                    Tab {
+                    let t = Tab {
                         name,
                         ids,
-                        v,
+                        id_na: vec![None; t + 1],
+                        v: v2,
+                        rows: rows as u64,
+                        v_na: None,
                         v_name: "v2",
-                    }
+                    };
+                    JoinTable::new(t, false, chunk_rows)
                 })
             });
         }
@@ -497,149 +468,165 @@ fn generate(n: u64, nas: u32, sort: bool) -> Vec<Tab> {
     })
 }
 
-/// NA the left table: each id column's drawn distinct values (indices into
-/// its values in order of first appearance), and `v1`'s drawn rows.
-fn set_nas(ids: &mut [Vec<u32>], v: &mut [u32], na: NaDraws) {
+/// The left table's NAs: each id column's drawn distinct values (indices
+/// into its values in order of first appearance), and `v1`'s drawn rows.
+fn nas_of(ids: &[Vec<u32>], rows: u64, na: NaDraws) -> (Vec<NaSet>, NaSet) {
     scope(|s| {
-        for ((col, draws), distinct) in ids.iter_mut().zip(na.ids).zip(na.distinct) {
-            let Some(draws) = draws else { continue };
-            s.spawn(move || {
-                let max = col.iter().copied().max().unwrap_or(0) as u64;
-                let mut seen = Bits::new(max + 1);
-                let mut ucol = vec![];
-                first_appearance(col, &mut seen, &mut ucol);
-                drop(seen);
-                assert_eq!(ucol.len(), distinct, "every key appears once at least");
-                let mut drop_set = Bits::new(max + 1);
-                for i in draws {
-                    drop_set.set(ucol[i as usize - 1] as u64);
-                }
-                for x in col.iter_mut() {
-                    if drop_set.get(*x as u64) {
-                        *x = NA;
+        let hs: Vec<_> = ids
+            .iter()
+            .zip(na.ids)
+            .zip(na.distinct)
+            .map(|((col, draws), distinct)| {
+                s.spawn(move || {
+                    let draws = draws?;
+                    let max = col.iter().copied().max().unwrap_or(0) as u64;
+                    let mut seen = Bits::new(max + 1);
+                    let mut ucol = vec![];
+                    first_appearance(col, &mut seen, &mut ucol);
+                    drop(seen);
+                    assert_eq!(ucol.len(), distinct, "every key appears once at least");
+                    let mut drop_set = Bits::new(max + 1);
+                    for i in draws {
+                        drop_set.set(ucol[i as usize - 1] as u64);
                     }
-                }
-            });
-        }
-        if let Some(rows) = na.rows {
-            s.spawn(move || {
-                for r in rows {
-                    v[r as usize - 1] = NA;
-                }
-            });
-        }
-    });
+                    Some(Arc::new(drop_set))
+                })
+            })
+            .collect();
+        let v = na.rows.map(|r| {
+            let mut b = Bits::new(rows);
+            for r in r {
+                b.set(r as u64 - 1);
+            }
+            Arc::new(b)
+        });
+        (hs.into_iter().map(|h| h.join().expect("NAs")).collect(), v)
+    })
+}
+
+/// A key column, as the number (`id1..`), its keys in `na` NA.
+fn key<const NULL: bool>((c, na): &(Arc<Vec<u32>>, NaSet)) -> impl Col<Int<NULL>> {
+    na_values(column_as(c.clone()), na.clone())
+}
+
+/// A key column as `"id<number>"` (`id4..`): the same column.
+fn key_name<const NULL: bool>((c, na): &(Arc<Vec<u32>>, NaSet)) -> impl Col<Id<0, NULL>> {
+    na_values(column_as(c.clone()), na.clone())
+}
+
+/// Bounds of a table's column distributions.
+trait Col<T>: Distribution<Item = T> + Clone + Send + Sync + 'static {}
+
+impl<T, D: Distribution<Item = T> + Clone + Send + Sync + 'static> Col<T> for D {}
+
+/// `t` as one distribution: `id1..idp` (`Int32`), `id4..` (the same keys
+/// as `"id<key>"`, `Utf8View`), the value (`Float64`). Only the left
+/// table has NAs (`NULL`).
+fn dist_table<const NULL: bool>(t: Tab, chunk_rows: u64) -> Arc<dyn Table> {
+    let ids: Vec<(Arc<Vec<u32>>, NaSet)> = t.ids.into_iter().map(Arc::new).zip(t.id_na).collect();
+    let rows = t.rows;
+    // `round(runif(rows, max = 100), 6)`, its state saved every chunk
+    let (v, _) = checkpointed(Runif100::<Micros<NULL>>::new(t.v), chunk_rows, rows);
+    let v = na_rows(v, t.v_na);
+    let (n, b) = (&t.name, DEFAULT_BATCH_SIZE);
+    let vn = t.v_name;
+    match &ids[..] {
+        [a] => table(
+            n,
+            rows,
+            b,
+            (
+                named("id1", key::<NULL>(a)),
+                named("id4", key_name::<NULL>(a)),
+                named(vn, v.clone()),
+            ),
+        ),
+        [a, c] => table(
+            n,
+            rows,
+            b,
+            (
+                named("id1", key::<NULL>(a)),
+                named("id2", key::<NULL>(c)),
+                named("id4", key_name::<NULL>(a)),
+                named("id5", key_name::<NULL>(c)),
+                named(vn, v.clone()),
+            ),
+        ),
+        [a, c, d] => table(
+            n,
+            rows,
+            b,
+            (
+                named("id1", key::<NULL>(a)),
+                named("id2", key::<NULL>(c)),
+                named("id3", key::<NULL>(d)),
+                named("id4", key_name::<NULL>(a)),
+                named("id5", key_name::<NULL>(c)),
+                named("id6", key_name::<NULL>(d)),
+                named(vn, v.clone()),
+            ),
+        ),
+        _ => unreachable!("1 to 3 key columns"),
+    }
 }
 
 impl JoinTable {
-    fn tab(&self) -> &Tab {
-        &self.data[self.which]
+    fn new(t: Tab, left: bool, chunk_rows: u64) -> Self {
+        let name = t.name.clone();
+        let rows = t.rows;
+        let table = if left {
+            dist_table::<true>(t, chunk_rows)
+        } else {
+            dist_table::<false>(t, chunk_rows)
+        };
+        JoinTable {
+            name,
+            rows,
+            chunk_rows,
+            table,
+        }
     }
 
     /// Rows per Arrow batch.
     pub fn batch_size(mut self, rows: usize) -> Self {
         assert!(rows > 0);
-        self.batch_size = rows;
+        self.table = self.table.with_batch_rows(rows as u64);
         self
     }
 
     /// The datagen's file name, e.g. `J1_1e7_1e1_0_0.csv`.
     pub fn file_name(&self) -> String {
-        format!("{}.csv", self.tab().name)
+        format!("{}.csv", self.name)
     }
 
     pub fn rows(&self) -> u64 {
-        self.tab().v.len() as u64
+        self.rows
     }
 
     pub fn num_chunks(&self) -> u64 {
-        self.rows().div_ceil(self.chunk_rows).max(1)
+        self.rows.div_ceil(self.chunk_rows).max(1)
     }
 
-    fn chunk_range(&self, j: u64) -> (usize, usize) {
+    fn chunk_range(&self, j: u64) -> (u64, u64) {
         let s = j * self.chunk_rows;
-        (s as usize, (s + self.chunk_rows).min(self.rows()) as usize)
+        (s, (s + self.chunk_rows).min(self.rows))
     }
 
-    fn names(&self) -> Vec<String> {
-        let p = self.tab().ids.len();
-        (1..=p)
-            .map(|i| format!("id{i}"))
-            .chain((4..4 + p).map(|i| format!("id{i}")))
-            .chain([self.tab().v_name.to_string()])
-            .collect()
-    }
-
-    /// Arrow schema: `id1..` `Int32`, `id4..` (`"id<id1>"`) `Utf8View`, the
-    /// value `Float64`. Only the left table has NAs.
+    /// Arrow schema, read off the table's distribution: `id1..` `Int32`,
+    /// `id4..` (`"id<id1>"`) `Utf8View`, the value `Float64`. Only the left
+    /// table is nullable.
     pub fn schema(&self) -> SchemaRef {
-        let p = self.tab().ids.len();
-        let null = self.which == 0;
-        Arc::new(Schema::new(
-            self.names()
-                .into_iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    let t = if i < p {
-                        DataType::Int32
-                    } else if i < 2 * p {
-                        DataType::Utf8View
-                    } else {
-                        DataType::Float64
-                    };
-                    Field::new(name, t, null)
-                })
-                .collect::<Vec<_>>(),
-        ))
+        self.table.schema()
     }
 
     /// Append chunk `j`'s CSV text (with the header for chunk 0).
     pub fn chunk_csv(&self, j: u64, out: &mut Vec<u8>) {
-        let t = self.tab();
         if j == 0 {
-            out.extend_from_slice(self.names().join(",").as_bytes());
-            out.push(b'\n');
+            header(&self.schema(), out);
         }
         let (a, b) = self.chunk_range(j);
-        let width: usize = t
-            .ids
-            .iter()
-            .map(|c| {
-                2 * digits(
-                    c[a..b]
-                        .iter()
-                        .copied()
-                        .filter(|&v| v != NA)
-                        .max()
-                        .unwrap_or(0),
-                ) + 4
-            })
-            .sum();
-        let line = width + 16 + 1;
-        write_with(out, (b - a) * line, |w: &mut Cursor| unsafe {
-            for r in a..b {
-                for c in &t.ids {
-                    let v = c[r];
-                    if v != NA {
-                        w.uint(v);
-                    }
-                    w.byte(b',');
-                }
-                for c in &t.ids {
-                    let v = c[r];
-                    if v != NA {
-                        w.bytes(b"id");
-                        w.uint(v);
-                    }
-                    w.byte(b',');
-                }
-                let v = t.v[r];
-                if v != NA {
-                    w.micros(v);
-                }
-                w.byte(b'\n');
-            }
-        });
+        self.table.csv(a, b, out);
     }
 }
 
@@ -653,17 +640,8 @@ impl Chunks for JoinTable {
     }
 
     fn chunk(&self, i: u64, emit: &mut dyn FnMut(RecordBatch)) {
-        let t = self.tab();
         let (a, b) = self.chunk_range(i);
-        let mut s = a;
-        while s < b {
-            let e = (s + self.batch_size).min(b);
-            let mut arrays: Vec<_> = t.ids.iter().map(|c| int32(&c[s..e])).collect();
-            arrays.extend(t.ids.iter().map(|c| id_strings(&c[s..e], b"id", 0)));
-            arrays.push(micros(&t.v[s..e]));
-            emit(RecordBatch::try_new(self.schema(), arrays).expect("schema matches"));
-            s = e;
-        }
+        self.table.arrow(a, b, emit)
     }
 }
 

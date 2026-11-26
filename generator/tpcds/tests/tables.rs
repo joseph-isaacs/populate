@@ -3,13 +3,77 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
-use populate_tpcds::Encoding::{Latin1, Utf8};
+use populate_tpcds::Encoding::{self, Latin1, Utf8};
 use populate_tpcds::TableName::{self, *};
-use populate_tpcds::Tpcds;
+use populate_tpcds::{DsTable, Tpcds};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use tpcdsgen::config::{SessionBuilder, Table as Ds};
-use tpcdsgen::row::{CallCenterRowGenerator, StoreSalesRowGenerator, WebReturnsRowGenerator};
+use tpcdsgen::row::*;
+use tpcdsgen_arrow::*;
+
+macro_rules! references {
+    ($($t:ident => $arrow:ident, $rows:ident;)*) => {
+        /// The table as tpcdsgen-arrow makes it, sequentially, at SF 1.
+        fn reference_arrow(t: &DsTable) -> Vec<RecordBatch> {
+            let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+            match t.name() {
+                $($t => $arrow::new(s)
+                    .with_source_row_range(1, t.source_rows())
+                    .map(|b| b.expect("tpcdsgen-arrow batch"))
+                    .collect(),)*
+            }
+        }
+
+        /// The `.dat` file as tpcdsgen formats its rows (`Display`),
+        /// sequentially, at SF 1.
+        fn reference_dat(t: &DsTable, encoding: Encoding) -> Vec<u8> {
+            let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+            let mut out = String::new();
+            match t.name() {
+                $($t => {
+                    let total = s.get_scaling().get_row_count(Ds::$t);
+                    let mut g = $rows::new(s, total);
+                    g.set_source_row_range(1, t.source_rows());
+                    for row in g {
+                        writeln!(out, "{row}").unwrap();
+                    }
+                })*
+            }
+            match encoding {
+                Utf8 => out.into_bytes(),
+                Latin1 => out.chars().map(|c| u8::try_from(c).expect("Latin-1")).collect(),
+            }
+        }
+    };
+}
+
+references! {
+    CallCenter => CallCenterArrow, CallCenterRowGenerator;
+    CatalogPage => CatalogPageArrow, CatalogPageRowGenerator;
+    CatalogReturns => CatalogReturnsArrow, CatalogReturnsRowGenerator;
+    CatalogSales => CatalogSalesArrow, CatalogSalesRowGenerator;
+    Customer => CustomerArrow, CustomerRowGenerator;
+    CustomerAddress => CustomerAddressArrow, CustomerAddressRowGenerator;
+    CustomerDemographics => CustomerDemographicsArrow, CustomerDemographicsRowGenerator;
+    DateDim => DateDimArrow, DateDimRowGenerator;
+    HouseholdDemographics => HouseholdDemographicsArrow, HouseholdDemographicsRowGenerator;
+    IncomeBand => IncomeBandArrow, IncomeBandRowGenerator;
+    Inventory => InventoryArrow, InventoryRowGenerator;
+    Item => ItemArrow, ItemRowGenerator;
+    Promotion => PromotionArrow, PromotionRowGenerator;
+    Reason => ReasonArrow, ReasonRowGenerator;
+    ShipMode => ShipModeArrow, ShipModeRowGenerator;
+    Store => StoreArrow, StoreRowGenerator;
+    StoreReturns => StoreReturnsArrow, StoreReturnsRowGenerator;
+    StoreSales => StoreSalesArrow, StoreSalesRowGenerator;
+    TimeDim => TimeDimArrow, TimeDimRowGenerator;
+    Warehouse => WarehouseArrow, WarehouseRowGenerator;
+    WebPage => WebPageArrow, WebPageRowGenerator;
+    WebReturns => WebReturnsArrow, WebReturnsRowGenerator;
+    WebSales => WebSalesArrow, WebSalesRowGenerator;
+    WebSite => WebSiteArrow, WebSiteRowGenerator;
+}
 
 fn rows(batches: &[RecordBatch]) -> usize {
     batches.iter().map(|b| b.num_rows()).sum()
@@ -20,7 +84,7 @@ fn concat(batches: &[RecordBatch]) -> RecordBatch {
 }
 
 /// Small enough to run unoptimised: whole dimensions, prefixes of facts.
-fn small(ds: &Tpcds, t: TableName) -> populate_tpcds::DsTable {
+fn small(ds: &Tpcds, t: TableName) -> DsTable {
     ds.table(t).limit_source_rows(3_000)
 }
 
@@ -52,7 +116,7 @@ fn dat_is_dsdgen_text_for_any_chunking() {
     }
 }
 
-/// The fast Arrow-to-text path writes exactly what tpcdsgen's row
+/// The `.dat` text written from the columns is exactly what tpcdsgen's row
 /// `Display` writes, for every table and both encodings.
 #[test]
 fn dat_matches_tpcdsgen_display_for_every_table() {
@@ -61,7 +125,7 @@ fn dat_matches_tpcdsgen_display_for_every_table() {
         let table = ds.table(t).limit_source_rows(2_000).chunk_source_rows(333);
         for enc in [Utf8, Latin1] {
             let got = table.write_dat(Vec::new(), 4, enc).unwrap();
-            let want = table.reference_dat(enc);
+            let want = reference_dat(&table, enc);
             assert!(!want.is_empty(), "{t}");
             if got != want {
                 let (g, w) = (
@@ -222,11 +286,11 @@ fn parquet_round_trips_and_is_thread_independent() {
     }
 }
 
-/// A sales table and its returns requested together run as one fused pass
+/// A sales table and its returns requested together run as one pass
 /// (in either order, with other tables between, a table listed twice); the
 /// output must not change.
 #[test]
-fn fused_channels_in_many() {
+fn channels_in_many() {
     let ds = Tpcds::new(1.0);
     let t = |n| ds.table(n).limit_source_rows(1_500).chunk_source_rows(211);
     let tables = [
@@ -243,12 +307,12 @@ fn fused_channels_in_many() {
     let mut got: Vec<Vec<RecordBatch>> = vec![Vec::new(); n];
     populate_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
     for (i, table) in tables.iter().enumerate() {
-        let want = populate_tpcds::DsTable::reference_arrow(table);
+        let want = reference_arrow(table);
         assert_eq!(concat(&got[i]), concat(&want), "{}", table.name());
     }
     let dats = populate_tpcds::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
     for (dat, table) in dats.iter().zip(&tables) {
-        assert_eq!(dat, &table.reference_dat(Utf8), "{}", table.name());
+        assert_eq!(dat, &reference_dat(table, Utf8), "{}", table.name());
     }
     let pq = populate_tpcds::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
     for (file, table) in pq.into_iter().zip(&tables) {
@@ -262,7 +326,7 @@ fn fused_channels_in_many() {
             .collect();
         assert_eq!(
             rows(&back),
-            rows(&table.reference_arrow()),
+            rows(&reference_arrow(table)),
             "{}",
             table.name()
         );

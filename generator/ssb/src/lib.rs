@@ -45,14 +45,13 @@ mod flat;
 mod tables;
 
 pub use engine::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, SsbTable, for_each_batch_many, parquet_props,
-    write_parquet_many, write_tbl_many,
+    SsbTable, for_each_batch_many, parquet_props, write_parquet_many, write_tbl_many,
 };
 
+use populate_table::DynTable;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
-use tables::TableGen;
 
 /// Every SSB table, and `lineorder_flat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -124,7 +123,7 @@ pub struct Ssb {
     scale: tables::Scale,
     /// `lineorder_flat`'s distribution, built (with the dimension tables)
     /// on first use.
-    flat: Arc<OnceLock<Arc<dyn TableGen>>>,
+    flat: Arc<OnceLock<DynTable>>,
 }
 
 impl Ssb {

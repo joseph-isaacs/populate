@@ -4,22 +4,19 @@
 //!
 //! Every string column is a `StringViewArray` with the same three buffers:
 //! [`DATA`] (the batch's own bytes: names, addresses, phone numbers),
-//! [`POOL`] (the text pool, shared by every batch) and [`DICT`] (every
-//! distribution value, shared too). A comment is a view of `(offset, len)`
+//! [`POOL`] (the text pool, shared by every batch) and [`DICT`] (the
+//! distribution values longer than a view holds, shared too). A comment is a view of `(offset, len)`
 //! into the pool and a distribution pick is a precomputed view, so neither
 //! copies a byte.
 
-use arrow_array::StringViewArray;
-use arrow_buffer::{Buffer, ScalarBuffer};
-#[cfg(test)]
-use populate_combinators::lehmer::Rng;
 use populate_combinators::lehmer::{draws, scale};
-use std::ptr::NonNull;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use populate_combinators::views::{Buffers, Dict, Picks, Shared, by_weight, static_buffer, view};
+use populate_table::resolve_threads;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use tpchgen::distribution::{Distribution, Distributions};
 
-/// Buffer index of a batch's own string bytes.
-pub(crate) const DATA: u32 = 0;
+#[cfg(doc)]
+use populate_combinators::views::DATA;
 /// Buffer index of the text pool.
 pub(crate) const POOL: u32 = 1;
 /// Buffer index of the distribution values.
@@ -31,96 +28,29 @@ pub(crate) const POOL_SIZE: usize = 300 * 1024 * 1024;
 /// size by at most this, then truncated).
 const MAX_SENTENCE: usize = 256;
 
-/// The view of `bytes`, stored at `offset` of buffer `buffer` (ignored for
-/// strings of up to 12 bytes, which live in the view).
-#[inline(always)]
-pub(crate) fn view(bytes: &[u8], buffer: u32, offset: u32) -> u128 {
-    let len = bytes.len();
-    if len <= 12 {
-        let mut b = [0u8; 16];
-        b[4..4 + len].copy_from_slice(bytes);
-        u128::from_le_bytes(b) | len as u128
-    } else {
-        let prefix = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"));
-        len as u128 | (prefix as u128) << 32 | (buffer as u128) << 64 | (offset as u128) << 96
-    }
-}
-
-/// A distribution: dbgen's weighted pick, as views into [`DICT`].
-#[derive(Debug)]
-pub(crate) struct Dist {
-    /// Value index for each unit of weight.
-    picks: Vec<u8>,
-    /// Each value's view.
-    pub(crate) views: Vec<u128>,
-    pub(crate) values: Vec<&'static str>,
-}
-
-impl Dist {
-    fn new(d: &Distribution, dict: &mut Vec<u8>) -> Self {
-        let values = d.get_values().to_vec();
-        let mut picks = Vec::new();
-        let mut views = Vec::new();
-        let mut prev = 0;
-        for (i, v) in values.iter().enumerate() {
-            let w = d.get_weight(i);
-            picks.extend(std::iter::repeat_n(i as u8, (w - prev).max(0) as usize));
-            prev = w;
-            views.push(view(v.as_bytes(), DICT, dict.len() as u32));
-            dict.extend_from_slice(v.as_bytes());
-        }
-        assert!(values.len() <= 256);
-        Dist {
-            picks,
-            views,
-            values,
-        }
-    }
-
-    /// Total weight: picks are `0..weight`.
-    #[inline(always)]
-    pub(crate) fn weight(&self) -> u32 {
-        self.picks.len() as u32
-    }
-
-    /// The value index draw `x` picks (`Distribution::random_value`).
-    #[inline(always)]
-    pub(crate) fn pick_draw(&self, x: u32) -> usize {
-        // weights are small, so the integer mapping is exact (see `scale`)
-        self.picks[scale(x, self.weight()) as usize] as usize
-    }
-
-    /// The value index the next draw of `r` picks.
-    #[cfg(test)]
-    pub(crate) fn pick(&self, r: &mut Rng) -> usize {
-        let x = r.next_rand();
-        self.pick_draw(x)
-    }
-}
-
-/// The distributions and the bytes of their values ([`DICT`]). Cheap to
+/// The distributions, as views into [`DICT`]. Cheap to
 /// build, so the generators hold a reference from the start.
 #[derive(Debug)]
 pub(crate) struct Dicts {
     bytes: &'static [u8],
-    pub(crate) colors: Dist,
-    pub(crate) types: Dist,
-    pub(crate) containers: Dist,
-    pub(crate) segments: Dist,
-    pub(crate) priorities: Dist,
-    pub(crate) return_flags: Dist,
-    pub(crate) instructions: Dist,
-    pub(crate) modes: Dist,
-    pub(crate) nations: Dist,
+    pub(crate) colors: Picks,
+    pub(crate) types: Picks,
+    pub(crate) containers: Picks,
+    pub(crate) segments: Picks,
+    pub(crate) priorities: Picks,
+    pub(crate) return_flags: Picks,
+    pub(crate) instructions: Picks,
+    pub(crate) modes: Picks,
+    pub(crate) nations: Picks,
     /// `n_regionkey` of each nation.
     pub(crate) nation_regions: Vec<i64>,
-    pub(crate) regions: Dist,
+    pub(crate) regions: Picks,
 }
 
 static DICTS: LazyLock<Dicts> = LazyLock::new(|| {
     let d = Distributions::static_default();
-    let mut dict = Vec::new();
-    let mut dist = |x: &Distribution| Dist::new(x, &mut dict);
+    let mut dict = Dict::new(DICT);
+    let mut dist = |x: &Distribution| Picks::new(x.get_values(), |i| x.get_weight(i), &mut dict);
     let colors = dist(d.part_colors());
     let types = dist(d.part_types());
     let containers = dist(d.part_containers());
@@ -135,7 +65,7 @@ static DICTS: LazyLock<Dicts> = LazyLock::new(|| {
         .map(|i| d.nations().get_weight(i) as i64)
         .collect();
     Dicts {
-        bytes: Box::leak(dict.into_boxed_slice()),
+        bytes: dict.leak(),
         colors,
         types,
         containers,
@@ -160,22 +90,14 @@ impl Dicts {
 /// into.
 #[derive(Debug)]
 pub(crate) struct Text {
-    pub(crate) pool: &'static [u8],
-    pool_buf: Buffer,
-    dict_buf: Buffer,
-    /// `[empty, pool, dict]`, for columns with no bytes of their own.
-    shared: Arc<[Buffer]>,
+    /// The pool: ASCII (dbgen's grammar words and punctuation; the tests
+    /// compare it to tpchgen's `&str` pool).
+    pub(crate) pool: &'static str,
+    /// `[pool, dict]`, buffers [`POOL`] and [`DICT`].
+    pub(crate) shared: Shared,
 }
 
 static TEXT: OnceLock<Text> = OnceLock::new();
-
-/// `bytes` as an Arrow buffer, without copying.
-fn static_buffer(bytes: &'static [u8]) -> Buffer {
-    let ptr = NonNull::new(bytes.as_ptr() as *mut u8).expect("non-null");
-    // SAFETY: the bytes are 'static and never written, so they outlive the
-    // buffer and are valid for `len` bytes; the owner is a no-op.
-    unsafe { Buffer::from_custom_allocation(ptr, bytes.len(), Arc::new(())) }
-}
 
 impl Text {
     /// The shared text, built on first use on all cores.
@@ -189,16 +111,16 @@ impl Text {
         TEXT.get_or_init(|| {
             let d = Distributions::static_default();
             let pool: &'static [u8] = Box::leak(build_pool(d, threads).into_boxed_slice());
-            let (pool_buf, dict_buf) = (static_buffer(pool), static_buffer(Dicts::get().bytes));
+            // SAFETY: `build_pool` writes only the grammar's ASCII words and
+            // punctuation (checked against tpchgen's pool by the tests), so
+            // the bytes are UTF-8; a 300 MiB validation would slow startup
+            let pool = unsafe { std::str::from_utf8_unchecked(pool) };
             Text {
                 pool,
-                shared: Arc::from(vec![
-                    Buffer::from_vec(Vec::<u8>::new()),
-                    pool_buf.clone(),
-                    dict_buf.clone(),
+                shared: Shared::new(vec![
+                    static_buffer(pool.as_bytes()),
+                    static_buffer(Dicts::get().bytes),
                 ]),
-                pool_buf,
-                dict_buf,
             }
         })
     }
@@ -208,52 +130,24 @@ impl Text {
     pub(crate) fn pool_view(&self, offset: u32, len: u32) -> u128 {
         let (o, n) = (offset as usize, len as usize);
         if n <= 12 {
-            view(&self.pool[o..o + n], POOL, offset)
+            view(&self.pool.as_bytes()[o..o + n], POOL, offset)
         } else {
-            // SAFETY: `o + 4 <= o + n <= pool.len()`, checked by the caller's
-            // range (dbgen's offsets stay `max_len` short of the end).
-            let prefix = u32::from_le_bytes(self.pool[o..o + 4].try_into().expect("4 bytes"));
+            // only the 4-byte prefix is read, not the whole span's bounds:
+            // a cache miss less per comment
+            let prefix =
+                u32::from_le_bytes(self.pool.as_bytes()[o..o + 4].try_into().expect("4 bytes"));
             n as u128 | (prefix as u128) << 32 | (POOL as u128) << 64 | (offset as u128) << 96
         }
     }
-
-    /// A string column from views and the batch's own bytes.
-    pub(crate) fn array(&self, views: Vec<u128>, data: Vec<u8>) -> StringViewArray {
-        let buffers = if data.is_empty() {
-            self.shared.clone()
-        } else {
-            Arc::from(vec![
-                Buffer::from_vec(data),
-                self.pool_buf.clone(),
-                self.dict_buf.clone(),
-            ])
-        };
-        // SAFETY: every view is built by `view`/`pool_view` from valid UTF-8
-        // (ASCII) bytes at the offset of the buffer it names.
-        unsafe { StringViewArray::new_unchecked(ScalarBuffer::from(views), buffers, None) }
-    }
 }
 
-/// A string column being built.
-#[derive(Default)]
-pub(crate) struct Views {
-    pub(crate) views: Vec<u128>,
-    pub(crate) data: Vec<u8>,
-}
+/// TPC-H's string buffers ([`Text`]), for the column types.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Tpch;
 
-impl Views {
-    /// Append the bytes `data[start..]` (just written) as the next string.
-    #[inline(always)]
-    pub(crate) fn end_string(&mut self, start: usize) {
-        let v = view(&self.data[start..], DATA, start as u32);
-        if self.data.len() - start <= 12 {
-            self.data.truncate(start);
-        }
-        self.views.push(v);
-    }
-
-    pub(crate) fn finish(self, t: &Text) -> StringViewArray {
-        t.array(self.views, self.data)
+impl Buffers for Tpch {
+    fn shared() -> &'static Shared {
+        &Text::get().shared
     }
 }
 
@@ -266,34 +160,27 @@ struct Table {
 
 impl Table {
     fn new(d: &Distribution, suffix: impl Fn(&[u8]) -> &'static [u8]) -> Self {
-        let mut picks = Vec::new();
-        let mut prev = 0;
-        for i in 0..d.size() {
-            let w = d.get_weight(i);
-            let v = d.get_values()[i].as_bytes();
-            let s = suffix(v);
-            let n = v.len() + s.len();
-            assert!(n <= 32, "pool word too long");
-            let mut b = [0u8; 32];
-            b[..v.len()].copy_from_slice(v);
-            b[v.len()..n].copy_from_slice(s);
-            picks.extend(std::iter::repeat_n((b, n as u8), (w - prev) as usize));
-            prev = w;
-        }
+        let picks = by_weight(
+            d.size(),
+            |i| d.get_weight(i),
+            |i| {
+                let v = d.get_values()[i].as_bytes();
+                let s = suffix(v);
+                let n = v.len() + s.len();
+                assert!(n <= 32, "pool word too long");
+                let mut b = [0u8; 32];
+                b[..v.len()].copy_from_slice(v);
+                b[v.len()..n].copy_from_slice(s);
+                (b, n as u8)
+            },
+        );
         Table { picks }
     }
 }
 
 /// A distribution's values, by weight unit (the grammar's syntax strings).
 fn syntax(d: &Distribution) -> Vec<&'static str> {
-    let mut picks = Vec::new();
-    let mut prev = 0;
-    for i in 0..d.size() {
-        let w = d.get_weight(i);
-        picks.extend(std::iter::repeat_n(d.get_values()[i], (w - prev) as usize));
-        prev = w;
-    }
-    picks
+    by_weight(d.size(), |i| d.get_weight(i), |i| d.get_values()[i])
 }
 
 /// Text being generated into `buf`, with fixed-size copies: a sentence
@@ -635,10 +522,7 @@ fn huge_pages(buf: &mut [u8]) {
 /// on all cores, each straight into its place.
 pub(crate) fn build_pool(d: &Distributions, threads: usize) -> Vec<u8> {
     let g = Grammar::new(d);
-    let threads = match threads {
-        0 => std::thread::available_parallelism().map_or(1, |t| t.get()),
-        t => t,
-    };
+    let threads = resolve_threads(threads);
     // whole parts of the index, 4 per thread, the last to the pool's end
     let step = (POOL_INDEX.len() / (threads * 4)).max(1);
     let marks: Vec<(u64, usize)> = POOL_INDEX
@@ -689,7 +573,7 @@ mod tests {
         let ours = &Text::get().pool;
         let theirs = TextPool::get_or_init_default();
         assert_eq!(ours.len(), theirs.size() as usize);
-        assert!(*ours == theirs.text(0, theirs.size()).as_bytes());
+        assert!(**ours == *theirs.text(0, theirs.size()));
     }
 
     /// Sentence starts in the pool: `(draws before, byte offset)` of the first
@@ -737,11 +621,12 @@ mod tests {
     #[test]
     fn serial_pool_matches_parallel() {
         let d = Distributions::static_default();
-        assert!(build_pool(d, 1) == Text::get().pool);
+        assert!(build_pool(d, 1) == Text::get().pool.as_bytes());
     }
 
     #[test]
     fn picks_match_tpchgen() {
+        use populate_combinators::lehmer::Rng;
         use tpchgen::random::RowRandomInt;
         let d = Distributions::static_default();
         let t = Dicts::get();
@@ -754,7 +639,10 @@ mod tests {
             let mut a = Rng::at(42, 1, 0);
             let mut b = RowRandomInt::new(42, 1);
             for _ in 0..10_000 {
-                assert_eq!(ours.values[ours.pick(&mut a)], theirs.random_value(&mut b));
+                assert_eq!(
+                    ours.values[ours.index(a.next_rand())],
+                    theirs.random_value(&mut b)
+                );
             }
         }
     }

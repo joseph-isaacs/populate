@@ -3,6 +3,7 @@ name = "populate-py"
 description = "Python bindings for populate (feature `python`): compose distributions, run the generators, get Arrow without a copy"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 

@@ -38,6 +38,16 @@ jobs:
       # Benches must keep compiling, but are not run in CI.
       - run: cargo bench --workspace --no-run
 
+  msrv:
+    name: MSRV (rust-version)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --all-features
+
   python:
     name: Python bindings
     runs-on: ubuntu-latest

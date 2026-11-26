@@ -24,15 +24,12 @@
 //! ```
 
 mod cols;
-mod engine;
 mod rng;
-mod strings;
 mod tables;
 mod text;
 pub mod tpcc;
 
-pub use engine::{
-    DEFAULT_BATCH_SIZE, DEFAULT_CHUNK_ROWS, for_each_batch_many, write_parquet_many,
+pub use tpcc::{
+    DEFAULT_CHUNK_ROWS, Tpcc, TpccTable, TpccTableName, for_each_batch_many, write_parquet_many,
     write_text_many,
 };
-pub use tpcc::{Tpcc, TpccTable, TpccTableName};

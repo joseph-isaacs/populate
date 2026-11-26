@@ -1,3 +1,6 @@
+// Modified from tpcdsgen 4.0.0 for the data-comb DSB variant.
+// Licensed under Apache-2.0; see the crate LICENSE and generator/dsb/NOTICE.md.
+
 use crate::business_key_generator::make_business_key;
 use crate::config::Session;
 use crate::dsb::address::make_address;

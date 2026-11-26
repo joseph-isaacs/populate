@@ -1,3 +1,8 @@
+// The FlatBuffers Builder is modified from FlatBuffers v1.11.0 go/builder.go:
+// translated to Rust and restricted to TSBS serialization operations.
+// That portion is licensed under Apache-2.0; see ../NOTICE.md and
+// ../LICENSE-Apache-2.0.txt.
+
 //! `tsbs_generate_data`'s binary formats: Prometheus (length-prefixed
 //! protobuf `TimeSeries`, one per field), SiriDB (qpack) and MongoDB
 //! (flatbuffers).

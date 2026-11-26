@@ -3,6 +3,7 @@ name = "populate-tpcc"
 description = "The TPC-C initial database (TPC-C 5.11 clause 4.3.3.1), on all cores: Arrow, Parquet or CSV"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -12,6 +13,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
 populate-sink-arrow = { workspace = true }
+populate-combinators = { workspace = true }
 populate-table = { workspace = true, features = ["parquet"] }
 rand = { workspace = true }
 arrow-array = { workspace = true }

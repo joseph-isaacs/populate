@@ -70,33 +70,39 @@ adds the engine around it:
   are what arrow-rs writes (same encodings, statistics and level
   histograms, plus page indexes). Checked with DuckDB on all 24 SF 1 tables: the same rows as arrow-rs's files and
   the same statistics in all 1,515 column chunks.
-- **`.dat` written from Arrow.** Formatting tpcdsgen's rows with `Display`
-  costs 10x their generation. `.dat` lines are instead written straight
-  from the Arrow batches into a reserved buffer (~800 MB/s per core),
-  matching tpcdsgen's text on every table (tested).
+- **`.dat` written from the columns.** Formatting tpcdsgen's rows with
+  `Display` costs 10x their generation. `.dat` lines are instead written
+  straight from the generated columns into a reserved buffer
+  (`populate_table::text`), matching tpcdsgen's text on every table
+  (tested).
 - **The workers write the `.dat` files.** SF 1 is 1.2 GB of text. Written
   by one thread it took ~1.6 s with the other cores busy, the whole run,
   and workers sat blocked on it. Now a finished chunk is queued on its
   file and whichever worker finds the file idle writes the queue in order,
   so files are written in parallel and every core generates. 4 threads:
   ~1.6 → ~1.25 s (interleaved runs, all 24 files `cmp`-identical).
-- **Inventory and demographics into columns.** `inventory` (11.7M rows
-  at SF 1) and `customer_demographics` (1.9M) are cross products of keys,
-  plus one random quantity and a null bitmap for inventory. `src/direct.rs`
-  fills their columns directly instead of building a tpcdsgen row struct
-  per row and converting (both tested equal to tpcdsgen-arrow).
+- **Every table is a `Distribution`.** Each table is one
+  `populate_core::Distribution` of rows built from `populate-builtins`
+  combinators, so its schema is `schema_of` its rows and `populate-table`
+  turns it into Arrow, Parquet or text; no Arrow array or schema is built
+  by hand. Dimensions are tpcdsgen's generators wrapped as distributions
+  (`src/dims.rs`). `inventory` and `customer_demographics` (11.7M and 1.9M
+  rows at SF 1) are cross products of keys counted up per column, plus one
+  random quantity for inventory (`src/inventory.rs`).
+- **One bitmap per row for NULLs.** dsdgen decides all of a sales row's
+  NULLs with one draw. The sales and returns rows keep that bitmap
+  (`src/masked.rs`) instead of a validity bit per column: it is pushed once
+  per row, transposed 64 rows at a time into each column's validity for
+  Arrow, and read per field when a row is printed.
 - **Cheaper `.dat` numbers.** Up to 8 digits are made at once in one
-  `u64` (multiply-shift divisions on 4-, 2- and 1-digit lanes), the length
-  is the count of leading zero bytes, and null bits are read straight from
-  the bitmap (`NullBuffer::is_valid` was a quarter of formatting time).
-  `--example datbench` times formatting alone.
-  Together with the two tables above: 28% fewer instructions for a
-  one-thread `.dat` run and 27% for Parquet (callgrind, SF 0.2), ~9% less
-  wall time at 1 thread and 6–9% at 4 (interleaved, best of 3).
-- **Cache-sized conversion.** tpcdsgen-arrow converts rows to columns one
-  column at a time over the buffered rows; at 8Ki rows a `catalog_sales`
-  batch (~3 MB) falls out of L2 and conversion is 5x slower. Batches are
-  generated 2Ki rows at a time.
+  `u64` (multiply-shift divisions on 4-, 2- and 1-digit lanes), and the
+  length is the count of leading zero bytes. `--example datbench` times
+  formatting alone.
+- **Parquet pages as if batches were even.** A ticket has 8 to 16 lines,
+  so generated batches vary in length; the Parquet writer pages each
+  column as if its rows came in batches of `--batch` rows
+  (`write_parquet_many_in_batches`), so the files are those of even
+  batches without re-cutting any array.
 
 ## Byte-identical: how it's checked
 
@@ -149,50 +155,43 @@ Parquet files: 393 MB vs tpcgen-cli's 418 MB at SF 1, 4,087 MB vs
 ### Where the time goes
 
 `cargo run -p populate-tpcds --release --example stages` times each stage
-per table on one thread. Summed over the tables, at SF 1:
+per table on one thread, in ms, at SF 1: tpcdsgen's own row generation,
+then this crate's Arrow, `.dat` and Parquet output (each includes the
+stages before it). A returns table is generated with its sales, so its
+columns include the sales work.
 
-| stage                                                     | time    |
-|-----------------------------------------------------------|--------:|
-| the six sales and returns tables, fused, into columns     | ~1.1 s  |
-| the other 18 tables: tpcdsgen row generation              | ~0.55 s |
-| the other 18 tables: rows → Arrow (tpcdsgen-arrow)        | ~0.3 s  |
-| Arrow → `.dat` text                                       | ~1.3 s  |
-| Arrow → Parquet                                           | ~2.2 s  |
-
-tpcdsgen is rows all the way down: each generator builds a row struct
-(text as owned `String`s), and tpcdsgen-arrow buffers 2Ki of them and
-walks the buffer once per column. Building columns directly is not much
-cheaper by itself: the store port fills `store_sales`' columns in about the
-time tpcdsgen-arrow converts them (~150 ms over 216 ms of generation). The
-fused channels win by not replaying sales for returns and by skipping
-seeds.
+| table                 | tpcdsgen rows | +Arrow | +`.dat` | +Parquet |
+|-----------------------|--------------:|-------:|--------:|---------:|
+| store_sales           | 259           | 354    | 591     | 960      |
+| catalog_sales         | 218           | 283    | 532     | 720      |
+| web_sales             | 96            | 130    | 271     | 324      |
+| store_returns         | 386           | 362    | 671     | 427      |
+| inventory             | 215           | 69     | 240     | 263      |
+| customer_demographics | 150           | 22     | 91      | 140      |
+| customer              | 56            | 72     | 84      | 111      |
 
 tpcgen-cli runs the same row generation, so the difference is in the
 rest:
 
 - **`.dat`:** tpcgen-cli formats each row with `Display`, ~10x the cost of
-  generating it (`store_sales`: 3.4 s vs 1.0 s here).
-- **Parquet:** its 8Ki-row batches fall out of cache during conversion
-  (`catalog_sales` converts 5x slower), and it dictionary-encodes decimals
-  and ids (~40% of encoding time, no smaller files).
+  generating it.
+- **Parquet:** its 8Ki-row batches fall out of cache during conversion,
+  and it dictionary-encodes decimals and ids (~40% of encoding time, no
+  smaller files).
 - **Cores:** it doesn't split tables under 1M source rows.
 
-### The sales channels, fused
+### The sales channels
 
 Each sales table and its returns (`store_`, `catalog_`, `web_`) come from
-one loop (`src/fused.rs`): ports of tpcdsgen's sales and returns
-generators (Apache-2.0) built on its public stream and key helpers,
-pushing values straight into Arrow columns. tpcdsgen's returns generators
-replay every sales line item; the fused loop does the sales work once.
-The loops push each row's values, in schema order, into a `Row`: the
-Arrow `Builder` appends them to columns, and for `.dat` output `Text`
-formats them straight into the chunk's text, so the sales and returns
-tables (~75% of the `.dat` bytes) never become Arrow batches.
-Each channel is tested equal to tpcdsgen-arrow for both tables, together
-and alone, and its text equal to the text of its Arrow batches. When
-only one table is asked for, the loop skips the other's work.
+one distribution (`src/channels.rs`): ports of tpcdsgen's sales and
+returns generators (Apache-2.0) built on its public stream and key
+helpers, as one `fan_out` over tickets or orders that pushes each line to
+the sales columns and, when it is returned, a row to the returns columns.
+tpcdsgen's returns generators replay every sales line item; here the sales
+work is done once. Each channel is tested equal to tpcdsgen-arrow for both
+tables.
 
-The loops also burn dsdgen's end-of-row seeds faster
+The channels also burn dsdgen's end-of-row seeds faster
 (`src/seeds.rs`). Every column gets a fixed budget of random draws per row,
 and tpcdsgen burns the unused ones one draw at a time: ~100 wasted draws per
 ticket. The stream is a Lehmer generator, so burning `k` draws is one

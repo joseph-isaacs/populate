@@ -23,7 +23,12 @@ pub const fn mix64(mut z: u64) -> u64 {
 
 /// FNV-1a, for turning names into seeds.
 pub const fn hash_str(s: &str) -> u64 {
-    let b = s.as_bytes();
+    fnv1a64(s.as_bytes())
+}
+
+/// FNV-1a, 64-bit: the hash the generators' tests check output bytes
+/// against.
+pub const fn fnv1a64(b: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     let mut i = 0;
     while i < b.len() {

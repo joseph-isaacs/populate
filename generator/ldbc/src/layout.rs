@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! The datagen's output layouts: `--explode-edges` and `--explode-attrs`
 //! (`ExplodeEdges`, `ExplodeAttrs`), and `--epoch-millis`.
 //!

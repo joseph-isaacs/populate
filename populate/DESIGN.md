@@ -106,10 +106,29 @@ a counter does, a random walk doesn't.
 generating a row. The types come from the sinks: every column type's
 `IntoArrowColumns::data_types` says what Arrow array it becomes, so
 `Vec<i64>` is `Int64`, `Vec<Date32>` is `Date32` and a tuple of columns
-lists its fields' types in order. The names come from the distribution:
+lists its fields' types in order, and `IntoArrowColumns::nullables` whether
+each may hold nulls (a column type that stores nulls says so). The names
+come from the distribution:
 `Distribution::column_names`, which `named` / `named_all` set and a tuple
 concatenates. `DistTable` (`populate-table`) runs a distribution over any
-range of rows (clone, `skip`, collect) with that schema.
+range of rows (clone, `skip`, collect) with that schema; `DynTable` is the
+same with the distribution's type erased, so a data set's tables share one
+type.
+
+`populate_table::text::write_columns` writes the same columns as text
+lines (`|` after every field, NULL empty: dbgen's and dsdgen's formats)
+without making Arrow arrays. `TextField` is a column that prints one
+value per row (numbers, `Decimal`, `Date32`, `StrCol`, `Nullable` of
+those) and `TextColumns` a row of them (a field, a tuple, `SpreadCols`),
+so each table's line writer is compiled for its row type.
+`TextColumns::write_row_masked` prints a row with some fields NULL by a
+caller's `null(j)`, for columns whose NULLs live outside them (a row's
+null bitmap). `DistTable::text` writes a range of rows that way.
+
+`write_parquet_many_in_batches` writes tables whose generated batches
+vary in length (a ticket's 8 to 16 lines) with pages cut as if the rows
+came in batches of a fixed size, so the files match those of even batches
+without re-cutting arrays.
 
 ## Seekable streams
 
@@ -121,6 +140,18 @@ A `SeekRng` is a stream of draws that can jump `n` draws ahead.
 on its position. This is how the reference generators seed their columns
 (dbgen gives every column its own Lehmer stream), and why a chunk of such a
 table starts at its first row in `O(log n)`.
+
+## Streams that can't jump, and columns built whole
+
+Some reference generators' streams have no fast way to row `n`: R's
+`sample()` rejects draws, so a row takes a varying number of them.
+`checkpointed(inner, every, rows)` runs `inner` over its rows once (by its
+own `skip`), saving its state every `every` rows; a skip then restarts
+from the last saved state before the target and skips fewer than `every`
+rows. Some columns are only known whole (a shuffle, a sort): `column(values)`
+reads a column in memory, shared by every clone, and `column_as` converts
+each value as it is collected, so several columns of different types can
+read one stored column.
 
 ## Columns from columns, and child rows
 
@@ -137,6 +168,16 @@ table starts at its first row in `O(log n)`.
 
 A distribution of `Children<T>` is a table of `T` rows: its columns are
 the children's, and the source rows only drive them.
+
+## Several tables from one pass
+
+`fan_out(source, f)` makes several child tables at once: its rows are a
+tuple of `Children`, one per table, and `f` appends each source row's
+children to any of them (a sale and its occasional return; a graph's
+nodes and edges). `schemas_of(&dist)` splits the names and types into one
+schema per table, and `DistTables` (`populate-table`) runs it like
+`DistTable`, one batch per table per range of source rows (`text` writes
+each table's lines to its own buffer).
 
 ## Writing a leaf
 
@@ -162,13 +203,15 @@ straight into the `StrCol` buffer.
 | crate                   | contents                                              |
 |-------------------------|-------------------------------------------------------|
 | `populate-core`         | the three traits, `SeekRng`, `StrCol`, `ListCol`, `Date32`, `Decimal`, `Children`, tuple impls |
-| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `children`, `flat_map`, `named`, random leaves |
+| `populate-builtins`     | `constant`, `range`, `map`, `list`, `with_column`, `draws`, `derive`, `children`, `flat_map`, `format`, `named`, `checkpointed`, `column`, random leaves |
 | `populate-sink-arrow`   | columns to Arrow arrays and `RecordBatch`, `schema_of` |
 | `populate-sink-parquet` | columns to Parquet without copying                    |
-| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on |
+| `populate-table`        | `Table`: named, typed columns generated in parallel batches; `DistTable` / `DynTable`: a table that is one distribution; `Chunks` and the drivers every benchmark generator runs on; `cli`: the generators' shared command-line flags and report |
 | `populate`              | facade re-exporting the above                         |
+| `populate-combinators`  | what several generators share (`generator/combinators`): dbgen's and dsdgen's Lehmer streams, `Utf8View` columns over shared buffers |
 
-TPC-H (`populate-tpch`) is built on `Distribution`: each table is one
-distribution run by `DistTable`, its schema read off it. The other
+TPC-H (`populate-tpch`) and H2O (`populate-h2o`) are built on
+`Distribution`: each table is one distribution run by `DynTable` (TPC-H)
+or `DistTable` (H2O), its schema read off it. The other
 benchmark generators (TPC-DS and the rest) implement `Chunks` from
 `populate-table` directly.

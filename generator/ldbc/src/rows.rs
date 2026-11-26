@@ -12,15 +12,20 @@
 //! as [`TableDef`]s) is derived from them too.
 
 use crate::java::MS_PER_DAY;
+#[cfg(feature = "formats")]
 use arrow_array::ArrayRef;
+#[cfg(feature = "formats")]
 use arrow_schema::{Field, Schema, SchemaRef};
 use populate_core::{
     ChildCols, Children, Columns, Date32, Nullable, StrBuf, StrCol, TableCols, Tables, Timestamp,
     Validity, time_unit,
 };
+#[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
 use std::borrow::Cow;
-use std::sync::{Arc, LazyLock};
+#[cfg(feature = "formats")]
+use std::sync::Arc;
+use std::sync::LazyLock;
 
 /// A timestamp: epoch milliseconds, UTC.
 pub type Ts = Timestamp<{ time_unit::MILLISECOND }, true>;
@@ -306,6 +311,7 @@ pub enum Kind {
 impl Kind {
     /// The Arrow type and nullability of the column, as its buffer's sink
     /// reports them.
+    #[cfg(feature = "formats")]
     fn field(self, name: &str) -> Field {
         fn f<C: IntoArrowArray>(name: &str) -> Field {
             Field::new(name, C::data_type(), C::nullable())
@@ -386,6 +392,7 @@ impl Col {
     }
 
     /// The Arrow array: the buffers move into it.
+    #[cfg(feature = "formats")]
     pub fn into_array(self) -> ArrayRef {
         match self {
             Col::Ts(v) => IntoArrowArray::into_array(v),
@@ -662,6 +669,7 @@ pub struct TableDef {
 impl TableDef {
     /// Its Arrow schema: each column's type and nullability are its
     /// buffer's, as an Arrow sink makes it.
+    #[cfg(feature = "formats")]
     pub fn schema(&self) -> SchemaRef {
         let fields: Vec<Field> = self.cols.iter().map(|&(n, k)| k.field(n)).collect();
         Arc::new(Schema::new(fields))

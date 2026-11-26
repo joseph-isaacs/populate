@@ -14,14 +14,27 @@ license = "MIT AND Apache-2.0 AND SunPro"
 [dependencies]
 populate-core = { workspace = true }
 populate-builtins = { workspace = true }
-populate-sink-arrow = { workspace = true }
-populate-table = { workspace = true, features = ["parquet"] }
+populate-sink-arrow = { workspace = true, optional = true }
+populate-table = { workspace = true, features = ["parquet"], optional = true }
 rand = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 # Java's Normalizer (NFD) for the datagen's e-mail addresses
 unicode-normalization = "0.1"
 
 [[bin]]
+required-features = ["formats"]
 name = "ldbc-gen"
 path = "src/bin/ldbc-gen.rs"
+
+[features]
+formats = ["dep:populate-sink-arrow", "dep:populate-table", "dep:arrow-array", "dep:arrow-schema"]
+default = ["formats"]
+
+[[test]]
+name = "modes"
+required-features = ["formats"]
+
+[[test]]
+name = "output"
+required-features = ["formats"]

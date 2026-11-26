@@ -55,12 +55,10 @@ use parquet::file::properties::WriterProperties;
 use populate_core::{Columnar, Columns, Distribution};
 use populate_sink_arrow::IntoArrowColumns;
 use populate_table::chunks::{for_each_batch, try_for_each_batch};
-use populate_table::{Chunks, DistTable};
+use populate_table::{Chunks, DEFAULT_BATCH_ROWS, DistTable};
 use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 
-/// Default rows per batch.
-pub const DEFAULT_BATCH_SIZE: usize = 8192;
 /// Default rows per chunk (one Parquet row group, one job on the pool).
 pub const DEFAULT_CHUNK_ROWS: u64 = 128 * 1024;
 
@@ -131,7 +129,7 @@ where
             table,
             plain,
             random,
-            batch_size: DEFAULT_BATCH_SIZE,
+            batch_size: DEFAULT_BATCH_ROWS,
             chunk_rows: DEFAULT_CHUNK_ROWS,
         }
         .cut()

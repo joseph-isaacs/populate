@@ -27,7 +27,7 @@ use populate_ldbc::layout::{Layout, LayoutOptions, LayoutRun};
 use populate_ldbc::rows::{Rows, TableDef};
 use populate_ldbc::{Ldbc, csv, default_resources, persons_for_scale_factor, to_batch};
 use populate_table::text::write_text_many;
-use populate_table::{Chunks, MultiChunks, par_sources, write_parquet_many};
+use populate_table::{Chunks, MultiChunks, par_map, write_parquet_many};
 use std::env::args;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -299,26 +299,10 @@ fn finish(ws: Vec<BufWriter<File>>) -> io::Result<usize> {
 
 fn count_snapshot(run: &BiRun, threads: usize) -> usize {
     let n = MultiChunks::num_chunks(run);
-    let counts: Vec<usize> = par_chunks(n, threads, |i| {
-        run.chunk_snapshot(i).iter().map(Rows::len).sum()
+    let counts: Vec<usize> = par_map(n as usize, threads, |i| {
+        run.chunk_snapshot(i as u64).iter().map(Rows::len).sum()
     });
     counts.into_iter().sum()
-}
-
-/// `f(i)` for `i in 0..n` on `threads` threads (0 = all cores).
-fn par_chunks<T: Send>(n: u64, threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
-    let mut out = Vec::new();
-    let r: Result<(), ()> = par_sources(
-        &[n],
-        threads,
-        |_, i| f(i),
-        |_, t| {
-            out.push(t);
-            Ok(())
-        },
-    );
-    r.expect("no errors");
-    out
 }
 
 fn write_static(a: &Args, layout: &Layout, lr: &LayoutRun, dir: &Path) -> io::Result<()> {

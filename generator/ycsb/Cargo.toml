@@ -3,7 +3,8 @@ name = "populate-ycsb"
 description = "YCSB load and run operations, byte-identical to YCSB 0.17.0, on all cores: Arrow, Parquet or TSV"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+rust-version.workspace = true
+license = "MIT AND Apache-2.0"
 
 [dependencies]
 # the CLI's allocator (feature `mimalloc`, on by default; the library

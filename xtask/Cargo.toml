@@ -3,6 +3,7 @@ name = "xtask"
 description = "Repository tasks: `cargo xtask bench` runs every generator in every format"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 

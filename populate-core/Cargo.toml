@@ -3,6 +3,7 @@ name = "populate-core"
 description = "Core traits for populate: Distribution, Columnar and Sink, and the string and list columns"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

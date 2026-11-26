@@ -1,3 +1,7 @@
+// Portions adapted from LDBC SNB datagen Spark (a2210c5), Apache-2.0.
+// Modified for Rust column buffers and chunked generation.
+// See ../NOTICE.md for upstream copyright and ../LICENSE-Apache-2.0.txt.
+
 //! The datagen's BI mode (`--mode bi`): the raw tables split at the bulk
 //! load threshold into an initial snapshot and daily (or yearly, ...)
 //! batches of inserts and deletes, as `RawToBiTransform` does.

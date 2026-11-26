@@ -3,6 +3,7 @@ name = "populate-tpch"
 description = "TPC-H data byte-identical to dbgen/tpchgen, on all cores: Arrow, Parquet or .tbl"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

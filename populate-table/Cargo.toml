@@ -3,6 +3,7 @@ name = "populate-table"
 description = "Named, typed, any-width tables from populate distributions, generated as Arrow batches in parallel"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

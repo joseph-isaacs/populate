@@ -3,6 +3,7 @@ name = "populate-bench"
 description = "Throughput comparison: populate vs tpchgen (Arrow and Parquet output)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 default-run = "populate-bench"

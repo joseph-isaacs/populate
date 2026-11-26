@@ -31,6 +31,13 @@ sales.for_each_batch(0, |batch| { /* RecordBatch, in table order */ });
 sales.write_dat(std::fs::File::create("store_sales.dat")?, 0, Encoding::Utf8)?;
 ```
 
+Parallel Arrow iteration subdivides chunks to spread smaller tables over
+workers and reduce buffered data. It aims for four jobs per worker, with
+up to 32 batches of work per job; tables of four batches or fewer keep
+their configured chunks. Sales and returns retain their configured chunks
+to amortize generator setup and preserve paired generation. Parquet row
+groups and text writer chunks retain their configured size.
+
 ## Where the data comes from
 
 `dsbgen` is tpcdsgen 4.0 (the Apache-2.0 Rust port of TPC-DS dsdgen from

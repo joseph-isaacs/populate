@@ -123,6 +123,7 @@ pub struct DirectColumn {
 }
 
 impl DirectColumn {
+    /// An empty chunk for the column `descr`.
     pub fn new(descr: ColumnDescPtr) -> Self {
         Self {
             descr,
@@ -153,6 +154,7 @@ impl DirectColumn {
         v
     }
 
+    /// Add `array`'s rows to the chunk (the array is shared, not copied).
     pub fn write(&mut self, array: &ArrayRef) {
         self.arrays.push(array.clone());
     }

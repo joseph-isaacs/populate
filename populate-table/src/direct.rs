@@ -37,7 +37,9 @@ pub struct ParquetOptions {
     pub rows_per_group: usize,
     /// Worker threads, 0 for all cores. Does not change the output.
     pub threads: usize,
+    /// Seeds every row group's RNG, with the group's index.
     pub seed: u64,
+    /// Parquet writer settings: compression, dictionaries, page sizes.
     pub props: WriterProperties,
 }
 

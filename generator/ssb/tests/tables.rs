@@ -14,19 +14,14 @@ use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use populate_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
 use populate_ssb::{Ssb, TableName, write_tbl_many};
+use populate_table::fnv1a64;
 use std::path::PathBuf;
 use std::process::Command;
-
-fn fnv(b: &[u8]) -> u64 {
-    b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| {
-        (h ^ x as u64).wrapping_mul(0x0100_0000_01b3)
-    })
-}
 
 fn check(sf: f64, t: TableName, first: u64, end: u64, len: usize, hash: u64) {
     let got = Ssb::new(sf).table(t).tbl_range(first, end);
     assert_eq!(got.len(), len, "SF {sf} {t} {first}..{end}: length");
-    assert_eq!(fnv(&got), hash, "SF {sf} {t} {first}..{end}: bytes");
+    assert_eq!(fnv1a64(&got), hash, "SF {sf} {t} {first}..{end}: bytes");
 }
 
 #[test]
@@ -39,7 +34,7 @@ fn sf_0_01_matches_ssb_dbgen() {
         (LineOrder, 5_526_185, 0x547598974e6077ed),
     ] {
         let tbl = Ssb::new(0.01).table(t).write_tbl(Vec::new(), 0).unwrap();
-        assert_eq!((tbl.len(), fnv(&tbl)), (len, hash), "{t}");
+        assert_eq!((tbl.len(), fnv1a64(&tbl)), (len, hash), "{t}");
     }
 }
 

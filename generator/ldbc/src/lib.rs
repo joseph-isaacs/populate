@@ -54,7 +54,7 @@ use person::{Hot, Person, PersonGenerator};
 use populate_builtins::{flat_map, named_all, range};
 use populate_core::{Distribution, Sink};
 use populate_table::text::TextChunks;
-use populate_table::{DistTables, resolve_threads};
+use populate_table::{DistTables, par_map, resolve_threads};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rows::{
@@ -68,46 +68,10 @@ use std::io;
 use std::mem::take;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 
 pub use jrand::JavaRandom;
 pub use params::{SCALE_FACTORS, persons_for_scale_factor};
-
-/// Run `f(i)` for `i in 0..n` on `threads` threads (0 = all cores),
-/// results in order. For many small tasks (one per person, say), where
-/// [`populate_table::par_ordered`]'s per-task scheduling would cost more
-/// than the work: workers take indices off one counter and keep their
-/// results until the end.
-fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    let threads = resolve_threads(threads).min(n.max(1));
-    if threads <= 1 {
-        return (0..n).map(f).collect();
-    }
-    let next = AtomicUsize::new(0);
-    let mut parts: Vec<Vec<(usize, T)>> = thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|_| {
-                s.spawn(|| {
-                    let mut v = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= n {
-                            break;
-                        }
-                        v.push((i, f(i)));
-                    }
-                    v
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().expect("worker")).collect()
-    });
-    let mut all: Vec<(usize, T)> = parts.iter_mut().flat_map(take).collect();
-    all.sort_unstable_by_key(|&(i, _)| i);
-    all.into_iter().map(|(_, t)| t).collect()
-}
 
 /// Time spent in each pre-pass step.
 #[derive(Debug, Clone, Default)]

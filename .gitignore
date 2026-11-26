@@ -27,3 +27,6 @@ target
 .cargo-ok
 __pycache__/
 *.pyc
+
+# mdBook output
+book/book/

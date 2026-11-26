@@ -145,7 +145,7 @@ impl Text {
     }
 }
 
-/// TPC-H's string buffers ([`Text`]), for the column types.
+/// Shared TPC-H string buffers for the column types.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Tpch;
 

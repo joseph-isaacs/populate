@@ -114,7 +114,7 @@ impl SharedText {
 }
 
 /// Columns of [`Shared`] views, and the buffers they point into: those of
-/// the [`SharedText`] the views were gathered from.
+/// the shared text buffers the views were gathered from.
 #[derive(Debug, Default)]
 pub struct SharedCols {
     views: Vec<u128>,

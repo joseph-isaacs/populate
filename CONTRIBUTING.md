@@ -9,11 +9,19 @@ the first differing line or row.
 What CI runs (`.github/workflows/ci.yml`):
 
 ```bash
+export CARGO_BUILD_WARNINGS=deny
+export RUSTFLAGS="-D warnings"
+export RUSTDOCFLAGS="-D warnings"
 scripts/check-tree.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo doc --workspace --all-features --no-deps
 cargo test --workspace --all-features
 ```
+
+Run these checks with current stable Rust; the MSRV check alone does not
+include newer Clippy lints. Python binding tests use
+`pytest -W error python/tests` so warnings fail the test run.
 
 Clippy's `--all-targets` checks that the benches compile; CI does not
 build or run them in the optimised `bench` profile.

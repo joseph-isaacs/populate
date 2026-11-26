@@ -119,7 +119,7 @@ impl Stream {
         debug_assert_eq!(out.len() % LANES, 0);
         let (lo, range, step) = (self.lo, self.range, self.step as u64);
         let mut lanes = self.lanes;
-        for chunk in out.chunks_exact_mut(LANES) {
+        for chunk in out.as_chunks_mut::<LANES>().0 {
             for (o, x) in chunk.iter_mut().zip(&mut lanes) {
                 *o = lo + scale(*x, range) as i32;
                 *x = mulmod(*x as u64, step) as u32;

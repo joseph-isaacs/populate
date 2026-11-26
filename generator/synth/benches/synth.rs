@@ -1,6 +1,6 @@
 //! Synthetic shapes: generation and Parquet throughput.
 //!
-//! `cargo bench -p populate-synth`. Each sample generates 256Ki rows (64Ki
+//! `cargo bench -p populate-gen-synth`. Each sample generates 256Ki rows (64Ki
 //! of `embeddings`, at 384 dimensions) in chunks of 32Ki rows. Throughput
 //! is in rows/s.
 //!
@@ -11,8 +11,8 @@
 use divan::counter::ItemsCount;
 use divan::{Bencher, black_box};
 use populate_core::{Columns, Distribution};
+use populate_gen_synth::{Embeddings, Features, Hits, Shape, ShapeName, Synth, Taxi};
 use populate_sink_arrow::IntoArrowColumns;
-use populate_synth::{Embeddings, Features, Hits, Shape, ShapeName, Synth, Taxi};
 
 fn main() {
     divan::main();

@@ -1,4 +1,4 @@
-# populate-ldbc
+# populate-gen-ldbc
 
 LDBC SNB (Social Network Benchmark) data, identical to the
 [LDBC Spark datagen](https://github.com/ldbc/ldbc_snb_datagen_spark)'s
@@ -14,11 +14,11 @@ batches. It also writes the 34 factor tables (`--generate-factors`).
 scripts/fetch-ldbc-resources.sh
 
 # SF 1 as the datagen's CSV, in ./ldbc-out/{dynamic,static}/<Table>.csv
-cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 1 --out ldbc-out
+cargo run -p populate-gen-ldbc --release --bin ldbc-gen -- --sf 1 --out ldbc-out
 
 # Parquet, one file per table; or generate only (counts rows)
-cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 10 --format parquet
-cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 10 --format none
+cargo run -p populate-gen-ldbc --release --bin ldbc-gen -- --sf 10 --format parquet
+cargo run -p populate-gen-ldbc --release --bin ldbc-gen -- --sf 10 --format none
 ```
 
 Flags:
@@ -37,16 +37,16 @@ Flags:
 # BI: OUT/initial_snapshot/{dynamic,static}/<Table>.csv and
 # OUT/{inserts,deletes}/dynamic/<Table>/batch_id=<day>/part-<k>.csv (a
 # new part once a string column of the batch passes 1 GiB)
-cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 1 --mode bi --out bi-out
+cargo run -p populate-gen-ldbc --release --bin ldbc-gen -- --sf 1 --mode bi --out bi-out
 
 # factor tables: OUT/factors/csv/raw/composite-merged-fk/<name>/part-0.csv
-cargo run -p populate-ldbc --release --bin ldbc-gen -- --sf 1 --generate-factors --factor-format csv
+cargo run -p populate-gen-ldbc --release --bin ldbc-gen -- --sf 1 --generate-factors --factor-format csv
 ```
 
 From Rust:
 
 ```rust
-use populate_ldbc::{Ldbc, default_resources, persons_for_scale_factor};
+use populate_gen_ldbc::{Ldbc, default_resources, persons_for_scale_factor};
 
 let g = Ldbc::new(&default_resources().unwrap(), persons_for_scale_factor("1").unwrap(), 0)?;
 // every dynamic table as Parquet, one shared pool

@@ -1,6 +1,6 @@
 //! TPC-DS generation throughput.
 //!
-//! `cargo bench -p populate-dsb`. Each sample generates a prefix of up to
+//! `cargo bench -p populate-gen-dsb`. Each sample generates a prefix of up to
 //! 64Ki source rows of a table at SF 1 from scratch; throughput is in output
 //! rows/s and Arrow bytes/s.
 //!
@@ -11,8 +11,8 @@
 
 use divan::counter::{BytesCount, ItemsCount};
 use divan::{Bencher, black_box};
-use populate_dsb::TableName::{self, *};
-use populate_dsb::{DsTable, Dsb, Encoding, parquet_props};
+use populate_gen_dsb::TableName::{self, *};
+use populate_gen_dsb::{DsTable, Dsb, Encoding, parquet_props};
 
 fn main() {
     divan::main();

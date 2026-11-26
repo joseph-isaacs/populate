@@ -77,9 +77,11 @@ fn fill_indices<T, S: Sink<T>>(
 /// small range takes several values from each RNG call; floats (and
 /// `char`) use rand's own `Uniform`.
 pub trait UniformValue: Copy {
+    /// What [`uniform`] keeps to draw values in `lo..=hi`.
     type Sampler: Clone;
     /// The sampler for `lo..=hi`. Panics if `lo > hi`.
     fn sampler(lo: Self, hi: Self) -> Self::Sampler;
+    /// One value.
     fn sample(s: &mut Self::Sampler, rng: &mut impl Rng) -> Self;
     /// `n` values into `sink`, the same as `n` calls of [`Self::sample`].
     fn fill<S: Sink<Self>>(s: &mut Self::Sampler, rng: &mut impl Rng, sink: &mut S, n: usize) {

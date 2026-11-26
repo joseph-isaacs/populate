@@ -1,4 +1,4 @@
-# populate-tpch
+# populate-gen-tpch
 
 TPC-H data byte-identical to `dbgen` (and `tpchgen-cli`), on all cores: all
 8 tables, every column, at any scale factor up to 10,000, as Arrow
@@ -6,24 +6,26 @@ TPC-H data byte-identical to `dbgen` (and `tpchgen-cli`), on all cores: all
 
 ```sh
 # all tables at SF 1 as Parquet in ./tpch (one file per table)
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch
 
 # dbgen's .tbl files, byte for byte
-cargo run -p populate-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- --sf 1 --out tpch --format tbl
 
 # a few tables, generation only (no output), 4 threads
-cargo run -p populate-tpch --release --bin tpch-gen -- \
+cargo run -p populate-gen-tpch --release --bin tpch-gen -- \
     --sf 10 --tables lineitem,orders --format none --threads 4
 ```
 
 Flags: `--sf`, `--out`, `--format parquet|tbl|none`, `--tables`,
 `--threads` (default all cores), `--batch`, `--row-group` (rows per chunk,
-default 256Ki), `--compression snappy|none`, `--no-dictionary`.
+default 256Ki) or `--row-group-bytes` (uncompressed Parquet bytes per row
+group, as `tpcgen-cli --row-group-bytes` counts them, measured on a sample
+of each table), `--compression snappy|none`, `--no-dictionary`.
 
 From Rust:
 
 ```rust
-use populate_tpch::{TableName, Tpch};
+use populate_gen_tpch::{TableName, Tpch};
 
 let h = Tpch::new(10.0);
 let lineitem = h.table(TableName::LineItem);
@@ -39,6 +41,13 @@ let head = lineitem.limit_source_rows(1000).collect(0);
 several tables on one shared pool (what `tpch-gen` does). The Arrow
 schemas are tpchgen-arrow's: `Int64` keys, `Decimal128(15, 2)` money,
 `Date32` dates and `Utf8View` text.
+
+Parallel Arrow iteration subdivides work into at most eight batches per
+job, aiming for four jobs per worker on smaller tables. This limits the
+Arrow data buffered for ordered delivery and spreads small tables over
+more workers. Batch order within each table is preserved; tables may
+interleave. Parquet row groups and text writer chunks use the configured
+chunk size.
 
 ## Where the data comes from
 
@@ -132,29 +141,31 @@ generator whose partitioned output differs from its sequential output.
 
 On a 4-core cloud VM, `cargo xtask bench --generators tpch --scale 1,10`
 (see [BENCHMARKS.md](../../BENCHMARKS.md)) against
-`tpcgen-cli tpch` (the CLI of tpcgen-rs). The VM is noisy, so the
-two tools run interleaved and each keeps its best time: best of 3 at SF 1
-(output to tmpfs), best of 2 at SF 10 (output to disk; 11 GB of text does
-not fit in the VM's tmpfs).
+`tpcgen-cli tpch` 4.0 (the CLI of tpcgen-rs), both with the same thread
+count, and for Parquet both with Snappy and `--row-group-bytes 7340032`
+(tpcgen-cli's default). The VM is noisy, so the two tools run interleaved
+and each keeps its best time: best of 3 at SF 1 (output to tmpfs), best of
+2 at SF 10 (output to disk; 11 GB of text does not fit in the VM's tmpfs).
 
-| SF | output           | threads | tpcgen-cli | populate-tpch | speedup |
+| SF | output           | threads | tpcgen-cli | populate-gen-tpch | speedup |
 |---:|------------------|--------:|-----------:|--------------:|--------:|
-| 1  | `.tbl`           | 1       | 6.44 s     | 3.47 s        | 1.9x    |
-| 1  | `.tbl`           | 4       | 2.61 s     | 1.02 s        | 2.6x    |
-| 1  | Parquet (snappy) | 1       | 6.74 s     | 3.95 s        | 1.7x    |
-| 1  | Parquet (snappy) | 4       | 2.50 s     | 1.15 s        | 2.2x    |
-| 10 | `.tbl`           | 1       | 60.4 s     | 35.4 s        | 1.7x    |
-| 10 | `.tbl`           | 4       | 20.3 s     | 9.21 s        | 2.2x    |
-| 10 | Parquet (snappy) | 1       | 64.3 s     | 45.6 s        | 1.4x    |
-| 10 | Parquet (snappy) | 4       | 19.7 s     | 11.4 s        | 1.7x    |
+| 1  | `.tbl`           | 1       | 8.24 s     | 3.16 s        | 2.6x    |
+| 1  | `.tbl`           | 4       | 3.26 s     | 0.87 s        | 3.7x    |
+| 1  | Parquet (snappy) | 1       | 8.95 s     | 4.19 s        | 2.1x    |
+| 1  | Parquet (snappy) | 4       | 4.11 s     | 1.28 s        | 3.2x    |
+| 10 | `.tbl`           | 1       | 74.4 s     | 32.5 s        | 2.3x    |
+| 10 | `.tbl`           | 4       | 29.7 s     | 11.3 s        | 2.6x    |
+| 10 | Parquet (snappy) | 1       | 82.0 s     | 40.2 s        | 2.0x    |
+| 10 | Parquet (snappy) | 4       | 28.7 s     | 11.4 s        | 2.5x    |
 
-The `.tbl` files are
-identical (1,100 MB at SF 1). Parquet files: 358 MB
-vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
+The `.tbl` files are identical (1,101 MB at SF 1; the bench checks the
+bytes). Parquet files have the same schema and rows; with each tool's own
+dictionary choices they come to 337 MB vs tpcgen-cli's 362 MB at SF 1,
+3,452 MB vs 3,915 MB at SF 10.
 
 ### Where the time goes
 
-`cargo run -p populate-tpch --release --example tpch_stages -- 1` times each
+`cargo run -p populate-gen-tpch --release --example tpch_stages -- 1` times each
 stage per table on one thread, and `--example tpch_columns` the Parquet encoding
 of each column. At SF 1, summed over the tables:
 

@@ -1,10 +1,10 @@
-# populate-tpcc
+# populate-gen-tpcc
 
 The TPC-C initial database, on all cores, as Arrow `RecordBatch`es,
 Parquet, or CSV, on `populate-table`'s `Chunks` engine.
 
 ```text
-cargo run --release -p populate-tpcc --bin tpcc-gen -- --warehouses 100 --out tpcc
+cargo run --release -p populate-gen-tpcc --bin tpcc-gen -- --warehouses 100 --out tpcc
 ```
 
 | Tables | Reference | How it is tested |
@@ -63,7 +63,7 @@ batch for every table.
 ## Speed
 
 4 cores, `--release`, best of 5, output to tmpfs (see also `cargo bench -p
-populate-tpcc`):
+populate-gen-tpcc`):
 
 | Workload | Generate (Arrow) | Parquet (snappy) | CSV |
 |---|---|---|---|

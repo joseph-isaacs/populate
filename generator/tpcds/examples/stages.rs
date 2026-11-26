@@ -2,9 +2,9 @@
 //! generation alone, then our Arrow, `.dat` and Parquet output (each
 //! includes the stages before it), in ms, best of 3.
 //!
-//! `cargo run -p populate-tpcds --release --example stages`
+//! `cargo run -p populate-gen-tpcds --release --example stages`
+use populate_gen_tpcds::{Encoding, TableName, Tpcds};
 use populate_table::Chunks;
-use populate_tpcds::{Encoding, TableName, Tpcds};
 use std::hint::black_box;
 use std::io::sink;
 use std::time::Instant;

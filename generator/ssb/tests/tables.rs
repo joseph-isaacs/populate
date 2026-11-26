@@ -1,4 +1,4 @@
-//! populate-ssb against ssb-dbgen, and chunked output against sequential.
+//! populate-gen-ssb against ssb-dbgen, and chunked output against sequential.
 //!
 //! The reference hashes are FNV-1a 64 of `.tbl` files (or ranges of their
 //! lines) written by eyalroz/ssb-dbgen's `dbgen -s <sf>` (default build: all
@@ -12,8 +12,8 @@ use arrow_array::types::Int32Type;
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use populate_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
-use populate_ssb::{Ssb, TableName, write_tbl_many};
+use populate_gen_ssb::TableName::{Customer, Date, LineOrder, LineOrderFlat, Part, Supplier};
+use populate_gen_ssb::{Ssb, TableName, write_tbl_many};
 use populate_table::fnv1a64;
 use std::path::PathBuf;
 use std::process::Command;
@@ -122,6 +122,59 @@ fn many_tables_on_one_pool() {
     }
 }
 
+#[test]
+fn adaptive_arrow_work_preserves_flat_repeated_and_empty_tables() {
+    let s = Ssb::new(1.0);
+    let mut tables: Vec<_> = TableName::ALL
+        .into_iter()
+        .rev()
+        .chain([LineOrderFlat, LineOrder])
+        .map(|t| s.table(t).limit_source_rows(10_003))
+        .collect();
+    tables.push(s.table(Part).limit_source_rows(0));
+    let expected: Vec<_> = tables
+        .iter()
+        .map(|t| concat_batches(&t.schema(), &t.collect(1)).unwrap())
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_ssb::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(
+                &concat_batches(&t.schema(), batches).unwrap(),
+                want,
+                "{}",
+                t.name()
+            );
+        }
+    }
+    populate_gen_ssb::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}
+
+#[test]
+fn large_lineorder_work_preserves_batches_and_chunk_limits() {
+    let table = Ssb::new(100.0).table(LineOrder).limit_source_rows(10_003);
+    let want = concat_batches(&table.schema(), &table.collect(1)).unwrap();
+    for batch in [4, 127] {
+        for chunk in [19, 10_000] {
+            let table = table.clone().batch_size(batch).chunk_source_rows(chunk);
+            for threads in [1, 4, 0] {
+                let got = concat_batches(&table.schema(), &table.collect(threads)).unwrap();
+                assert_eq!(got, want);
+                let mut batches = Vec::new();
+                populate_gen_ssb::for_each_batch_many(
+                    std::slice::from_ref(&table),
+                    threads,
+                    |_, b| {
+                        batches.push(b);
+                    },
+                );
+                assert_eq!(concat_batches(&table.schema(), &batches).unwrap(), want);
+            }
+        }
+    }
+}
+
 fn int(b: &RecordBatch, c: &str, r: usize) -> i32 {
     b.column_by_name(c)
         .unwrap()
@@ -223,14 +276,14 @@ fn parquet_round_trips() {
 }
 
 /// Every table at several scale factors against a local ssb-dbgen build:
-/// `SSB_DBGEN=/path/to/dbgen cargo test --release -p populate-ssb -- --ignored`.
+/// `SSB_DBGEN=/path/to/dbgen cargo test --release -p populate-gen-ssb -- --ignored`.
 #[test]
 #[ignore = "needs ssb-dbgen: set SSB_DBGEN to its dbgen binary"]
 fn whole_files_match_ssb_dbgen() {
     let dbgen = PathBuf::from(std::env::var("SSB_DBGEN").expect("SSB_DBGEN"));
     let dists = dbgen.with_file_name("dists.dss");
     for sf in ["0.05", "0.5", "1", "4"] {
-        let dir = std::env::temp_dir().join(format!("populate-ssb-dbgen-{sf}"));
+        let dir = std::env::temp_dir().join(format!("populate-gen-ssb-dbgen-{sf}"));
         std::fs::create_dir_all(&dir).unwrap();
         let ok = Command::new(&dbgen)
             .args(["-q", "-f", "-s", sf, "-b"])

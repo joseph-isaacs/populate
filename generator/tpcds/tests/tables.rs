@@ -3,9 +3,9 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
-use populate_tpcds::Encoding::{self, Latin1, Utf8};
-use populate_tpcds::TableName::{self, *};
-use populate_tpcds::{DsTable, Tpcds};
+use populate_gen_tpcds::Encoding::{self, Latin1, Utf8};
+use populate_gen_tpcds::TableName::{self, *};
+use populate_gen_tpcds::{DsTable, Tpcds};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use tpcdsgen::config::{SessionBuilder, Table as Ds};
@@ -16,7 +16,11 @@ macro_rules! references {
     ($($t:ident => $arrow:ident, $rows:ident;)*) => {
         /// The table as tpcdsgen-arrow makes it, sequentially, at SF 1.
         fn reference_arrow(t: &DsTable) -> Vec<RecordBatch> {
-            let s = SessionBuilder::new().with_scale_factor(1.0).build().unwrap();
+            reference_arrow_at(t, 1.0)
+        }
+
+        fn reference_arrow_at(t: &DsTable, sf: f64) -> Vec<RecordBatch> {
+            let s = SessionBuilder::new().with_scale_factor(sf).build().unwrap();
             match t.name() {
                 $($t => $arrow::new(s)
                     .with_source_row_range(1, t.source_rows())
@@ -99,6 +103,63 @@ fn chunks_and_threads_do_not_change_the_data() {
             .collect(4);
         assert!(rows(&one) > 0, "{t}");
         assert_eq!(concat(&one), concat(&many), "{t}");
+    }
+}
+
+#[test]
+fn adaptive_arrow_work_preserves_all_tables_and_fused_outputs() {
+    let ds = Tpcds::new(10.0);
+    let mut tables: Vec<_> = TableName::ALL
+        .iter()
+        .rev()
+        .map(|&t| ds.table(t).limit_source_rows(5_000))
+        .collect();
+    tables.push(ds.table(StoreSales).limit_source_rows(5_000));
+    tables.push(ds.table(Inventory).limit_source_rows(0));
+    let expected: Vec<_> = tables[..tables.len() - 1]
+        .iter()
+        .map(|t| concat(&reference_arrow_at(t, 10.0)))
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_tpcds::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        assert!(got.last().unwrap().is_empty());
+        for ((t, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(&concat(batches), want, "{}", t.name());
+        }
+    }
+    populate_gen_tpcds::for_each_batch_many(&[], 4, |_, _| panic!("empty input"));
+}
+
+#[test]
+fn partitioned_channels_preserve_paired_outputs() {
+    let ds = Tpcds::new(100.0);
+    let tables: Vec<_> = [
+        StoreSales,
+        StoreReturns,
+        CatalogSales,
+        CatalogReturns,
+        WebSales,
+        WebReturns,
+    ]
+    .into_iter()
+    .map(|t| {
+        ds.table(t)
+            .limit_source_rows(1_027)
+            .chunk_source_rows(7)
+            .batch_size(127)
+    })
+    .collect();
+    let expected: Vec<_> = tables
+        .iter()
+        .map(|t| concat(&reference_arrow_at(t, 100.0)))
+        .collect();
+    for threads in [1, 4, 0] {
+        let mut got = vec![Vec::new(); tables.len()];
+        populate_gen_tpcds::for_each_batch_many(&tables, threads, |i, b| got[i].push(b));
+        for ((table, batches), want) in tables.iter().zip(&got).zip(&expected) {
+            assert_eq!(&concat(batches), want, "{}", table.name());
+        }
     }
 }
 
@@ -305,16 +366,16 @@ fn channels_in_many() {
     ];
     let n = tables.len();
     let mut got: Vec<Vec<RecordBatch>> = vec![Vec::new(); n];
-    populate_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
+    populate_gen_tpcds::for_each_batch_many(&tables, 4, |i, b| got[i].push(b));
     for (i, table) in tables.iter().enumerate() {
         let want = reference_arrow(table);
         assert_eq!(concat(&got[i]), concat(&want), "{}", table.name());
     }
-    let dats = populate_tpcds::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
+    let dats = populate_gen_tpcds::write_dat_many(&tables, vec![Vec::new(); n], 3, Utf8).unwrap();
     for (dat, table) in dats.iter().zip(&tables) {
         assert_eq!(dat, &reference_dat(table, Utf8), "{}", table.name());
     }
-    let pq = populate_tpcds::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
+    let pq = populate_gen_tpcds::write_parquet_many(&tables, vec![Vec::new(); n], 4, None).unwrap();
     for (file, table) in pq.into_iter().zip(&tables) {
         let back: Vec<RecordBatch> =
             parquet::arrow::arrow_reader::ParquetRecordBatchReader::try_new(
@@ -357,6 +418,6 @@ fn dat_write_error_is_returned() {
     let t = |n| ds.table(n).limit_source_rows(3_000).chunk_source_rows(100);
     let tables = [t(StoreSales), t(Customer)];
     let writers = vec![Failing(100_000), Failing(usize::MAX)];
-    let err = populate_tpcds::write_dat_many(&tables, writers, 4, Utf8).err();
+    let err = populate_gen_tpcds::write_dat_many(&tables, writers, 4, Utf8).err();
     assert_eq!(err.map(|e| e.to_string()), Some("disk full".into()));
 }

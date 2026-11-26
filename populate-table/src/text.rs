@@ -1,10 +1,12 @@
 //! The TPC text formats (dsdgen's `.dat`, dbgen's `.tbl`), written straight
-//! from Arrow batches, and a parallel writer for them.
+//! from Arrow batches ([`write_batch`]) or from collected columns
+//! ([`write_columns`], with no Arrow in between), and a parallel writer for
+//! them.
 //!
 //! One line per row: every field followed by `|`, NULL as an empty field,
 //! decimals with exactly `scale` digits (`-0.05`), dates as `YYYY-MM-DD`.
-//! This is ~10x faster than formatting rows with `Display`; populate-tpcds
-//! and populate-tpch test it against their reference generators' `Display`
+//! This is ~10x faster than formatting rows with `Display`; populate-gen-tpcds
+//! and populate-gen-tpch test it against their reference generators' `Display`
 //! output for every table.
 //!
 //! [`write_text_many`] runs any [`TextChunks`] on all cores and has the
@@ -474,7 +476,7 @@ impl Cursor {
         }
     }
 
-    /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in [`DATES`] for
+    /// Days since 1970-01-01 as `YYYY-MM-DD`, looked up in a table for
     /// the years 1900 to 2099.
     ///
     /// # Safety
@@ -572,7 +574,7 @@ impl Cursor {
 }
 
 /// A source of text: chunk `i` of each of its outputs, formatted
-/// independently of the others (populate-tpcds generates a sales table and
+/// independently of the others (populate-gen-tpcds generates a sales table and
 /// its returns as one source with two outputs).
 pub trait TextChunks: Sync {
     /// Number of outputs (files).
@@ -758,6 +760,7 @@ pub trait TextField {
 /// [`TextField`], a tuple or [`SpreadCols`] of them, or a child table's
 /// [`ChildCols`].
 pub trait TextColumns {
+    /// Rows to print.
     fn text_rows(&self) -> usize;
 
     /// Most bytes all its rows take, separators included.

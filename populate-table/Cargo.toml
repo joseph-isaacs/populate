@@ -4,6 +4,10 @@ description = "Named, typed, any-width tables from populate distributions, gener
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -42,3 +46,6 @@ required-features = ["parquet"]
 [[test]]
 name = "direct"
 required-features = ["parquet"]
+
+[package.metadata.docs.rs]
+all-features = true

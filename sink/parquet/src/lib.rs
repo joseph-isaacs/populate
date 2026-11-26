@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Parquet output.
 //!
 //! - [`write_columns`] / [`DistributionParquet::collect_parquet`]: collected
@@ -52,16 +53,22 @@ pub fn write_parquet<W: Write + Send>(
 /// One leaf column of a collected row group, borrowed.
 #[derive(Debug, Clone, Copy)]
 pub enum Leaf<'a> {
+    /// Numbers, one per row.
     Num(Num<'a>),
     /// Arrow `Utf8` layout: `offsets` has one more entry than there are
     /// rows (or none at all for no rows).
     Str {
+        /// Where each value starts in `data`, and where the last ends.
         offsets: &'a [i32],
+        /// Every value's UTF-8 bytes, end to end.
         data: &'a [u8],
     },
     /// Arrow `List` layout, of numbers.
     List {
+        /// Where each row's elements start in `values`, and where the last
+        /// ends.
         offsets: &'a [i32],
+        /// Every element of every row, end to end.
         values: Num<'a>,
     },
 }
@@ -69,9 +76,13 @@ pub enum Leaf<'a> {
 /// A buffer of numbers.
 #[derive(Debug, Clone, Copy)]
 pub enum Num<'a> {
+    /// Parquet `INT32`.
     I32(&'a [i32]),
+    /// Parquet `INT64`.
     I64(&'a [i64]),
+    /// Parquet `FLOAT`.
     F32(&'a [f32]),
+    /// Parquet `DOUBLE`.
     F64(&'a [f64]),
 }
 
@@ -113,8 +124,11 @@ pub trait ParquetColumns {
 /// A number type with a Parquet column: its physical type, and its buffer
 /// as a [`Num`].
 pub trait ParquetNative: Copy {
+    /// The `parquet` crate's type for the column.
     type Parquet: DataType<T = Self>;
+    /// The column's physical type.
     const PHYSICAL: PhysicalType;
+    /// `v` as a [`Num`].
     fn num(v: &[Self]) -> Num<'_>;
 }
 
@@ -302,6 +316,17 @@ pub fn write_columns<S: ParquetColumns, W: Write + Send>(
     file.into_inner()
 }
 
+/// Collecting straight to a Parquet file, for every [`Distribution`] whose
+/// columns [`ParquetColumns`] covers.
+///
+/// ```
+/// use populate_builtins::{list, range, uniform};
+/// use populate_sink_parquet::DistributionParquet;
+///
+/// let mut rows = (range(0i64, 1), list(uniform(0i32, 4), uniform(0.0f64, 1.0)));
+/// let bytes = rows.collect_parquet(&mut rand::rng(), 1_000, Vec::new(), None).unwrap();
+/// assert_eq!(&bytes[..4], b"PAR1");
+/// ```
 pub trait DistributionParquet: Distribution {
     /// Generate `n` rows column by column and write them as Parquet
     /// ([`write_columns`]) without copying the values.

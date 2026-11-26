@@ -1,4 +1,4 @@
-# populate-ssb
+# populate-gen-ssb
 
 Star Schema Benchmark (SSB) data byte-identical to
 [`ssb-dbgen`](https://github.com/eyalroz/ssb-dbgen), on all cores: the five
@@ -8,13 +8,13 @@ ssb-dbgen's `.tbl` text.
 
 ```sh
 # all five tables at SF 1 as Parquet in ./ssb (one file per table)
-cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb
+cargo run -p populate-gen-ssb --release --bin ssb-gen -- --sf 1 --out ssb
 
 # ssb-dbgen's .tbl files, byte for byte
-cargo run -p populate-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl
+cargo run -p populate-gen-ssb --release --bin ssb-gen -- --sf 1 --out ssb --format tbl
 
 # SSB-flat (lineorder joined with customer, supplier and part)
-cargo run -p populate-ssb --release --bin ssb-gen -- --sf 10 --tables lineorder_flat
+cargo run -p populate-gen-ssb --release --bin ssb-gen -- --sf 10 --tables lineorder_flat
 ```
 
 Flags are `tpch-gen`'s: `--sf`, `--out`, `--format parquet|tbl|none`,
@@ -24,7 +24,7 @@ Flags are `tpch-gen`'s: `--sf`, `--out`, `--format parquet|tbl|none`,
 From Rust:
 
 ```rust
-use populate_ssb::{Ssb, TableName};
+use populate_gen_ssb::{Ssb, TableName};
 
 let s = Ssb::new(10.0);
 let lo = s.table(TableName::LineOrder);
@@ -32,6 +32,12 @@ lo.for_each_batch(0, |batch| { /* RecordBatch, in table order */ });
 lo.write_parquet(std::fs::File::create("lineorder.parquet")?, 0, None)?;
 lo.write_tbl(std::fs::File::create("lineorder.tbl")?, 0)?;
 ```
+
+Parallel Arrow iteration subdivides work into at most eight batches per
+job, aiming for four jobs per worker on smaller tables. This reduces
+buffered data while preserving each table's row order, including
+`lineorder_flat`. Parquet row groups and text writer chunks retain their
+configured size.
 
 Column names are ssb-dbgen's `ssb.ddl`. Integers are `Int32`
 (`lo_orderkey` is `Int64`), dates are `Int32` `YYYYMMDD` as ssb-dbgen
@@ -112,7 +118,7 @@ On `populate`'s combinators, `populate-combinators`' Lehmer streams and
 4-core cloud VM, `.tbl` output to tmpfs, SF 1 (600 MB, 6.0 M line
 orders); ssb-dbgen is single-threaded.
 
-| output            | threads | ssb-dbgen | populate-ssb |
+| output            | threads | ssb-dbgen | populate-gen-ssb |
 |-------------------|--------:|----------:|-------------:|
 | `.tbl`            | 1       | 8.2 s     | 1.41 s       |
 | `.tbl`            | 4       | —         | 0.61 s       |

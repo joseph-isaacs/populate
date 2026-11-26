@@ -4,6 +4,10 @@ description = "Parquet output for populate: collected columns encoded in place"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -15,3 +19,6 @@ arrow-schema = { workspace = true }
 bytes = "1"
 snap = "1"
 parquet = { workspace = true, features = ["arrow"] }
+
+[dev-dependencies]
+populate-builtins = { workspace = true }

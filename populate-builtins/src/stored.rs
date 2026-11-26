@@ -1,4 +1,4 @@
-//! Distributions over state that is computed up front: [`column`] (rows
+//! Distributions over state that is computed up front: [`column()`] (rows
 //! already in memory, [`column_as`] converted) and [`checkpointed`] (a stream that can only skip by
 //! running, made seekable by saving its state every so many rows).
 //!
@@ -29,7 +29,7 @@ use std::sync::Arc;
 // Column
 // ============================================================================
 
-/// The rows of a column in memory, as `Out`. See [`column`].
+/// The rows of a column in memory, as `Out`. See [`column()`].
 #[derive(Debug)]
 pub struct Column<T, Out = T> {
     values: Arc<Vec<T>>,
@@ -59,7 +59,7 @@ pub fn column<T: Copy + Columnar>(values: Arc<Vec<T>>) -> Column<T> {
     column_as(values)
 }
 
-/// [`column`], each value converted to `Out` as it is collected: one
+/// [`column()`], each value converted to `Out` as it is collected: one
 /// pass from the shared column into the output's, where a
 /// [`derive`](crate::derive()) would copy the rows out first. Several
 /// columns of different types can read one stored column.

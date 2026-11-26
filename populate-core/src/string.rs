@@ -10,12 +10,26 @@
 use crate::columnar::Columnar;
 use crate::list::offset;
 use crate::sink::Sink;
+use std::fmt;
 
 /// String column in Arrow `Utf8` layout.
 ///
 /// Every byte goes in through `&str`, `char` or a checked ASCII byte, so the
 /// buffer is always valid UTF-8 and the offsets always increase; Arrow
 /// conversion can skip validation.
+///
+/// ```
+/// use populate_core::StrCol;
+///
+/// let mut names = StrCol::new();
+/// names.push_str("ada");
+/// names.push_with(|b| {
+///     b.push_str("grace ");
+///     b.push_char('h');
+/// });
+/// assert_eq!(names.len(), 2);
+/// assert_eq!(names.get(1), "grace h");
+/// ```
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct StrCol {
     offsets: Vec<i32>,
@@ -139,12 +153,23 @@ impl<'a> StrBuf<'a> {
     }
 }
 
+/// `write!` into a value, as `format!` would write it.
+impl fmt::Write for StrBuf<'_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
+    }
+}
+
 impl StrBuf<'_> {
+    /// Append `s` to the value.
     #[inline]
     pub fn push_str(&mut self, s: &str) {
         extend_small(self.0, s.as_bytes());
     }
 
+    /// Append `c` to the value, UTF-8 encoded.
     #[inline]
     pub fn push_char(&mut self, c: char) {
         let mut b = [0u8; 4];
@@ -211,11 +236,10 @@ impl StrBuf<'_> {
             debug_assert!(b.is_ascii(), "push_ascii_blocks: input is not ASCII");
             b.map(|x| x & 0x7f)
         };
-        let mut blocks = self.0[start..].chunks_exact_mut(N);
-        for c in &mut blocks {
-            c.copy_from_slice(&mask(next()));
+        let (blocks, rest) = self.0[start..].as_chunks_mut::<N>();
+        for c in blocks {
+            *c = mask(next());
         }
-        let rest = blocks.into_remainder();
         if !rest.is_empty() {
             let n = rest.len();
             rest.copy_from_slice(&mask(next())[..n]);
@@ -276,6 +300,7 @@ impl StrBuf<'_> {
 }
 
 impl StrCol {
+    /// An empty column.
     pub fn new() -> Self {
         Self::default()
     }
@@ -285,6 +310,7 @@ impl StrCol {
         self.offsets.len().saturating_sub(1)
     }
 
+    /// Whether there are no values.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -307,6 +333,7 @@ impl StrCol {
         self.data.reserve(bytes);
     }
 
+    /// Append `s` as one value.
     #[inline]
     pub fn push_str(&mut self, s: &str) {
         self.start();

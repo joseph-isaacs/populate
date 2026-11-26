@@ -791,7 +791,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-dsb"
+name = "populate-gen-dsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -813,7 +813,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-h2o"
+name = "populate-gen-h2o"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -829,7 +829,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-ldbc"
+name = "populate-gen-ldbc"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -843,49 +843,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-py"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "parquet",
- "populate-builtins",
- "populate-core",
- "populate-sink-arrow",
- "populate-ssb",
- "populate-table",
- "populate-tpch",
- "pyo3",
- "rand",
-]
-
-[[package]]
-name = "populate-sink-arrow"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "populate-core",
- "rand",
-]
-
-[[package]]
-name = "populate-sink-parquet"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "bytes",
- "parquet",
- "populate-core",
- "rand",
- "snap",
-]
-
-[[package]]
-name = "populate-ssb"
+name = "populate-gen-ssb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -905,7 +863,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-synth"
+name = "populate-gen-synth"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -925,25 +883,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-table"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "parquet",
- "populate-builtins",
- "populate-core",
- "populate-sink-arrow",
- "populate-sink-parquet",
- "rand",
-]
-
-[[package]]
-name = "populate-tpcc"
+name = "populate-gen-tpcc"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -963,7 +903,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-tpcds"
+name = "populate-gen-tpcds"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -986,7 +926,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-tpch"
+name = "populate-gen-tpch"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -1009,7 +949,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-tsbs"
+name = "populate-gen-tsbs"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -1027,7 +967,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "populate-ycsb"
+name = "populate-gen-ycsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
@@ -1039,6 +979,68 @@ dependencies = [
  "populate-combinators",
  "populate-core",
  "populate-table",
+ "rand",
+]
+
+[[package]]
+name = "populate-py"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-gen-ssb",
+ "populate-gen-tpch",
+ "populate-sink-arrow",
+ "populate-table",
+ "pyo3",
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "populate-builtins",
+ "populate-core",
+ "rand",
+]
+
+[[package]]
+name = "populate-sink-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-schema",
+ "bytes",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "rand",
+ "snap",
+]
+
+[[package]]
+name = "populate-table"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-schema",
+ "arrow-select",
+ "bytes",
+ "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
+ "populate-sink-parquet",
  "rand",
 ]
 

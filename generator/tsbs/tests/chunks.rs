@@ -9,9 +9,9 @@ use arrow_schema::DataType;
 use arrow_select::concat::concat_batches;
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use populate_gen_tsbs::text::{push_f32, push_f64, push_i64};
+use populate_gen_tsbs::{Config, Format, Tsbs, UseCase};
 use populate_table::MultiChunks;
-use populate_tsbs::text::{push_f32, push_f64, push_i64};
-use populate_tsbs::{Config, Format, Tsbs, UseCase};
 
 fn cfg(uc: UseCase, scale: u64, seed: i64, secs: i64) -> Config {
     let mut c = Config::new(uc, scale, seed);

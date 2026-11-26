@@ -141,16 +141,20 @@ not fit in the VM's tmpfs).
 |---:|------------------|--------:|-----------:|--------------:|--------:|
 | 1  | `.tbl`           | 1       | 6.44 s     | 3.47 s        | 1.9x    |
 | 1  | `.tbl`           | 4       | 2.61 s     | 1.02 s        | 2.6x    |
-| 1  | Parquet (snappy) | 1       | 6.74 s     | 3.95 s        | 1.7x    |
-| 1  | Parquet (snappy) | 4       | 2.50 s     | 1.15 s        | 2.2x    |
+| 1  | Parquet (snappy) | 1       | 6.71 s     | 5.28 s        | 1.3x    |
+| 1  | Parquet (snappy) | 4       | 3.30 s     | 1.36 s        | 2.4x    |
 | 10 | `.tbl`           | 1       | 60.4 s     | 35.4 s        | 1.7x    |
 | 10 | `.tbl`           | 4       | 20.3 s     | 9.21 s        | 2.2x    |
-| 10 | Parquet (snappy) | 1       | 64.3 s     | 45.6 s        | 1.4x    |
-| 10 | Parquet (snappy) | 4       | 19.7 s     | 11.4 s        | 1.7x    |
+| 10 | Parquet (snappy) | 1       | 53.5 s     | 34.9 s        | 1.5x    |
+| 10 | Parquet (snappy) | 4       | 18.2 s     | 9.95 s        | 1.8x    |
 
 The `.tbl` files are
-identical (1,100 MB at SF 1). Parquet files: 358 MB
-vs tpcgen-cli's 361 MB at SF 1, 3,658 MB vs 3,915 MB at SF 10.
+identical (1,100 MB at SF 1). For Parquet, tpcgen-cli is given our codec,
+our dictionary settings and our row-group size (see
+[BENCHMARKS.md](../../BENCHMARKS.md)), and the files hold the same values:
+333 MB vs tpcgen-cli's 334 MB at SF 1, 3,410 MB vs 3,419 MB at SF 10.
+The Parquet rows were measured on a later, slower day of the same VM than
+the `.tbl` rows, at SF 1 on one thread especially.
 
 ### Where the time goes
 

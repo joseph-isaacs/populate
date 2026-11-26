@@ -724,9 +724,10 @@ fn bench(o: Opts) -> Result<(), String> {
                         }
                         (None, _) => None,
                     };
-                    if !notes.is_empty() {
-                        for n in notes.drain(..) {
-                            note_lines.push(format!("{} {size} {format}: {n}", g.0));
+                    for n in notes.drain(..) {
+                        let n = format!("{} {size} {format}: {n}", g.0);
+                        if !note_lines.contains(&n) {
+                            note_lines.push(n);
                         }
                     }
                     let mut row = vec![

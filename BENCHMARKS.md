@@ -9,8 +9,8 @@ on a 4-core x86-64 cloud VM; see each README for the settings.
 
 | benchmark | crate | matches | speed vs the reference |
 |---|---|---|---|
-| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 1.4–2.6x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads) |
-| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 2.3–3.3x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet) |
+| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 1.3–2.6x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads) |
+| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 1.9–3.3x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet) |
 | DSB | [`populate-dsb`](generator/dsb/README.md) | DSB's `dsdgen`, byte for byte, all 24 tables (SF 1 and 2) | SF 1 `.dat` in ~2 s on 4 cores; `dsdgen` takes 68 s on one |
 | SSB and SSB-flat | [`populate-ssb`](generator/ssb/README.md) | `ssb-dbgen`, byte for byte, all 5 tables (SF 0.0001 to 10) | 5.8x `ssb-dbgen` on 1 thread, 13x on 4 (SF 1 `.tbl`) |
 | H2O db-benchmark | [`populate-h2o`](generator/h2o/README.md) | its R datagen (`set.seed(108)`), byte for byte | 7–39x `Rscript`; 1e8-row joins that R runs out of memory on take ~17–20 s |
@@ -34,7 +34,17 @@ format at `--scale 1` on 1 thread and on every core, and prints a Markdown
 table of wall time and output size. Where a reference tool is on `PATH` it
 runs alternately with ours and the table gets a speedup column:
 `tpcgen-cli` (`cargo install tpcgen-cli`) for TPC-H and TPC-DS, and
-`tsbs_generate_data` for TSBS. Missing tools are skipped. The default run
+`tsbs_generate_data` for TSBS. Missing tools are skipped.
+
+A reference runs like for like. `tpcgen-cli` writes the same tables, and
+for Parquet it gets the settings read off our own output: the same codec
+(Snappy), no dictionary on the columns we write without one, and
+`--row-group-bytes` set to our largest table's row-group size, so that
+table has about as many row groups on both sides. After the first run of
+each, the two outputs are compared, text files byte for byte and Parquet
+files by schema, values, codecs and dictionary use. The `output` column
+says `same`; a difference fails the run. Tables whose row-group counts still
+differ by more than 2x are listed under the table. The default run
 takes about 10 minutes on 4 cores; `--scale 0.1 --runs 1` takes under a
 minute.
 
@@ -45,7 +55,7 @@ minute.
 | `--generators` | all | names from `--list`, or a family: `h2o`, `ycsb`, `synth` |
 | `--formats` | `text,parquet,arrow` | `text` is the reference tool's own format (`.tbl`, `.dat`, CSV, influx line protocol); `arrow` generates batches and drops them |
 | `--runs` | `3` | runs per configuration; the best wall time is kept |
-| `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; use a disk path when the output will not fit in memory |
+| `--out` | `/dev/shm`, else the temp dir | output goes to `DIR/populate-bench` and is deleted after each run; against a reference one output of each is kept to compare, so allow twice the output size; use a disk path when it will not fit in memory |
 | `--tpcgen-cli`, `--tsbs-generate-data` | found on `PATH` | reference binaries |
 | `--no-reference` | | skip reference tools |
 

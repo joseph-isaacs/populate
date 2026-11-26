@@ -48,6 +48,7 @@
 //! ```
 
 use crate::chunks::{Chunks, MultiChunks};
+use crate::sched::resolve_threads;
 use crate::stream::mix64;
 use crate::text::{Encoding, TextColumns, TextTables, write_columns};
 use arrow_array::RecordBatch;
@@ -462,6 +463,25 @@ impl DynTable {
         self
     }
 
+    /// Subdivide chunks for parallel Arrow generation: aim for four jobs
+    /// per worker, with at most eight batches per job. Never enlarge the
+    /// configured chunk size. With one worker, keep the existing chunks.
+    ///
+    /// Apply this to a clone when Parquet row groups should keep their
+    /// configured size. `threads: 0` uses every available core.
+    pub fn parallel_chunks(mut self, threads: usize) -> Self {
+        let threads = resolve_threads(threads);
+        if threads > 1 {
+            let target = self.rows.div_ceil((threads as u64).saturating_mul(4));
+            let size = target
+                .div_ceil(self.batch_rows)
+                .clamp(1, 8)
+                .saturating_mul(self.batch_rows);
+            self.chunk_rows = self.chunk_rows.min(size);
+        }
+        self
+    }
+
     /// Source rows `first..first + n` as one batch.
     pub fn batch(&self, first: u64, n: u64) -> RecordBatch {
         self.table.batch(first, n)
@@ -512,10 +532,37 @@ mod tests {
     use arrow_array::Int64Array;
     use arrow_array::cast::AsArray;
     use arrow_array::types::Int64Type;
-    use populate_builtins::{flat_map, named_all, range};
+    use populate_builtins::{flat_map, named, named_all, range};
     use populate_core::{Children, Sink};
 
     type Two = Tables<(Children<i64>, Children<(i64, i64)>)>;
+
+    fn ids() -> impl Distribution<Item = i64> + Clone + Send + Sync {
+        named("id", range(0i64, 1))
+    }
+
+    #[test]
+    fn parallel_chunks_preserve_values_and_configured_limits() {
+        for rows in [0, 5, 117] {
+            for (chunk, batch) in [(3, 7), (1_000, 7), (1_000, 1)] {
+                let table = DynTable::new("ids", rows, ids())
+                    .chunk_rows(chunk)
+                    .batch_rows(batch);
+                for threads in [1, 4, 0] {
+                    let parallel = table.clone().parallel_chunks(threads);
+                    assert!(parallel.chunk_rows <= table.chunk_rows);
+                    if threads == 1 {
+                        assert_eq!(parallel.chunk_rows, table.chunk_rows);
+                    }
+                    let mut values = Vec::new();
+                    crate::chunks::for_each_batch(&parallel, threads, |b| {
+                        values.extend_from_slice(b.column(0).as_primitive::<Int64Type>().values());
+                    });
+                    assert_eq!(values, (0..rows as i64).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
 
     /// Per key `k`: `k % 3` lines of `k`, and a return `(k, 10k)` for odd `k`.
     fn tables() -> DistTables<impl Distribution<Item = Two> + Clone + Sync> {

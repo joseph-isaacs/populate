@@ -9,8 +9,8 @@
 //! [`FastNormal`]: five draws per hash from 4,096 normal quantiles.
 
 use crate::Shape;
-use crate::kernel::{FastNormal, Quantiles, Rows, Zipf, row_numbers};
-use populate_builtins::{derive_columns, named, named_all, range};
+use crate::kernel::{FastNormal, Quantiles, Zipf};
+use populate_builtins::{Rows, derive_columns, named, named_all, range, row_numbers};
 use populate_core::Distribution;
 use populate_core::Stream;
 use std::array::from_fn;

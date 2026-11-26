@@ -17,11 +17,9 @@ use arrow_buffer::{Buffer, ScalarBuffer};
 use arrow_schema::DataType;
 use populate_core::RowCount;
 use populate_core::Stream;
-use populate_core::{Columnar, Distribution, Nullable, Sink, Validity};
+use populate_core::{Columnar, Nullable, Sink, Validity};
 #[cfg(feature = "formats")]
 use populate_sink_arrow::IntoArrowArray;
-use rand::Rng;
-use std::ops::Range;
 use std::str::from_utf8;
 use std::sync::Arc;
 #[cfg(not(feature = "formats"))]
@@ -511,75 +509,6 @@ pub fn put<T>(out: &mut Vec<T>, values: Vec<T>) {
 pub fn put_nullable<T>(out: &mut Nullable<Vec<T>>, values: Vec<T>, present: &Validity) {
     put(&mut out.values, values);
     out.valid.append(present);
-}
-
-/// A row number.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Row(pub u64);
-
-/// Consecutive row numbers, held as the range they are: a block of rows
-/// costs no memory, and loops over it count in a register.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Rows(pub Range<u64>);
-
-impl Rows {
-    pub fn len(&self) -> usize {
-        (self.0.end - self.0.start) as usize
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl Columnar for Row {
-    type Columns = Rows;
-}
-
-impl Sink<Row> for Rows {
-    fn push(&mut self, Row(r): Row) {
-        if self.0.is_empty() {
-            self.0 = r..r + 1;
-        } else {
-            assert_eq!(r, self.0.end, "row numbers are consecutive");
-            self.0.end += 1;
-        }
-    }
-}
-
-impl RowCount for Rows {
-    fn rows(&self) -> usize {
-        self.len()
-    }
-}
-
-/// The row numbers, for writers that work a block at a time.
-#[derive(Debug, Clone, Default)]
-pub struct RowNumbers {
-    next: u64,
-}
-
-pub fn row_numbers() -> RowNumbers {
-    RowNumbers::default()
-}
-
-impl Distribution for RowNumbers {
-    type Item = Row;
-
-    fn collect_into(&mut self, cols: &mut Rows, _: &mut impl Rng, n: usize) {
-        let end = self.next + n as u64;
-        if cols.0.is_empty() {
-            cols.0 = self.next..end;
-        } else {
-            assert_eq!(cols.0.end, self.next, "row numbers are consecutive");
-            cols.0.end = end;
-        }
-        self.next = end;
-    }
-
-    fn skip(&mut self, n: u64) {
-        self.next += n;
-    }
 }
 
 /// Round to cents (non-negative inputs; `+ 0.5` then truncate, which

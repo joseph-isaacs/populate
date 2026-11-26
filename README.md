@@ -189,7 +189,9 @@ and the data-set generators under `generator/`.
 | `populate-py`           | [Python bindings](python/README.md) (feature `python`): distributions, `table`, TPC-H and SSB as Arrow streams |
 
 The generator crates are listed [above](#benchmark-generators). See
-[`populate/DESIGN.md`](populate/DESIGN.md) for the design.
+[`populate/DESIGN.md`](populate/DESIGN.md) for the design, and the
+[book](book/src/introduction.md) (`mdbook serve book`) for a guide to
+writing tables with the library.
 
 ## Licence
 

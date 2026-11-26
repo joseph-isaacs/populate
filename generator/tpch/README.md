@@ -50,8 +50,9 @@ it. The generators are this crate's own:
 
 - **Each table is one populate distribution.** A table is a tuple of
   named columns built from `populate-builtins` combinators (`draws`,
-  `derive`, `children`, `flat_map`, `named`) over dbgen's streams, run by
-  `populate_table::DistTable`. Its Arrow schema is read off that
+  `derive`, `children`, `flat_map`, `format`, `named`) over dbgen's
+  streams (`populate_combinators::lehmer`), run by
+  `populate_table::DynTable`. Its Arrow schema is read off that
   distribution: the names it carries and the types of the columns it
   collects into (`Date32`, `Decimal<15, 2>`, `Utf8View` text). Nothing is
   declared twice, and no rows are generated to get it.
@@ -77,17 +78,17 @@ it. The generators are this crate's own:
 - **The text pool, fast and on all cores.** dbgen builds the pool by
   parsing one long stream of draws into sentences from a small grammar,
   which is sequential: where a sentence starts depends on every earlier
-  one. Two changes:
+  one. Here:
   - The grammar is compiled: each sentence, noun-phrase and verb-phrase
     shape becomes a list of word draws, and each word is one 32-byte copy
     of the word with what follows it (a space, `", "`, `" the "`). No
     syntax is read per word, and there is no mispredicted jump per word.
-    One thread: 0.50 → 0.38 s.
+    One thread builds the pool in about 0.38 s.
   - `src/pool_index.rs` lists 512 sentence starts (draw and byte), evenly
     spaced through the pool. The parts between them are generated
     independently, each straight into its place in the pool. A test
     checks the list against the serial parse and can regenerate it.
-    4 threads: 0.23 → 0.10 s.
+    4 threads build the pool in about 0.10 s.
 
   The pool is built once per process (`Tpch::prepare`), and is tested
   equal to tpchgen's byte for byte.

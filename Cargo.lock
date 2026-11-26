@@ -811,7 +811,11 @@ dependencies = [
  "arrow-schema",
  "divan",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]
@@ -862,9 +866,14 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "bytes",
+ "mimalloc",
  "parquet",
+ "populate-builtins",
  "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
  "tpchgen",
 ]
 
@@ -918,7 +927,11 @@ dependencies = [
  "itoa",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]
@@ -996,7 +1009,11 @@ dependencies = [
  "itoa",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]

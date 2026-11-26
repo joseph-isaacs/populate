@@ -9,8 +9,8 @@ on a 4-core x86-64 cloud VM; see each README for the settings.
 
 | benchmark | crate | matches | speed vs the reference |
 |---|---|---|---|
-| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 1.4–2.6x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads) |
-| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 2.3–3.3x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet) |
+| TPC-H | [`populate-tpch`](generator/tpch/README.md) | `dbgen` / `tpchgen-cli`, byte for byte, all 8 tables | 2.0–3.7x `tpcgen-cli` (SF 1 and 10, `.tbl` and Parquet, 1 and 4 threads, same settings) |
+| TPC-DS | [`populate-tpcds`](generator/tpcds/README.md) | `dsdgen`, byte for byte, all 24 tables | 3.0–4.7x `tpcgen-cli` (SF 1 and 10, `.dat` and Parquet, same settings) |
 | DSB | [`populate-dsb`](generator/dsb/README.md) | DSB's `dsdgen`, byte for byte, all 24 tables (SF 1 and 2) | SF 1 `.dat` in ~2 s on 4 cores; `dsdgen` takes 68 s on one |
 | SSB and SSB-flat | [`populate-ssb`](generator/ssb/README.md) | `ssb-dbgen`, byte for byte, all 5 tables (SF 0.0001 to 10) | 5.8x `ssb-dbgen` on 1 thread, 13x on 4 (SF 1 `.tbl`) |
 | H2O db-benchmark | [`populate-h2o`](generator/h2o/README.md) | its R datagen (`set.seed(108)`), byte for byte | 7–39x `Rscript`; 1e8-row joins that R runs out of memory on take ~17–20 s |

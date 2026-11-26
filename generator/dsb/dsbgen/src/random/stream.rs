@@ -53,14 +53,27 @@ static POW: [i64; 256] = {
 
 impl RandomNumberStream {
     // https://en.wikipedia.org/wiki/Lehmer_random_number_generator
+    #[inline]
     pub fn next_random(&mut self) -> i64 {
-        let mut next_seed = self.seed;
-        let division_result = next_seed / Self::QUOTIENT;
-        let mod_result = next_seed % Self::QUOTIENT;
-        next_seed = Self::MULTIPLIER * mod_result - division_result * Self::REMAINDER;
-        if next_seed < 0 {
-            next_seed += i32::MAX as i64;
-        }
+        let seed = self.seed;
+        let next_seed = if (1..i32::MAX as i64).contains(&seed) {
+            // `seed * 16807 mod (2^31 - 1)` by folding the high bits onto
+            // the low ones (`2^31 = 1 mod m`): Schrage's method below gives
+            // the same residue for a seed in range, with two divisions
+            let p = seed as u64 * Self::MULTIPLIER as u64;
+            let r = (p & i32::MAX as u64) + (p >> 31);
+            ((r & i32::MAX as u64) + (r >> 31)) as i64
+        } else {
+            // a seed dsdgen never reduced (some start above the modulus)
+            let division_result = seed / Self::QUOTIENT;
+            let mod_result = seed % Self::QUOTIENT;
+            let next = Self::MULTIPLIER * mod_result - division_result * Self::REMAINDER;
+            if next < 0 {
+                next + i32::MAX as i64
+            } else {
+                next
+            }
+        };
 
         self.seed = next_seed;
         // dsdgen's count is a C int: it can wrap on a stream that is never
@@ -173,6 +186,34 @@ impl RandomNumberStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The folded step is Schrage's method for every seed in range.
+    #[test]
+    fn folded_step_matches_schrage() {
+        let schrage = |seed: i64| {
+            let q = RandomNumberStream::QUOTIENT;
+            let next = RandomNumberStream::MULTIPLIER * (seed % q)
+                - seed / q * RandomNumberStream::REMAINDER;
+            if next < 0 {
+                next + i32::MAX as i64
+            } else {
+                next
+            }
+        };
+        let seeds = (1..i32::MAX as i64).step_by(4_093).chain([
+            1,
+            2,
+            127_772,
+            127_773,
+            127_774,
+            i32::MAX as i64 - 1,
+        ]);
+        for seed in seeds {
+            let mut s = RandomNumberStream::new_with_column(1, 1);
+            s.seed = seed;
+            assert_eq!(s.next_random(), schrage(seed), "seed {seed}");
+        }
+    }
 
     #[test]
     fn finish_row_burns_like_drawing() {

@@ -104,6 +104,36 @@ impl FirstAppearance {
     fn count(&self) -> usize {
         self.ids.len()
     }
+
+    /// The values, in the order of their ids.
+    fn in_order(&self) -> Vec<String> {
+        let mut v: Vec<(&String, &i32)> = self.ids.iter().collect();
+        v.sort_unstable_by_key(|&(_, &id)| id);
+        v.into_iter().map(|(s, _)| s.clone()).collect()
+    }
+}
+
+/// `f(first, last)` over rows `1..=n` split into one part per core
+/// (1-based, inclusive), run in parallel; the parts' results in order. The
+/// row generators skip to any row, so a map's rows are made by all cores
+/// instead of one, while every other thread waits for the map.
+fn in_parts<T: Send>(n: u64, f: impl Fn(u64, u64) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get()) as u64;
+    let per = n.div_ceil(threads.max(1)).max(1);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let parts: Vec<_> = (0..n.div_ceil(per))
+            .map(|k| {
+                let first = k * per + 1;
+                let last = ((k + 1) * per).min(n);
+                scope.spawn(move || f(first, last))
+            })
+            .collect();
+        parts
+            .into_iter()
+            .map(|p| p.join().expect("attribute map part"))
+            .collect()
+    })
 }
 
 /// The maps dsdgen serialises, by `.meta` name.
@@ -181,11 +211,19 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
     match name {
         ItemCategory | ItemColor => {
             let n = rows(session, Table::Item);
-            let mut g = ItemRowGenerator::new(session.clone(), n);
             let (mut category, mut color) = (Vec::new(), Vec::new());
-            while let Some(row) = g.next() {
-                category.push(row.get_i_category_id() as i32);
-                color.push(g.last_color_id());
+            for (cat, col) in in_parts(n, |first, last| {
+                let mut g = ItemRowGenerator::new(session.clone(), n);
+                g.set_source_row_range(first, last);
+                let (mut cat, mut col) = (Vec::new(), Vec::new());
+                while let Some(row) = g.next() {
+                    cat.push(row.get_i_category_id() as i32);
+                    col.push(g.last_color_id());
+                }
+                (cat, col)
+            }) {
+                category.extend(cat);
+                color.extend(col);
             }
             vec![
                 (
@@ -200,12 +238,23 @@ fn build(name: MapName, session: &Session) -> Vec<(MapName, AttributeKeyMap)> {
         }
         CustomerAddressCounty | CustomerAddressState => {
             let n = rows(session, Table::CustomerAddress);
-            let mut g = CustomerAddressRowGenerator::new(session.clone(), n);
             let (mut county, mut state) = (Vec::new(), Vec::new());
             let mut states = FirstAppearance::default();
-            while let Some(row) = g.next() {
-                county.push(g.last_county_id().expect("customer_address is not small"));
-                state.push(states.id(row.get_ca_address().get_state()));
+            for (part_county, part_states, part_state) in in_parts(n, |first, last| {
+                let mut g = CustomerAddressRowGenerator::new(session.clone(), n);
+                g.set_source_row_range(first, last);
+                let (mut county, mut state) = (Vec::new(), Vec::new());
+                // ids by first appearance in this part, renumbered below
+                let mut states = FirstAppearance::default();
+                while let Some(row) = g.next() {
+                    county.push(g.last_county_id().expect("customer_address is not small"));
+                    state.push(states.id(row.get_ca_address().get_state()));
+                }
+                (county, states.in_order(), state)
+            }) {
+                county.extend(part_county);
+                let ids: Vec<i32> = part_states.iter().map(|s| states.id(s)).collect();
+                state.extend(part_state.into_iter().map(|i| ids[i as usize - 1]));
             }
             vec![
                 (

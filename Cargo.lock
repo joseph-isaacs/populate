@@ -778,6 +778,7 @@ dependencies = [
  "populate-builtins",
  "populate-core",
  "populate-sink-arrow",
+ "populate-table",
  "rand",
  "tpchgen",
 ]
@@ -794,7 +795,6 @@ name = "populate-dsb"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
  "arrow-select",
@@ -804,7 +804,12 @@ dependencies = [
  "dsbgen-arrow",
  "mimalloc",
  "parquet",
+ "populate-builtins",
+ "populate-combinators",
+ "populate-core",
+ "populate-sink-arrow",
  "populate-table",
+ "rand",
 ]
 
 [[package]]

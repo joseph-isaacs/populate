@@ -17,7 +17,7 @@ pub mod sales;
 
 use crate::random::RandomNumberStream;
 use crate::types::{Date, Decimal};
-use std::cell::RefCell;
+use std::sync::{LazyLock, OnceLock};
 
 /// `DIST_EXP_LAMBDA_LOW`: the skew DSB uses almost everywhere.
 pub const LAMBDA_LOW: f64 = 0.1;
@@ -39,6 +39,7 @@ pub const MARKUP_BUCKET_COUNT: i32 = 20;
 /// 31-bit draw at both lambdas: `exp_ratio_is_monotone`), so for ranges up
 /// to [`TABLE_MAX_RANGE`] it is looked up from the draws where it steps
 /// instead of computed with a logarithm. The result is the same.
+#[inline]
 pub fn exp_rank(min: i64, max: i64, lambda: f64, stream: &mut RandomNumberStream) -> i64 {
     let draw = stream.next_random();
     let range = max - min;
@@ -51,7 +52,8 @@ pub fn exp_rank(min: i64, max: i64, lambda: f64, stream: &mut RandomNumberStream
             None
         };
         if let Some(w) = which {
-            return min + EXP_STEPS.with(|t| t.borrow_mut()[w].steps(range, lambda, draw));
+            let steps = EXP_STEPS[w][range as usize].get_or_init(|| Steps::new(range, lambda));
+            return min + steps.offset(draw);
         }
     }
     min + exp_offset(draw, range, lambda)
@@ -128,28 +130,11 @@ impl Steps {
     }
 }
 
-/// Per range, its [`Steps`], built on first use.
-#[derive(Default)]
-struct ExpSteps {
-    by_range: Vec<Option<Steps>>,
-}
-
-impl ExpSteps {
-    #[inline]
-    fn steps(&mut self, range: i64, lambda: f64, draw: i64) -> i64 {
-        let r = range as usize;
-        if self.by_range.len() <= r {
-            self.by_range.resize_with(r + 1, || None);
-        }
-        self.by_range[r]
-            .get_or_insert_with(|| Steps::new(range, lambda))
-            .offset(draw)
-    }
-}
-
-thread_local! {
-    static EXP_STEPS: RefCell<[ExpSteps; 2]> = RefCell::default();
-}
+/// Per lambda (low, high) and range, its [`Steps`], built on first use
+/// and shared by every thread: a lookup is one atomic load, not a
+/// thread-local borrow.
+static EXP_STEPS: LazyLock<[Box<[OnceLock<Steps>]>; 2]> =
+    LazyLock::new(|| [(); 2].map(|_| (0..=TABLE_MAX_RANGE).map(|_| OnceLock::new()).collect()));
 
 // C's fmax/fmin (no NaNs reach them here).
 fn f64_max(a: f64, b: f64) -> f64 {
@@ -407,9 +392,8 @@ mod tests {
     fn exp_rank_lookup_matches_formula() {
         for lambda in [LAMBDA_LOW, LAMBDA_HIGH] {
             for range in [0i64, 1, 2, 11, 19, 30, 49, 99, 999, 4096] {
-                let mut t = ExpSteps::default();
-                t.steps(range, lambda, 1);
-                let steps = t.by_range[range as usize].as_ref().unwrap().draws.clone();
+                let t = Steps::new(range, lambda);
+                let steps = t.draws.clone();
                 let mut draws: Vec<i64> =
                     (1..20_000).map(|i| i * 107_351 % i32::MAX as i64).collect();
                 for &s in steps.iter() {
@@ -421,7 +405,7 @@ mod tests {
                     .filter(|&d| (1..i32::MAX as i64).contains(&d))
                 {
                     assert_eq!(
-                        t.steps(range, lambda, d),
+                        t.offset(d),
                         exp_offset(d, range, lambda),
                         "lambda {lambda} range {range} draw {d}"
                     );

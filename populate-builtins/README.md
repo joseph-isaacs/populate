@@ -19,5 +19,5 @@ successive scalar values into arrays of width N. `from_iter` accepts an
 existing iterator, including one that owns a seeded RNG.
 
 Use `collect_as` when a benchmark wants a specific scalar collection.
-For example, `let indices: Buffer<u32> = indexed(|i| (i * 4) as u32).collect_as(rng, n);`
-fills a Vortex buffer directly. The return type selects the destination.
+For example, `let indices: Vec<u32> = indexed(|i| (i * 4) as u32).collect_as(rng, n);`
+collects the indices into a vector. The return type selects the destination.
